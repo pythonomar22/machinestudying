@@ -1,11 +1,14 @@
-"""Aggregate runs + grades into the paper's Table 1: per-budget accuracy, mean
-generated tokens, and expertise (weighted AUC per Appendix C).
+"""Aggregate grades into the paper's Table 1: per-budget accuracy, mean generated
+tokens, and expertise (weighted AUC per Appendix C). Each grade file embeds its
+episode's gen_tokens and status, so scores and tokens come from one population.
 
 The expertise formula was verified against the paper: with x = log10(tokens/3000),
 w(x) = ln(10)·10^(-x), the weight of the segment between consecutive budgets is
 3000/tok_i - 3000/tok_{i+1}; performance is the best-score-so-far envelope; the region
-below the first budget is floored to 0 and the last score carries the tail. This
-reproduces the published 6.49 (DSPy base) and 7.64 (OpenClaw base) exactly.
+below the first budget is floored to 0 and the last score carries the tail. It
+reproduces the worked example (10.8) and DSPy base (6.49) exactly; the paper's own
+Table 1 values for OpenClaw base give 7.66 vs the published 7.64, consistent with the
+table's tokens being rounded to 0.1k.
 """
 
 import argparse
@@ -30,32 +33,35 @@ def expertise(points: list[tuple[float, float]]) -> float:
     e, best = 0.0, 0.0
     for i, (tok, acc) in enumerate(pts):
         best = max(best, acc)
-        next_w = 3000 / pts[i + 1][0] if i + 1 < len(pts) else 0.0
+        next_w = min(3000 / pts[i + 1][0], 1.0) if i + 1 < len(pts) else 0.0
         e += (min(3000 / tok, 1.0) - next_w) * best
     return e
 
 
 def aggregate(task: str) -> dict:
-    out = {}
+    budgets = {}
     for budget in BUDGET_ORDER:
         gdir = ROOT / "grades" / task / budget
         grades = [json.loads(f.read_text()) for f in sorted(gdir.rglob("*.json"))] \
             if gdir.exists() else []
         if not grades:
             continue
-        runs = [json.loads(f.read_text())
-                for f in sorted((ROOT / "runs" / task / budget).rglob("*.json"))]
-        out[budget] = {
+        n_runs = len(list((ROOT / "runs" / task / budget).rglob("*.json")))
+        if n_runs != len(grades):
+            print(f"WARNING: {task}/{budget} has {n_runs} runs but {len(grades)} grades "
+                  "— aggregating the graded subset only")
+        budgets[budget] = {
             "n": len(grades),
             "lenient": mean(g["lenient"] for g in grades),
             "strict": mean(g["strict"] for g in grades),
             "compile_rate": mean(g["compile_check"]["compile_ok"] for g in grades),
             "needs_regrade": sum(bool(g.get("needs_regrade")) for g in grades),
-            "tokens": mean(r["gen_tokens"] for r in runs),
-            "bad_episodes": sum(r["status"] != "ok" for r in runs),
+            "tokens": mean(g["gen_tokens"] for g in grades),
+            "bad_episodes": sum(g["episode_status"] != "ok" for g in grades),
         }
+    out = {"budgets": budgets}
     for kind in ("lenient", "strict"):
-        pts = [(b["tokens"], b[kind]) for b in out.values()]
+        pts = [(b["tokens"], b[kind]) for b in budgets.values()]
         out[f"expertise_{kind}"] = expertise(pts) if len(pts) == 4 else None
     return out
 
@@ -71,10 +77,7 @@ def main():
         print(f"\n== {CORPORA[task].display} (Qwen3.5-9B base) ==")
         print(f"{'budget':8} {'n':>4} {'lenient':>8} {'strict':>7} {'tok(k)':>7} "
               f"{'compile':>8} {'regrade':>8} {'bad':>4}   paper-lenient  paper-tok(k)")
-        for budget in BUDGET_ORDER:
-            if budget not in agg:
-                continue
-            b = agg[budget]
+        for budget, b in agg["budgets"].items():
             pa, pt = paper[budget]
             print(f"{budget:8} {b['n']:>4} {b['lenient']:>8.1f} {b['strict']:>7.1f} "
                   f"{b['tokens'] / 1000:>7.1f} {b['compile_rate']:>8.1%} "

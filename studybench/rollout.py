@@ -53,8 +53,8 @@ def system_prompt(corpus, budget: str) -> str:
     )
     if forced:
         base += (
-            f" You must make exactly {max_iters} tool calls to research the question "
-            "before giving your final answer; do not answer early."
+            f" You must use tools for exactly {max_iters} iterations to research the "
+            "question before giving your final answer; do not answer early."
         )
     return base
 
@@ -120,17 +120,26 @@ async def run_episode(client: AsyncOpenAI, corpus, tools: RepoTools, q: dict,
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": obs})
             continue
 
-        if msg.content and msg.content.strip():
+        answered = bool(msg.content and msg.content.strip())
+        if answered and not (forced and iters < max_iters):
             ep["answer"] = msg.content
             break
 
-        # Neither a tool call nor answer text (e.g. the turn was cut mid-thinking).
+        # Either an empty turn (e.g. cut mid-thinking), or a forced episode trying to
+        # answer before its 20 iterations (tool_choice="required" should prevent the
+        # latter; this is a guard against tool-parser failures).
         nudges += 1
         if nudges > MAX_NUDGES:
-            ep["status"] = "no_answer"
+            if answered:
+                ep["answer"], ep["status"] = msg.content, "forced_short"
+            else:
+                ep["status"] = "no_answer"
             break
-        messages.append({"role": "assistant", "content": ""})
-        messages.append({"role": "user", "content": "Please give your final answer now."})
+        messages.append({"role": "assistant", "content": msg.content or ""})
+        messages.append({"role": "user", "content":
+                         "Please continue researching with a tool call."
+                         if forced and iters < max_iters
+                         else "Please give your final answer now."})
 
     ep["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     return ep
@@ -163,7 +172,9 @@ async def main_async(args):
         for rollout in range(args.rollouts):
             for q in questions:
                 out = ROOT / "runs" / args.task / budget / f"r{rollout}" / f"{q['id']}.json"
-                if out.exists() and json.loads(out.read_text()).get("status") == "ok":
+                # "ok" and "no_answer" are genuine model outcomes; only infra
+                # failures ("error", "forced_short") are retried on resume.
+                if out.exists() and json.loads(out.read_text()).get("status") in ("ok", "no_answer"):
                     continue
                 pending.append((q, budget, rollout, out))
     log.info("%d episodes pending (task=%s)", len(pending), args.task)
@@ -174,11 +185,16 @@ async def main_async(args):
     async def one(i, q, budget, rollout, out):
         nonlocal done
         async with sem:
-            ep = await run_episode(clients[i % len(clients)], corpus, tools, q, budget, rollout)
-            out.parent.mkdir(parents=True, exist_ok=True)
-            tmp = out.with_suffix(".tmp")
-            tmp.write_text(json.dumps(ep, indent=2))
-            tmp.rename(out)
+            try:
+                ep = await run_episode(clients[i % len(clients)], corpus, tools, q, budget, rollout)
+                out.parent.mkdir(parents=True, exist_ok=True)
+                tmp = out.with_suffix(".tmp")
+                tmp.write_text(json.dumps(ep, indent=2))
+                tmp.rename(out)
+            except Exception:
+                log.exception("episode %s/%s/r%d failed outside run_episode",
+                              budget, q["id"], rollout)
+                return
             done += 1
             log.info("[%d/%d] %s/%s/r%d %s: status=%s iters=%d gen_tokens=%d",
                      done, len(pending), budget, q["id"], rollout, ep["finished"],

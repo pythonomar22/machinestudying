@@ -63,35 +63,40 @@ GRADER_PROMPT = """You are grading one model answer for a private {library_name}
 
 Return JSON that matches the schema exactly."""
 
-JUDGE_SCHEMA = {
-    "type": "json_schema",
-    "json_schema": {
-        "name": "grading",
-        "strict": True,
-        "schema": {
-            "type": "object",
-            "properties": {
-                "claims": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "claim_id": {"type": "string"},
-                            "score": {"type": "integer", "enum": [0, 1]},
-                            "rationale": {"type": "string"},
+def judge_schema(row: dict) -> dict:
+    """Structured-output schema, pinned to this question's claim ids and count."""
+    ids = [c["claim_id"] for c in row["rubric"]]
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "grading",
+            "strict": True,
+            "schema": {
+                "type": "object",
+                "properties": {
+                    "claims": {
+                        "type": "array",
+                        "minItems": len(ids),
+                        "maxItems": len(ids),
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "claim_id": {"type": "string", "enum": ids},
+                                "score": {"type": "integer", "enum": [0, 1]},
+                                "rationale": {"type": "string"},
+                            },
+                            "required": ["claim_id", "score", "rationale"],
+                            "additionalProperties": False,
                         },
-                        "required": ["claim_id", "score", "rationale"],
-                        "additionalProperties": False,
                     },
+                    "question_score": {"type": "number"},
+                    "needs_regrade": {"type": "boolean"},
                 },
-                "question_score": {"type": "number"},
-                "needs_regrade": {"type": "boolean"},
+                "required": ["claims", "question_score", "needs_regrade"],
+                "additionalProperties": False,
             },
-            "required": ["claims", "question_score", "needs_regrade"],
-            "additionalProperties": False,
         },
-    },
-}
+    }
 
 log = logging.getLogger("grade")
 
@@ -146,7 +151,7 @@ async def grade_episode(client: AsyncOpenAI, corpus, row: dict, ep: dict) -> dic
     resp = await client.chat.completions.create(
         model=JUDGE_MODEL,
         messages=[{"role": "user", "content": build_prompt(corpus, row, answer)}],
-        response_format=JUDGE_SCHEMA,
+        response_format=judge_schema(row),
     )
     verdict = json.loads(resp.choices[0].message.content)
     claim_scores = {c["claim_id"]: c["score"] for c in verdict["claims"]}
@@ -172,7 +177,8 @@ async def main_async(args):
     pending = []
     for rf in run_files:
         gf = ROOT / "grades" / rf.relative_to(ROOT / "runs")
-        if not gf.exists():
+        # (re-)grade if ungraded, or if the episode was regenerated since grading
+        if not gf.exists() or gf.stat().st_mtime < rf.stat().st_mtime:
             pending.append((rf, gf))
     log.info("%d episodes to grade (task=%s)", len(pending), args.task)
 
@@ -182,12 +188,16 @@ async def main_async(args):
     async def one(rf, gf):
         nonlocal done
         async with sem:
-            ep = json.loads(rf.read_text())
-            grade = await grade_episode(client, corpus, rows[ep["qid"]], ep)
-            gf.parent.mkdir(parents=True, exist_ok=True)
-            tmp = gf.with_suffix(".tmp")
-            tmp.write_text(json.dumps(grade, indent=2))
-            tmp.rename(gf)
+            try:
+                ep = json.loads(rf.read_text())
+                grade = await grade_episode(client, corpus, rows[ep["qid"]], ep)
+                gf.parent.mkdir(parents=True, exist_ok=True)
+                tmp = gf.with_suffix(".tmp")
+                tmp.write_text(json.dumps(grade, indent=2))
+                tmp.rename(gf)
+            except Exception:
+                log.exception("grading %s failed (no grade written; rerun to retry)", rf)
+                return
             done += 1
             log.info("[%d/%d] %s/%s/r%d lenient=%.0f strict=%.0f compile_ok=%s%s",
                      done, len(pending), grade["budget"], grade["qid"], grade["rollout"],

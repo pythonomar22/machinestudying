@@ -16,17 +16,17 @@ from .dataset import ROOT
 PYTHON_BIN = ROOT / ".venv-dspy/bin/python"  # created by scripts/setup_grading.sh
 RUN_TIMEOUT = 240
 
-FENCE = re.compile(r"```[ \t]*([A-Za-z]*)[ \t]*\n(.*?)```", re.DOTALL)
+FENCE = re.compile(r"```[ \t]*([\w+-]*)[^\n]*\n(.*?)```", re.DOTALL)
 LANG_TAGS = {
-    "python": {"python", "py", ""},
+    "python": {"python", "python3", "py", ""},
     "typescript": {"typescript", "ts", "tsx", "javascript", "js", ""},
 }
 
 
-def extract_code(answer: str, language: str) -> list[str]:
-    """Fenced code blocks in the answer whose tag matches the task language."""
+def extract_code(answer: str, language: str) -> list[tuple[str, str]]:
+    """(tag, body) fenced code blocks in the answer matching the task language."""
     return [
-        body for tag, body in FENCE.findall(answer)
+        (tag.lower(), body) for tag, body in FENCE.findall(answer)
         if tag.lower() in LANG_TAGS[language] and body.strip()
     ]
 
@@ -36,10 +36,10 @@ def check(answer: str, language: str) -> dict:
     blocks = extract_code(answer, language)
     if not blocks:
         return {"compile_ok": False, "detail": "no code block found in answer"}
-    program = max(blocks, key=len)  # the main program; smaller blocks are usually asides
+    tag, program = max(blocks, key=lambda b: len(b[1]))  # the main program
     if language == "python":
         return _check_python(program)
-    return _check_typescript(program)
+    return _check_typescript(program, tsx=tag == "tsx")
 
 
 def _check_python(program: str) -> dict:
@@ -51,8 +51,10 @@ def _check_python(program: str) -> dict:
         path = Path(td) / "answer.py"
         path.write_text(program)
         try:
+            # scrubbed env: no API keys from .env / the user shell reach generated code
             proc = subprocess.run(
                 [str(PYTHON_BIN), "-I", str(path)], cwd=td,
+                env={"PATH": "/usr/bin:/bin", "HOME": td, "TMPDIR": td},
                 capture_output=True, text=True, timeout=RUN_TIMEOUT,
             )
         except subprocess.TimeoutExpired:
@@ -66,16 +68,16 @@ def _check_python(program: str) -> dict:
     }
 
 
-_TS_PARSER = None
+_TS_PARSERS: dict[bool, object] = {}
 
 
-def _check_typescript(program: str) -> dict:
-    global _TS_PARSER
-    if _TS_PARSER is None:
-        import tree_sitter_typescript
+def _check_typescript(program: str, tsx: bool = False) -> dict:
+    if tsx not in _TS_PARSERS:
+        import tree_sitter_typescript as tst
         from tree_sitter import Language, Parser
-        _TS_PARSER = Parser(Language(tree_sitter_typescript.language_typescript()))
-    tree = _TS_PARSER.parse(program.encode())
+        lang = tst.language_tsx() if tsx else tst.language_typescript()
+        _TS_PARSERS[tsx] = Parser(Language(lang))
+    tree = _TS_PARSERS[tsx].parse(program.encode())
     errors = []
 
     def walk(node):

@@ -3,6 +3,9 @@
 corpora/
 runs/
 grades/
-logs/
+logs/*
+!logs/slurm/
+logs/slurm/*
+!logs/slurm/.gitkeep
 __pycache__/
 *.egg-info/
