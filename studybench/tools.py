@@ -14,6 +14,8 @@ import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
+import regex  # not re: its match timeout stops catastrophic backtracking
+
 from .dataset import Corpus
 
 GREP_MAX_MATCHES = 50
@@ -118,9 +120,9 @@ class RepoTools:
 
     def _grep(self, pattern: str, path: str | None = None) -> str:
         try:
-            rx = re.compile(pattern)
-        except re.error:
-            rx = re.compile(re.escape(pattern))  # fall back to a literal search
+            rx = regex.compile(pattern)
+        except regex.error:
+            rx = regex.compile(regex.escape(pattern))  # fall back to a literal search
         path = (path or "").strip("/")
         candidates = [f for f in self.files if not path or f == path or f.startswith(path + "/")]
         if path and not candidates:
@@ -129,16 +131,20 @@ class RepoTools:
         deadline = time.monotonic() + GREP_TIME_BUDGET
         for f in candidates:
             starts, seen_line = self._starts[f], -1
-            for m in rx.finditer(self.text[f]):
-                line = bisect.bisect_right(starts, m.start())  # 1-indexed
-                if line == seen_line:
-                    continue  # one report per line
-                seen_line = line
-                text = self.text[f][starts[line - 1]:].split("\n", 1)[0]
-                matches.append(f"{f}:{line}:{text[:GREP_MAX_LINE_CHARS]}")
-                if len(matches) >= GREP_MAX_MATCHES:
-                    truncated = True
-                    break
+            try:
+                for m in rx.finditer(self.text[f],
+                                     timeout=max(0.1, deadline - time.monotonic())):
+                    line = bisect.bisect_right(starts, m.start())  # 1-indexed
+                    if line == seen_line:
+                        continue  # one report per line
+                    seen_line = line
+                    text = self.text[f][starts[line - 1]:].split("\n", 1)[0]
+                    matches.append(f"{f}:{line}:{text[:GREP_MAX_LINE_CHARS]}")
+                    if len(matches) >= GREP_MAX_MATCHES:
+                        truncated = True
+                        break
+            except TimeoutError:  # pathological backtracking; report what we have
+                truncated = True
             if truncated or time.monotonic() > deadline:
                 truncated = True
                 break
@@ -170,6 +176,8 @@ class RepoTools:
         n = len(lines)
         start = max(1, int(start_line or 1))
         end = min(n, int(end_line) if end_line else n)
+        if start > n or end < start:
+            return f"Error: '{path}' has {n} lines; requested lines {start}-{end}."
         if end - start + 1 > READ_MAX_LINES:
             end = start + READ_MAX_LINES - 1
         body = "\n".join(f"{i}: {lines[i - 1][:500]}" for i in range(start, end + 1))

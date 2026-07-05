@@ -16,7 +16,8 @@ fi
 
 NGPU=${SB_NGPU:-$(nvidia-smi -L | wc -l)}
 PORT_BASE=${SB_PORT_BASE:-8100}
-mkdir -p logs
+LOG_PREFIX=${SB_VLLM_LOG_PREFIX:-logs/vllm}  # job-unique prefix: stale logs from a
+mkdir -p logs                                # previous run must not be re-read
 for i in $(seq 0 $((NGPU - 1))); do
     CUDA_VISIBLE_DEVICES=$i .venv-vllm/bin/vllm serve Qwen/Qwen3.5-9B \
         --port $((PORT_BASE + i)) \
@@ -24,6 +25,6 @@ for i in $(seq 0 $((NGPU - 1))); do
         --reasoning-parser qwen3 \
         --enable-auto-tool-choice --tool-call-parser qwen3_coder \
         --language-model-only \
-        > "logs/vllm-$i.log" 2>&1 &
+        > "$LOG_PREFIX-$i.log" 2>&1 &
 done
 wait

@@ -91,3 +91,25 @@ OpenClaw 7.64), using the exact grading procedure the first author described to 
   path). Whether thinking survives the grammar in forced mode → smoke test.
 - 2026-07-05: smoke test job 22923 (1 GPU): dspy+openclaw × {direct,k5,k20f} × 1
   rollout × 2 questions = 12 episodes.
+- 2026-07-05 (review round 2, all 28 agents): fixed the confirmed findings:
+  - **tools.py grep blocker**: `re` → `regex` with a hard match timeout — a
+    catastrophic-backtracking pattern used to hold the GIL and freeze every
+    concurrent episode; now it returns partial matches at the deadline.
+  - rollout: `parallel_tool_calls=False` (one action per ReAct iteration — the
+    faithful reading of the paper's "tool iterations"; also bounds context growth);
+    rollout exits non-zero when any episode ends in error/forced_short so the batch
+    job fails visibly; read_file now errors on out-of-range instead of returning an
+    empty success.
+  - sandbox: the compile gate prefers explicitly-tagged code blocks (an untagged
+    output/config blob can no longer displace the program).
+  - grade: judge retried once if it returns duplicate/missing claim ids.
+  - sbatch/serve: job-unique vLLM log names (a stale Traceback from a previous run
+    used to falsely abort startup), port stride 8 per job id (concurrent jobs with
+    adjacent ids no longer overlap ports), unconditional `uv sync`.
+  - Verified refutations worth recording: vLLM 0.24.0 clamps `max_tokens`
+    server-side to the remaining context (no context-overflow failures); the
+    forced-mode xgrammar structural tag constrains only post-`</think>` tokens, so
+    thinking survives `tool_choice="required"`; slurm ≥23.02 creates missing
+    --output dirs.
+  - NOTE: smoke episodes were generated with pre-round-2 rollout semantics —
+    runs/ and grades/ will be wiped before the full run.

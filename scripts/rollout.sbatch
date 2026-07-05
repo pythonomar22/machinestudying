@@ -19,9 +19,12 @@ BUDGETS=${SB_BUDGETS:-direct,k5,k20,k20f}
 ROLLOUTS=${SB_ROLLOUTS:-3}
 LIMIT=${SB_LIMIT:-0}
 export SB_NGPU=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
-export SB_PORT_BASE=$((20000 + SLURM_JOB_ID % 10000))  # nodes are shared; avoid fixed ports
+# nodes are shared and jobs can run concurrently: job-unique ports (stride 8 so
+# consecutive job ids cannot overlap) and job-unique vLLM logs
+export SB_PORT_BASE=$((20000 + (SLURM_JOB_ID % 2000) * 8))
+export SB_VLLM_LOG_PREFIX="logs/vllm-$SLURM_JOB_ID"
 
-[ -d .venv ] || uv sync
+uv sync
 setsid bash scripts/serve_vllm.sh &
 SERVE_PID=$!
 trap 'kill -TERM -- -$SERVE_PID 2>/dev/null || true' EXIT
@@ -31,15 +34,15 @@ for i in $(seq 0 $((SB_NGPU - 1))); do
     BASE_URLS+="${BASE_URLS:+,}http://localhost:$((SB_PORT_BASE + i))/v1"
     for _ in $(seq 1 240); do  # up to 40 min (first startup compiles kernels)
         curl -sf "http://localhost:$((SB_PORT_BASE + i))/health" > /dev/null && break
-        if grep -q "Traceback (most recent call last)" "logs/vllm-$i.log" 2>/dev/null; then
+        if grep -q "Traceback (most recent call last)" "$SB_VLLM_LOG_PREFIX-$i.log" 2>/dev/null; then
             echo "FATAL: vLLM server $i crashed during startup:"
-            tail -50 "logs/vllm-$i.log"
+            tail -50 "$SB_VLLM_LOG_PREFIX-$i.log"
             exit 1
         fi
         sleep 10
     done
     curl -sf "http://localhost:$((SB_PORT_BASE + i))/health" > /dev/null \
-        || { echo "FATAL: vLLM server $i never became healthy"; tail -50 "logs/vllm-$i.log"; exit 1; }
+        || { echo "FATAL: vLLM server $i never became healthy"; tail -50 "$SB_VLLM_LOG_PREFIX-$i.log"; exit 1; }
 done
 echo "all $SB_NGPU vLLM servers healthy: $BASE_URLS"
 

@@ -36,7 +36,10 @@ def check(answer: str, language: str) -> dict:
     blocks = extract_code(answer, language)
     if not blocks:
         return {"compile_ok": False, "detail": "no code block found in answer"}
-    tag, program = max(blocks, key=lambda b: len(b[1]))  # the main program
+    # the main program = largest explicitly-tagged block; untagged fences (often
+    # sample output or config) are considered only when no tagged block exists
+    tagged = [b for b in blocks if b[0]]
+    tag, program = max(tagged or blocks, key=lambda b: len(b[1]))
     if language == "python":
         return _check_python(program)
     return _check_typescript(program, tsx=tag == "tsx")

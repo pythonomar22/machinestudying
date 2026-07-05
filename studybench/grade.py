@@ -148,17 +148,20 @@ async def grade_episode(client: AsyncOpenAI, corpus, row: dict, ep: dict) -> dic
 
     grade["compile_check"] = await asyncio.to_thread(sandbox.check, answer, corpus.language)
 
-    resp = await client.chat.completions.create(
-        model=JUDGE_MODEL,
-        messages=[{"role": "user", "content": build_prompt(corpus, row, answer)}],
-        response_format=judge_schema(row),
-    )
-    verdict = json.loads(resp.choices[0].message.content)
-    claim_scores = {c["claim_id"]: c["score"] for c in verdict["claims"]}
-    missing = [c["claim_id"] for c in row["rubric"] if c["claim_id"] not in claim_scores]
-    if missing:
-        log.warning("%s/%s/r%d: judge skipped claims %s (scored 0)",
-                    ep["budget"], ep["qid"], ep["rollout"], missing)
+    rubric_ids = {c["claim_id"] for c in row["rubric"]}
+    for attempt in range(2):  # retry once if the judge duplicates/omits claim ids
+        resp = await client.chat.completions.create(
+            model=JUDGE_MODEL,
+            messages=[{"role": "user", "content": build_prompt(corpus, row, answer)}],
+            response_format=judge_schema(row),
+        )
+        verdict = json.loads(resp.choices[0].message.content)
+        claim_scores = {c["claim_id"]: c["score"] for c in verdict["claims"]}
+        if set(claim_scores) == rubric_ids:
+            break
+        log.warning("%s/%s/r%d attempt %d: judge returned claim ids %s, want %s",
+                    ep["budget"], ep["qid"], ep["rollout"], attempt,
+                    sorted(claim_scores), sorted(rubric_ids))
     grade.update(
         claims=verdict["claims"],
         needs_regrade=verdict["needs_regrade"],

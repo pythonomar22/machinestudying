@@ -83,6 +83,8 @@ async def run_episode(client: AsyncOpenAI, corpus, tools: RepoTools, q: dict,
         if allow_tools:
             kwargs["tools"] = TOOL_SCHEMAS
             kwargs["tool_choice"] = "required" if forced else "auto"
+            # one action per ReAct iteration (paper: "up to 5 or 20 tool iterations")
+            kwargs["parallel_tool_calls"] = False
         try:
             resp = await request_with_retry(
                 client, messages=messages, model=MODEL, seed=seed,
@@ -204,7 +206,15 @@ async def main_async(args):
                           ep["answer"][:2000])
 
     await asyncio.gather(*(one(i, *p) for i, p in enumerate(pending)))
-    log.info("all done")
+
+    statuses = {}
+    for _, budget, rollout, out in pending:
+        s = json.loads(out.read_text())["status"] if out.exists() else "missing"
+        statuses[s] = statuses.get(s, 0) + 1
+    log.info("all done: %s", statuses)
+    if statuses.keys() - {"ok", "no_answer"}:
+        log.error("some episodes failed; rerun to retry them")
+        raise SystemExit(1)
 
 
 def main():
