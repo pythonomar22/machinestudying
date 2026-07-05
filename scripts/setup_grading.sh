@@ -10,4 +10,6 @@ if [ ! -d .venv-dspy ]; then
     uv venv .venv-dspy -p 3.12
     uv pip install -p .venv-dspy ./corpora/dspy
 fi
+# optional deps exercised by gold answers (MIPROv2 needs optuna)
+uv pip install -p .venv-dspy optuna
 echo "grading environments ready"

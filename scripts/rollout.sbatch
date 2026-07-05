@@ -34,7 +34,8 @@ for i in $(seq 0 $((SB_NGPU - 1))); do
     BASE_URLS+="${BASE_URLS:+,}http://localhost:$((SB_PORT_BASE + i))/v1"
     for _ in $(seq 1 240); do  # up to 40 min (first startup compiles kernels)
         curl -sf "http://localhost:$((SB_PORT_BASE + i))/health" > /dev/null && break
-        if grep -q "Traceback (most recent call last)" "$SB_VLLM_LOG_PREFIX-$i.log" 2>/dev/null; then
+        # fatal marker only — warmup WARNINGs also print tracebacks
+        if grep -q "EngineCore failed to start" "$SB_VLLM_LOG_PREFIX-$i.log" 2>/dev/null; then
             echo "FATAL: vLLM server $i crashed during startup:"
             tail -50 "$SB_VLLM_LOG_PREFIX-$i.log"
             exit 1

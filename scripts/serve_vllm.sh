@@ -8,10 +8,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 export UV_LINK_MODE=copy
 unset ROCR_VISIBLE_DEVICES
+# flashinfer JIT-compiles kernels at startup; it needs nvcc and ninja on PATH
+# (ninja is pip-installed into the venv, whose bin/ is not on PATH otherwise)
+export CUDA_HOME=/usr/local/cuda-12.8
+export PATH="$PWD/.venv-vllm/bin:$CUDA_HOME/bin:$PATH"
 
 if [ ! -x .venv-vllm/bin/vllm ]; then
     uv venv .venv-vllm -p 3.12
-    uv pip install -p .venv-vllm vllm==0.24.0
+    uv pip install -p .venv-vllm vllm==0.24.0 ninja
 fi
 
 NGPU=${SB_NGPU:-$(nvidia-smi -L | wc -l)}
