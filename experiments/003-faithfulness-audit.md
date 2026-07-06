@@ -93,6 +93,62 @@ inflation (stronger harness and/or judge severity) for the rest.
 16. needs_regrade handling when the judge sets it.
 17. Could he share one generated cheatsheet (or characterize length/style)?
 
+## The accepted-divergence register
+
+What a byte-for-byte replication would require changing, item by item. We are
+ACCEPTING these divergences (decision record: experiments/004) on the strength of
+the author's "I think native tool call should work"; this register is the complete
+path back if we ever want absolute Table-1 numbers. Status legend:
+**[known]** = we know what to build; **[blocked-on-Qn]** = requires the answer to
+question n in the list above.
+
+Harness (all: rip out studybench/rollout.py's chat loop, rebuild on dspy.ReAct):
+1. [blocked-on-Q1] dspy.ReAct as the loop: exact dspy version/commit, signature
+   string + instructions, adapter, dspy.LM provider prefix, and verification that
+   §B sampling params survive litellm. Structural consequences we'd inherit:
+   fresh stateless LM call per step (fresh ~1.5k-token thinking each turn — the
+   paper's token axis), trajectory re-serialized into each prompt, JSON-parse
+   retries, trajectory truncation on context overflow.
+2. [known] `finish` tool as the only voluntary stop (their k20 ≈ k5 behavior);
+   [blocked-on-Q2] the forced-N mechanism on top of it (finish removed / ignored /
+   re-prompted; whether the model is told upfront).
+3. [blocked-on-Q3] direct budget: Predict vs ChainOfThought vs ReAct(max_iters=0).
+4. [known] answer channel: graded answer = the extract step's output field, not
+   the last assistant message; [blocked-on-Q9] which fields exactly.
+5. [blocked-on-Q4] tool implementations: grep/glob/read_file signatures, output
+   caps, truncation messages, and the readable file set (extension filtering,
+   in-root markdown, README). Ours are invented (GREP_MAX_MATCHES=50,
+   READ_MAX_LINES=500, OBS_MAX_CHARS=25000).
+6. [blocked-on-Q10] system-prompt disclosure: we hand the agent the repo name and
+   code roots ("a free map"); theirs may start blind.
+7. [known] remove our inventions, none of which exist in dspy.ReAct: cap-notice
+   message, nudge machinery, tool-shaped-answer rejection, forced_short status,
+   parallel_tool_calls=False, interleaved-thinking passback, per-episode seeds.
+
+Grading:
+8. [blocked-on-Q8] the hallucinated-API deterministic check (never built): likely
+   symbol/import existence against the pinned repo; unknown TS equivalent. Affects
+   strict/compile columns only (lenient skips automatic zeros).
+9. [blocked-on-Q7] judge reasoning effort (our ablation: moves cells 10-30%
+   relative), exact 0/1 wording, output schema vs free JSON, evidence = whole
+   files vs excerpts (our ablation: ±1pt).
+10. [blocked-on-Q8] sandbox semantics: exit-0 execution (ours) vs compile/import
+    only (possibly theirs); code-block selection from multi-block answers.
+11. [blocked-on-Q16] needs_regrade policy. [blocked-on-Q14] token-axis
+    composition (extract call? adapter retries? ungradable episodes?).
+
+Study (cheatsheet):
+12. [blocked-on-Q11] study instruction text; whether "at least 50" means exactly
+    50; single cheatsheet vs best-of-N; cheatsheet from the extract step; study
+    sampling params.
+13. [blocked-on-Q12] prepend placement (question field vs system) and framing
+    text. Ours: user-message header "Reference notes on {lib} from your prior
+    study...".
+
+Serving:
+14. [blocked-on-Q13] served context length (ours 262144) and whether trajectory
+    truncation fired in their forced-20 runs.
+
 ## Recommended next experiment (004)
 
 Build the harness AS dspy.ReAct (the pinned library is in corpora/dspy; point
