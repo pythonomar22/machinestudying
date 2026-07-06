@@ -46,6 +46,40 @@ base grades are gpt-5.4, so cheatsheet-vs-base and cheatsheet-vs-paper are
 cross-judge comparisons until either side is regraded under a common judge
 (the base fugu regrade was started and intentionally stopped — user call).
 
+## RESULTS (2026-07-06; 600 episodes, judge=fugu, core-conjunctive lenient)
+
+All 600 episodes clean (statuses ok, forced=20 exact). CIs: two-stage cluster
+bootstrap, 10k replicates.
+
+| DSPy | direct | k5 | k20 | k20f | WAUC |
+|---|---|---|---|---|---|
+| paper +cheatsheet | 6.3 | 14.4 | 14.1 | 23.1 | **9.65** |
+| ours +cheatsheet (fugu) | 0.0 | 8.3 | 11.6 | 12.6 | **8.89** [4.5, 16.5] |
+| ours base (gpt-5.4, ref) | 0.0 | 2.9 | 10.3 | 17.8 | 9.68 |
+
+| OpenClaw | direct | k5 | k20 | k20f | WAUC |
+|---|---|---|---|---|---|
+| paper +cheatsheet | 4.3 | 8.6 | 15.2 | 18.1 | **8.18** |
+| ours +cheatsheet (fugu) | 0.0 | 1.3 | 3.0 | 9.2 | **5.77** [0.0, 14.0] |
+| ours base (gpt-5.4, ref) | 0.0 | 1.6 | 9.7 | 9.6 | 5.98 |
+
+**The paper's cheatsheet signature replicates.**
+1. WAUC inside our 95% CI on both tasks (9.65 in [4.5, 16.5]; 8.18 in [0, 14.0]).
+2. **Gains concentrate at low budgets** (paper's central claim for this row):
+   DSPy k5 2.9 → 8.3 lenient; visible judge-independently in the rubric sums
+   (base gpt-5.4: 4.9/21.3 at direct/k5 → cheatsheet fugu: 9.8/29.4).
+3. **Forced search amortizes the note away** (paper: base k20f 29.4 > cheatsheet
+   23.1): ours base 17.8 > cheatsheet 12.6; rubric sums agree (40.4 > 36.5).
+4. **OpenClaw gains are marginal-to-absent**, matching the paper ("only marginal
+   gains on STUDY-OPENCLAW"; their 7.64 → 8.18 is well within our noise floor).
+
+**Judge note:** fugu with our 0/1 + strict-schema pipeline is NOT inflated relative
+to gpt-5.4 (rubric sums are comparable across the base/cheatsheet pairs) — the
+discipline Jacob attributed to the grader appears to come from the prompt + 0/1
+claims + schema, not the judge model. Exact base-vs-cheatsheet deltas remain
+cross-judge (base = gpt-5.4, cheatsheet = fugu); a same-judge pass on one side
+would pin the paired per-question deltas if we want them sharp.
+
 ## Artifacts
 
 - 2026-07-06: cheatsheets generated (job 24723): dspy.md 12,425 chars (~3.3k
