@@ -42,6 +42,7 @@ echo "all $SB_NGPU vLLM servers healthy: $BASE_URLS"
 FLAGS=""
 [ "$SMOKE" = 1 ] && FLAGS="--smoke --debug"
 [ "${SB_COMPACT:-0}" = 1 ] && FLAGS="--compact"
+[ "${SB_USAGE:-0}" = 1 ] && FLAGS="--usage"
 for task in ${TASKS//,/ }; do
     .venv-dspy/bin/python -m studybench.selfquiz --task "$task" --round "$ROUND" \
         --base-urls "$BASE_URLS" --concurrency $((4 * SB_NGPU)) $FLAGS
