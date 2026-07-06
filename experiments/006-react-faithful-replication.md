@@ -122,8 +122,40 @@ qualifying MS algorithm will need to shift that frontier."*
    grades/base judge-ablation dirs (regenerable), studybench/study.py +
    scripts/study.sbatch (native study loop; react.py --study replaces them).
 
-## Results
+## Results (600/600 episodes, fugu judge, pure-sum lenient, 10k-rep CIs)
 
-(to be filled when fugu grades land — comparison targets: paper Table 1 base,
-DSPy 3.3/8.6/9.6/29.4 lenient @ 4.1/7.9/8.6/34.6k tok, WAUC 6.49;
-OpenClaw 2.3/6.9/15.8/17.6 @ 4.1/4.6/9.7/24.3k, WAUC 7.64.)
+| DSPy | direct | k5 | k20 | k20f | WAUC |
+|---|---|---|---|---|---|
+| ours (react) | **3.6** (3.2k) | 16.2 (6.1k) | 19.6 (7.5k) | **29.0** (20.6k) | 12.31 [9.0, 16.4] |
+| paper | 3.3 (4.1k) | 8.6 (7.9k) | 9.6 (8.6k) | 29.4 (34.6k) | 6.49 |
+
+| OpenClaw | direct | k5 | k20 | k20f | WAUC |
+|---|---|---|---|---|---|
+| ours (react) | 3.7 (3.2k) | 4.6 (4.0k) | 16.6 (10.3k) | 19.8 (12.3k) | **8.45 [5.1, 13.0]** |
+| paper | 2.3 (4.1k) | 6.9 (4.6k) | 15.8 (9.7k) | 17.6 (24.3k) | **7.64 ✓ inside CI** |
+
+**Verdict.**
+- **OpenClaw: full replication.** Every cell within ~2.3 points; WAUC 8.45 vs
+  7.64, paper comfortably inside our CI. The never-seen-library row of Table 1
+  reproduces end to end (harness + grading + metric).
+- **DSPy: endpoints replicate exactly** — direct 3.6 vs 3.3, k20f 29.0 vs 29.4 —
+  but the voluntary middle budgets stay ~2x hot (k5 16.2 vs 8.6, k20 19.6 vs 9.6;
+  paper's k20 value sits below our CI). Search behavior matches (our k20 mean
+  3.4 iters, 7.5k tokens vs their 8.6k) — same search amount, better answers —
+  so the residual is answer quality per token on the *stale-prior* library, not
+  agent strength. Remaining candidate causes, in order: grep/glob output caps
+  and observation shaping (the one tool detail still ours, and dspy re-feeds
+  observations into every step), the exact dspy version/adapter, judge identity
+  (fugu vs gpt-5.4: ±7% measured — too small alone), and question-set noise
+  (n=30). The decisive instrument for attribution remains the Q5 cross-grading
+  ask (his grader on ~10 of our answers).
+- Token axis: direct/k5/k20 within ~1-2k of the paper everywhere; forced
+  episodes lighter than theirs (20.6k vs 34.6k DSPy) — same regime, thinner
+  per-step thinking.
+- WAUC gaps compound the k5/k20 accuracy residual with our lighter tokens
+  (cheaper budgets carry more weight): DSPy 12.31 vs 6.49; OpenClaw 8.45 vs
+  7.64.
+
+Compared to where we started (native harness: DSPy WAUC 27.99, OpenClaw 18.16
+under the same judge/metric), the faithful harness moved us from 3-4x hot to
+full replication on one task and endpoint-exact on the other.
