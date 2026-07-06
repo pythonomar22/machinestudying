@@ -460,6 +460,94 @@ def run_round(args):
     log.info("ROUND %d SUMMARY %s", args.round, json.dumps(summary))
 
 
+class CompactSig(dspy.Signature):
+    """Rewrite these note entries about one module to be tighter: merge entries
+    that correct the same or overlapping beliefs, drop redundancy, keep every
+    distinct correction. Each output entry must keep `quote`, `file`, and `line`
+    copied EXACTLY from one of the input entries (they are verified against the
+    source); only the belief/correction wording may change."""
+
+    chapter: str = dspy.InputField()
+    entries_json: str = dspy.InputField()
+    compacted: list[dict] = dspy.OutputField(
+        desc="entries with keys belief, correction, quote, file, line")
+
+
+def compact(args):
+    """Cap-triggered note compaction with a regression guard (design §DISTILL).
+    Compacts per chapter; re-gates every quote; then re-ATTEMPTs a sample of
+    entry-backed questions with old vs new note — keeps the compacted note only
+    if closed-book performance does not regress."""
+    corpus = CORPORA[args.task]
+    rt = RepoTools(corpus, read_max_lines=READ_MAX_LINES)
+    chaps = chapters(rt)
+    sdir = ROOT / "study-selfquiz" / args.task
+    recs = []
+    for r in range(1, args.round + 1):
+        p = sdir / f"r{r}" / "items.jsonl"
+        if p.exists():
+            recs += [json.loads(l) for l in p.read_text().splitlines()]
+    entries = [x["entry"] for x in recs if x.get("entry")]
+    old_note = render_note(rt, chaps, entries, corpus.display)
+    lm = fresh_lm(args.base_urls.split(",")[0])
+
+    by_ch = defaultdict(list)
+    for e in entries:
+        by_ch[e["chapter"]].append(e)
+    new_entries, dropped = [], 0
+    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        for ch, es in by_ch.items():
+            if len(es) < 2:
+                new_entries += es
+                continue
+            try:
+                out = dspy.Predict(CompactSig)(
+                    chapter=ch, entries_json=json.dumps(es)).compacted
+            except Exception as e2:
+                log.warning("compaction failed for %s (%s); keeping originals", ch, e2)
+                new_entries += es
+                continue
+            kept = [dict(o, chapter=ch) for o in out
+                    if all(k in o for k in ("belief", "correction", "quote", "file", "line"))
+                    and quote_gate(rt, o["file"], int(o["line"]), o["quote"])]
+            if kept:
+                new_entries += kept
+                dropped += len(es) - len(kept)
+            else:  # everything failed the re-gate: refuse this chapter's compaction
+                new_entries += es
+    new_note = render_note(rt, chaps, new_entries, corpus.display)
+    log.info("compaction: %d -> %d entries, %d -> %d chars",
+             len(entries), len(new_entries), len(old_note), len(new_note))
+
+    # regression guard: closed-book re-attempts on entry-backed questions
+    backed = [x for x in recs if x.get("entry")][: args.guard_n]
+    def score(note):
+        ok = 0
+        with dspy.context(lm=fresh_lm(args.base_urls.split(",")[0]),
+                          adapter=dspy.ChatAdapter()):
+            for x in backed:
+                try:
+                    a = dspy.Predict("note, question -> answer")(
+                        note=note, question=x["question"]).answer
+                    ref = max(x["derivations"], key=lambda d: len(d.get("evidence", [])))
+                    v = dspy.Predict(AdjudicateSig)(
+                        question=x["question"], reference_answer=ref["answer"],
+                        reference_evidence=json.dumps(ref["evidence"]), attempt=a).verdict
+                    ok += v in ("correct", "partial")
+                except Exception:
+                    pass
+        return ok
+    old_ok, new_ok = score(old_note), score(new_note)
+    log.info("regression guard on %d entry-backed questions: old=%d new=%d",
+             len(backed), old_ok, new_ok)
+    if new_ok >= old_ok:
+        (sdir / f"note-r{args.round}.md").write_text(new_note)
+        log.info("compacted note ACCEPTED -> note-r%d.md", args.round)
+    else:
+        (sdir / f"note-r{args.round}.md").write_text(old_note)
+        log.info("compacted note REJECTED (regressed); kept full note")
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--task", required=True, choices=list(CORPORA))
@@ -469,6 +557,10 @@ def main():
     p.add_argument("--base-urls", default="http://localhost:8100/v1")
     p.add_argument("--concurrency", type=int, default=16)
     p.add_argument("--smoke", action="store_true", help="1 chapter, 3 questions")
+    p.add_argument("--compact", action="store_true",
+                   help="compact the cumulative note through --round (cap-triggered; "
+                        "regression-guarded) instead of running a study round")
+    p.add_argument("--guard-n", type=int, default=12)
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
 
@@ -480,7 +572,10 @@ def main():
                   logging.FileHandler(ROOT / "logs" / f"selfquiz-{args.task}.log")])
     logging.getLogger("LiteLLM").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    run_round(args)
+    if args.compact:
+        compact(args)
+    else:
+        run_round(args)
 
 
 if __name__ == "__main__":
