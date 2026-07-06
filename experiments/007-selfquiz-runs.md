@@ -234,6 +234,28 @@ public questions, 7 arms measured so far. Therefore:
 4. Multiplicity is disclosed in any writeup: 7 adaptive arms preceded the
    confirmatory pair.
 
+## Iteration 4 verdict (hybrid, preliminary 2026-07-06; final 6v6 pending)
+
+DSPy hybrid (6 rollouts): direct 9.2 / k5 19.1 / k20 22.2 / k20f 29.3 —
+recovers the cheatsheet's direct AND keeps the correction edge (≥ cheatsheet
+in 6/8 cells across tasks; no component interference). WAUC vs base **+2.83**
+(= the cheatsheet's +2.88); vs cheatsheet **+0.05 [−2.44, +2.50]** — dead even:
+WAUC's weighting concentrates value exactly where corrections add least.
+OpenClaw: +1.53 vs base; −0.84 vs cheatsheet (n.s.). Finding: breadth and
+precision compose additively at the cell level; the metric demands direct
+accuracy ABOVE the single-pass cheatsheet's to win.
+
+## Iteration 5 declared (2026-07-06, before any eval data — per the standard)
+
+**Studied summary**: replace the breadth component with per-chapter summaries
+generated from the study loop's OWN accumulated grounded reading (all Phase-A
+derivation evidence + quiz anchors across r1-r4 — hundreds of cited file
+reads, full syllabus), rather than the single 50-step cheatsheet pass. Note =
+studied summary + select-12 corrections. Hypothesis: deeper grounded breadth
+lifts direct above the cheatsheet's level while corrections keep the
+tool-budget edge. Eval at 6 rollouts, variant selfquiz-studied. Success remains
+the pre-registered bar + fresh-note replication.
+
 ## Round 2 notes (both tasks)
 
 - Gate normalization validated in production: bounce rate 43% (r1) → 17% (r2
