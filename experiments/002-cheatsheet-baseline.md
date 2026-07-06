@@ -93,6 +93,32 @@ OpenClaw) still hold, but base-vs-cheatsheet deltas remain judge-confounded
 (base=gpt-5.4, cheatsheet=fugu) and absolute paper comparisons await the
 dspy.ReAct-harness rerun.
 
+## Same-judge paired result (2026-07-06, fugu on both arms — the honest bar)
+
+Base regraded with fugu (grades-fugu/, 600/600). Judge calibration on identical
+base answers: fugu WAUC 27.99 vs gpt-5.4 26.40 (DSPy), 18.16 vs 20.20 (OpenClaw)
+— ±7%, confirming rule 3 of experiments/004.
+
+Paired per-question deltas (cheatsheet − base), pure-sum lenient, 10k paired
+cluster bootstrap:
+
+| DSPy | direct | k5 | k20 | k20f | WAUC delta |
+|---|---|---|---|---|---|
+| delta | +5.49 | +3.52 | +0.93 | −5.46 | **+0.84 [−4.88, +6.39] n.s.** |
+
+| OpenClaw | direct | k5 | k20 | k20f | WAUC delta |
+|---|---|---|---|---|---|
+| delta | +0.97 | −0.93 | −4.28 | +0.68 | **−0.98 [−6.06, +3.97] n.s.** |
+
+Reading: the DSPy budget-shape is exactly the paper's story (low-budget gains,
+k20f giveback), but the WAUC effect is not significant at 3 rollouts — the CI
+half-width (±5.6) sits right at paper-effect scale (+3.2). This is the
+pre-registered bar for self-quizzing: to CLAIM a win over the cheatsheet we need
+a bigger true effect and/or more rollouts (detecting +3 WAUC needs roughly
+3-4x the effective sample → ~10 rollouts, or accept only effects ≥ ~+6 at 3).
+OpenClaw: noise everywhere, as pre-registered (underpowered, no execution
+grounding).
+
 ## Artifacts
 
 - 2026-07-06: cheatsheets generated (job 24723): dspy.md 12,425 chars (~3.3k
