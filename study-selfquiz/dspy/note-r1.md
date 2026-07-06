@@ -17,15 +17,30 @@
 - `dspy/`: __init__.py, __metadata__.py
 - `dspy/experimental/`: __init__.py
 
+## dspy/teleprompt
+- **You believe that BootstrapFinetune raises a ValueError with the message "Predictors must have language models assigned" when a predictor lacks a language model.** BootstrapFinetune raises a ValueError with the message fragment "Predictor {pred_ind} does not have an LM assigned." and informs you to set the LM using your_module.set_lm(your_lm).
+  > `dspy/teleprompt/bootstrap_finetune.py:83`: `raise ValueError(
+                    f"Predictor {pred_ind} does not have an LM assigned. "
+                    f"Please ensure the module's predictors have their LM set before fine-tuning. "
+                    f"You can set it using: your_module.set_lm(your_lm)"
+                )`
+
 ## dspy/adapters
 - **You believe the parameter required to initialize a TwoStepAdapter that must be an instance of BaseLM is named `model`.** The correct parameter name is `extraction_model`.
   > `dspy/adapters/two_step_adapter.py:42`: `def __init__(self, extraction_model: BaseLM, **kwargs):`
 - **You believe the regular expression pattern used is `r'\[\[([^\]]+)\]\]'` which captures any content inside double brackets.** The actual pattern requires the `##` delimiters and specifically captures word characters using `(\w+)`.
   > `dspy/adapters/chat_adapter.py:20`: `field_header_pattern = re.compile(r"\[\[ ## (\w+) ## \]\]")`
+- **you believe a demo is considered 'complete' if all mandatory keys are present and the corresponding values are non-null and not empty strings.** a demo is classified as complete if ALL signature fields are present and non-None, and incomplete if missing fields but retaining at least one input and one output field, while others are discarded.
+  > `dspy/adapters/base.py:414`: ``is_complete = all(k in demo and demo[k] is not None for k in signature.fields)``
 
 ## dspy/clients
 - **you believe that setting the cache parameter to `None` or using varying parameter names across frameworks like LangChain is sufficient to disable response caching.** in dspy, you must explicitly set the `cache` parameter to `False` when creating the LM instance.
   > `dspy/clients/base_lm.py:63`: `def __init__(self, model, model_type="chat", temperature=0.0, max_tokens=1000, cache=True, **kwargs):`
+- **You believe the code for detecting whether a model supports function calling, reasoning, or response schema is located in generic utility files or provider adapters that delegate to external libraries.** The detection logic is implemented natively in the `BaseLM` class within `dspy/clients/base_lm.py` via properties that return `False` by default, rather than delegating to external SDKs.
+  > `dspy/clients/base_lm.py:70`: `@property
+def supports_function_calling(self) -> bool:
+    """Whether the model supports function calling (tool use)."""
+    return False`
 - **You believe that passing a `rollout_id` alongside `temperature=0` allows DSPy to track the inference request with that identifier for caching or experiment association despite the deterministic sampling strategy.** DSPy logs a warning that the parameter is ineffective and explicitly removes `rollout_id` from the arguments before forwarding the request.
   > `dspy/clients/lm.py:142`: `rollout_id has no effect when temperature=0; set temperature>0 to bypass the cache.`
 - **You believe that the LM.cache system utilizes a spillover policy where entries are initially stored in memory and subsequently moved to the disk cache if the memory usage reaches a threshold.** In reality, the system stores the response in both the memory cache and the disk cache independently during the `cache.put()` operation. There is no automatic migration of new entries from memory to disk based on capacity; disk write failures are logged but do not block memory storage. Additionally, disk cache hits are promoted to the memory cache upon retrieval.

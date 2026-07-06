@@ -327,7 +327,7 @@ def run_item(item: dict, note: str, tools_fns, run_py, url: str,
 def render_note(rt: RepoTools, chaps: list[str], entries: list[dict],
                 display: str) -> str:
     parts = [f"# {display} — corrections from studying (your beliefs vs. this repository)",
-             "", repo_map(rt, chaps), ""]
+             "", repo_map(rt, chaps[:20]), ""]  # map capped: openclaw has 169 chapters
     by_ch = defaultdict(list)
     for e in entries:
         by_ch[e["chapter"]].append(e)
