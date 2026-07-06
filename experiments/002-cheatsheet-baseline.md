@@ -80,6 +80,19 @@ claims + schema, not the judge model. Exact base-vs-cheatsheet deltas remain
 cross-judge (base = gpt-5.4, cheatsheet = fugu); a same-judge pass on one side
 would pin the paired per-question deltas if we want them sharp.
 
+## CORRECTION (2026-07-06, after author reply — see experiments/003 audit)
+
+Jacob: "lenient is just weights summed together" — the RESULTS table above quotes
+the core-conjunctive gate, which is NOT Table 1's metric. Under the correct
+pure-sum lenient: DSPy cheatsheet 9.8/29.4/35.1/36.5, WAUC 28.45 vs paper 9.65
+(2.9x hot); OpenClaw 3.5/8.1/23.1/25.9, WAUC 17.91 vs 8.18 (2.2x hot) — same
+~2-4x inflation as the base under our stronger-than-paper harness (dspy.ReAct
+revelation, experiments/001 correction). The qualitative signatures (low-budget
+gains judge-independently visible in the sums, forced-search giveback, marginal
+OpenClaw) still hold, but base-vs-cheatsheet deltas remain judge-confounded
+(base=gpt-5.4, cheatsheet=fugu) and absolute paper comparisons await the
+dspy.ReAct-harness rerun.
+
 ## Artifacts
 
 - 2026-07-06: cheatsheets generated (job 24723): dspy.md 12,425 chars (~3.3k

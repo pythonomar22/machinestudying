@@ -2,13 +2,12 @@
 tokens, and expertise (weighted AUC per Appendix C). Each grade file embeds its
 episode's gen_tokens and status, so scores and tokens come from one population.
 
-Score definitions (see docs/jacob.md — the author's core-conjunctive rule is what
-brings replicated scores into the paper's range; the raw rubric sum runs ~2-4x hot):
-  lenient  = weighted claim sum if every core claim scored 1, else 0
-             (the compilation check is omitted — paper: "lenient grading omits the
-             compilation check"); this is the Table 1 comparison.
-  rubric   = raw weighted claim sum, no gates (reported for transparency).
-  strict   = lenient plus the compile-gate zero.
+Score definitions (author-confirmed, docs/jacob.md: "lenient is just weights
+summed together"; the core-conjunctive rule from the earlier DMs belongs to strict):
+  lenient  = raw weighted claim sum, no gates; THE Table 1 comparison.
+  len-cc   = weighted sum if every core claim scored 1, else 0 (core-conjunctive;
+             reported for the strict-adjacent analysis, NOT Table 1).
+  strict   = core-conjunctive plus the compile-gate zero.
 
 The expertise formula was verified against the paper: with x = log10(tokens/3000),
 w(x) = ln(10)·10^(-x), the weight of the segment between consecutive budgets is
@@ -65,8 +64,8 @@ def aggregate(task: str, grades_dir: str = "grades", runs_dir: str = "runs") -> 
                   "— aggregating the graded subset only")
         budgets[budget] = {
             "n": len(grades),
-            "lenient": mean(g["lenient"] if g["cores_ok"] else 0 for g in grades),
-            "rubric": mean(g["lenient"] for g in grades),
+            "lenient": mean(g["lenient"] for g in grades),
+            "len_cc": mean(g["lenient"] if g["cores_ok"] else 0 for g in grades),
             "strict": mean(g["strict"] for g in grades),
             "compile_rate": mean(g["compile_check"]["compile_ok"] for g in grades),
             "needs_regrade": sum(bool(g.get("needs_regrade")) for g in grades),
@@ -95,21 +94,21 @@ def bootstrap(task: str, n_boot: int, seed: int = 0, grades_dir: str = "grades")
         data[budget] = eps
     qids = sorted(data[BUDGET_ORDER[0]])
     rng = random.Random(seed)
-    stats = {b: [] for b in BUDGET_ORDER} | {"wauc": [], "wauc_rubric": []}
+    stats = {b: [] for b in BUDGET_ORDER} | {"wauc": [], "wauc_cc": []}
     for _ in range(n_boot):
         qs = rng.choices(qids, k=len(qids))
-        pts_cc, pts_rub = [], []
+        pts, pts_cc = [], []
         for b in BUDGET_ORDER:
             cc = rub = tok = n = 0
             for q in qs:
                 pool = data[b][q]
                 for ep in rng.choices(pool, k=len(pool)):
                     cc += ep[0]; rub += ep[1]; tok += ep[2]; n += 1
-            stats[b].append(cc / n)
+            stats[b].append(rub / n)
+            pts.append((tok / n, rub / n))
             pts_cc.append((tok / n, cc / n))
-            pts_rub.append((tok / n, rub / n))
-        stats["wauc"].append(expertise(pts_cc))
-        stats["wauc_rubric"].append(expertise(pts_rub))
+        stats["wauc"].append(expertise(pts))
+        stats["wauc_cc"].append(expertise(pts_cc))
 
     def ci(xs):
         xs = sorted(xs)
@@ -137,11 +136,11 @@ def main():
             paper = {b: (float("nan"), float("nan")) for b in BUDGET_ORDER} | {"expertise": float("nan")}
         label = f"Qwen3.5-9B {'+ ' + args.variant if args.variant else 'base'}, judge={args.grader}"
         print(f"\n== {CORPORA[task].display} ({label}) ==")
-        print(f"{'budget':8} {'n':>4} {'lenient':>8} {'rubric':>7} {'strict':>7} {'tok(k)':>7} "
+        print(f"{'budget':8} {'n':>4} {'lenient':>8} {'len-cc':>7} {'strict':>7} {'tok(k)':>7} "
               f"{'compile':>8} {'regrade':>8} {'bad':>4}   paper-lenient  paper-tok(k)")
         for budget, b in agg["budgets"].items():
             pa, pt = paper[budget]
-            print(f"{budget:8} {b['n']:>4} {b['lenient']:>8.1f} {b['rubric']:>7.1f} "
+            print(f"{budget:8} {b['n']:>4} {b['lenient']:>8.1f} {b['len_cc']:>7.1f} "
                   f"{b['strict']:>7.1f} {b['tokens'] / 1000:>7.1f} {b['compile_rate']:>8.1%} "
                   f"{b['needs_regrade']:>8} {b['bad_episodes']:>4}   "
                   f"{pa:>13.1f} {pt:>12.1f}")
@@ -158,8 +157,8 @@ def main():
             m, lo, hi = b["wauc"]
             print(f"  WAUC lenient {m:5.2f} [{lo:5.2f}, {hi:5.2f}] "
                   f"(paper: {paper['expertise']:.2f})")
-            m, lo, hi = b["wauc_rubric"]
-            print(f"  WAUC rubric  {m:5.2f} [{lo:5.2f}, {hi:5.2f}]")
+            m, lo, hi = b["wauc_cc"]
+            print(f"  WAUC len-cc  {m:5.2f} [{lo:5.2f}, {hi:5.2f}]")
 
 
 if __name__ == "__main__":
