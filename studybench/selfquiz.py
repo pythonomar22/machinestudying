@@ -548,6 +548,44 @@ def compact(args):
         log.info("compacted note REJECTED (regressed); kept full note")
 
 
+def select_note(args):
+    """Iteration 2 (artifact-cited: the r1-r4 milestone curve peaks at small
+    notes and declines as entries accumulate): build a hard-capped note by
+    deterministic selection over the full entry pool. Scoring favors entries
+    from wrong (vs partial) verdicts and executed evidence, then round-robins
+    chapters for diversity. No new model calls."""
+    corpus = CORPORA[args.task]
+    rt = RepoTools(corpus, read_max_lines=READ_MAX_LINES)
+    chaps = chapters(rt)
+    sdir = ROOT / "study-selfquiz" / args.task
+    pool = []
+    for r in range(1, args.round + 1):
+        p = sdir / f"r{r}" / "items.jsonl"
+        if p.exists():
+            for line in p.read_text().splitlines():
+                x = json.loads(line)
+                if x.get("entry"):
+                    e = dict(x["entry"])
+                    e["_score"] = (2 if x.get("verdict") == "wrong" else 1)
+                    pool.append(e)
+    by_ch = defaultdict(list)
+    for e in sorted(pool, key=lambda e: -e["_score"]):
+        by_ch[e["chapter"]].append(e)
+    picked, i = [], 0
+    order = [c for c in chaps if by_ch.get(c)]
+    while len(picked) < args.select and any(by_ch.values()):
+        c = order[i % len(order)]
+        if by_ch[c]:
+            picked.append(by_ch[c].pop(0))
+        i += 1
+    for e in picked:
+        e.pop("_score", None)
+    note = render_note(rt, chaps, picked, corpus.display)
+    (sdir / "note-select.md").write_text(note)
+    log.info("select-note: %d/%d entries kept, %d chars -> note-select.md",
+             len(picked), len(pool), len(note))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--task", required=True, choices=list(CORPORA))
@@ -561,6 +599,8 @@ def main():
                    help="compact the cumulative note through --round (cap-triggered; "
                         "regression-guarded) instead of running a study round")
     p.add_argument("--guard-n", type=int, default=12)
+    p.add_argument("--select", type=int, default=0,
+                   help="build a hard-capped note of N selected entries (no LM calls)")
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
 
@@ -572,7 +612,9 @@ def main():
                   logging.FileHandler(ROOT / "logs" / f"selfquiz-{args.task}.log")])
     logging.getLogger("LiteLLM").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    if args.compact:
+    if args.select:
+        select_note(args)
+    elif args.compact:
         compact(args)
     else:
         run_round(args)

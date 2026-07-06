@@ -125,6 +125,50 @@ curve as-is.
 - No procedure changes from these numbers (policy); r4 milestone (compacted
   notes, full syllabus coverage) is the decisive curve point.
 
+## The pre-registered curve (r1/r2/r4 complete, 2026-07-06)
+
+Expertise (WAUC, fugu, pure-sum lenient) vs cumulative study tokens:
+
+| DSPy | study tok | WAUC | vs base | vs cheatsheet |
+|---|---|---|---|---|
+| base | 0 | 12.31 | — | — |
+| cheatsheet | 64k | 15.18 | +2.88 | — |
+| selfquiz-r1 | 279k | 13.63 | +1.21 | −1.64 |
+| selfquiz-r2 | 507k | 11.20 | −1.05 | −3.90 |
+| selfquiz-r4 | 943k | 11.76 | −0.42 | −3.29 |
+
+| OpenClaw | study tok | WAUC | vs base | vs cheatsheet |
+|---|---|---|---|---|
+| base | 0 | 8.45 | — | — |
+| cheatsheet | 64k | 10.59 | +2.36 | — |
+| selfquiz-r1 | 407k | 10.17 | +1.71 | −0.76 |
+| selfquiz-r2 | 922k | 10.64 | +2.27 | −0.19 |
+| selfquiz-r4 | 1656k | 9.36 | +0.95 | −1.51 |
+
+(All CIs include 0.)
+
+**Honest verdict: the success criterion is NOT met at r1/r2/r4** (no milestone
+beats the cheatsheet with CI excluding 0 on DSPy), and the pre-registered
+DSPy>OpenClaw effect ordering is **FALSIFIED** — OpenClaw showed the larger,
+more durable effect, i.e. orientation value on a no-priors corpus beat
+stale-prior correction. On the efficiency (intelligence) axis the cheatsheet
+dominates outright: 64k study tokens vs 279k-1.7M for weaker results.
+
+**Diagnosis from the curve's shape**: both tasks peak at small notes (11-29
+entries) and decline as entries accumulate — distraction cost outpaces marginal
+entry value (pre-registered failure mode 3; corroborated by the openclaw
+compaction guard catching its own merge regressing). r8 is NOT justified by
+this curve (declining, not saturating); descoped.
+
+## Iteration 2: selection over accumulation (launched 2026-07-06)
+
+Artifact-cited change (the curve + retest data; no milestone-tuning of study
+prompts): `selfquiz --select N` builds a HARD-CAPPED 12-entry note from the
+full r1-r4 entry pool — deterministic scoring (wrong-verdict entries first,
+chapter round-robin for diversity), zero new LM calls. Causal question: if
+select-12-from-full-coverage ≥ r1's 11-from-4-chapters, note size (not
+coverage) was binding. Milestone eval variant: selfquiz-select.
+
 ## Round 2 notes (both tasks)
 
 - Gate normalization validated in production: bounce rate 43% (r1) → 17% (r2

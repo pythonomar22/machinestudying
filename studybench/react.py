@@ -203,7 +203,7 @@ def main():
     if args.variant:
         if args.variant == "cheatsheet":
             note_path = ROOT / "cheatsheets" / f"{args.task}.md"
-        elif args.variant.startswith("selfquiz-r"):
+        elif args.variant.startswith("selfquiz-"):
             r = args.variant.removeprefix("selfquiz-")
             note_path = ROOT / "study-selfquiz" / args.task / f"note-{r}.md"
         else:
