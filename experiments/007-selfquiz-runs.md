@@ -85,3 +85,44 @@ dev-exam or artifact-inspection evidence in this file, never milestone scores.
     Accumulated 8 of the ~30 required before dev metrics may steer decisions.
   - Milestone eval r1 submitted: jobs 25455 (dspy) + 25456 (openclaw), variant
     react-selfquiz-r1, fugu grading armed.
+
+## Milestone r1 results (2026-07-06; paired, fugu, 10k bootstrap)
+
+| DSPy lenient | direct | k5 | k20 | k20f |
+|---|---|---|---|---|
+| base | 3.6 | 16.2 | 19.6 | 29.0 |
+| selfquiz-r1 (11 entries, 4/15 chapters) | 5.4 | 17.4 | **24.3** | 29.0 |
+| cheatsheet | **9.9** | 17.9 | 17.7 | 27.5 |
+
+DSPy: selfquiz−base **+1.21** [−2.29, +5.01] n.s.; selfquiz−cheatsheet **−1.66**
+[−5.27, +2.11] n.s. OpenClaw: selfquiz−base +1.71 [−1.43, +5.60] n.s.;
+selfquiz−cheatsheet −0.68 [−4.86, +3.94] n.s. (selfquiz k5 9.5 ≈ cheatsheet 9.3,
+both ≈ 2x base's 4.6).
+
+**Interpretation (honest):** not at the bar yet, as a 4-chapters-of-15 note
+shouldn't be. The budget shape is the mechanism speaking: the cheatsheet's broad
+summary wins closed-book breadth (direct 9.9 vs 5.4 — its entries fire on many
+questions), while the error-delta note wins WITH search (k20 24.3 vs 17.7,
++4.7 over base — targeted distrust-your-prior corrections compose with tool use,
+where the big cheatsheet actually hurts vs base) and shows no k20f giveback.
+Coverage should convert direct-breadth over rounds: entries 11 (r1) → 26 (r2) →
+r3/r4 running (jobs 25653/25654 chained). No procedure changes made off these
+milestone numbers (iteration policy): r2/r4 milestones measure the pre-registered
+curve as-is.
+
+## Round 2 notes (both tasks)
+
+- Gate normalization validated in production: bounce rate 43% (r1) → 17% (r2
+  dspy), 15 entries admitted per task. OpenClaw hit 100% train error on new
+  chapters (everything distills). One ensemble `unresolved` (derivations
+  disagreed → dropped) — the two-derivation rule caught its first case.
+- Retests (first activation): the two r1 DEV items retested still fail —
+  correct, they were never distilled (holdout clean). Two entry-backed retests
+  improved wrong→partial but not to correct: the note helps direction, not full
+  closed-book recall. Watch across rounds; if entry-backed retests never reach
+  correct, entry format needs iteration (dev/artifact-cited, not
+  milestone-cited).
+- OpenClaw note now ~4.5k tokens (over the 4k soft cap; compaction unimplemented
+  — "manual for now"). DECISION DEFERRED to r4: implement regression-tested
+  compaction if openclaw note exceeds ~6k tokens. Deviation documented rather
+  than silently ignored.
