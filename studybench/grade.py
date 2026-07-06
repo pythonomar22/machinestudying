@@ -101,15 +101,28 @@ def judge_schema(row: dict) -> dict:
 log = logging.getLogger("grade")
 
 
-def build_prompt(corpus, row: dict, model_answer: str) -> str:
-    spans_meta = [
-        {k: e[k] for k in ("span_id", "path", "start_line", "end_line")}
-        for e in row["evidence"]
-    ]
-    whole_text = "\n\n".join(
-        f"### {e['path']} lines {e['start_line']}-{e['end_line']} ({e['span_id']})\n{e['excerpt']}"
-        for e in row["evidence"]
-    )
+def build_prompt(corpus, row: dict, model_answer: str, whole_files: bool = False) -> str:
+    if whole_files:
+        # A.5-faithful: spans = the dataset's excerpts; whole files = full numbered
+        # dumps of every evidence file from the pinned checkout
+        spans_meta = row["evidence"]
+        paths = list(dict.fromkeys(e["path"] for e in row["evidence"]))
+        whole_text = "\n\n".join(
+            f"### {p}\n" + "\n".join(
+                f"{i:04d}: {line}" for i, line in enumerate(
+                    (corpus.repo / p).read_text().splitlines(), 1)
+            ) for p in paths
+        )
+    else:
+        # dataset-README variant: the excerpts are the only code context
+        spans_meta = [
+            {k: e[k] for k in ("span_id", "path", "start_line", "end_line")}
+            for e in row["evidence"]
+        ]
+        whole_text = "\n\n".join(
+            f"### {e['path']} lines {e['start_line']}-{e['end_line']} ({e['span_id']})\n{e['excerpt']}"
+            for e in row["evidence"]
+        )
     return GRADER_PROMPT.format(
         library_name=corpus.display,
         question_id=row["id"],
@@ -133,7 +146,8 @@ def score_from_claims(row: dict, claim_scores: dict[str, int], compile_ok: bool)
     return {"lenient": lenient, "strict": strict, "cores_ok": cores_ok}
 
 
-async def grade_episode(client: AsyncOpenAI, corpus, row: dict, ep: dict) -> dict:
+async def grade_episode(client: AsyncOpenAI, corpus, row: dict, ep: dict,
+                        whole_files: bool = False) -> dict:
     grade = {
         "task": ep["task"], "qid": ep["qid"], "budget": ep["budget"], "rollout": ep["rollout"],
         "judge_model": JUDGE_MODEL, "episode_status": ep["status"],
@@ -152,7 +166,8 @@ async def grade_episode(client: AsyncOpenAI, corpus, row: dict, ep: dict) -> dic
     for attempt in range(2):  # retry once if the judge duplicates/omits claim ids
         resp = await client.chat.completions.create(
             model=JUDGE_MODEL,
-            messages=[{"role": "user", "content": build_prompt(corpus, row, answer)}],
+            messages=[{"role": "user",
+                       "content": build_prompt(corpus, row, answer, whole_files)}],
             response_format=judge_schema(row),
         )
         verdict = json.loads(resp.choices[0].message.content)
@@ -175,11 +190,12 @@ async def main_async(args):
     corpus = CORPORA[args.task]
     rows = {q["id"]: q for q in load_questions(args.task)}
     client = AsyncOpenAI(timeout=600)
+    out_root = ROOT / ("grades-wholefiles" if args.whole_files else "grades")
 
     run_files = sorted((ROOT / "runs" / args.task).rglob("*.json"))
     pending = []
     for rf in run_files:
-        gf = ROOT / "grades" / rf.relative_to(ROOT / "runs")
+        gf = out_root / rf.relative_to(ROOT / "runs")
         # (re-)grade if ungraded, or if the episode was regenerated since grading
         if not gf.exists() or gf.stat().st_mtime < rf.stat().st_mtime:
             pending.append((rf, gf))
@@ -193,7 +209,8 @@ async def main_async(args):
         async with sem:
             try:
                 ep = json.loads(rf.read_text())
-                grade = await grade_episode(client, corpus, rows[ep["qid"]], ep)
+                grade = await grade_episode(client, corpus, rows[ep["qid"]], ep,
+                                            args.whole_files)
                 gf.parent.mkdir(parents=True, exist_ok=True)
                 tmp = gf.with_suffix(".tmp")
                 tmp.write_text(json.dumps(grade, indent=2))
@@ -228,6 +245,9 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--task", required=True, choices=list(CORPORA))
     p.add_argument("--concurrency", type=int, default=8)
+    p.add_argument("--whole-files", action="store_true",
+                   help="give the judge full evidence files (paper A.5) instead of "
+                        "the dataset's span excerpts; writes to grades-wholefiles/")
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
 

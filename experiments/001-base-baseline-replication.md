@@ -86,6 +86,52 @@ TypeScript question (correctly gated). Judge rationales are code-grounded and ci
 rubric mechanisms. n=2 lenient levels are far above the paper's 30-question means at
 k5/k20f — expected variance at this sample size; the full run decides.
 
+## RESULTS — primary run (2026-07-06; 600 episodes, 8×H100, ~24 min; grading GPT-5.4)
+
+All 600 episodes status=ok, zero invariant violations (forced=20 exact, caps
+respected, no tool-call-shaped answers, no empty answers). Grading clean: zero
+judge claim-id mismatches, zero needs_regrade, zero errors.
+
+| | direct | k5 | k20 | k20f | WAUC |
+|---|---|---|---|---|---|
+| **DSPy ours (lenient)** | 4.9 | 21.3 | 35.9 | 40.4 | 26.40 |
+| **DSPy paper** | 3.3 | 8.6 | 9.6 | 29.4 | 6.49 |
+| **DSPy ours tok(k)** | 2.9 | 4.2 | 5.9 | 5.9 | |
+| **DSPy paper tok(k)** | 4.1 | 7.9 | 8.6 | 34.6 | |
+| **OpenClaw ours (lenient)** | 5.8 | 12.1 | 27.3 | 28.6 | 20.20 |
+| **OpenClaw paper** | 2.3 | 6.9 | 15.8 | 17.6 | 7.64 |
+| **OpenClaw ours tok(k)** | 2.8 | 4.2 | 5.1 | 5.0 | |
+| **OpenClaw paper tok(k)** | 4.1 | 4.6 | 9.7 | 24.3 | |
+
+**What replicates (direction/shape):** monotone lenient accuracy in budget; tools
+help a lot; DSPy k20f is the best cell; OpenClaw k20≈k20f plateau (theirs
+15.8→17.6, ours 27.3→28.6); strict ≈ 0 at low budgets (paper: "most answers would
+otherwise receive zero"); direct-mode answers hallucinate stale APIs and
+compile-fail (DSPy direct compile rate 5.6%).
+
+**What does not (levels):** lenient ~1.5-3.7x higher across cells; WAUC 3-4x
+(compounded by our lower token means: cheaper budgets carry more WAUC weight).
+Biggest structural difference: paper's voluntary k20 barely beats k5 (9.6 vs 8.6,
+tokens 8.6k≈7.9k → their agent stops early), while ours keeps searching (mean 16.9
+iters, 35.9 lenient). Our harness produces a genuinely stronger agent — exactly the
+effect the first author warned about ("you could improve 'performance' by using
+more complicated harness", docs/jacob.md).
+
+**Judge-severity checks:**
+- Rationale spot-reads: judge is strict and mechanism-specific (denies a 50-weight
+  core claim for using `retrieve_module(query,k=..)` instead of `dspy.Retrieve`
+  backed by the configured rm).
+- Lenient definition readings (OpenClaw): rubric-only 5.8/12.1/27.3/28.6 (~2x
+  high); +core-conjunctive 0/1.6/9.7/9.6 (~2x low); +compile-gate 1.0/10.0/22.1/21.2.
+  The paper's numbers sit between the rubric-only and core-conjunctive readings.
+- Whole-evidence-files judge (A.5-faithful) vs dataset excerpts: OpenClaw direct
+  5.8→4.7, k20 27.3→27.0 — judge evidence context is NOT the inflation source.
+
+**Ablation in flight:** `--variant no-think-history` rollouts (jobs 24405/24406) —
+the naive tool loop without reasoning passback, i.e. the other canonical reading of
+"bare-bones ReAct harness". Hypothesis: shorter thinking, earlier voluntary
+stopping, lower scores — closer to the paper's baseline.
+
 ## Status log
 
 - 2026-07-04: dataset vendored; corpora cloned at pinned commits; model downloaded to

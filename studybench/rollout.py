@@ -64,7 +64,7 @@ def episode_seed(task: str, qid: str, budget: str, rollout: int) -> int:
 
 
 async def run_episode(client: AsyncOpenAI, corpus, tools: RepoTools, q: dict,
-                      budget: str, rollout: int) -> dict:
+                      budget: str, rollout: int, think_history: bool = True) -> dict:
     max_iters, forced = BUDGETS[budget]
     seed = episode_seed(corpus.name, q["id"], budget, rollout)
     messages = [
@@ -122,7 +122,7 @@ async def run_episode(client: AsyncOpenAI, corpus, tools: RepoTools, q: dict,
                 "role": "assistant", "content": msg.content or "",
                 "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
             }
-            if turn["reasoning"]:
+            if think_history and turn["reasoning"]:
                 # interleaved thinking: the chat template renders prior turns'
                 # <think> blocks within the current tool loop (empty ones
                 # otherwise, which conditions the model to stop thinking)
@@ -155,7 +155,7 @@ async def run_episode(client: AsyncOpenAI, corpus, tools: RepoTools, q: dict,
                 ep["status"] = "no_answer"
             break
         assistant = {"role": "assistant", "content": msg.content or ""}
-        if turn["reasoning"]:
+        if think_history and turn["reasoning"]:
             assistant["reasoning"] = turn["reasoning"]
         messages.append(assistant)
         if early:
@@ -196,13 +196,15 @@ async def main_async(args):
     questions = load_questions(args.task)[: args.limit or None]
     clients = [AsyncOpenAI(base_url=u, api_key="EMPTY", timeout=3600, max_retries=0)
                for u in args.base_urls.split(",")]
+    think_history = args.variant != "no-think-history"
+    runs_root = ROOT / ("runs" if not args.variant else f"runs-{args.variant}")
 
     pending = []
     for budget in args.budgets.split(","):
         assert budget in BUDGETS, f"unknown budget {budget}"
         for rollout in range(args.rollouts):
             for q in questions:
-                out = ROOT / "runs" / args.task / budget / f"r{rollout}" / f"{q['id']}.json"
+                out = runs_root / args.task / budget / f"r{rollout}" / f"{q['id']}.json"
                 # "ok" and "no_answer" are genuine model outcomes; only infra
                 # failures ("error", "forced_short") are retried on resume.
                 if out.exists() and json.loads(out.read_text()).get("status") in ("ok", "no_answer"):
@@ -217,7 +219,8 @@ async def main_async(args):
         nonlocal done
         async with sem:
             try:
-                ep = await run_episode(clients[i % len(clients)], corpus, tools, q, budget, rollout)
+                ep = await run_episode(clients[i % len(clients)], corpus, tools, q,
+                                       budget, rollout, think_history)
                 out.parent.mkdir(parents=True, exist_ok=True)
                 tmp = out.with_suffix(".tmp")
                 tmp.write_text(json.dumps(ep, indent=2))
@@ -254,6 +257,8 @@ def main():
     p.add_argument("--base-urls", default="http://localhost:8100/v1")
     p.add_argument("--concurrency", type=int, default=32)
     p.add_argument("--limit", type=int, default=0, help="only the first N questions (smoke tests)")
+    p.add_argument("--variant", default="", choices=["", "no-think-history"],
+                   help="harness ablation; writes to runs-<variant>/ instead of runs/")
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
 

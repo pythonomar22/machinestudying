@@ -18,6 +18,7 @@ TASKS=${SB_TASKS:-dspy,openclaw}
 BUDGETS=${SB_BUDGETS:-direct,k5,k20,k20f}
 ROLLOUTS=${SB_ROLLOUTS:-3}
 LIMIT=${SB_LIMIT:-0}
+VARIANT=${SB_VARIANT:-}
 export SB_NGPU=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
 # nodes are shared and jobs can run concurrently: job-unique ports (stride 8 so
 # consecutive job ids cannot overlap) and job-unique vLLM logs
@@ -50,6 +51,7 @@ echo "all $SB_NGPU vLLM servers healthy: $BASE_URLS"
 for task in ${TASKS//,/ }; do
     .venv/bin/python -m studybench.rollout --task "$task" \
         --budgets "$BUDGETS" --rollouts "$ROLLOUTS" --limit "$LIMIT" \
+        --variant "$VARIANT" \
         --base-urls "$BASE_URLS" --concurrency $((8 * SB_NGPU))
 done
 echo "rollouts complete"
