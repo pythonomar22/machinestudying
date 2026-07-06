@@ -1,0 +1,472 @@
+"""SELF-QUIZZING study procedure (experiments/005 v1.2): the agent studies a
+codebase by quizzing itself; verified errors become its note.
+
+Per round r (chapters advance through a fixed size-ordered syllabus, wrapping):
+  QUIZ     one ReAct episode per chapter writes M questions (anchored, deduped;
+           1 of M held out to the accumulating dev exam)
+  ATTEMPT  closed book (dspy.Predict): note_{r-1} + question -> committed answer
+  VERIFY   Phase A derives the answer blind (ReAct + run_python probe; never
+           sees the attempt or the note); Phase B diffs attempt vs derivation
+  DISTILL  wrong/partial only -> {belief, correction, quote, file, line};
+           a model-free gate string-matches the quote at file:line before the
+           entry is admitted to the note
+  RETEST   (r>=2) ~20% of slots re-run previous items against the current note
+
+Everything is logged per item (study-selfquiz/{task}/r{r}/items.jsonl) and the
+note is the markdown rendering of the admitted entries plus a code-generated
+repo map. Study tokens are recorded and stay off the eval token axis.
+Corpus-agnostic by construction: inputs are the repo, the three tools, and a
+sandbox where the language runs (Axiom 0).
+"""
+
+import argparse
+import json
+import logging
+import re
+import subprocess
+import tempfile
+import time
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Literal
+
+import dspy
+import pydantic
+
+from .dataset import CORPORA, ROOT
+from .react import MODEL_ID, READ_MAX_LINES, SAMPLING, make_tools
+from .sandbox import PYTHON_BIN
+from .tools import RepoTools
+
+K_CHAPTERS = 4
+M_QUESTIONS = 5      # per chapter; 1 of these is held out to the dev exam
+RETEST_FRAC = 0.2
+QUIZ_MAX_ITERS = 15
+DERIVE_MAX_ITERS = 15
+NOTE_CAP_TOKENS = 4000  # soft cap; compaction is manual for now (design §DISTILL)
+DEDUP_JACCARD = 0.5
+
+log = logging.getLogger("selfquiz")
+
+
+# ---------------------------------------------------------------- structures
+
+class QuizQ(pydantic.BaseModel):
+    question: str
+    qtype: Literal["usage", "behavior", "location", "pitfall"]
+    anchors: list[str]
+    writer_sketch: str = ""
+
+
+class Evidence(pydantic.BaseModel):
+    file: str
+    line: int
+    quote: str
+
+
+class QuizSig(dspy.Signature):
+    """You are studying one module of a code repository to become an expert on
+    the whole repository. Explore the module with your tools (read its code and
+    its tests). Then write quiz questions that test whether someone who has NOT
+    just read this code could use it correctly — usage ("write code that ..."),
+    behavior ("what happens when ..."), location ("where/how is ... implemented"),
+    or pitfall ("what breaks if ...") questions. Each question must be answerable
+    from the repository alone, must NOT contain its own answer, and must cite the
+    files that motivated it in `anchors`. In `writer_sketch` note in one line what
+    you believe the answer is (this is not trusted; it is audit metadata)."""
+
+    module: str = dspy.InputField(desc="the module (directory) to study")
+    num_questions: int = dspy.InputField()
+    questions: list[QuizQ] = dspy.OutputField()
+
+
+class DeriveSig(dspy.Signature):
+    """Answer this question about the code repository with certainty. Explore the
+    repository with your tools; when the question concerns executable behavior and
+    a run_python tool is available, write a short probe script and run it to
+    confirm the behavior. Cite the decisive lines of source in `evidence` — file
+    path, 1-indexed line number, and a short verbatim quote of that line."""
+
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField(desc="the correct answer, precise and complete")
+    evidence: list[Evidence] = dspy.OutputField()
+
+
+class AdjudicateSig(dspy.Signature):
+    """Compare a student's attempt against a reference answer that was derived
+    directly from the source code with cited evidence. Judge agreement on the
+    substantive claims, not the wording. verdict: `correct` = the attempt makes
+    the reference's substantive claims; `partial` = right direction, missing or
+    muddling something essential; `wrong` = contradicts the reference or invents
+    behavior; `unresolved` = the reference itself does not decisively settle the
+    question. In `delta`, state precisely what the attempt got wrong or missed."""
+
+    question: str = dspy.InputField()
+    reference_answer: str = dspy.InputField()
+    reference_evidence: str = dspy.InputField()
+    attempt: str = dspy.InputField()
+    verdict: Literal["correct", "partial", "wrong", "unresolved"] = dspy.OutputField()
+    delta: str = dspy.OutputField()
+
+
+class DistillSig(dspy.Signature):
+    """Write one note entry correcting a mistaken belief. `belief` = the specific
+    wrong belief revealed by the attempt, stated in second person ("you believe
+    ..."). `correction` = the actual behavior per the reference answer, precise
+    enough to act on. `quote`/`file`/`line` = one decisive verbatim source line
+    from the reference evidence (copy it exactly; it will be checked against the
+    file)."""
+
+    question: str = dspy.InputField()
+    attempt: str = dspy.InputField()
+    reference_answer: str = dspy.InputField()
+    reference_evidence: str = dspy.InputField()
+    belief: str = dspy.OutputField()
+    correction: str = dspy.OutputField()
+    quote: str = dspy.OutputField()
+    file: str = dspy.OutputField()
+    line: int = dspy.OutputField()
+
+
+# ---------------------------------------------------------------- corpus bits
+
+def chapters(rt: RepoTools) -> list[str]:
+    """The syllabus: first-level directories under the corpus roots, ordered by
+    lines of code (descending). Test directories are evidence, not chapters."""
+    loc = defaultdict(int)
+    for f in rt.files:
+        parts = f.split("/")
+        if parts[0].lower() in ("tests", "test", "spec", "specs"):
+            continue
+        chap = "/".join(parts[:2]) if len(parts) > 2 else parts[0]
+        loc[chap] += rt.text[f].count("\n") + 1
+    return [c for c, _ in sorted(loc.items(), key=lambda kv: -kv[1])]
+
+
+def repo_map(rt: RepoTools, chaps: list[str]) -> str:
+    """Model-free orientation section: chapters with their largest files."""
+    lines = ["## Repo map"]
+    for c in chaps:
+        fs = sorted((f for f in rt.files if f.startswith(c + "/") or f == c),
+                    key=lambda f: -len(rt.text[f]))[:3]
+        lines.append(f"- `{c}/`: " + ", ".join(f.rsplit('/', 1)[-1] for f in fs))
+    return "\n".join(lines)
+
+
+def make_run_python():
+    def run_python(code: str) -> str:
+        """Execute a short Python script against the pinned repository install and
+        return its exit code and output (120s timeout). Use it to probe actual
+        behavior: construct objects, call functions, print results."""
+        with tempfile.TemporaryDirectory() as td:
+            p = Path(td) / "probe.py"
+            p.write_text(code)
+            try:
+                proc = subprocess.run(
+                    [str(PYTHON_BIN), "-I", str(p)], cwd=td,
+                    env={"PATH": "/usr/bin:/bin", "HOME": td, "TMPDIR": td},
+                    capture_output=True, text=True, timeout=120)
+                out = (proc.stdout + "\n" + proc.stderr)[-3000:]
+                return f"exit={proc.returncode}\n{out}"
+            except subprocess.TimeoutExpired:
+                return "exit=timeout(120s)"
+    return run_python
+
+
+# ---------------------------------------------------------------- gates
+
+def quote_gate(rt: RepoTools, file: str, line: int, quote: str) -> bool:
+    """Model-free integrity check: `quote` must appear at file:line (+/-2)."""
+    text = rt.text.get(file.strip("/"))
+    q = quote.strip()
+    if text is None or len(q) < 6:
+        return False
+    lines = text.splitlines()
+    lo, hi = max(0, line - 3), min(len(lines), line + 2)
+    return any(q in ln for ln in lines[lo:hi])
+
+
+def dedup(question: str, seen: list[str]) -> bool:
+    toks = set(re.findall(r"[a-z0-9_]+", question.lower()))
+    for s in seen:
+        st = set(re.findall(r"[a-z0-9_]+", s.lower()))
+        if toks and st and len(toks & st) / len(toks | st) > DEDUP_JACCARD:
+            return True
+    return False
+
+
+# ---------------------------------------------------------------- LM plumbing
+
+def fresh_lm(base_url: str) -> dspy.LM:
+    return dspy.LM(MODEL_ID, api_base=base_url, api_key="EMPTY", model_type="chat",
+                   cache=False, num_retries=3, **SAMPLING)
+
+
+def spent(lm: dspy.LM) -> int:
+    return sum((h.get("usage") or {}).get("completion_tokens") or 0 for h in lm.history)
+
+
+# ---------------------------------------------------------------- pipeline
+
+def run_quiz(chapter: str, tools_fns, url: str, n: int, seen: list[str]) -> list[dict]:
+    lm = fresh_lm(url)
+    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        try:
+            pred = dspy.ReAct(QuizSig, tools=list(tools_fns), max_iters=QUIZ_MAX_ITERS)(
+                module=chapter, num_questions=n)
+            qs = pred.questions
+        except Exception as e:
+            log.warning("quiz episode failed for %s: %s", chapter, str(e)[:200])
+            return []
+    out = []
+    for q in qs:
+        rec = q.model_dump() | {"chapter": chapter, "quiz_tokens": 0}
+        if dedup(q.question, seen):
+            log.info("  DROP(dup) %s :: %.80s", chapter, q.question)
+            continue
+        seen.append(q.question)
+        out.append(rec)
+    if out:
+        out[0]["quiz_tokens"] = spent(lm)  # episode cost, attributed once
+    log.info("QUIZ %s: %d questions kept (%d tokens)", chapter, len(out), spent(lm))
+    return out
+
+
+def run_item(item: dict, note: str, tools_fns, run_py, url: str,
+             ensemble: int, rt: RepoTools) -> dict:
+    """ATTEMPT -> VERIFY(A blind derive xN, B adjudicate) -> DISTILL(+gate)."""
+    rec = dict(item)
+    lm = fresh_lm(url)
+    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        try:
+            rec["attempt"] = dspy.Predict("note, question -> answer")(
+                note=note or "(no notes yet)", question=item["question"]).answer
+        except Exception as e:
+            rec.update(status="attempt_error", error=str(e)[:300], tokens=spent(lm))
+            return rec
+
+        derivations = []
+        d_tools = list(tools_fns) + ([run_py] if run_py else [])
+        for _ in range(ensemble):
+            try:
+                d = dspy.ReAct(DeriveSig, tools=d_tools, max_iters=DERIVE_MAX_ITERS)(
+                    question=item["question"])
+                derivations.append({"answer": d.answer,
+                                    "evidence": [e.model_dump() for e in d.evidence]})
+            except Exception as e:
+                derivations.append({"answer": "", "evidence": [],
+                                    "error": str(e)[:200]})
+        rec["derivations"] = derivations
+        ref = max(derivations, key=lambda d: len(d.get("evidence", [])))
+        if not ref["answer"].strip():
+            rec.update(status="derive_error", tokens=spent(lm))
+            return rec
+
+        try:
+            adj = dspy.Predict(AdjudicateSig)(
+                question=item["question"], reference_answer=ref["answer"],
+                reference_evidence=json.dumps(ref["evidence"]),
+                attempt=rec["attempt"])
+            rec["verdict"], rec["delta"] = adj.verdict, adj.delta
+        except Exception as e:
+            rec.update(status="adjudicate_error", error=str(e)[:300], tokens=spent(lm))
+            return rec
+
+        # ensemble agreement rule (OpenClaw / dev items): a wrong/partial verdict
+        # may only distill if a second derivation supports the same reference
+        if ensemble > 1 and rec["verdict"] in ("wrong", "partial"):
+            others = [d for d in derivations if d is not ref and d["answer"].strip()]
+            agree = False
+            for o in others:
+                try:
+                    a2 = dspy.Predict(AdjudicateSig)(
+                        question=item["question"], reference_answer=o["answer"],
+                        reference_evidence=json.dumps(o["evidence"]),
+                        attempt=rec["attempt"])
+                    agree |= a2.verdict in ("wrong", "partial")
+                except Exception:
+                    pass
+            if not agree:
+                rec["verdict"] = "unresolved"
+                rec["delta"] += " [downgraded: derivations disagree]"
+
+        rec["entry"] = None
+        if rec["verdict"] in ("wrong", "partial") and not item.get("dev"):
+            try:
+                d = dspy.Predict(DistillSig)(
+                    question=item["question"], attempt=rec["attempt"],
+                    reference_answer=ref["answer"],
+                    reference_evidence=json.dumps(ref["evidence"]))
+                entry = {"belief": d.belief, "correction": d.correction,
+                         "quote": d.quote, "file": d.file, "line": int(d.line),
+                         "chapter": item["chapter"]}
+                if quote_gate(rt, entry["file"], entry["line"], entry["quote"]):
+                    rec["entry"] = entry
+                else:
+                    rec["entry_bounced"] = entry
+            except Exception as e:
+                rec.update(distill_error=str(e)[:300])
+    rec["status"] = "ok"
+    rec["tokens"] = spent(lm)
+    return rec
+
+
+def render_note(rt: RepoTools, chaps: list[str], entries: list[dict],
+                display: str) -> str:
+    parts = [f"# {display} — corrections from studying (your beliefs vs. this repository)",
+             "", repo_map(rt, chaps), ""]
+    by_ch = defaultdict(list)
+    for e in entries:
+        by_ch[e["chapter"]].append(e)
+    for ch in chaps:
+        if not by_ch.get(ch):
+            continue
+        parts.append(f"## {ch}")
+        for e in by_ch[ch]:
+            parts.append(f"- **{e['belief'].strip()}** {e['correction'].strip()}\n"
+                         f"  > `{e['file']}:{e['line']}`: `{e['quote'].strip()}`")
+        parts.append("")
+    return "\n".join(parts)
+
+
+# ---------------------------------------------------------------- round driver
+
+def run_round(args):
+    corpus = CORPORA[args.task]
+    rt = RepoTools(corpus, read_max_lines=READ_MAX_LINES)
+    tools_fns = make_tools(rt)
+    run_py = make_run_python() if corpus.language == "python" else None
+    ensemble = 1 if corpus.language == "python" else 2  # execution grounds python
+    urls = args.base_urls.split(",")
+    sdir = ROOT / "study-selfquiz" / args.task
+    rdir = sdir / f"r{args.round}"
+    rdir.mkdir(parents=True, exist_ok=True)
+
+    chaps = chapters(rt)
+    k = min(args.chapters, len(chaps))
+    start = (args.round - 1) * k
+    todo = [chaps[(start + i) % len(chaps)] for i in range(k)]
+    log.info("ROUND %d %s: chapters=%s (syllabus has %d)", args.round, args.task, todo, len(chaps))
+
+    # prior state: note entries + all previous questions (dedup + retest pool)
+    entries, prev_items, seen_q = [], [], []
+    for r in range(1, args.round):
+        pf = sdir / f"r{r}" / "items.jsonl"
+        if pf.exists():
+            for line in pf.read_text().splitlines():
+                it = json.loads(line)
+                prev_items.append(it)
+                seen_q.append(it["question"])
+                if it.get("entry"):
+                    entries.append(it["entry"])
+    note = render_note(rt, chaps, entries, corpus.display) if entries else ""
+
+    # QUIZ (parallel across chapters), resumable via questions.jsonl
+    qfile = rdir / "questions.jsonl"
+    if qfile.exists():
+        items = [json.loads(l) for l in qfile.read_text().splitlines()]
+        log.info("resuming: %d questions from %s", len(items), qfile)
+    else:
+        n = args.questions if not args.smoke else 3
+        with ThreadPoolExecutor(max_workers=k) as pool:
+            batches = list(pool.map(
+                lambda i: run_quiz(todo[i], tools_fns, urls[i % len(urls)], n, seen_q),
+                range(len(todo) if not args.smoke else 1)))
+        items = [q for b in batches for q in b]
+        for ch_items in batches:  # 1 dev holdout per chapter
+            if len(ch_items) > 1:
+                ch_items[-1]["dev"] = True
+        # RETEST slots from round 2 on
+        if args.round > 1 and prev_items:
+            import random
+            rng = random.Random(args.round)
+            n_retest = max(1, int(len(items) * RETEST_FRAC))
+            for it in rng.sample(prev_items, min(n_retest, len(prev_items))):
+                items.append({k2: it[k2] for k2 in ("question", "qtype", "anchors", "chapter")}
+                             | {"retest": True})
+        qfile.write_text("\n".join(json.dumps(i) for i in items))
+    log.info("round has %d items (%d dev, %d retest)", len(items),
+             sum(1 for i in items if i.get("dev")), sum(1 for i in items if i.get("retest")))
+
+    # ATTEMPT/VERIFY/DISTILL (parallel across items), resumable via items.jsonl
+    ifile = rdir / "items.jsonl"
+    done_q = set()
+    if ifile.exists():
+        done_q = {json.loads(l)["question"] for l in ifile.read_text().splitlines()}
+    pending = [i for i in items if i["question"] not in done_q]
+    log.info("%d items pending", len(pending))
+
+    lock = __import__("threading").Lock()
+
+    def one(idx, item):
+        rec = run_item(item, note, tools_fns, run_py, urls[idx % len(urls)], ensemble, rt)
+        with lock:
+            with open(ifile, "a") as f:
+                f.write(json.dumps(rec) + "\n")
+        log.info("[%s%s] %s :: verdict=%s entry=%s tokens=%d",
+                 "dev " if item.get("dev") else "", "retest" if item.get("retest") else "item",
+                 item["question"][:70], rec.get("verdict", rec["status"]),
+                 "ADMITTED" if rec.get("entry") else
+                 ("BOUNCED" if rec.get("entry_bounced") else "-"), rec.get("tokens", 0))
+        if args.debug:
+            log.debug("attempt: %.500s\nderived: %.500s\ndelta: %.300s",
+                      rec.get("attempt"), (rec.get("derivations") or [{}])[0].get("answer"),
+                      rec.get("delta"))
+
+    with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+        list(pool.map(lambda t: one(*t), list(enumerate(pending))))
+
+    # round summary + note snapshot
+    recs = [json.loads(l) for l in ifile.read_text().splitlines()]
+    train = [r for r in recs if not r.get("dev") and not r.get("retest")]
+    dev = [r for r in recs if r.get("dev")]
+    new_entries = [r["entry"] for r in recs if r.get("entry")]
+    bounced = sum(1 for r in recs if r.get("entry_bounced"))
+    verdicts = defaultdict(int)
+    for r in recs:
+        verdicts[r.get("verdict", r["status"])] += 1
+    all_entries = entries + new_entries
+    note_text = render_note(rt, chaps, all_entries, corpus.display)
+    (sdir / f"note-r{args.round}.md").write_text(note_text)
+    summary = {
+        "round": args.round, "task": args.task, "chapters": todo,
+        "items": len(recs), "verdicts": dict(verdicts),
+        "train_error_rate": (sum(1 for r in train if r.get("verdict") in ("wrong", "partial"))
+                             / max(1, len(train))),
+        "dev_error_rate": (sum(1 for r in dev if r.get("verdict") in ("wrong", "partial"))
+                           / max(1, len(dev))),
+        "entries_admitted": len(new_entries), "entries_bounced": bounced,
+        "note_entries_total": len(all_entries), "note_chars": len(note_text),
+        "study_tokens": sum(r.get("tokens", 0) for r in recs)
+                        + sum(i.get("quiz_tokens", 0) for i in items),
+    }
+    (rdir / "summary.json").write_text(json.dumps(summary, indent=2))
+    log.info("ROUND %d SUMMARY %s", args.round, json.dumps(summary))
+
+
+def main():
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument("--task", required=True, choices=list(CORPORA))
+    p.add_argument("--round", type=int, required=True)
+    p.add_argument("--chapters", type=int, default=K_CHAPTERS)
+    p.add_argument("--questions", type=int, default=M_QUESTIONS)
+    p.add_argument("--base-urls", default="http://localhost:8100/v1")
+    p.add_argument("--concurrency", type=int, default=16)
+    p.add_argument("--smoke", action="store_true", help="1 chapter, 3 questions")
+    p.add_argument("--debug", action="store_true")
+    args = p.parse_args()
+
+    (ROOT / "logs").mkdir(exist_ok=True)
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(asctime)s %(levelname)s %(message)s",
+        handlers=[logging.StreamHandler(),
+                  logging.FileHandler(ROOT / "logs" / f"selfquiz-{args.task}.log")])
+    logging.getLogger("LiteLLM").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    run_round(args)
+
+
+if __name__ == "__main__":
+    main()
