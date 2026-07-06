@@ -110,6 +110,21 @@ r3/r4 running (jobs 25653/25654 chained). No procedure changes made off these
 milestone numbers (iteration policy): r2/r4 milestones measure the pre-registered
 curve as-is.
 
+## Milestone r2 results (2026-07-06; paired vs base / cheatsheet / r1)
+
+- DSPy: r2−base **−1.05** [−4.3, +2.5]; r2−cheatsheet −3.93 [−8.3, +0.7];
+  **r2−r1 −2.26** [−5.3, +0.7] — the 26-entry/13k-char note underperforms the
+  11-entry/6.3k r1 note across cells (direct 5.4→3.7, k20 24.3→19.9,
+  k20f 29.0→25.2). Reading: note bloat/distraction (pre-registered failure
+  mode 3) + low-value entries from r2's utility-module chapters. The remedy
+  (compaction) was cap-triggered BEFORE these numbers existed and applies at
+  the r4 milestone. "Optimal note size" is emerging as a finding in itself.
+- OpenClaw: r2−base **+2.27** [−1.6, +7.1] (r1 was +1.71); r2−cheatsheet
+  −0.12 (caught up); k5 10.7 = 2.3x base. Monotone coverage growth, as
+  hypothesized for the no-priors library.
+- No procedure changes from these numbers (policy); r4 milestone (compacted
+  notes, full syllabus coverage) is the decisive curve point.
+
 ## Round 2 notes (both tasks)
 
 - Gate normalization validated in production: bounce rate 43% (r1) → 17% (r2
