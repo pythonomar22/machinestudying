@@ -217,6 +217,23 @@ prepended artifact. Measured at **6 rollouts** (noise floor ±3 at 3 rollouts;
 cheatsheet arm extended to 6 in parallel for the paired comparison).
 Jobs 26454/26455 (hybrid), 26456 (cheatsheet extension); grading armed.
 
+## Confirmation standard (declared 2026-07-06, BEFORE the iteration-4 verdict)
+
+Honesty accounting: iterations 2-4 are note-construction variants chosen after
+inspecting milestone budget-shapes — adaptive analysis over the same 30+20
+public questions, 7 arms measured so far. Therefore:
+1. The 6-rollout hybrid arm is the CONFIRMATORY test (declared in the log
+   before its data existed). A positive result there is still artifact-level.
+2. "Self-studying works" will only be claimed after a **fresh-note
+   replication**: re-run the entire study pipeline from scratch (new quiz
+   sampling → new entries → new select/hybrid note, same frozen procedure and
+   prompts), then one pre-declared eval of the fresh hybrid note. Effect
+   reproduces → procedure-level claim; doesn't → the first result was artifact
+   luck and gets reported as such.
+3. Any further iteration is declared in this file before its eval data exists.
+4. Multiplicity is disclosed in any writeup: 7 adaptive arms preceded the
+   confirmatory pair.
+
 ## Round 2 notes (both tasks)
 
 - Gate normalization validated in production: bounce rate 43% (r1) → 17% (r2
