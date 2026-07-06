@@ -144,11 +144,16 @@ def chapters(rt: RepoTools) -> list[str]:
     return [c for c, _ in sorted(loc.items(), key=lambda kv: -kv[1])]
 
 
+def _chapter_of(f: str) -> str:
+    parts = f.split("/")
+    return "/".join(parts[:2]) if len(parts) > 2 else parts[0]
+
+
 def repo_map(rt: RepoTools, chaps: list[str]) -> str:
     """Model-free orientation section: chapters with their largest files."""
     lines = ["## Repo map"]
     for c in chaps:
-        fs = sorted((f for f in rt.files if f.startswith(c + "/") or f == c),
+        fs = sorted((f for f in rt.files if _chapter_of(f) == c),
                     key=lambda f: -len(rt.text[f]))[:3]
         lines.append(f"- `{c}/`: " + ", ".join(f.rsplit('/', 1)[-1] for f in fs))
     return "\n".join(lines)
