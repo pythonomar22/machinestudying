@@ -52,4 +52,36 @@ dev-exam or artifact-inspection evidence in this file, never milestone scores.
 
 ## Run log
 
-- 2026-07-06: smoke submitted (job 25397: DSPy, 1 chapter, 3 questions, 1 GPU).
+- 2026-07-06: smoke job 25397 crashed on a dspy.ReAct kwarg collision (QuizSig
+  input named `module` shadows ReAct internals) — renamed to `chapter`; also made
+  zero-item rounds fail loudly. Smoke 25409 passed; all 3 artifacts hand-read:
+  the closed-book model REINVENTED LabeledFewShot with numpy (Jacob's
+  "reinventing wheels" failure, caught and corrected with a true cite), the
+  max_errors pitfall produced a real cross-file correction (None → inherits
+  settings.max_errors=10), the dev item was rightly judged correct. repo_map bug
+  found in the note (root chapter listed subdir files) — fixed.
+- 2026-07-06 round 1 (job 25439, 8 GPUs, both tasks):
+  - DSPy: 20 items, train error 87.5% (above the healthy band top — the model
+    genuinely lacks these chapters closed-book; fine for note-building),
+    8 entries admitted / 6 bounced; 279k study tokens.
+  - OpenClaw: 20 items, train error 93.8% (never-seen library, as pre-registered),
+    11 admitted / 4 bounced, 0 ensemble downgrades; 407k study tokens.
+  - **Iteration (artifact-cited, per policy):** manual read of all bounced
+    entries showed two classes — true fabrications (prose quoted as code:
+    correctly dead) and format failures (real source quoted across lines or
+    inside backticks). quote_gate now normalizes to the first non-empty line and
+    strips markdown wrapping before the exact-match check; unit-tested on the
+    actual bounced strings (real ones recover, prose still bounces). Recovery
+    pass over items.jsonl: +3 entries per task (marked entry_recovered).
+    Also: repo map capped at 20 chapters (OpenClaw's 169-line map bloated the
+    note to 18.8k chars). Final r1 notes: dspy 11 entries/6.3k chars,
+    openclaw 14 entries/8.9k chars.
+  - Entry quality (manual read of all 25): precise, real-cite corrections —
+    e.g. TwoStepAdapter's `extraction_model` arg, `rollout_id` stripped at
+    temperature=0, ReAct's Tool-wrapping (dspy); gateway auth token precedence
+    via `??`, strict-lowercase "session_expired", dispatcher unregister-at-zero
+    (openclaw).
+  - **Dev-verdict audit: 8/8 human agreement** (one arguable partial-vs-wrong).
+    Accumulated 8 of the ~30 required before dev metrics may steer decisions.
+  - Milestone eval r1 submitted: jobs 25455 (dspy) + 25456 (openclaw), variant
+    react-selfquiz-r1, fugu grading armed.
