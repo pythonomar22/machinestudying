@@ -10,7 +10,7 @@ export UV_LINK_MODE=copy
 unset ROCR_VISIBLE_DEVICES
 # flashinfer JIT-compiles kernels at startup; it needs nvcc and ninja on PATH
 # (ninja is pip-installed into the venv, whose bin/ is not on PATH otherwise)
-export CUDA_HOME=/usr/local/cuda-12.8
+export CUDA_HOME=${CUDA_HOME:-/usr/local/cuda-12.8}
 export PATH="$PWD/.venv-vllm/bin:$CUDA_HOME/bin:$PATH"
 
 if [ ! -x .venv-vllm/bin/vllm ]; then
@@ -19,12 +19,15 @@ if [ ! -x .venv-vllm/bin/vllm ]; then
 fi
 
 NGPU=${SB_NGPU:-$(nvidia-smi -L | wc -l)}
+TP=${SB_TP:-1}  # tensor-parallel size per server (e.g. 2 on 48GB L40S if KV is tight)
 PORT_BASE=${SB_PORT_BASE:-8100}
 LOG_PREFIX=${SB_VLLM_LOG_PREFIX:-logs/vllm}  # job-unique prefix: stale logs from a
 mkdir -p logs                                # previous run must not be re-read
-for i in $(seq 0 $((NGPU - 1))); do
-    CUDA_VISIBLE_DEVICES=$i .venv-vllm/bin/vllm serve Qwen/Qwen3.5-9B \
+for i in $(seq 0 $((NGPU / TP - 1))); do
+    CUDA_VISIBLE_DEVICES=$(seq -s, $((i * TP)) $((i * TP + TP - 1))) \
+    .venv-vllm/bin/vllm serve Qwen/Qwen3.5-9B \
         --port $((PORT_BASE + i)) \
+        --tensor-parallel-size "$TP" \
         --max-model-len 262144 \
         --reasoning-parser qwen3 \
         --enable-auto-tool-choice --tool-call-parser qwen3_coder \
