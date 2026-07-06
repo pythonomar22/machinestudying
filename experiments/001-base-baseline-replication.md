@@ -54,6 +54,38 @@ OpenClaw 7.64), using the exact grading procedure the first author described to 
 6. **Seeds**: per-episode deterministic seed (crc32 of task/qid/budget/rollout)
    passed to vLLM.
 
+## Harness findings from smoke tests (2026-07-06)
+
+Smoke rounds on 1 GPU (2 questions × direct/k5/k20f × both tasks) surfaced three
+behavioral issues, each fixed and re-smoked:
+
+1. **vLLM 0.24 returns thinking under `reasoning`**, not `reasoning_content` — we
+   recorded nothing until fixed.
+2. **The model cannot tell when its tool budget is gone.** At the cap the request
+   drops the `tools` param, but the model keeps writing tool calls — first as parsed
+   calls, then as plain `<tool_call>` XML that became the "answer" (51-token
+   answers). Fixes: an explicit user notice when the budget exhausts, plus
+   tool-call-shaped text is never accepted as an answer without nudges.
+3. **Interleaved thinking is the model's intended agentic mode.** The Qwen3.5 chat
+   template renders prior turns' `<think>` blocks inside the current tool loop and
+   renders *empty* think blocks when reasoning isn't passed back — visibly
+   conditioning the model to stop thinking (~60-100 tokens/turn in tool loops vs
+   ~2k thinking in direct mode). vLLM 0.24's chat parser explicitly supports
+   assistant `reasoning` passback "for interleaved thinking". Round 2 tokens without
+   passback: k20f ≈ 2.5-5.2k vs the paper's 34.6k mean — passback (round 3) is the
+   mechanism that plausibly closes this gap.
+
+## Smoke grading (2026-07-06, 12 episodes, n=2 questions — NOT representative)
+
+End-to-end pipeline verified: sandbox + GPT-5.4 judge + report. Qualitative patterns
+match the paper: direct answers hallucinate APIs (`GeoTeleprompter`,
+`dsp.utils.dotdict`) → compile-fail → lenient 0; lenient rises with budget (DSPy
+0 → 38.5 → 55.5; OpenClaw 0 → 7 → 26); strict ≈ 0 everywhere (paper: "most answers
+would have otherwise received zero"); one direct answer wrote Python for a
+TypeScript question (correctly gated). Judge rationales are code-grounded and cite
+rubric mechanisms. n=2 lenient levels are far above the paper's 30-question means at
+k5/k20f — expected variance at this sample size; the full run decides.
+
 ## Status log
 
 - 2026-07-04: dataset vendored; corpora cloned at pinned commits; model downloaded to
