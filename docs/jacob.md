@@ -138,3 +138,54 @@ Edited
 great, thanks
 2:32 PM
 2:32 P
+reading thru dspy.react, how exactly did you do no early stopping for the forced-20 runs? it seems like dspy.react breaks out of the loop the moment the model picks finish, so did you remove finish from the tool list, ignore finish selections and keep looping, or reprompt it ? and did the model know upfront it had to do all 20 iterations, or did it just discover it couldn't finish? (same question for the cheatsheet study loop)
+also if u mind sharing what the direct setting was concretely: dspy.Predict, ChainOfThought, or ReAct with max_iters=0? i guess the last one would just fall thru to the extract step
+my native-tool calling numbers are running pretty hot, like 2x the lenient scores
+4:30 PM
+4:30 PM
+also if you could share the shape of the three tool functions? does read_file read whole files or line ranges, or any glob semantics, or any specific truncations that you did to bservations before going into the trajectory
+4:32 PM
+
+reading thru dspy.react, how exactly did you do no early stopping for the forced-20 runs? it seems like dspy.react breaks out of the loop the moment the model picks finish, so did you remove finish from the tool list, ignore finish selections and keep looping, or reprompt it ? and did the model know upfront it had to do all 20 iterations, or did it just discover it couldn't finish? (same question for the cheatsheet study loop)
+also if u mind sharing what the direct setting was concretely: dspy.Predict, ChainOfThought, or ReAct with max_iters=0? i guess the last one would just fall thru to the extract step
+my native-tool calling numbers are running pretty hot, like 2x the lenient scores
+4:30 PM
+4:30 PM
+also if you could share the shape of the three tool functions? does read_file read whole files or line ranges, or any glob semantics, or any specific truncations that you did to bservations before going into the trajectory
+4:32 PM
+4:32 PM
+Omar Abul-Hassan
+reading thru dspy.react, how exactly did you do no early stopping for the forced-20 runs? it seems like dspy.react breaks out of the loop th
+Just catch the finish and return something like you gotta keep searching type of logic no need to remove that specific turn
+4:33 PM
+4:33 PM
+👍
+Omar Abul-Hassan
+my native-tool calling numbers are running pretty hot, like 2x the lenient scores
+Yeah it’s possible that native tool calling helps with the performance (but I wasn’t expecting 2x improvement )
+4:35 PM
+4:35 PM
+Three tools are Grep glob, and read file (lines, Capped at 200lines)
+Omar Abul-Hassan
+also if u mind sharing what the direct setting was concretely: dspy.Predict, ChainOfThought, or ReAct with max_iters=0? i guess the last one
+Dspy predict
+4:37 PM
+4:37 PM
+Omar Abul-Hassan
+my native-tool calling numbers are running pretty hot, like 2x the lenient scores
+But it wouldn’t matter much after all, the reason for including this lenient grading was to demonstrate a prettier inf scaling curve
+4:39 PM
+4:39 PM
+And a qualifying MS algorithm will need to shit that frontier
+4:41 PM
+4:41 PM
+👍Edited
+thank you so much
+Jacob X. Li ✈️ ICML
+But it wouldn’t matter much after all, the reason for including this lenient grading was to demonstrate a prettier inf scaling curve
+i see, yeah
+4:44 PM
+4:44 PM
+
+
+

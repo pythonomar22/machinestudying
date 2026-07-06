@@ -201,11 +201,10 @@ async def main_async(args):
     judge_model, base_url, key_var = GRADERS[grader]
     client = AsyncOpenAI(timeout=600, base_url=base_url, api_key=os.environ[key_var])
     log.info("grader=%s judge_model=%s", grader, judge_model)
-    runs_root = ROOT / ("runs" if not args.variant else f"runs-{args.variant}")
-    out_root = ROOT / ("grades" + (f"-{args.variant}" if args.variant else "")
-                       + (f"-{grader}" if grader != "openai" else "")
-                       + ("-wholefiles" if args.whole_files else "")
-                       + (f"-effort-{args.judge_effort}" if args.judge_effort else ""))
+    runs_root = ROOT / "runs" / (args.variant or "base")
+    judge_dir = (judge_model + ("-wholefiles" if args.whole_files else "")
+                 + (f"-effort-{args.judge_effort}" if args.judge_effort else ""))
+    out_root = ROOT / "grades" / (args.variant or "base") / judge_dir
 
     run_files = sorted((runs_root / args.task).rglob("*.json"))
     pending = []

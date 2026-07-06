@@ -199,7 +199,7 @@ async def main_async(args):
     clients = [AsyncOpenAI(base_url=u, api_key="EMPTY", timeout=3600, max_retries=0)
                for u in args.base_urls.split(",")]
     think_history = args.variant != "no-think-history"
-    runs_root = ROOT / ("runs" if not args.variant else f"runs-{args.variant}")
+    runs_root = ROOT / "runs" / (args.variant or "base")
     if args.variant == "cheatsheet":
         # paper §B Table 4: the self-written cheatsheet is prepended to every
         # question; the repository tools remain available

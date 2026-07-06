@@ -126,9 +126,9 @@ def main():
                    help="add 95%% bootstrap CIs from N replicates (e.g. 10000)")
     args = p.parse_args()
 
-    grades = ("grades" + (f"-{args.variant}" if args.variant else "")
-              + (f"-{args.grader}" if args.grader != "openai" else ""))
-    runs = "runs" + (f"-{args.variant}" if args.variant else "")
+    judge_dir = {"openai": "gpt-5.4", "fugu": "fugu"}[args.grader]
+    grades = f"grades/{args.variant or 'base'}/{judge_dir}"
+    runs = f"runs/{args.variant or 'base'}"
     for task in args.tasks.split(","):
         agg = aggregate(task, grades, runs)
         paper = PAPER.get((task, args.variant))
