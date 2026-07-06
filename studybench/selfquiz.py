@@ -586,6 +586,86 @@ def select_note(args):
              len(picked), len(pool), len(note))
 
 
+class SnippetSig(dspy.Signature):
+    """Write one minimal, self-contained code snippet (<=12 lines) that
+    demonstrates the CORRECT usage described by this note entry — the snippet a
+    developer would copy to avoid the mistaken belief. For Python it must run
+    as-is against the installed library (prints something small to prove it
+    ran); prefer offline constructs (e.g. dummy models) over network calls."""
+
+    belief: str = dspy.InputField()
+    correction: str = dspy.InputField()
+    evidence_quote: str = dspy.InputField()
+    language: str = dspy.InputField()
+    snippet: str = dspy.OutputField()
+
+
+def usage_note(args):
+    """Iteration 3 (artifact-cited: the direct-column gap vs the cheatsheet is
+    the entire remaining deficit, and the cheatsheet's direct advantage comes
+    from code-shaped content): attach an execution-gated usage snippet to each
+    selected entry. DSPy snippets must exit 0 in the pinned sandbox; OpenClaw
+    snippets must tree-sitter-parse. Entries whose snippets fail keep prose."""
+    from . import sandbox as sb
+    corpus = CORPORA[args.task]
+    rt = RepoTools(corpus, read_max_lines=READ_MAX_LINES)
+    chaps = chapters(rt)
+    sdir = ROOT / "study-selfquiz" / args.task
+    # entries = the select-12 note's entries (iteration 2 pool)
+    pool = []
+    for r in range(1, args.round + 1):
+        p = sdir / f"r{r}" / "items.jsonl"
+        if p.exists():
+            pool += [json.loads(l)["entry"] for l in p.read_text().splitlines()
+                     if json.loads(l).get("entry")]
+    select_txt = (sdir / "note-select.md").read_text()
+    entries = [e for e in pool if e["belief"].strip()[:60] in select_txt]
+    log.info("usage-note: %d selected entries to snippet", len(entries))
+    lm = fresh_lm(args.base_urls.split(",")[0])
+    ok = fail = 0
+    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        for e in entries:
+            try:
+                snip = dspy.Predict(SnippetSig)(
+                    belief=e["belief"], correction=e["correction"],
+                    evidence_quote=f"{e['file']}:{e['line']}: {e['quote']}",
+                    language=corpus.language).snippet
+                snip = snip.strip().strip("`")
+                if snip.startswith(("python", "typescript", "ts")):
+                    snip = snip.split("\n", 1)[1] if "\n" in snip else ""
+                gate = (sb._check_python(snip) if corpus.language == "python"
+                        else sb._check_typescript(snip))
+                if snip and gate["compile_ok"]:
+                    e["snippet"] = snip
+                    ok += 1
+                else:
+                    fail += 1
+            except Exception as ex:
+                fail += 1
+                log.warning("snippet failed: %s", str(ex)[:150])
+    log.info("usage-note: %d snippets execution-gated in, %d failed (prose kept)", ok, fail)
+
+    parts = [f"# {corpus.display} — corrections from studying (verified usage)",
+             "", repo_map(rt, chaps[:20]), ""]
+    by_ch = defaultdict(list)
+    for e in entries:
+        by_ch[e["chapter"]].append(e)
+    for ch in chaps:
+        if not by_ch.get(ch):
+            continue
+        parts.append(f"## {ch}")
+        for e in by_ch[ch]:
+            parts.append(f"- **{e['belief'].strip()}** {e['correction'].strip()}\n"
+                         f"  > `{e['file']}:{e['line']}`: `{e['quote'].strip()}`")
+            if e.get("snippet"):
+                lang = "python" if corpus.language == "python" else "ts"
+                parts.append(f"```{lang}\n{e['snippet']}\n```")
+        parts.append("")
+    note = "\n".join(parts)
+    (sdir / "note-usage.md").write_text(note)
+    log.info("wrote note-usage.md (%d chars)", len(note))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--task", required=True, choices=list(CORPORA))
@@ -601,6 +681,8 @@ def main():
     p.add_argument("--guard-n", type=int, default=12)
     p.add_argument("--select", type=int, default=0,
                    help="build a hard-capped note of N selected entries (no LM calls)")
+    p.add_argument("--usage", action="store_true",
+                   help="attach execution-gated usage snippets to the select note")
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
 
@@ -612,7 +694,9 @@ def main():
                   logging.FileHandler(ROOT / "logs" / f"selfquiz-{args.task}.log")])
     logging.getLogger("LiteLLM").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    if args.select:
+    if args.usage:
+        usage_note(args)
+    elif args.select:
         select_note(args)
     elif args.compact:
         compact(args)
