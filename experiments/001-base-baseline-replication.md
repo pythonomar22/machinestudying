@@ -202,6 +202,31 @@ only the deterministic compile/hallucinated-API zeros), or is it the pure weight
 sum? (b) was the ReAct loop native tool-calling or text-format, and was prior-turn
 thinking kept in context? (c) judge reasoning effort.
 
+## AUTHOR CORRECTIONS (2026-07-06, docs/jacob.md lines 116-140) — supersede the above
+
+Jacob answered (a) and (b):
+1. **"lenient is just weights summed together."** Table 1 lenient = the pure
+   weighted claim sum. Our core-conjunctive reconciliation above is the WRONG
+   reading — the correct comparison is our rubric-sum row, which is **3-4x above
+   the paper and excluded by our own CIs** (26.4 vs 6.49 DSPy; 20.2 vs 7.64
+   OpenClaw). The core-conjunctive rule from the earlier DMs evidently belongs to
+   *strict* grading only. The real discrepancy is therefore open again, and since
+   the judge knobs we swept move scores ≤30%, the harness must carry it → see (2).
+2. **"I was using dspy.ReAct ... (and yes model emits reasoning every turn)."**
+   The paper's harness is DSPy's own text-field ReAct (signature fields
+   next_thought/next_tool_name/next_tool_args, a `finish` tool, trajectory dict
+   re-fed each turn, final extract step) — not a native tool-calling loop. This
+   coherently explains BOTH anomalies we flagged: fresh ~1.5k-token thinking every
+   turn with no reasoning carry-over (their k20f 34.6k vs our 6k) and voluntary
+   early stopping via the `finish` tool (their k20 ≈ k5 tokens).
+
+Consequence: our harness is materially stronger than the paper's (Jacob's own
+warning — "you could improve 'performance' by using more complicated harness").
+A faithful replication of Table 1's absolute numbers requires a dspy.ReAct-based
+harness (the pinned library is already in corpora/dspy). Faithfulness audit +
+consolidated Jacob questions: see the three-agent audit in this session and
+experiments/003 (planned).
+
 ## Status log
 
 - 2026-07-04: dataset vendored; corpora cloned at pinned commits; model downloaded to

@@ -113,3 +113,28 @@ yes
 yeah I think those are all really great directions!
 10:31 AM
 10:31 AM
+hey jacob, i had a couple questions about replicating that i'm revisiting now that i've tried to do a couple experiments on my own and realized that some things were kind of up to interpretation when i first tried to replicate results
+1:13 PM
+1:13 PM
+Edited
+1. for the lenient columns in table 1: does the core-conjunctive zero still apply here? (so lenient would skip the deterministic compile/hallucinated-api zeros), or is lenient just the pure weighted sum of claim scores?
+1:14 PM
+1:14 PM
+2. for the react harness: are you doing native tool calling (tools param and parser) or just like raw text thought/action/observation? and did prior turns' thinking stay in context within an episode or get stripped? asking because my forced-20 episodes land around 6k tokens vs your ~35k. your numbers look like to me maybe that the model re-thinks ~1.5k tokens fresh every turn, which i only get when thinking is NOT carried across turns
+1:16 PM
+1:16 PM
+
+Omar Abul-Hassan
+1. for the lenient columns in table 1: does the core-conjunctive zero still apply here? (so lenient would skip the deterministic compile/hal
+lenient is just weights summed together
+1:46 PM
+1:46 PM
+Omar Abul-Hassan
+2. for the react harness: are you doing native tool calling (tools param and parser) or just like raw text thought/action/observation? and d
+I was using dspy.ReAct but I think native tool call should work (and yes model emits reasoning every turn)
+1:48 PM
+1:48 PM
+Edited
+great, thanks
+2:32 PM
+2:32 P
