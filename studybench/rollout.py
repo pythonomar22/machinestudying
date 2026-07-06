@@ -118,10 +118,16 @@ async def run_episode(client: AsyncOpenAI, corpus, tools: RepoTools, q: dict,
         if msg.tool_calls:
             iters += 1
             ep["n_tool_iters"] = iters
-            messages.append({
+            assistant = {
                 "role": "assistant", "content": msg.content or "",
                 "tool_calls": [tc.model_dump() for tc in msg.tool_calls],
-            })
+            }
+            if turn["reasoning"]:
+                # interleaved thinking: the chat template renders prior turns'
+                # <think> blocks within the current tool loop (empty ones
+                # otherwise, which conditions the model to stop thinking)
+                assistant["reasoning"] = turn["reasoning"]
+            messages.append(assistant)
             turn["observations"] = []
             for tc in msg.tool_calls:
                 obs = await asyncio.to_thread(tools.dispatch, tc.function.name, tc.function.arguments)
@@ -129,26 +135,42 @@ async def run_episode(client: AsyncOpenAI, corpus, tools: RepoTools, q: dict,
                 messages.append({"role": "tool", "tool_call_id": tc.id, "content": obs})
             continue
 
-        answered = bool(msg.content and msg.content.strip())
-        if answered and not (forced and iters < max_iters):
+        content = (msg.content or "").strip()
+        tool_shaped = "<tool_call>" in content or "<function=" in content
+        early = forced and iters < max_iters
+        if content and not tool_shaped and not early:
             ep["answer"] = msg.content
             break
 
-        # Either an empty turn (e.g. cut mid-thinking), or a forced episode trying to
-        # answer before its 20 iterations (tool_choice="required" should prevent the
-        # latter; this is a guard against tool-parser failures).
+        # Not an acceptable answer: empty (e.g. cut mid-thinking), a tool call
+        # written as plain text (the model trying to explore past its budget), or
+        # a forced episode answering before its 20 iterations.
         nudges += 1
         if nudges > MAX_NUDGES:
-            if answered:
+            if early and content:
                 ep["answer"], ep["status"] = msg.content, "forced_short"
+            elif content:
+                ep["answer"] = msg.content  # tool-shaped; the rubric will judge it
             else:
                 ep["status"] = "no_answer"
             break
-        messages.append({"role": "assistant", "content": msg.content or ""})
-        messages.append({"role": "user", "content":
-                         "Please continue researching with a tool call."
-                         if forced and iters < max_iters
-                         else "Please give your final answer now."})
+        assistant = {"role": "assistant", "content": msg.content or ""}
+        if turn["reasoning"]:
+            assistant["reasoning"] = turn["reasoning"]
+        messages.append(assistant)
+        if early:
+            nudge = "Please continue researching with a tool call."
+        elif tool_shaped and allow_tools:
+            nudge = ("Your last message contained a tool call written as plain "
+                     "text, which cannot be executed. Use the tool-calling "
+                     "interface, or give your final answer.")
+        elif tool_shaped:
+            nudge = ("You cannot make any more tool calls. Give your final, "
+                     "complete answer to the original question now, based on "
+                     "what you have learned.")
+        else:
+            nudge = "Please give your final answer now."
+        messages.append({"role": "user", "content": nudge})
 
     ep["finished"] = time.strftime("%Y-%m-%dT%H:%M:%S")
     return ep
