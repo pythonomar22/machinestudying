@@ -76,7 +76,7 @@ class QuizSig(dspy.Signature):
     files that motivated it in `anchors`. In `writer_sketch` note in one line what
     you believe the answer is (this is not trusted; it is audit metadata)."""
 
-    module: str = dspy.InputField(desc="the module (directory) to study")
+    chapter: str = dspy.InputField(desc="the module (directory) to study")
     num_questions: int = dspy.InputField()
     questions: list[QuizQ] = dspy.OutputField()
 
@@ -214,7 +214,7 @@ def run_quiz(chapter: str, tools_fns, url: str, n: int, seen: list[str]) -> list
     with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
         try:
             pred = dspy.ReAct(QuizSig, tools=list(tools_fns), max_iters=QUIZ_MAX_ITERS)(
-                module=chapter, num_questions=n)
+                chapter=chapter, num_questions=n)
             qs = pred.questions
         except Exception as e:
             log.warning("quiz episode failed for %s: %s", chapter, str(e)[:200])
@@ -416,6 +416,9 @@ def run_round(args):
 
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
         list(pool.map(lambda t: one(*t), list(enumerate(pending))))
+
+    if not ifile.exists():
+        raise SystemExit("no items were produced — every quiz episode failed; see log")
 
     # round summary + note snapshot
     recs = [json.loads(l) for l in ifile.read_text().splitlines()]
