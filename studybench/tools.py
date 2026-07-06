@@ -81,8 +81,9 @@ TOOL_SCHEMAS = [
 
 
 class RepoTools:
-    def __init__(self, corpus: Corpus):
+    def __init__(self, corpus: Corpus, read_max_lines: int = READ_MAX_LINES):
         self.corpus = corpus
+        self.read_max_lines = read_max_lines
         paths = sorted(
             p for root in corpus.roots for p in (corpus.repo / root).rglob("*")
             if p.is_file() and p.stat().st_size <= MAX_FILE_BYTES
@@ -178,8 +179,8 @@ class RepoTools:
         end = min(n, int(end_line) if end_line else n)
         if start > n or end < start:
             return f"Error: '{path}' has {n} lines; requested lines {start}-{end}."
-        if end - start + 1 > READ_MAX_LINES:
-            end = start + READ_MAX_LINES - 1
+        if end - start + 1 > self.read_max_lines:
+            end = start + self.read_max_lines - 1
         body = "\n".join(f"{i}: {lines[i - 1][:500]}" for i in range(start, end + 1))
         header = f"{path} (lines {start}-{end} of {n})"
         if end < n:
