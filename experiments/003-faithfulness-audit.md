@@ -149,6 +149,15 @@ Serving:
 14. [blocked-on-Q13] served context length (ours 262144) and whether trajectory
     truncation fired in their forced-20 runs.
 
+## Register updates (2026-07-06, author round 3 — see experiments/006)
+
+Answered and implemented: item 2 forced-N = catch finish, return keep-searching,
+turn stays (Q2 closed); item 3 direct = dspy.Predict (Q3 closed); item 5 read_file
+= line ranges capped at 200 (Q4 partially closed — grep/glob caps and observation
+truncation still ours); item 1 partially (harness rebuilt on the pinned dspy
+commit; his exact version still unknown). Still open: Q4 remainder, Q5
+cross-grading, Q7 judge details, Q8 hallucinated-API check, Q10-12 study/prepend.
+
 ## Recommended next experiment (004)
 
 Build the harness AS dspy.ReAct (the pinned library is in corpora/dspy; point
