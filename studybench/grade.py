@@ -147,7 +147,7 @@ def score_from_claims(row: dict, claim_scores: dict[str, int], compile_ok: bool)
 
 
 async def grade_episode(client: AsyncOpenAI, corpus, row: dict, ep: dict,
-                        whole_files: bool = False) -> dict:
+                        whole_files: bool = False, effort: str = "") -> dict:
     grade = {
         "task": ep["task"], "qid": ep["qid"], "budget": ep["budget"], "rollout": ep["rollout"],
         "judge_model": JUDGE_MODEL, "episode_status": ep["status"],
@@ -169,6 +169,7 @@ async def grade_episode(client: AsyncOpenAI, corpus, row: dict, ep: dict,
             messages=[{"role": "user",
                        "content": build_prompt(corpus, row, answer, whole_files)}],
             response_format=judge_schema(row),
+            **({"reasoning_effort": effort} if effort else {}),
         )
         verdict = json.loads(resp.choices[0].message.content)
         claim_scores = {c["claim_id"]: c["score"] for c in verdict["claims"]}
@@ -190,12 +191,15 @@ async def main_async(args):
     corpus = CORPORA[args.task]
     rows = {q["id"]: q for q in load_questions(args.task)}
     client = AsyncOpenAI(timeout=600)
-    out_root = ROOT / ("grades-wholefiles" if args.whole_files else "grades")
+    runs_root = ROOT / ("runs" if not args.variant else f"runs-{args.variant}")
+    out_root = ROOT / ("grades" + (f"-{args.variant}" if args.variant else "")
+                       + ("-wholefiles" if args.whole_files else "")
+                       + (f"-effort-{args.judge_effort}" if args.judge_effort else ""))
 
-    run_files = sorted((ROOT / "runs" / args.task).rglob("*.json"))
+    run_files = sorted((runs_root / args.task).rglob("*.json"))
     pending = []
     for rf in run_files:
-        gf = out_root / rf.relative_to(ROOT / "runs")
+        gf = out_root / rf.relative_to(runs_root)
         # (re-)grade if ungraded, or if the episode was regenerated since grading
         if not gf.exists() or gf.stat().st_mtime < rf.stat().st_mtime:
             pending.append((rf, gf))
@@ -210,7 +214,7 @@ async def main_async(args):
             try:
                 ep = json.loads(rf.read_text())
                 grade = await grade_episode(client, corpus, rows[ep["qid"]], ep,
-                                            args.whole_files)
+                                            args.whole_files, args.judge_effort)
                 gf.parent.mkdir(parents=True, exist_ok=True)
                 tmp = gf.with_suffix(".tmp")
                 tmp.write_text(json.dumps(grade, indent=2))
@@ -248,6 +252,11 @@ def main():
     p.add_argument("--whole-files", action="store_true",
                    help="give the judge full evidence files (paper A.5) instead of "
                         "the dataset's span excerpts; writes to grades-wholefiles/")
+    p.add_argument("--variant", default="",
+                   help="grade runs-<variant>/ into grades-<variant>/")
+    p.add_argument("--judge-effort", default="",
+                   choices=["", "low", "medium", "high", "xhigh"],
+                   help="judge reasoning effort (default: API default)")
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
 
