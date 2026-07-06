@@ -113,3 +113,15 @@ OpenClaw 7.64), using the exact grading procedure the first author described to 
     --output dirs.
   - NOTE: smoke episodes were generated with pre-round-2 rollout semantics —
     runs/ and grades/ will be wiped before the full run.
+- 2026-07-05 (sandbox validated against golds): all 50/50 gold answers pass the
+  compile gate (paper A.1 stage 5: references must pass the checker). Required
+  installing `optuna` into `.venv-dspy` (two golds run MIPROv2); done in
+  `setup_grading.sh`. This also exercised the env-scrubbed sandbox
+  (no API keys, HOME=tempdir) — no gold needs network or user env.
+- 2026-07-05 (vLLM startup on H100): Qwen3.5-9B GDN linear-attention prefill and the
+  flashinfer top-k/top-p sampler are JIT-compiled at server start → need `ninja` and
+  `nvcc` on PATH inside the batch job. Fixed by pip-installing ninja into .venv-vllm
+  and prepending `.venv-vllm/bin` + `/usr/local/cuda-12.8/bin` to PATH in
+  serve_vllm.sh (smoke jobs 22923/22949 died on this; 22961 has the fix). Crash
+  detector now keys on "EngineCore failed to start" — GDN warmup prints non-fatal
+  WARNING tracebacks that must not abort the job.

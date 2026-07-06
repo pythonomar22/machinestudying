@@ -79,6 +79,12 @@ async def run_episode(client: AsyncOpenAI, corpus, tools: RepoTools, q: dict,
     iters = nudges = 0
     while True:
         allow_tools = iters < max_iters
+        if not allow_tools and max_iters and messages[-1]["role"] == "tool":
+            # the tool budget was just exhausted; the model cannot see that tools
+            # are gone, so ask for the answer explicitly
+            messages.append({"role": "user", "content":
+                             "You have used all your tool calls. Now give your "
+                             "final, complete answer to the original question."})
         kwargs = {}
         if allow_tools:
             kwargs["tools"] = TOOL_SCHEMAS
@@ -95,8 +101,9 @@ async def run_episode(client: AsyncOpenAI, corpus, tools: RepoTools, q: dict,
         msg = resp.choices[0].message
         usage = resp.usage
         ep["gen_tokens"] += usage.completion_tokens
+        extra = msg.model_extra or {}
         turn = {
-            "reasoning": (msg.model_extra or {}).get("reasoning_content"),
+            "reasoning": extra.get("reasoning") or extra.get("reasoning_content"),
             "content": msg.content,
             "tool_calls": [
                 {"name": tc.function.name, "arguments": tc.function.arguments}
