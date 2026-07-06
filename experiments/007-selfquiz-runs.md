@@ -191,6 +191,32 @@ OpenClaw) — a stronger admission gate than the quote check. Prose kept where
 snippets fail the gate. Chain: build 26317 → evals 26318/26319 (variant
 selfquiz-usage) → armed grading.
 
+## Iteration 3 verdict (selfquiz-usage, 2026-07-06)
+
+DSPy: 8/12 snippets passed the execution gate. direct did NOT move (4.3 vs
+select 4.4 — code content per se doesn't close the closed-book gap; the
+cheatsheet's direct edge is BREADTH) but k20f jumped to **34.3, the best of any
+arm measured** (base 29.0, cheatsheet 27.5): verified working code composes
+with forced search. WAUC vs base +1.46 (best selfquiz arm), vs cheatsheet
+−1.41, all n.s. OpenClaw: snippet gate admitted 0/12 (tree-sitter rejections;
+note ≈ select) — turning its arm into an A/A test: usage−select −0.22
+[−2.87, +2.83], calibrating the **rollout noise floor at ~±3 WAUC** (3 rollouts).
+
+Accumulated decomposition across 6 arms: selfquiz corrections reliably add
+value WITH tools at every iteration; the cheatsheet's entire remaining
+advantage is closed-book breadth at direct.
+
+## Iteration 4: hybrid breadth+precision (launched 2026-07-06)
+
+Composition arm implied by the decomposition (and by the paper's own "you
+likely have to combine the bets"): note = the self-written react-study
+cheatsheet (breadth → direct) + the select-12 verified corrections appended
+under "trust these over the summary above" (precision → tool budgets). Both
+components self-generated; zero new study compute; still a single static
+prepended artifact. Measured at **6 rollouts** (noise floor ±3 at 3 rollouts;
+cheatsheet arm extended to 6 in parallel for the paired comparison).
+Jobs 26454/26455 (hybrid), 26456 (cheatsheet extension); grading armed.
+
 ## Round 2 notes (both tasks)
 
 - Gate normalization validated in production: bounce rate 43% (r1) → 17% (r2
