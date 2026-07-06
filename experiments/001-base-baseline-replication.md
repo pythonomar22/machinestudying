@@ -127,10 +127,53 @@ more complicated harness", docs/jacob.md).
 - Whole-evidence-files judge (A.5-faithful) vs dataset excerpts: OpenClaw direct
   5.8→4.7, k20 27.3→27.0 — judge evidence context is NOT the inflation source.
 
-**Ablation in flight:** `--variant no-think-history` rollouts (jobs 24405/24406) —
-the naive tool loop without reasoning passback, i.e. the other canonical reading of
-"bare-bones ReAct harness". Hypothesis: shorter thinking, earlier voluntary
-stopping, lower scores — closer to the paper's baseline.
+**Full sweep results (all 600 episodes per variant; lenient means, tokens in k):**
+
+| DSPy | direct | k5 | k20 | k20f | WAUC |
+|---|---|---|---|---|---|
+| paper Table 1 | 3.3 (4.1) | 8.6 (7.9) | 9.6 (8.6) | 29.4 (34.6) | 6.49 |
+| ours, rubric-sum | 4.9 (2.9) | 21.3 (4.2) | 35.9 (5.9) | 40.4 (5.9) | 26.40 |
+| ours, **core-conjunctive** | 0.0 (2.9) | 2.9 (4.2) | 10.3 (5.9) | 17.8 (5.9) | **9.68** |
+| judge whole-files (rubric-sum) | 5.1 | 23.5 | 34.4 | 40.6 | 27.04 |
+| harness no-think-history (rubric-sum) | 4.9 (2.8) | 23.2 (3.7) | 34.2 (6.2) | 37.1 (6.7) | 26.37 |
+
+| OpenClaw | direct | k5 | k20 | k20f | WAUC |
+|---|---|---|---|---|---|
+| paper Table 1 | 2.3 (4.1) | 6.9 (4.6) | 15.8 (9.7) | 17.6 (24.3) | 7.64 |
+| ours, rubric-sum | 5.8 (2.8) | 12.1 (4.2) | 27.3 (5.1) | 28.6 (5.0) | 20.20 |
+| ours, **core-conjunctive** | 0.0 (2.8) | 1.6 (4.2) | 9.7 (5.1) | 9.6 (5.0) | **5.98** |
+| judge whole-files (rubric-sum) | 4.7 | 12.9 | 27.0 | 28.7 | 20.05 |
+| judge xhigh (rubric-sum) | 4.0 | 10.2 | 26.1 | 24.2 | 17.95 |
+| harness no-think-history (rubric-sum) | 6.6 (2.7) | 11.5 (3.0) | 28.5 (4.8) | 29.1 (5.2) | 22.53 |
+
+**Interpretation.**
+1. **The lenient definition dominates everything else.** The raw weighted rubric sum
+   runs 2-4x above the paper; applying the author's core-conjunctive rule (any core
+   claim ≠ 1 → question scores 0; docs/jacob.md, stated precisely while explaining a
+   3x-inflated baseline replication) lands both tasks in the paper's range: WAUC
+   9.68 vs 6.49 (DSPy), 5.98 vs 7.64 (OpenClaw) — over-shooting one task,
+   under-shooting the other, i.e. no systematic bias. `report.py` now reports
+   core-conjunctive lenient as the Table 1 comparison, with the raw rubric sum
+   alongside. The two readings bracket the paper everywhere.
+2. **Judge-side knobs are second-order.** Whole evidence files vs excerpts: no
+   effect (±1pt). Judge reasoning effort xhigh: −10-30% relative. Claim-id schema
+   enforcement: zero mismatches in 1800+ judge calls.
+3. **Harness thinking passback is also second-order for scores** (rubric-sum
+   28.5 vs 27.3 at OpenClaw k20) though it changes voluntary persistence
+   (DSPy k20 16.9 → 12.9 iters) and token counts.
+4. **Residual structural gap: token axis.** The paper's k20f means (34.6k / 24.3k)
+   imply ~1.2-1.6k generated tokens per forced turn sustained for 20 turns; every
+   harness variant we ran produces 5-7k per forced episode (the model thinks briefly
+   once oriented). Their voluntary-k20 token counts (≈ k5's) also show their agent
+   stopping early where ours keeps searching. Both point to a differently-shaped
+   ReAct loop (plausibly text-based rather than native tool calling, and no
+   interleaved thinking), which the paper does not specify.
+
+**Open questions for the first author** (to confirm before we treat the baseline as
+fully pinned): (a) does Table 1 "lenient" apply the core-conjunctive zero (skipping
+only the deterministic compile/hallucinated-API zeros), or is it the pure weighted
+sum? (b) was the ReAct loop native tool-calling or text-format, and was prior-turn
+thinking kept in context? (c) judge reasoning effort.
 
 ## Status log
 
