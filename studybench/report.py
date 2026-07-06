@@ -28,11 +28,15 @@ from .dataset import CORPORA, ROOT
 
 BUDGET_ORDER = ["direct", "k5", "k20", "k20f"]
 
-PAPER_BASE = {  # Table 1, Qwen3.5-9B (base), lenient: budget -> (acc %, tokens k)
-    "dspy": {"direct": (3.3, 4.1), "k5": (8.6, 7.9), "k20": (9.6, 8.6), "k20f": (29.4, 34.6),
-             "expertise": 6.49},
-    "openclaw": {"direct": (2.3, 4.1), "k5": (6.9, 4.6), "k20": (15.8, 9.7), "k20f": (17.6, 24.3),
-                 "expertise": 7.64},
+PAPER = {  # Table 1, lenient: (task, variant) -> budget -> (acc %, tokens k)
+    ("dspy", ""): {"direct": (3.3, 4.1), "k5": (8.6, 7.9), "k20": (9.6, 8.6),
+                   "k20f": (29.4, 34.6), "expertise": 6.49},
+    ("openclaw", ""): {"direct": (2.3, 4.1), "k5": (6.9, 4.6), "k20": (15.8, 9.7),
+                       "k20f": (17.6, 24.3), "expertise": 7.64},
+    ("dspy", "cheatsheet"): {"direct": (6.3, 3.9), "k5": (14.4, 6.1), "k20": (14.1, 7.1),
+                             "k20f": (23.1, 29.9), "expertise": 9.65},
+    ("openclaw", "cheatsheet"): {"direct": (4.3, 3.8), "k5": (8.6, 6.0), "k20": (15.2, 9.1),
+                                 "k20f": (18.1, 20.1), "expertise": 8.18},
 }
 
 
@@ -47,15 +51,15 @@ def expertise(points: list[tuple[float, float]]) -> float:
     return e
 
 
-def aggregate(task: str) -> dict:
+def aggregate(task: str, grades_dir: str = "grades", runs_dir: str = "runs") -> dict:
     budgets = {}
     for budget in BUDGET_ORDER:
-        gdir = ROOT / "grades" / task / budget
+        gdir = ROOT / grades_dir / task / budget
         grades = [json.loads(f.read_text()) for f in sorted(gdir.rglob("*.json"))] \
             if gdir.exists() else []
         if not grades:
             continue
-        n_runs = len(list((ROOT / "runs" / task / budget).rglob("*.json")))
+        n_runs = len(list((ROOT / runs_dir / task / budget).rglob("*.json")))
         if n_runs != len(grades):
             print(f"WARNING: {task}/{budget} has {n_runs} runs but {len(grades)} grades "
                   "— aggregating the graded subset only")
@@ -76,7 +80,7 @@ def aggregate(task: str) -> dict:
     return out
 
 
-def bootstrap(task: str, n_boot: int, seed: int = 0) -> dict:
+def bootstrap(task: str, n_boot: int, seed: int = 0, grades_dir: str = "grades") -> dict:
     """95% CIs via a two-stage cluster bootstrap: resample questions with
     replacement (the benchmark's sampling unit), then rollouts within each
     question. One question resample is shared across budgets, so each
@@ -84,7 +88,7 @@ def bootstrap(task: str, n_boot: int, seed: int = 0) -> dict:
     data = {}  # budget -> qid -> [(lenient_cc, rubric, tokens)]
     for budget in BUDGET_ORDER:
         eps = {}
-        for f in sorted((ROOT / "grades" / task / budget).rglob("*.json")):
+        for f in sorted((ROOT / grades_dir / task / budget).rglob("*.json")):
             g = json.loads(f.read_text())
             eps.setdefault(g["qid"], []).append(
                 (g["lenient"] if g["cores_ok"] else 0, g["lenient"], g["gen_tokens"]))
@@ -117,14 +121,22 @@ def bootstrap(task: str, n_boot: int, seed: int = 0) -> dict:
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--tasks", default="dspy,openclaw")
+    p.add_argument("--variant", default="", choices=["", "cheatsheet", "no-think-history"])
+    p.add_argument("--grader", default="openai", choices=["openai", "fugu"])
     p.add_argument("--ci", type=int, default=0, metavar="N",
                    help="add 95%% bootstrap CIs from N replicates (e.g. 10000)")
     args = p.parse_args()
 
+    grades = ("grades" + (f"-{args.variant}" if args.variant else "")
+              + (f"-{args.grader}" if args.grader != "openai" else ""))
+    runs = "runs" + (f"-{args.variant}" if args.variant else "")
     for task in args.tasks.split(","):
-        agg = aggregate(task)
-        paper = PAPER_BASE[task]
-        print(f"\n== {CORPORA[task].display} (Qwen3.5-9B base) ==")
+        agg = aggregate(task, grades, runs)
+        paper = PAPER.get((task, args.variant))
+        if paper is None:
+            paper = {b: (float("nan"), float("nan")) for b in BUDGET_ORDER} | {"expertise": float("nan")}
+        label = f"Qwen3.5-9B {'+ ' + args.variant if args.variant else 'base'}, judge={args.grader}"
+        print(f"\n== {CORPORA[task].display} ({label}) ==")
         print(f"{'budget':8} {'n':>4} {'lenient':>8} {'rubric':>7} {'strict':>7} {'tok(k)':>7} "
               f"{'compile':>8} {'regrade':>8} {'bad':>4}   paper-lenient  paper-tok(k)")
         for budget, b in agg["budgets"].items():
@@ -138,7 +150,7 @@ def main():
                   f"(paper: {paper['expertise']:.2f}); "
                   f"strict WAUC: {agg['expertise_strict']:.2f}")
         if args.ci:
-            b = bootstrap(task, args.ci)
+            b = bootstrap(task, args.ci, grades_dir=grades)
             print(f"95% CIs ({args.ci} bootstrap replicates over questions×rollouts):")
             for budget in BUDGET_ORDER:
                 m, lo, hi = b[budget]
