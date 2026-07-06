@@ -9,6 +9,10 @@ level was removed because it increased variance). Scores:
             otherwise equal to the weighted sum
 
 Writes grades/{task}/{budget}/r{rollout}/{qid}.json next to each episode in runs/.
+
+The judge is selected by the GRADER_MODEL env var: "openai" (gpt-5.4, the paper's
+grader — default) or "fugu" (Sakana API). Non-default graders get a directory
+suffix (grades-fugu/, grades-cheatsheet-fugu/, ...) so judge populations never mix.
 """
 
 import argparse
@@ -22,7 +26,10 @@ from openai import AsyncOpenAI
 from . import sandbox
 from .dataset import CORPORA, ROOT, load_questions
 
-JUDGE_MODEL = "gpt-5.4"
+GRADERS = {  # GRADER_MODEL env var -> (judge model id, base_url, api key env var)
+    "openai": ("gpt-5.4", None, "OPENAI_API_KEY"),
+    "fugu": ("fugu", "https://api.sakana.ai/v1", "SAKANA_API_KEY"),
+}
 
 GRADER_PROMPT = """You are grading one model answer for a private {library_name} expert QA benchmark.
 
@@ -146,11 +153,11 @@ def score_from_claims(row: dict, claim_scores: dict[str, int], compile_ok: bool)
     return {"lenient": lenient, "strict": strict, "cores_ok": cores_ok}
 
 
-async def grade_episode(client: AsyncOpenAI, corpus, row: dict, ep: dict,
-                        whole_files: bool = False, effort: str = "") -> dict:
+async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict,
+                        ep: dict, whole_files: bool = False, effort: str = "") -> dict:
     grade = {
         "task": ep["task"], "qid": ep["qid"], "budget": ep["budget"], "rollout": ep["rollout"],
-        "judge_model": JUDGE_MODEL, "episode_status": ep["status"],
+        "judge_model": judge_model, "episode_status": ep["status"],
         "gen_tokens": ep["gen_tokens"],
     }
     answer = ep.get("answer", "")
@@ -165,7 +172,7 @@ async def grade_episode(client: AsyncOpenAI, corpus, row: dict, ep: dict,
     rubric_ids = {c["claim_id"] for c in row["rubric"]}
     for attempt in range(2):  # retry once if the judge duplicates/omits claim ids
         resp = await client.chat.completions.create(
-            model=JUDGE_MODEL,
+            model=judge_model,
             messages=[{"role": "user",
                        "content": build_prompt(corpus, row, answer, whole_files)}],
             response_format=judge_schema(row),
@@ -190,9 +197,13 @@ async def grade_episode(client: AsyncOpenAI, corpus, row: dict, ep: dict,
 async def main_async(args):
     corpus = CORPORA[args.task]
     rows = {q["id"]: q for q in load_questions(args.task)}
-    client = AsyncOpenAI(timeout=600)
+    grader = os.environ.get("GRADER_MODEL", "openai")
+    judge_model, base_url, key_var = GRADERS[grader]
+    client = AsyncOpenAI(timeout=600, base_url=base_url, api_key=os.environ[key_var])
+    log.info("grader=%s judge_model=%s", grader, judge_model)
     runs_root = ROOT / ("runs" if not args.variant else f"runs-{args.variant}")
     out_root = ROOT / ("grades" + (f"-{args.variant}" if args.variant else "")
+                       + (f"-{grader}" if grader != "openai" else "")
                        + ("-wholefiles" if args.whole_files else "")
                        + (f"-effort-{args.judge_effort}" if args.judge_effort else ""))
 
@@ -213,7 +224,8 @@ async def main_async(args):
         async with sem:
             try:
                 ep = json.loads(rf.read_text())
-                grade = await grade_episode(client, corpus, rows[ep["qid"]], ep,
+                grade = await grade_episode(client, judge_model, corpus,
+                                            rows[ep["qid"]], ep,
                                             args.whole_files, args.judge_effort)
                 gf.parent.mkdir(parents=True, exist_ok=True)
                 tmp = gf.with_suffix(".tmp")

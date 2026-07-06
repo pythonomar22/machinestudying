@@ -32,6 +32,7 @@ BUDGETS = {  # name -> (max tool iterations, forced: no early stopping)
     "k5": (5, False),
     "k20": (20, False),
     "k20f": (20, True),
+    "s50": (50, True),  # the cheatsheet study loop (paper §B Table 4); study.py only
 }
 MAX_NUDGES = 2  # retries when a turn produces neither a tool call nor answer text
 
@@ -64,11 +65,12 @@ def episode_seed(task: str, qid: str, budget: str, rollout: int) -> int:
 
 
 async def run_episode(client: AsyncOpenAI, corpus, tools: RepoTools, q: dict,
-                      budget: str, rollout: int, think_history: bool = True) -> dict:
+                      budget: str, rollout: int, think_history: bool = True,
+                      system: str | None = None) -> dict:
     max_iters, forced = BUDGETS[budget]
     seed = episode_seed(corpus.name, q["id"], budget, rollout)
     messages = [
-        {"role": "system", "content": system_prompt(corpus, budget)},
+        {"role": "system", "content": system or system_prompt(corpus, budget)},
         {"role": "user", "content": q["question"]},
     ]
     ep = {
@@ -198,6 +200,13 @@ async def main_async(args):
                for u in args.base_urls.split(",")]
     think_history = args.variant != "no-think-history"
     runs_root = ROOT / ("runs" if not args.variant else f"runs-{args.variant}")
+    if args.variant == "cheatsheet":
+        # paper §B Table 4: the self-written cheatsheet is prepended to every
+        # question; the repository tools remain available
+        note = (ROOT / "cheatsheets" / f"{args.task}.md").read_text()
+        prefix = (f"Reference notes on {corpus.display} from your prior study of "
+                  f"its repository:\n\n{note}\n\n---\n\n")
+        questions = [{**q, "question": prefix + q["question"]} for q in questions]
 
     pending = []
     for budget in args.budgets.split(","):
@@ -257,8 +266,8 @@ def main():
     p.add_argument("--base-urls", default="http://localhost:8100/v1")
     p.add_argument("--concurrency", type=int, default=32)
     p.add_argument("--limit", type=int, default=0, help="only the first N questions (smoke tests)")
-    p.add_argument("--variant", default="", choices=["", "no-think-history"],
-                   help="harness ablation; writes to runs-<variant>/ instead of runs/")
+    p.add_argument("--variant", default="", choices=["", "no-think-history", "cheatsheet"],
+                   help="harness variant; writes to runs-<variant>/ instead of runs/")
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
 
