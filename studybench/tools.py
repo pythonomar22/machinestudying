@@ -80,6 +80,38 @@ TOOL_SCHEMAS = [
 ]
 
 
+def _glob_to_regex(pat: str) -> str:
+    """glob -> regex with ** support, matching Python 3.13's glob.translate
+    (recursive=True, include_hidden=True) semantics."""
+    i, n, out = 0, len(pat), []
+    while i < n:
+        c = pat[i]
+        if c == "*":
+            if pat[i:i + 3] == "**/":
+                out.append("(?:[^/]+/)*"); i += 3
+            elif pat[i:i + 2] == "**":
+                out.append(".*"); i += 2
+            else:
+                out.append("[^/]*"); i += 1
+        elif c == "?":
+            out.append("[^/]"); i += 1
+        elif c == "[":
+            j = i + 1
+            if j < n and pat[j] in "!]":
+                j += 1
+            while j < n and pat[j] != "]":
+                j += 1
+            if j < n:
+                cls = pat[i + 1:j]
+                out.append("[" + ("^" + cls[1:] if cls.startswith("!") else cls) + "]")
+                i = j + 1
+            else:
+                out.append(re.escape(c)); i += 1
+        else:
+            out.append(re.escape(c)); i += 1
+    return "".join(out) + r"\Z"
+
+
 class RepoTools:
     def __init__(self, corpus: Corpus, read_max_lines: int = READ_MAX_LINES):
         self.corpus = corpus
@@ -157,7 +189,11 @@ class RepoTools:
         return out
 
     def _glob(self, pattern: str) -> str:
-        rx = re.compile(globlib.translate(pattern.strip("/"), recursive=True, include_hidden=True))
+        p = pattern.strip("/")
+        if hasattr(globlib, "translate"):  # Python >= 3.13
+            rx = re.compile(globlib.translate(p, recursive=True, include_hidden=True))
+        else:  # 3.12 (the dspy.ReAct runner venv): equivalent translation
+            rx = re.compile(_glob_to_regex(p))
         hits = [f for f in self.files if rx.match(f)]
         if not hits:
             # a bare filename pattern like '*.py' is a common mistake; match basenames too
