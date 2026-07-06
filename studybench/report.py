@@ -21,6 +21,7 @@ table's tokens being rounded to 0.1k.
 
 import argparse
 import json
+import random
 from statistics import mean
 
 from .dataset import CORPORA, ROOT
@@ -75,9 +76,49 @@ def aggregate(task: str) -> dict:
     return out
 
 
+def bootstrap(task: str, n_boot: int, seed: int = 0) -> dict:
+    """95% CIs via a two-stage cluster bootstrap: resample questions with
+    replacement (the benchmark's sampling unit), then rollouts within each
+    question. One question resample is shared across budgets, so each
+    replicate's WAUC is computed from a coherent set of curve points."""
+    data = {}  # budget -> qid -> [(lenient_cc, rubric, tokens)]
+    for budget in BUDGET_ORDER:
+        eps = {}
+        for f in sorted((ROOT / "grades" / task / budget).rglob("*.json")):
+            g = json.loads(f.read_text())
+            eps.setdefault(g["qid"], []).append(
+                (g["lenient"] if g["cores_ok"] else 0, g["lenient"], g["gen_tokens"]))
+        data[budget] = eps
+    qids = sorted(data[BUDGET_ORDER[0]])
+    rng = random.Random(seed)
+    stats = {b: [] for b in BUDGET_ORDER} | {"wauc": [], "wauc_rubric": []}
+    for _ in range(n_boot):
+        qs = rng.choices(qids, k=len(qids))
+        pts_cc, pts_rub = [], []
+        for b in BUDGET_ORDER:
+            cc = rub = tok = n = 0
+            for q in qs:
+                pool = data[b][q]
+                for ep in rng.choices(pool, k=len(pool)):
+                    cc += ep[0]; rub += ep[1]; tok += ep[2]; n += 1
+            stats[b].append(cc / n)
+            pts_cc.append((tok / n, cc / n))
+            pts_rub.append((tok / n, rub / n))
+        stats["wauc"].append(expertise(pts_cc))
+        stats["wauc_rubric"].append(expertise(pts_rub))
+
+    def ci(xs):
+        xs = sorted(xs)
+        return xs[round(0.025 * (len(xs) - 1))], xs[round(0.975 * (len(xs) - 1))]
+
+    return {k: (mean(v), *ci(v)) for k, v in stats.items()}
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--tasks", default="dspy,openclaw")
+    p.add_argument("--ci", type=int, default=0, metavar="N",
+                   help="add 95%% bootstrap CIs from N replicates (e.g. 10000)")
     args = p.parse_args()
 
     for task in args.tasks.split(","):
@@ -96,6 +137,17 @@ def main():
             print(f"expertise (lenient WAUC): {agg['expertise_lenient']:.2f} "
                   f"(paper: {paper['expertise']:.2f}); "
                   f"strict WAUC: {agg['expertise_strict']:.2f}")
+        if args.ci:
+            b = bootstrap(task, args.ci)
+            print(f"95% CIs ({args.ci} bootstrap replicates over questions×rollouts):")
+            for budget in BUDGET_ORDER:
+                m, lo, hi = b[budget]
+                print(f"  {budget:8} lenient {m:5.1f} [{lo:5.1f}, {hi:5.1f}]")
+            m, lo, hi = b["wauc"]
+            print(f"  WAUC lenient {m:5.2f} [{lo:5.2f}, {hi:5.2f}] "
+                  f"(paper: {paper['expertise']:.2f})")
+            m, lo, hi = b["wauc_rubric"]
+            print(f"  WAUC rubric  {m:5.2f} [{lo:5.2f}, {hi:5.2f}]")
 
 
 if __name__ == "__main__":

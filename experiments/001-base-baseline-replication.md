@@ -169,6 +169,33 @@ more complicated harness", docs/jacob.md).
    ReAct loop (plausibly text-based rather than native tool calling, and no
    interleaved thinking), which the paper does not specify.
 
+**Error bars (2026-07-06; two-stage cluster bootstrap, 10k replicates, questions
+then rollouts, `report.py --ci`):**
+
+| WAUC (lenient) | point | 95% CI | paper | inside CI? |
+|---|---|---|---|---|
+| DSPy, core-conjunctive | 9.68 | [4.4, 16.5] | 6.49 | **yes** |
+| DSPy, rubric-sum | 26.40 | [19.9, 34.5] | 6.49 | no |
+| OpenClaw, core-conjunctive | 5.98 | [0.9, 15.5] | 7.64 | **yes** |
+| OpenClaw, rubric-sum | 20.20 | [14.4, 30.0] | 7.64 | no |
+
+So under the core-conjunctive reading we are **statistically consistent with the
+paper on both tasks**, and the rubric-sum reading is excluded on both — the
+strongest evidence yet that Table 1's lenient applies the core-claim gate
+(pending Jacob's confirmation, DM sent 2026-07-06).
+
+Why the CIs are wide: the signal is carried by a handful of questions — under
+core-conjunctive grading only 3/7/10 DSPy questions (k5/k20/k20f) and 1/3/3
+OpenClaw questions ever score above zero across all rollouts; direct is 0/30 and
+0/20. Design implications for the study-procedure experiments:
+1. **Compare paired by question** (per-question score differences vs the base),
+   which removes the dominant between-question variance — marginal CIs (±6-7 WAUC)
+   would swamp cheatsheet-sized effects (paper: +3.2 DSPy, +0.5 OpenClaw).
+2. More rollouts are cheap (~8 GPU-min per extra rollout wave per task) if paired
+   CIs are still too wide.
+3. OpenClaw effects of the paper's size are likely undetectable at this n even
+   paired; DSPy is the primary battleground.
+
 **Open questions for the first author** (to confirm before we treat the baseline as
 fully pinned): (a) does Table 1 "lenient" apply the core-conjunctive zero (skipping
 only the deterministic compile/hallucinated-API zeros), or is it the pure weighted
