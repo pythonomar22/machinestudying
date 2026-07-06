@@ -169,6 +169,28 @@ chapter round-robin for diversity), zero new LM calls. Causal question: if
 select-12-from-full-coverage ≥ r1's 11-from-4-chapters, note size (not
 coverage) was binding. Milestone eval variant: selfquiz-select.
 
+## Iteration 2 verdict (selfquiz-select, 2026-07-06)
+
+DSPy select-12: direct 4.4 / k5 **19.8** (best selfquiz k5) / k20 22.3 / k20f
+28.7 → vs base +0.42, vs cheatsheet −2.45, vs r1 −0.79 (all n.s.). OpenClaw:
++1.43 vs base (≈ r1; below r2's +2.27 — its optimum is a larger note).
+
+**Size hypothesis half-confirmed**: capping restored search-budget performance
+across full coverage (k5/k20 healthy again, unlike r2/r4). But the remaining
+deficit is now isolated to ONE column: `direct`, where every selfquiz arm loses
+to the cheatsheet by 4-6 points (4.4-5.4 vs 9.9 on DSPy) — and direct carries
+the largest WAUC weight. Selfquiz wins WITH tools; loses WITHOUT them.
+
+## Iteration 3: execution-gated usage snippets (launched 2026-07-06)
+
+Artifact-cited: the cheatsheet's direct advantage comes from code-shaped content
+(its note is full of code blocks; ours is prose). `selfquiz --usage` attaches to
+each selected entry a minimal usage snippet demonstrating the correction, gated
+by ACTUAL EXECUTION against the pinned install (exit 0; tree-sitter parse for
+OpenClaw) — a stronger admission gate than the quote check. Prose kept where
+snippets fail the gate. Chain: build 26317 → evals 26318/26319 (variant
+selfquiz-usage) → armed grading.
+
 ## Round 2 notes (both tasks)
 
 - Gate normalization validated in production: bounce rate 43% (r1) → 17% (r2
