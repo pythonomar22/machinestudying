@@ -92,6 +92,36 @@ qualifying MS algorithm will need to shift that frontier."*
   only), study instruction, prepend placement — still open from the
   experiments/003 register (P1s), none blocking the lenient comparison.
 
+## Insights carried forward from the native-harness phase (kept for the studying program)
+
+1. **Harness strength interacts with studying gains.** On the strong native agent
+   the cheatsheet's paired WAUC effect vanished (+0.84 n.s., experiments/002):
+   direct/k5 gains were offset by k20f giveback, because the strong agent's search
+   already recovers what the note knows. Studying methods get evaluated on the
+   faithful (react) harness where headroom exists at every budget — and "does
+   studying still help stronger agents?" is itself a future research question. The
+   raw data for that arm is retained: runs/base + runs/cheatsheet with
+   grades/{base,cheatsheet}/.
+2. **Interleaved thinking is the single biggest agent-strength lever we found**
+   (persistence + per-turn depth, ~0 score change from context alone) — a candidate
+   *studying target* later (procedures that improve per-step thinking rather than
+   notes).
+3. **Judge economics**: fugu ≈ gpt-5.4 within ±7% WAUC under our 0/1 + strict-schema
+   pipeline; judge evidence/effort are second-order. Offline grading means judge
+   sweeps are free-ish — never let a judge question block a rollout.
+4. **Power**: paired-by-question deltas + the two-stage bootstrap are mandatory;
+   at 3 rollouts the native paired CI half-width was ±5.6 WAUC. Recompute the
+   noise floor on the react harness before pre-registering the self-quizzing
+   success criterion (experiments/005 §4).
+5. **Design assets that survive the harness switch**: the self-quizzing design
+   v1.1 (experiments/005) — two-phase independent VERIFY, mechanical quote-check
+   gate, dev-exam audit protocol, RETEST slots — now to be instantiated on the
+   react harness (ATTEMPT = Predict closed-book, VERIFY = react episodes).
+6. Cleanup record (this date): deleted cheatsheets/* (native study products;
+   in git history), runs/no-think-history + grades (ablation, conclusion recorded),
+   grades/base judge-ablation dirs (regenerable), studybench/study.py +
+   scripts/study.sbatch (native study loop; react.py --study replaces them).
+
 ## Results
 
 (to be filled when fugu grades land — comparison targets: paper Table 1 base,

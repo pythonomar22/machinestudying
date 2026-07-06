@@ -29,6 +29,19 @@ from .tools import RepoTools
 
 MODEL_ID = "openai/Qwen/Qwen3.5-9B"  # openai-compatible provider -> our vLLM
 READ_MAX_LINES = 200  # author: "read file (lines, Capped at 200lines)"
+
+# The cheatsheet study task (replication inference, carried over from the native
+# study loop — see experiments/002 §inferences). The forced-50 mechanism is the
+# author's ("same question for the cheatsheet study loop" -> catch finish).
+def study_task(corpus) -> str:
+    return (
+        f"Study the {corpus.display} repository and write yourself a cheatsheet: a "
+        f"reference document that will be prepended to every future question you are "
+        f"asked about {corpus.display}. You will not see the questions in advance, "
+        "but you will keep access to these repository tools when answering them. "
+        "Record whatever will make you fastest and most accurate later. After your "
+        "50 iterations of study, write the complete cheatsheet as your final answer."
+    )
 SAMPLING = dict(  # paper §B; passed through litellm to vLLM
     temperature=1.0, top_p=0.95, max_tokens=32768, presence_penalty=1.5,
     extra_body={"top_k": 20, "min_p": 0.0, "repetition_penalty": 1.0},
@@ -152,6 +165,11 @@ def main():
     p.add_argument("--base-urls", default="http://localhost:8100/v1")
     p.add_argument("--concurrency", type=int, default=32)
     p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--variant", default="", choices=["", "cheatsheet"],
+                   help="cheatsheet: prepend cheatsheets/{task}.md to every question; "
+                        "writes to runs/react-cheatsheet/")
+    p.add_argument("--study", action="store_true",
+                   help="run the forced-50 study episode and write cheatsheets/{task}.md")
     args = p.parse_args()
 
     (ROOT / "logs").mkdir(exist_ok=True)
@@ -164,15 +182,37 @@ def main():
 
     corpus = CORPORA[args.task]
     tools_fns = make_tools(RepoTools(corpus, read_max_lines=READ_MAX_LINES))
-    questions = load_questions(args.task)[: args.limit or None]
     urls = args.base_urls.split(",")
+
+    if args.study:
+        q = {"id": "cheatsheet", "question": study_task(corpus)}
+        ep = run_episode(corpus, tools_fns, q, "s50", 0, urls[0])
+        log.info("study: status=%s iters=%d catches=%d gen_tokens=%d note_chars=%d",
+                 ep["status"], ep["n_tool_iters"], ep["finish_catches"],
+                 ep["gen_tokens"], len(ep["answer"]))
+        if ep["status"] != "ok" or not ep["answer"].strip():
+            raise SystemExit(f"study episode failed: {ep['status']}")
+        out = ROOT / "cheatsheets"
+        out.mkdir(exist_ok=True)
+        (out / f"{args.task}.episode.json").write_text(json.dumps(ep, indent=2))
+        (out / f"{args.task}.md").write_text(ep["answer"])
+        log.info("wrote cheatsheets/%s.md", args.task)
+        return
+
+    questions = load_questions(args.task)[: args.limit or None]
+    if args.variant == "cheatsheet":
+        note = (ROOT / "cheatsheets" / f"{args.task}.md").read_text()
+        prefix = (f"Reference notes on {corpus.display} from your prior study of "
+                  f"its repository:\n\n{note}\n\n---\n\n")
+        questions = [{**q, "question": prefix + q["question"]} for q in questions]
+    runs_root = ROOT / "runs" / ("react" if not args.variant else f"react-{args.variant}")
 
     pending = []
     for budget in args.budgets.split(","):
         assert budget in BUDGETS and budget != "s50"
         for rollout in range(args.rollouts):
             for q in questions:
-                out = ROOT / "runs" / "react" / args.task / budget / f"r{rollout}" / f"{q['id']}.json"
+                out = runs_root / args.task / budget / f"r{rollout}" / f"{q['id']}.json"
                 if out.exists() and json.loads(out.read_text()).get("status") in ("ok", "no_answer"):
                     continue
                 pending.append((q, budget, rollout, out))

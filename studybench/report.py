@@ -37,6 +37,10 @@ PAPER = {  # Table 1, lenient: (task, variant) -> budget -> (acc %, tokens k)
     ("openclaw", "cheatsheet"): {"direct": (4.3, 3.8), "k5": (8.6, 6.0), "k20": (15.2, 9.1),
                                  "k20f": (18.1, 20.1), "expertise": 8.18},
 }
+PAPER[("dspy", "react")] = PAPER[("dspy", "")]  # react = the paper's own base harness
+PAPER[("openclaw", "react")] = PAPER[("openclaw", "")]
+PAPER[("dspy", "react-cheatsheet")] = PAPER[("dspy", "cheatsheet")]
+PAPER[("openclaw", "react-cheatsheet")] = PAPER[("openclaw", "cheatsheet")]
 
 
 def expertise(points: list[tuple[float, float]]) -> float:
@@ -120,7 +124,8 @@ def bootstrap(task: str, n_boot: int, seed: int = 0, grades_dir: str = "grades")
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--tasks", default="dspy,openclaw")
-    p.add_argument("--variant", default="", choices=["", "cheatsheet", "no-think-history"])
+    p.add_argument("--variant", default="",
+                   choices=["", "cheatsheet", "no-think-history", "react", "react-cheatsheet"])
     p.add_argument("--grader", default="openai", choices=["openai", "fugu"])
     p.add_argument("--ci", type=int, default=0, metavar="N",
                    help="add 95%% bootstrap CIs from N replicates (e.g. 10000)")

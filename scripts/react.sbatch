@@ -16,6 +16,8 @@ TASKS=${SB_TASKS:-dspy,openclaw}
 BUDGETS=${SB_BUDGETS:-direct,k5,k20,k20f}
 ROLLOUTS=${SB_ROLLOUTS:-3}
 LIMIT=${SB_LIMIT:-0}
+VARIANT=${SB_VARIANT:-}
+STUDY=${SB_STUDY:-0}   # 1 = run the forced-50 study loop instead of the eval grid
 export SB_NGPU=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
 export SB_PORT_BASE=$((20000 + (SLURM_JOB_ID % 2000) * 8))
 export SB_VLLM_LOG_PREFIX="logs/vllm-$SLURM_JOB_ID"
@@ -41,8 +43,14 @@ done
 echo "all $SB_NGPU vLLM servers healthy: $BASE_URLS"
 
 for task in ${TASKS//,/ }; do
-    .venv-dspy/bin/python -m studybench.react --task "$task" \
-        --budgets "$BUDGETS" --rollouts "$ROLLOUTS" --limit "$LIMIT" \
-        --base-urls "$BASE_URLS" --concurrency $((8 * SB_NGPU))
+    if [ "$STUDY" = 1 ]; then
+        .venv-dspy/bin/python -m studybench.react --task "$task" --study \
+            --base-urls "$BASE_URLS"
+    else
+        .venv-dspy/bin/python -m studybench.react --task "$task" \
+            --budgets "$BUDGETS" --rollouts "$ROLLOUTS" --limit "$LIMIT" \
+            --variant "$VARIANT" \
+            --base-urls "$BASE_URLS" --concurrency $((8 * SB_NGPU))
+    fi
 done
 echo "react rollouts complete"
