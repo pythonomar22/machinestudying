@@ -125,7 +125,7 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--tasks", default="dspy,openclaw")
     p.add_argument("--variant", default="",
-                   choices=["", "cheatsheet", "no-think-history", "react", "react-cheatsheet"])
+                   help="runs/grades variant dir, e.g. react, react-cheatsheet, react-selfquiz-r1")
     p.add_argument("--grader", default="openai", choices=["openai", "fugu"])
     p.add_argument("--ci", type=int, default=0, metavar="N",
                    help="add 95%% bootstrap CIs from N replicates (e.g. 10000)")

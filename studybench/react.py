@@ -165,9 +165,9 @@ def main():
     p.add_argument("--base-urls", default="http://localhost:8100/v1")
     p.add_argument("--concurrency", type=int, default=32)
     p.add_argument("--limit", type=int, default=0)
-    p.add_argument("--variant", default="", choices=["", "cheatsheet"],
-                   help="cheatsheet: prepend cheatsheets/{task}.md to every question; "
-                        "writes to runs/react-cheatsheet/")
+    p.add_argument("--variant", default="",
+                   help="'' | cheatsheet | selfquiz-rN — prepends the variant's note "
+                        "to every question; writes to runs/react-<variant>/")
     p.add_argument("--study", action="store_true",
                    help="run the forced-50 study episode and write cheatsheets/{task}.md")
     args = p.parse_args()
@@ -200,8 +200,15 @@ def main():
         return
 
     questions = load_questions(args.task)[: args.limit or None]
-    if args.variant == "cheatsheet":
-        note = (ROOT / "cheatsheets" / f"{args.task}.md").read_text()
+    if args.variant:
+        if args.variant == "cheatsheet":
+            note_path = ROOT / "cheatsheets" / f"{args.task}.md"
+        elif args.variant.startswith("selfquiz-r"):
+            r = args.variant.removeprefix("selfquiz-")
+            note_path = ROOT / "study-selfquiz" / args.task / f"note-{r}.md"
+        else:
+            raise SystemExit(f"unknown variant {args.variant}")
+        note = note_path.read_text()
         prefix = (f"Reference notes on {corpus.display} from your prior study of "
                   f"its repository:\n\n{note}\n\n---\n\n")
         questions = [{**q, "question": prefix + q["question"]} for q in questions]

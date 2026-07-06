@@ -1,0 +1,23 @@
+{
+  "round": 1,
+  "task": "dspy",
+  "chapters": [
+    "dspy/teleprompt",
+    "dspy/adapters",
+    "dspy/clients",
+    "dspy/predict"
+  ],
+  "items": 20,
+  "verdicts": {
+    "correct": 3,
+    "wrong": 10,
+    "partial": 7
+  },
+  "train_error_rate": 0.875,
+  "dev_error_rate": 0.75,
+  "entries_admitted": 8,
+  "entries_bounced": 6,
+  "note_entries_total": 8,
+  "note_chars": 4514,
+  "study_tokens": 278848
+}

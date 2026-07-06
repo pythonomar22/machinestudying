@@ -182,10 +182,17 @@ def make_run_python():
 # ---------------------------------------------------------------- gates
 
 def quote_gate(rt: RepoTools, file: str, line: int, quote: str) -> bool:
-    """Model-free integrity check: `quote` must appear at file:line (+/-2)."""
+    """Model-free integrity check: `quote` must appear at file:line (+/-2).
+    The quote is normalized first (first non-empty line, markdown wrapping
+    stripped) — models often quote real code across lines or inside backticks;
+    normalization forgives formatting while still requiring the exact source
+    text at the cited location."""
     text = rt.text.get(file.strip("/"))
-    q = quote.strip()
-    if text is None or len(q) < 6:
+    if text is None:
+        return False
+    q = next((ln.strip() for ln in quote.splitlines() if ln.strip()), "")
+    q = q.strip("`>").strip()
+    if len(q) < 6:
         return False
     lines = text.splitlines()
     lo, hi = max(0, line - 3), min(len(lines), line + 2)
