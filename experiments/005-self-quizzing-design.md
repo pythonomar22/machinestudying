@@ -264,6 +264,64 @@ study-compute-scaling curve.
   work on maintained notes / self-generated study — to be differentiated
   precisely once the prior-art lane completes (pending, rate-limited).
 
+## Operational spec (v1.2 clarifications, 2026-07-06 — from design review with Omar)
+
+**Axiom 0 — corpus-agnostic.** The procedure's inputs are exactly: a repository,
+the three tools, and a sandbox when the language runs. Nothing benchmark-derived
+anywhere. DSPy/OpenClaw are testbeds, not targets; the mechanism must run on any
+codebase via one command.
+
+**Syllabus (COVER), corrected role.** Chapters = top-level modules, ordered once
+by lines of code (descending; import-degree weighting is an ablation, not a
+foundation — it requires per-language parsing and fights Axiom 0). The ordering
+does NOT mean earlier chapters are studied *better* — every chapter gets identical
+treatment when reached. Ordering matters solely under **budget truncation**: at a
+round-r snapshot, only the first 4r chapters exist in the note, so the prefix
+should be the most load-bearing one. (Incidental second-order effect, not a
+mechanism: earlier chapters accrue more RETEST passes over the program's life.)
+
+**QUIZ, verbatim shape.** One agent episode per chapter. Input: module path +
+file list + instruction: "You are studying <module> to become an expert on this
+repository. Explore it with your tools. Write M quiz questions that test whether
+someone who has not just read this code could use it correctly — usage, behavior,
+location, or pitfall questions. Each must be answerable from the repository alone,
+must not contain its own answer, and must cite the files that motivated it."
+Schema-forced JSON out: {question, type, anchors[], writer_sketch}. The sketch is
+audit metadata, never ground truth. Gates (code, not model): anchor files must
+exist; near-duplicate questions vs all prior rounds dropped; 1 of M held out to
+the dev exam. The type menu is an anti-trivia heuristic, ablatable.
+
+**VERIFY, exact I/O.**
+- Phase A (derive): fresh agent episode; input = question ONLY (never the
+  attempt, never the note). Tools + run_python (runnable corpora). Output
+  (schema): derived_answer; evidence [{file, line, quote}]; probe + captured
+  output when the question concerns executable behavior. Evidence class tag:
+  executed-repo-test > executed-self-written > quote-only.
+- Phase B (adjudicate): toolless call; input = question + Phase A output +
+  attempt; output = verdict {correct, partial, wrong, unresolved} + delta.
+  Compares claims, not wording. unresolved => dropped, never distilled.
+- Firewall rationale: never ask "is this right?"; ask "what is right?" then
+  compare mechanically (self-preference/anchoring/confirmation-bias evidence,
+  review round 1).
+- Ensembling: 2-3 independent Phase-A runs with majority agreement for all
+  dev-exam verdicts and for OpenClaw distillation (no execution grounding there).
+
+**DISTILL, exact record.** Per wrong/partial item, one call: input = question +
+attempt + Phase A output; output (schema) = {belief, correction, quote, file,
+line}. Model-free integrity gate: the harness string-matches `quote` at
+`file:line` (±2 lines tolerance) and rejects on mismatch; rejection rate logged
+as a verifier-quality metric. Entries append to a JSONL sidecar (with round,
+verdict, evidence class); the eval-time note is its markdown rendering (grouped
+by chapter, ~4k-token soft cap, plus the ~500-token repo-map section). Correct
+items write nothing — the note stores only the verified diff between the model's
+priors and the repo.
+
+**Harness instantiation.** Everything runs on the faithful react harness
+(experiments/006): ATTEMPT = dspy.Predict closed-book; QUIZ and VERIFY Phase A =
+react episodes; eval = the standard react grid with the note prepended
+(identical mechanics to the react-cheatsheet row, so the studying algorithm is
+the only variable vs that baseline).
+
 ## Review round 1 (2026-07-06): learning-science lane
 
 14 findings folded into this v1.1 (frozen-model reframing; two-phase independent
