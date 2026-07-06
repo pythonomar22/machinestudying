@@ -159,3 +159,36 @@ qualifying MS algorithm will need to shift that frontier."*
 Compared to where we started (native harness: DSPy WAUC 27.99, OpenClaw 18.16
 under the same judge/metric), the faithful harness moved us from 3-4x hot to
 full replication on one task and endpoint-exact on the other.
+
+## Cheatsheet row (completed 2026-07-06; study = forced-50 react loop)
+
+| DSPy | direct | k5 | k20 | k20f | WAUC |
+|---|---|---|---|---|---|
+| ours +cheatsheet | 9.9 (3.0k) | 17.9 (5.9k) | 17.7 (7.5k) | 27.5 (23.7k) | 15.18 |
+| paper +cheatsheet | 6.3 (3.9k) | 14.4 (6.1k) | 14.1 (7.1k) | 23.1 (29.9k) | 9.65 |
+
+| OpenClaw | direct | k5 | k20 | k20f | WAUC |
+|---|---|---|---|---|---|
+| ours +cheatsheet | 4.7 (2.7k) | 9.3 (4.9k) | 19.5 (10.2k) | 20.1 (14.2k) | 10.59 |
+| paper +cheatsheet | 4.3 (3.8k) | 8.6 (6.0k) | 15.2 (9.1k) | 18.1 (20.1k) | 8.18 |
+
+**Paired cheatsheet effects (same harness, same judge, 10k paired bootstrap):**
+
+| | direct | k5 | k20 | k20f | WAUC delta |
+|---|---|---|---|---|---|
+| DSPy | +6.33 | +1.73 | −1.94 | −1.53 | **+2.88 [−0.84, +7.10] n.s.** |
+| OpenClaw | +1.00 | +4.65 | +2.92 | +0.22 | **+2.36 [−0.57, +5.66] n.s.** |
+| paper (published deltas) | +3.0 | +5.8 | +4.5 | −6.3 | **+3.16 (DSPy)** / +0.54 (OpenClaw) |
+
+The paper's cheatsheet story reproduces where it matters: DSPy gains concentrate
+at direct (+6.3 — ours even sharper than theirs), fade with budget, and go
+NEGATIVE under forced search (the amortization claim). Our DSPy WAUC point
+estimate (+2.88) is nearly identical to the paper's published effect (+3.16);
+at 3 rollouts the CI includes zero — exactly the power situation pre-registered
+in experiments/007. **This is the bar for self-quizzing: beat +2.9 WAUC paired
+on DSPy**, with significance requiring either a larger true effect or more
+rollouts at milestone time (~10 rollouts halves the CI).
+
+Replication is hereby CLOSED: both Table-1 rows, both tasks, faithful harness,
+author-confirmed grading, with the residual DSPy k5/k20 level gap documented
+above and its candidate causes queued as Jacob questions.
