@@ -666,6 +666,65 @@ def usage_note(args):
     log.info("wrote note-usage.md (%d chars)", len(note))
 
 
+class ChapterSummarySig(dspy.Signature):
+    """Write a compact reference summary (250-400 words) of this module for a
+    developer who will answer questions about the library without reading it.
+    Use ONLY the supplied evidence (derived answers and cited source lines from
+    prior study of this module) — do not add API details the evidence does not
+    support. Prefer concrete signatures, argument names, defaults, and behaviors
+    over prose."""
+
+    chapter: str = dspy.InputField()
+    evidence: str = dspy.InputField(desc="accumulated grounded findings for this module")
+    summary: str = dspy.OutputField()
+
+
+def studied_note(args):
+    """Iteration 5 (declared 2026-07-06): breadth from the study loop's own
+    accumulated grounded reading — per-chapter summaries generated from all
+    Phase-A derivations/evidence across rounds, plus the select corrections."""
+    corpus = CORPORA[args.task]
+    rt = RepoTools(corpus, read_max_lines=READ_MAX_LINES)
+    chaps = chapters(rt)
+    sdir = ROOT / "study-selfquiz" / args.task
+    by_ch = defaultdict(list)
+    for r in range(1, args.round + 1):
+        p = sdir / f"r{r}" / "items.jsonl"
+        if not p.exists():
+            continue
+        for line in p.read_text().splitlines():
+            x = json.loads(line)
+            d = max(x.get("derivations") or [{}],
+                    key=lambda dd: len(dd.get("evidence", [])))
+            if d.get("answer"):
+                by_ch[x["chapter"]].append(
+                    {"q": x["question"], "finding": d["answer"][:800],
+                     "evidence": d.get("evidence", [])[:3]})
+    lm = fresh_lm(args.base_urls.split(",")[0])
+    summaries = {}
+    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        for ch, recs in by_ch.items():
+            try:
+                summaries[ch] = dspy.Predict(ChapterSummarySig)(
+                    chapter=ch, evidence=json.dumps(recs)).summary
+            except Exception as e:
+                log.warning("summary failed for %s: %s", ch, str(e)[:150])
+    log.info("studied summaries: %d chapters", len(summaries))
+
+    sel = (sdir / "note-select.md").read_text()
+    corrections = sel.split("\n## ", 1)[1] if "\n## " in sel else ""
+    parts = [f"# {corpus.display} — studied reference (grounded in prior study)",
+             "", repo_map(rt, chaps[:20]), ""]
+    for ch in chaps:
+        if ch in summaries:
+            parts += [f"## {ch}", summaries[ch].strip(), ""]
+    parts += ["---", "", "# Verified corrections (trust these over the summaries)",
+              "", "## " + corrections]
+    note = "\n".join(parts)
+    (sdir / "note-studied.md").write_text(note)
+    log.info("wrote note-studied.md (%d chars)", len(note))
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--task", required=True, choices=list(CORPORA))
@@ -683,6 +742,8 @@ def main():
                    help="build a hard-capped note of N selected entries (no LM calls)")
     p.add_argument("--usage", action="store_true",
                    help="attach execution-gated usage snippets to the select note")
+    p.add_argument("--studied", action="store_true",
+                   help="build the studied-summary note (iteration 5)")
     p.add_argument("--debug", action="store_true")
     args = p.parse_args()
 
@@ -694,7 +755,9 @@ def main():
                   logging.FileHandler(ROOT / "logs" / f"selfquiz-{args.task}.log")])
     logging.getLogger("LiteLLM").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
-    if args.usage:
+    if args.studied:
+        studied_note(args)
+    elif args.usage:
         usage_note(args)
     elif args.select:
         select_note(args)

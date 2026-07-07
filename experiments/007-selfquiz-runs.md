@@ -245,6 +245,17 @@ OpenClaw: +1.53 vs base; −0.84 vs cheatsheet (n.s.). Finding: breadth and
 precision compose additively at the cell level; the metric demands direct
 accuracy ABOVE the single-pass cheatsheet's to win.
 
+## Iteration 4 FINAL (6v6, 2026-07-07)
+
+With the cheatsheet extended to 6 rollouts its cells firmed up (k20 21.4 not
+18.2; k5 18.4) — the hybrid's apparent tool-budget edge over the cheatsheet was
+partly 3-rollout noise, exactly as the A/A floor warned. Final: DSPy hybrid −
+cheatsheet **−0.61 [−2.76, +1.52]**; OpenClaw **−0.84 [−3.62, +2.12]**. Verdict:
+hybrid = cheatsheet. Both methods ≈ +2.8 WAUC over base on DSPy. The reliable
+selfquiz-specific signature that survives all measurements is corrections-
+compose-with-search at tool budgets vs BASE — but not above the cheatsheet with
+significance at these sample sizes.
+
 ## Iteration 5 declared (2026-07-06, before any eval data — per the standard)
 
 **Studied summary**: replace the breadth component with per-chapter summaries
