@@ -307,6 +307,40 @@ the verified self-QA corpus — the quiz artifacts were designed for reuse).
 - User decision required: enable pay-as-you-go, wait for the July 13 reset, or
   fund a gpt-5.4 full-arm regrade (mixing judges within an arm is prohibited).
 
+## Integrity audit (user-requested, 2026-07-07)
+
+Manual inspection of all 18 note artifacts, eval-job timeline (sacct), per-arm
+episode statuses, and gate functions. Findings:
+
+1. **Half-fresh hybrid2** (CONFIRMED): the replication's fresh-cheatsheet job
+   26529 crashed at vLLM startup (torch FXGraphCacheMiss); the orchestrator
+   found the OLD cheatsheets and proceeded. hybrid2 = old breadth + fresh
+   corrections.
+2. **Deterministic study episodes** (ROOT CAUSE, subtle): retrying the study
+   (job 26576) produced BYTE-IDENTICAL cheatsheets (md5-equal to committed;
+   identical 46-step trajectory, gen_tokens=25183 twice at temperature 1.0).
+   Not a cache: dspy cache=False verified in the pinned source
+   (`_get_cached_completion_fn` skips request_cache; litellm no-cache/no-store);
+   ~/.dspy_cache is import-time scaffolding. Mechanism: vLLM's default server
+   seed makes a fresh server deterministic; the study episode is the only
+   SOLO SEQUENTIAL workload, so it replays exactly. Eval jobs run ~32
+   concurrent episodes whose racing interleaves RNG draws — verified genuinely
+   variable (distinct answers/tokens across rollouts in react, hybrid,
+   cheatsheet arms). **Eval data is clean; only the cheatsheet was a
+   deterministic draw.** Fix: react.py --study-seed passes a per-request seed;
+   hybrid3 (truly fresh, seed=20260707) built behind an md5-change check and
+   evaluating now. Duplicate hybrid3-as-hybrid2 evals were cancelled in time.
+3. **Infra-error episodes graded as zeros**: 2-10 per arm, unequal (base 3,
+   hybrid2 10). Retry sweep (job 26575) re-rolling all of them across all ten
+   arms; regrades queue behind the fugu quota.
+4. **OpenClaw snippet gate CLEARED**: tested against valid/broken/fenced TS —
+   no false rejections; the 0/12 was genuine model failure. Gap: rejected
+   snippets weren't stored for post-mortem (fix if usage-arm work continues).
+5. Clean: note provenance per arm (mtimes vs eval starts), compaction-guard
+   rejection legitimate, run-2 selfquiz notes genuinely fresh (differ from
+   run-1 — concurrent execution), select/studied/usage note contents real and
+   correctly cited on line-by-line read.
+
 ## Round 2 notes (both tasks)
 
 - Gate normalization validated in production: bounce rate 43% (r1) → 17% (r2
