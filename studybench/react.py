@@ -107,10 +107,11 @@ class ForcedReAct(dspy.ReAct):
 
 
 def run_episode(corpus, tools_fns, q: dict, budget: str, rollout: int,
-                base_url: str) -> dict:
+                base_url: str, seed: int | None = None) -> dict:
     max_iters, forced = BUDGETS[budget]
     lm = dspy.LM(MODEL_ID, api_base=base_url, api_key="EMPTY", model_type="chat",
-                 cache=False, num_retries=3, **SAMPLING)
+                 cache=False, num_retries=3,
+                 **({**SAMPLING, "seed": seed} if seed is not None else SAMPLING))
     ep = {
         "task": corpus.name, "qid": q["id"], "budget": budget, "rollout": rollout,
         "model": MODEL_ID, "harness": "dspy.ReAct",
@@ -170,6 +171,10 @@ def main():
                         "to every question; writes to runs/react-<variant>/")
     p.add_argument("--study", action="store_true",
                    help="run the forced-50 study episode and write cheatsheets/{task}.md")
+    p.add_argument("--study-seed", type=int, default=None,
+                   help="per-request sampling seed for the study episode. Needed for a "
+                        "genuinely fresh study draw: vLLM's default server seed makes a "
+                        "solo sequential episode on a fresh server replay byte-identically.")
     args = p.parse_args()
 
     (ROOT / "logs").mkdir(exist_ok=True)
@@ -186,7 +191,7 @@ def main():
 
     if args.study:
         q = {"id": "cheatsheet", "question": study_task(corpus)}
-        ep = run_episode(corpus, tools_fns, q, "s50", 0, urls[0])
+        ep = run_episode(corpus, tools_fns, q, "s50", 0, urls[0], seed=args.study_seed)
         log.info("study: status=%s iters=%d catches=%d gen_tokens=%d note_chars=%d",
                  ep["status"], ep["n_tool_iters"], ep["finish_catches"],
                  ep["gen_tokens"], len(ep["answer"]))

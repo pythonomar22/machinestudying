@@ -45,6 +45,7 @@ echo "all $SB_NGPU vLLM servers healthy: $BASE_URLS"
 for task in ${TASKS//,/ }; do
     if [ "$STUDY" = 1 ]; then
         .venv-dspy/bin/python -m studybench.react --task "$task" --study \
+            ${SB_STUDY_SEED:+--study-seed "$SB_STUDY_SEED"} \
             --base-urls "$BASE_URLS"
     else
         .venv-dspy/bin/python -m studybench.react --task "$task" \
