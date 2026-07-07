@@ -293,6 +293,20 @@ cheatsheet-parity is procedure-level. Escalation paths beyond the static-note
 class (user decision pending): retrieval-routed notes; weight updates (SFT on
 the verified self-QA corpus — the quiz artifacts were designed for reuse).
 
+## Fresh-note replication — partial verdict (2026-07-07)
+
+- **OpenClaw: parity REPRODUCED with fresh notes** (hybrid2 − cheatsheet
+  −0.08 [−2.63, +2.70]; vs base +2.27 [−0.64, +5.46] — consistent with run 1).
+  The procedure-level conclusion holds on the no-priors corpus.
+- **DSPy: BLOCKED at 385/720 grades — fugu weekly quota exhausted**
+  (`usage_limit_reached`, resets 2026-07-13; or pay-as-you-go). All 1200
+  episodes safely on disk; grading resumes whenever quota returns (the
+  rollout/grading separation doing its job). Tantalizing partial signal: the
+  one fully-graded DSPy budget row had hybrid2 direct at 11.7 vs cheatsheet
+  9.7 — unconfirmed until grading completes.
+- User decision required: enable pay-as-you-go, wait for the July 13 reset, or
+  fund a gpt-5.4 full-arm regrade (mixing judges within an arm is prohibited).
+
 ## Round 2 notes (both tasks)
 
 - Gate normalization validated in production: bounce rate 43% (r1) → 17% (r2
