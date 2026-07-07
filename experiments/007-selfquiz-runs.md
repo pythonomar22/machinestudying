@@ -267,6 +267,32 @@ lifts direct above the cheatsheet's level while corrections keep the
 tool-budget edge. Eval at 6 rollouts, variant selfquiz-studied. Success remains
 the pre-registered bar + fresh-note replication.
 
+## Iteration 5 verdict (studied summary, 2026-07-07)
+
+DSPy: direct 6.9 (above corrections' 4.4, below cheatsheet's 9.7 — grounded
+content helps but the 41k-char size costs at direct); best k5 ever (21.2);
+WAUC vs cheatsheet −3.12 [−6.99, +0.74]. OpenClaw: direct BELOW base (2.7 vs
+3.7 — pure distraction on the no-priors library); −1.82 vs cheatsheet.
+
+## Converged picture after 5 iterations / 10 arms (2026-07-07)
+
+Within the static-prepend note space (accumulation, selection, executed
+snippets, hybrid, grounded breadth): **nothing beats the 50-step cheatsheet on
+WAUC with significance; the best arm (hybrid) ties it exactly.** Robust
+findings: (1) verified corrections beat BASE at tool budgets in every
+instantiation; (2) executed snippets → best-ever k20f (34.3); (3) breadth and
+precision compose without interference; (4) the size-content frontier: compact
+beats comprehensive at direct regardless of grounding quality; (5) the paper's
+single-pass narrative cheatsheet is a remarkably strong artifact for WAUC's
+direct-weighted objective.
+
+**Fresh-note replication launched** (pre-declared): full pipeline rerun with
+fresh sampling (rounds 26525-26528 chained + fresh cheatsheet 26529; prior run
+archived at study-selfquiz-run1/), then hybrid2 at 6 rollouts. Tests whether
+cheatsheet-parity is procedure-level. Escalation paths beyond the static-note
+class (user decision pending): retrieval-routed notes; weight updates (SFT on
+the verified self-QA corpus — the quiz artifacts were designed for reuse).
+
 ## Round 2 notes (both tasks)
 
 - Gate normalization validated in production: bounce rate 43% (r1) → 17% (r2
