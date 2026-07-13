@@ -1,15 +1,19 @@
 #!/bin/bash
-# One-time setup for offline grading: a sandbox venv with the pinned DSPy checkout
-# installed (used by sandbox.py to actually run DSPy answers), plus the project venv.
+# Offline grading setup. This intentionally omits the GPU/vLLM environment.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export UV_LINK_MODE=copy
 
-[ -d .venv ] || uv sync
-if [ ! -d .venv-dspy ]; then
-    uv venv .venv-dspy -p 3.12
-    uv pip install -p .venv-dspy ./corpora/dspy
-fi
-# optional deps exercised by gold answers (MIPROv2 needs optuna)
-uv pip install -p .venv-dspy optuna
-echo "grading environments ready"
+source scripts/setup_common.sh
+require_command git
+require_command uv
+require_command stat
+verify_env_file
+
+mkdir -p corpora logs/slurm
+ensure_corpus "$PWD/corpora/dspy" "$DSPY_URL" "$DSPY_SHA" DSPy
+ensure_corpus "$PWD/corpora/openclaw" "$OPENCLAW_URL" "$OPENCLAW_SHA" OpenClaw
+sync_main_environment
+sync_dspy_environment
+
+echo "grading environments ready: pinned corpora and parser imports verified"

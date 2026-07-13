@@ -13,10 +13,16 @@ import json
 import re
 import time
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import PurePosixPath
 
 import regex  # not re: its match timeout stops catastrophic backtracking
 
-from .dataset import Corpus
+from .dataset import (
+    Corpus,
+    read_pinned_code_bytes,
+    tracked_code_paths,
+    validate_corpus_snapshot,
+)
 
 GREP_MAX_MATCHES = 50
 GREP_MAX_LINE_CHARS = 240
@@ -24,7 +30,21 @@ GREP_TIME_BUDGET = 10.0  # seconds; guards against catastrophic regex backtracki
 GLOB_MAX_PATHS = 200
 READ_MAX_LINES = 500
 OBS_MAX_CHARS = 25_000
-MAX_FILE_BYTES = 5_000_000
+MAX_PATTERN_CHARS = 1_000
+MAX_LINE_NUMBER = 10_000_000
+
+
+def _object_without_duplicate_keys(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError(f"duplicate tool argument: {key!r}")
+        value[key] = item
+    return value
+
+
+def _reject_json_constant(value):
+    raise ValueError(f"non-finite tool argument is forbidden: {value}")
 
 TOOL_SCHEMAS = [
     {
@@ -36,7 +56,10 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "pattern": {"type": "string", "description": "Regular expression to search for."},
+                    "pattern": {
+                        "type": "string",
+                        "description": "Regular expression to search for.",
+                    },
                     "path": {
                         "type": "string",
                         "description": "Optional file or directory path to restrict the search to.",
@@ -69,9 +92,18 @@ TOOL_SCHEMAS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "File path relative to the repository root."},
-                    "start_line": {"type": "integer", "description": "1-indexed first line to read."},
-                    "end_line": {"type": "integer", "description": "1-indexed last line to read."},
+                    "path": {
+                        "type": "string",
+                        "description": "File path relative to the repository root.",
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "description": "1-indexed first line to read.",
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "description": "1-indexed last line to read.",
+                    },
                 },
                 "required": ["path"],
             },
@@ -114,37 +146,70 @@ def _glob_to_regex(pat: str) -> str:
 
 class RepoTools:
     def __init__(self, corpus: Corpus, read_max_lines: int = READ_MAX_LINES):
+        validate_corpus_snapshot(corpus)
         self.corpus = corpus
         self.read_max_lines = read_max_lines
-        paths = sorted(
-            p for root in corpus.roots for p in (corpus.repo / root).rglob("*")
-            if p.is_file() and p.stat().st_size <= MAX_FILE_BYTES
-        )
+        if type(read_max_lines) is not int or read_max_lines < 1:
+            raise ValueError("read_max_lines must be a positive integer")
+
+        # Git enumeration excludes ignored/generated files while the resolver
+        # rejects broken or root-escaping tracked symlinks.
+        paths = tracked_code_paths(corpus)
         with ThreadPoolExecutor(16) as pool:
             texts = pool.map(self._load, paths)
         self.text: dict[str, str] = {
-            str(p.relative_to(corpus.repo)): t for p, t in zip(paths, texts) if t is not None
+            p.relative_to(corpus.repo).as_posix(): text for p, text in zip(paths, texts)
         }
         self.files = list(self.text)
-        # byte offset of each line start, for offset -> line-number lookup in grep
+        # Character offset of each line start, for match -> line-number lookup in grep.
         self._starts = {
             f: [0] + [m.end() for m in re.finditer("\n", t)] for f, t in self.text.items()
         }
 
+    def _load(self, path) -> str:
+        relative = path.relative_to(self.corpus.repo).as_posix()
+        data = read_pinned_code_bytes(self.corpus, relative)
+        if b"\x00" in data:
+            raise ValueError(f"code file contains NUL bytes: {path}")
+        try:
+            return data.decode("utf-8")
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"code file is not valid UTF-8: {path}") from exc
+
     @staticmethod
-    def _load(path) -> str | None:
-        data = path.read_bytes()
-        if b"\x00" in data[:8192]:
-            return None  # binary
-        return data.decode("utf-8", errors="replace")
+    def _relative_path(value: str, *, allow_empty: bool = False) -> str:
+        if not isinstance(value, str) or "\\" in value or "\x00" in value:
+            raise ValueError("path must be a POSIX string relative to the repository")
+        if not value:
+            if allow_empty:
+                return ""
+            raise ValueError("path must not be empty")
+        path = PurePosixPath(value)
+        if (
+            path.is_absolute()
+            or path.as_posix() != value
+            or any(part in ("", ".", "..") for part in path.parts)
+        ):
+            raise ValueError(f"path must be normalized and relative: {value!r}")
+        return path.as_posix()
 
     def dispatch(self, name: str, arguments: str) -> str:
         """Run one tool call; always returns an observation string, never raises."""
         try:
-            args = json.loads(arguments) if arguments else {}
+            args = (
+                json.loads(
+                    arguments,
+                    object_pairs_hook=_object_without_duplicate_keys,
+                    parse_constant=_reject_json_constant,
+                )
+                if arguments else {}
+            )
             if not isinstance(args, dict):
                 return f"Error: tool arguments must be a JSON object, got: {arguments[:200]}"
-            obs = getattr(self, f"_{name}")(**args)
+            handlers = {"grep": self._grep, "glob": self._glob, "read_file": self._read_file}
+            if name not in handlers:
+                raise ValueError(f"unknown tool: {name!r}")
+            obs = handlers[name](**args)
         except Exception as e:  # bad tool name, bad args, bad regex, ...
             obs = f"Error: {type(e).__name__}: {e}"
         if len(obs) > OBS_MAX_CHARS:
@@ -152,21 +217,26 @@ class RepoTools:
         return obs
 
     def _grep(self, pattern: str, path: str | None = None) -> str:
+        if not isinstance(pattern, str) or len(pattern) > MAX_PATTERN_CHARS:
+            return f"Error: grep pattern must be at most {MAX_PATTERN_CHARS} characters."
         try:
             rx = regex.compile(pattern)
         except regex.error:
             rx = regex.compile(regex.escape(pattern))  # fall back to a literal search
-        path = (path or "").strip("/")
+        path = self._relative_path(path or "", allow_empty=True)
         candidates = [f for f in self.files if not path or f == path or f.startswith(path + "/")]
         if path and not candidates:
             return f"Error: no files under '{path}'."
         matches, truncated = [], False
         deadline = time.monotonic() + GREP_TIME_BUDGET
         for f in candidates:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                truncated = True
+                break
             starts, seen_line = self._starts[f], -1
             try:
-                for m in rx.finditer(self.text[f],
-                                     timeout=max(0.1, deadline - time.monotonic())):
+                for m in rx.finditer(self.text[f], timeout=max(0.001, remaining)):
                     line = bisect.bisect_right(starts, m.start())  # 1-indexed
                     if line == seen_line:
                         continue  # one report per line
@@ -189,7 +259,12 @@ class RepoTools:
         return out
 
     def _glob(self, pattern: str) -> str:
-        p = pattern.strip("/")
+        if not isinstance(pattern, str) or not pattern or len(pattern) > MAX_PATTERN_CHARS:
+            return (
+                "Error: glob pattern must be a non-empty string of at most "
+                f"{MAX_PATTERN_CHARS} characters."
+            )
+        p = self._relative_path(pattern)
         if hasattr(globlib, "translate"):  # Python >= 3.13
             rx = re.compile(globlib.translate(p, recursive=True, include_hidden=True))
         else:  # 3.12 (the dspy.ReAct runner venv): equivalent translation
@@ -205,14 +280,34 @@ class RepoTools:
             out += f"\n... ({len(hits) - GLOB_MAX_PATHS} more files not shown)"
         return out
 
-    def _read_file(self, path: str, start_line: int | None = None, end_line: int | None = None) -> str:
-        path = path.strip("/")
+    def _read_file(
+        self,
+        path: str,
+        start_line: int | None = None,
+        end_line: int | None = None,
+    ) -> str:
+        path = self._relative_path(path)
         if path not in self.text:
             return f"Error: '{path}' is not a readable file in this repository."
         lines = self.text[path].splitlines()
         n = len(lines)
-        start = max(1, int(start_line or 1))
-        end = min(n, int(end_line) if end_line else n)
+        if start_line is not None and type(start_line) is not int:
+            return "Error: start_line must be a positive, 1-indexed integer."
+        if end_line is not None and type(end_line) is not int:
+            return "Error: end_line must be a positive, 1-indexed integer."
+        start = start_line if start_line is not None else 1
+        requested_end = end_line if end_line is not None else n
+        if (
+            start < 1
+            or requested_end < 1
+            or start > MAX_LINE_NUMBER
+            or requested_end > MAX_LINE_NUMBER
+        ):
+            return (
+                "Error: start_line and end_line must be positive, 1-indexed "
+                f"integers no greater than {MAX_LINE_NUMBER}."
+            )
+        end = min(n, requested_end)
         if start > n or end < start:
             return f"Error: '{path}' has {n} lines; requested lines {start}-{end}."
         if end - start + 1 > self.read_max_lines:

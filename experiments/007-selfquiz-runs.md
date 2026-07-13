@@ -1,5 +1,12 @@
 # 007 — Self-quizzing runs (pre-registered 2026-07-06, before any results)
 
+> **Historical results with known validity defects.** Preserve these numbers as
+> the chronological record, but do not treat them as claim-ready or as a clean
+> procedure-level replication. The complete artifact audit, corrected token
+> accounting, leakage/freshness findings, and supported claims are in
+> [008 — Repository and artifact audit](008-repository-and-artifact-audit.md).
+> Later safeguards prevent recurrence; they do not upgrade these artifacts.
+
 Design: experiments/005 (v1.2 operational spec). Code: `studybench/selfquiz.py`
 (+ `scripts/selfquiz.sbatch`). Harness: the faithful react stack throughout
 (experiments/006). Judge: fugu. Metric: pure-sum lenient + WAUC.

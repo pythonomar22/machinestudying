@@ -1,31 +1,21 @@
 #!/bin/bash
-# One-time environment setup from a fresh clone (no secrets needed for rollouts).
-# Creates: corpora checkouts at the paper's pinned commits (Table 2), the runner
-# venvs. Requires uv (https://docs.astral.sh/uv/) and git.
+# Idempotent setup from a fresh clone. Existing wrong/dirty corpus snapshots and
+# drifted environments fail closed; the script never resets research inputs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 export UV_LINK_MODE=copy
 
-DSPY_SHA=9cdb0aac28b2a04b064e40697ccd301872cf6a43
-OPENCLAW_SHA=da228660306b55a9cce3b973946f3aacfc515848
+source scripts/setup_common.sh
+require_command git
+require_command uv
+require_command stat
+verify_env_file
 
 mkdir -p corpora logs/slurm
-if [ ! -d corpora/dspy ]; then
-    git clone https://github.com/stanfordnlp/dspy corpora/dspy
-    git -C corpora/dspy checkout $DSPY_SHA
-fi
-if [ ! -d corpora/openclaw ]; then
-    git clone https://github.com/openclaw/openclaw corpora/openclaw
-    git -C corpora/openclaw checkout $OPENCLAW_SHA
-fi
+ensure_corpus "$PWD/corpora/dspy" "$DSPY_URL" "$DSPY_SHA" DSPy
+ensure_corpus "$PWD/corpora/openclaw" "$OPENCLAW_URL" "$OPENCLAW_SHA" OpenClaw
+sync_main_environment
+sync_dspy_environment
+sync_vllm_environment
 
-[ -d .venv ] || uv sync
-if [ ! -d .venv-dspy ]; then
-    uv venv .venv-dspy -p 3.12
-    uv pip install -p .venv-dspy ./corpora/dspy optuna regex
-fi
-if [ ! -x .venv-vllm/bin/vllm ]; then
-    uv venv .venv-vllm -p 3.12
-    uv pip install -p .venv-vllm vllm==0.24.0 ninja
-fi
-echo "setup complete"
+echo "setup complete: pinned corpora and environments verified"

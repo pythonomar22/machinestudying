@@ -1,5 +1,15 @@
-# 005 — Self-quizzing: design (v1.1, 2026-07-06; v1 revised per the
-# learning-science review lane — see "Review round 1" at the bottom)
+# 005 — Self-quizzing: design
+
+Version 1.1, 2026-07-06; version 1 was revised after the learning-science
+review documented under “Review round 1” below.
+
+> **Historical protocol; not a current validity guarantee.** The executed
+> implementation later violated important parts of this design, including dev
+> isolation/accumulation, retest isolation, verification strength, freshness,
+> and note provenance. See
+> [008 — Repository and artifact audit](008-repository-and-artifact-audit.md),
+> especially findings I1–I8 and I10. The hardened code applies only to future
+> studies and does not retroactively validate these runs.
 
 **Intent.** A studying procedure π_quiz that converts corpus D + study compute into
 a better agent, grounded in the human practice the user described: a student with
