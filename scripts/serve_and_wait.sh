@@ -25,7 +25,7 @@ source "$SB_VLLM_LOG_PREFIX.env"
 i=0
 for url in ${BASE_URLS//,/ }; do
     for _ in $(seq 1 240); do  # up to 40 min (first startup downloads weights + compiles kernels)
-        curl -sf "$url/health" > /dev/null && break
+        curl -sf "${url%/v1}/health" > /dev/null && break
         # fatal marker only — warmup WARNINGs also print tracebacks
         if grep -q "EngineCore failed to start" "$SB_VLLM_LOG_PREFIX-$i.log" 2>/dev/null; then
             echo "FATAL: vLLM server $i crashed during startup:"
@@ -34,7 +34,7 @@ for url in ${BASE_URLS//,/ }; do
         fi
         sleep 10
     done
-    curl -sf "$url/health" > /dev/null \
+    curl -sf "${url%/v1}/health" > /dev/null \
         || { echo "FATAL: vLLM server $i never became healthy"; tail -50 "$SB_VLLM_LOG_PREFIX-$i.log"; exit 1; }
     i=$((i + 1))
 done
