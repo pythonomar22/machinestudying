@@ -61,6 +61,25 @@ TLDR:
    target GPU and `kill -KILL` by PID. And never pkill a pattern contained
    in your own remote command line (it kills your ssh shell first).
 
+## SC (Stanford) cluster (second site, added 2026-07-13)
+
+- Repo lives at `/matx/u/omarah/ms/m1` (user `omarah`). Login node
+  `sc.stanford.edu` is for tmux + slurm submission only (no heavy CPU/IO);
+  data transfer goes through `scdt.stanford.edu` (same /matx mount).
+  Wiki: https://cluster.cs.stanford.edu/sc
+- Shell env (in ~/.bashrc there): `HF_HOME=/matx/u/omarah/hf`,
+  `UV_CACHE_DIR=/matx/u/omarah/uv-cache`, `UV_LINK_MODE=copy` — home quota
+  is small; everything big lives on /matx.
+- GPUs vary per allocation: sometimes 2, sometimes 7-8; sometimes L40S
+  (48GB), sometimes H100 (80GB). scripts/serve_vllm.sh auto-detects the
+  count and picks TP=1 on 80GB / TP=2 on 48GB (262k-context KV needs ~36GB,
+  which does not fit one L40S); override with SB_TP. An odd L40S count
+  leaves one GPU idle — prefer requesting an even number.
+- Submit with explicit partition + GPU count (the a3 default in the sbatch
+  headers is GCP-only): `sbatch -p <partition> --gpus-per-node=N
+  scripts/<x>.sbatch`. Find partitions with `sinfo`.
+- L40S throughput is ~1/4 of H100 (decode is KV-bandwidth-bound); size
+  --time generously — every runner is episode-resumable on resubmit.
 
 
 GCP Manual at Sakana AI

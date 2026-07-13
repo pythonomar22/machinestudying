@@ -10,23 +10,8 @@
 # retries status=error/forced_short only). One server startup, all arms.
 set -uo pipefail   # no -e: per-arm exit 1 (residual errors) must not stop the sweep
 cd "$SLURM_SUBMIT_DIR"
-export UV_LINK_MODE=copy
-export SB_NGPU=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
-export SB_PORT_BASE=$((20000 + (SLURM_JOB_ID % 2000) * 8))
-export SB_VLLM_LOG_PREFIX="logs/vllm-$SLURM_JOB_ID"
 
-setsid bash scripts/serve_vllm.sh &
-SERVE_PID=$!
-trap 'kill -TERM -- -$SERVE_PID 2>/dev/null || true' EXIT
-BASE_URLS=""
-for i in $(seq 0 $((SB_NGPU - 1))); do
-    BASE_URLS+="${BASE_URLS:+,}http://localhost:$((SB_PORT_BASE + i))/v1"
-    for _ in $(seq 1 240); do
-        curl -sf "http://localhost:$((SB_PORT_BASE + i))/health" > /dev/null && break
-        sleep 10
-    done
-done
-echo "servers up: $BASE_URLS"
+source scripts/serve_and_wait.sh
 
 # variant:rollouts pairs (must match each arm's original rollout count)
 for spec in ":3" "cheatsheet:6" "selfquiz-r1:3" "selfquiz-r2:3" "selfquiz-r4:3" \

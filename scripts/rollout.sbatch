@@ -8,8 +8,11 @@
 #SBATCH --error=logs/slurm/%x-%j.out
 # Generation only (grading is offline): serve Qwen3.5-9B, then drive the ReAct
 # rollouts. Resumable — finished episodes in runs/ are skipped on resubmit.
-# Scope for smoke tests via: sbatch --gpus-per-node=1 --time=2:00:00 \
-#   --export=ALL,SB_TASKS=dspy,SB_BUDGETS=k5,SB_ROLLOUTS=1,SB_LIMIT=2 scripts/rollout.sbatch
+# Partition/GPU count are submit-time knobs on other clusters, e.g.
+#   sbatch -p <partition> --gpus-per-node=7 scripts/rollout.sbatch
+# Scope for smoke tests via (2 GPUs: one TP=2 server on 48GB L40S nodes):
+#   sbatch --gpus-per-node=2 --time=2:00:00 \
+#     --export=ALL,SB_TASKS=dspy,SB_BUDGETS=k5,SB_ROLLOUTS=1,SB_LIMIT=2 scripts/rollout.sbatch
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 export UV_LINK_MODE=copy
@@ -19,34 +22,9 @@ BUDGETS=${SB_BUDGETS:-direct,k5,k20,k20f}
 ROLLOUTS=${SB_ROLLOUTS:-3}
 LIMIT=${SB_LIMIT:-0}
 VARIANT=${SB_VARIANT:-}
-export SB_NGPU=$(echo "$CUDA_VISIBLE_DEVICES" | tr ',' '\n' | wc -l)
-# nodes are shared and jobs can run concurrently: job-unique ports (stride 8 so
-# consecutive job ids cannot overlap) and job-unique vLLM logs
-export SB_PORT_BASE=$((20000 + (SLURM_JOB_ID % 2000) * 8))
-export SB_VLLM_LOG_PREFIX="logs/vllm-$SLURM_JOB_ID"
 
 uv sync
-setsid bash scripts/serve_vllm.sh &
-SERVE_PID=$!
-trap 'kill -TERM -- -$SERVE_PID 2>/dev/null || true' EXIT
-
-BASE_URLS=""
-for i in $(seq 0 $((SB_NGPU - 1))); do
-    BASE_URLS+="${BASE_URLS:+,}http://localhost:$((SB_PORT_BASE + i))/v1"
-    for _ in $(seq 1 240); do  # up to 40 min (first startup compiles kernels)
-        curl -sf "http://localhost:$((SB_PORT_BASE + i))/health" > /dev/null && break
-        # fatal marker only — warmup WARNINGs also print tracebacks
-        if grep -q "EngineCore failed to start" "$SB_VLLM_LOG_PREFIX-$i.log" 2>/dev/null; then
-            echo "FATAL: vLLM server $i crashed during startup:"
-            tail -50 "$SB_VLLM_LOG_PREFIX-$i.log"
-            exit 1
-        fi
-        sleep 10
-    done
-    curl -sf "http://localhost:$((SB_PORT_BASE + i))/health" > /dev/null \
-        || { echo "FATAL: vLLM server $i never became healthy"; tail -50 "$SB_VLLM_LOG_PREFIX-$i.log"; exit 1; }
-done
-echo "all $SB_NGPU vLLM servers healthy: $BASE_URLS"
+source scripts/serve_and_wait.sh
 
 for task in ${TASKS//,/ }; do
     .venv/bin/python -m studybench.rollout --task "$task" \
