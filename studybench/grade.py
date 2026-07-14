@@ -82,15 +82,15 @@ LOCAL_GRADER_ENDPOINT_IDENTITY = "authenticated-loopback-openai-v1"
 LOCAL_GRADER_REQUEST_OPTIONS = {
     "temperature": 0,
     "seed": 0,
-    "max_tokens": 256,
+    "max_tokens": 4096,
     "extra_body": {
         "chat_template_kwargs": {
-            "enable_thinking": False,
+            "enable_thinking": True,
         },
     },
 }
 LOCAL_GRADER_REQUEST_POLICY = (
-    "qwen-answer-centered-system-json-binary-one-attempt-v4"
+    "qwen-thinking-answer-centered-system-json-binary-one-attempt-v5"
 )
 LOCAL_GRADER_VERDICT_CONTRACT = "exact-keyed-binary-scores-no-rationale-v1"
 LOCAL_GRADER_RATIONALE_POLICY = "not-requested"

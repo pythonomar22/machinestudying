@@ -37,13 +37,13 @@ also terminal; their full chronology is recorded below. The preregistered `k`
 protocol was executed as its declared last attempt and stopped before benchmark
 grading when all three replicas failed its synthetic candidate-entailment
 check. That failure remains immutable and `k` has no score. The user's earlier
-instruction to continue engineering the local judge until it is sound now
-authorizes one separately disclosed `l` screen. `l` does not comply with,
-rescue, or replace `k`: it is a post-hoc local engineering experiment whose
-prompt and balanced synthetic qualification were designed after inspecting
-only the non-benchmark `k` failure. Every correction followed observed
-failures, so any completed `l` numbers remain adaptive, exploratory, and
-non-claim-ready.
+instruction to continue engineering the local judge until it is sound
+authorized the separately disclosed `l` screen. `l` then failed its expanded
+qualification before benchmark contact. Protocol `m` changes only the local
+judge's thinking setting and completion ceiling, as documented in Results.
+Neither `l` nor `m` complies with, rescues, or replaces `k`: both are post-hoc
+local engineering experiments. Every correction followed observed failures,
+so any completed `m` numbers remain adaptive, exploratory, and non-claim-ready.
 
 ## What this dataset is—and is not
 
@@ -114,9 +114,9 @@ The design is an adaptive exploratory screen:
 | generator and local judge | `Qwen/Qwen3.5-9B` @ `c202236235762e1c871ad0ccb60c8ee5ba337b9a` |
 | harness | author-confirmed `dspy.ReAct`; parse-only Chat-to-JSON format repair with independent provider-attempt audit; structured JSON constrained only after Qwen reasoning ends |
 | answer generation mode | paper sampling parameters with Qwen thinking enabled |
-| corrected local-judge mode | temperature 0, seed 0, maximum 256 output tokens, and `chat_template_kwargs.enable_thinking=false`; an answer-centered system message plus JSON-escaped candidate-last payload; xgrammar JSON contains only exact keyed binary claim labels and `needs_regrade`, with no rationale or total |
+| current local-judge mode (`m`) | temperature 0, seed 0, maximum 4,096 output tokens, and `chat_template_kwargs.enable_thinking=true`; Qwen may reason privately before an answer-centered, xgrammar-constrained final JSON object; the JSON-escaped candidate-last payload contains every exact keyed binary claim label and `needs_regrade`, with no rationale or total |
 | local-judge topology | three homogeneous TP=2 replicas on six L40S GPUs; the immutable generation-manifest `episode.server_slot` routes each cell to the same slot in both arms |
-| local-judge lifecycle | one authenticated `l` launcher lifecycle for the 20-case qualification, both arm grades, both reports, and the paired comparison; its high-entropy non-secret launch ID is grading-spec-bound, so interruption/relaunch makes the namespace terminal rather than resumable |
+| local-judge lifecycle | one authenticated `m` launcher lifecycle for the 20-case qualification, both arm grades, both reports, and the paired comparison; its high-entropy non-secret launch ID is grading-spec-bound, so interruption/relaunch makes the namespace terminal rather than resumable |
 | lenient scoring | binary `0/1` claims following Jacob's correction; the harness alone computes the pure weighted sum, following Jacob's clarification that lenient is just the weights summed together |
 | arms | no note; exact forced-50 SmallDSPy note prepended |
 | answer-time corpus access | `grep`, `glob`, and pinned `read_file` in both arms |
@@ -527,7 +527,7 @@ checks must pass with zero tolerance. Raw JSON whitespace is recorded but is
 not a gate. Any failure makes `l` terminal and no benchmark request is made.
 
 The fixed full-census manual answer/rubric/evidence audit below applies to a
-complete `l` population without selectively repairing labels. Even a perfect
+complete `m` population without selectively repairing labels. Even a perfect
 synthetic qualification establishes only minimum face validity for this local
 screen, not agreement with GPT-5.4 or reliable grading of real technical
 rubrics. Publication claims still require an independent qualified judge and
@@ -615,7 +615,7 @@ clean at `9cdb0aac28b2a04b064e40697ccd301872cf6a43`.
 ## Frozen post-score integrity and manual-audit protocol
 
 This protocol was fixed before `k` calibration and is carried forward unchanged
-for any complete `l` population. It is an audit of immutable outputs, not a
+for any complete `m` population. It is an audit of immutable outputs, not a
 second adaptive grader and not a way to repair a preferred result.
 
 First, a machine census covers all 120 generation cells and all 120 terminal
@@ -627,7 +627,7 @@ launch ID, request policy/options, response model, accepted response identity,
 deterministic weighted-score recomputation. For the 119 answered cells there
 must be exactly 119 pre-contact intents, 119 accepted one-request judge audits,
 and zero failed-judge audits; the no-answer cell must have neither a judge
-intent nor a provider contact. Any mismatch makes `l` incomplete and prevents
+intent nor a provider contact. Any mismatch makes `m` incomplete and prevents
 reporting the two scores.
 
 Second, the human/agent-assisted review is a full census rather than a sample:
@@ -1238,7 +1238,28 @@ two requested primary numbers.
 
 ## Results
 
-`k` is terminal with no benchmark grades for the reasons above. `l` is pending.
+`k` is terminal with no benchmark grades for the reasons above. `l` is also
+terminal with no benchmark grades. Its pushed clean launch completed all 60
+qualification requests, but only 43 request verdicts matched every frozen
+expectation and replica consensus failed for C15. The 17 failed request
+verdicts were complete, schema-valid, stop-terminated Qwen outputs: three
+replicas each missed C03, C09, C13, C18, and C20, while two replicas missed
+C15. This rules out transport, truncation, parsing, and structured-output
+failure; the no-thinking elicitation was semantically inadequate. The complete
+immutable audit is
+`logs/local-judge-qualification-38a7c81c25a19e6269fbb9b6daaafa27e0da0aac36451ddd96eb9f85a715058e.json`,
+SHA-256
+`cc3615daedbbbae96802e93369d7b21a97feaea91da374f51f5f8c4c9ce924c6`.
+
+Protocol `m` is a disclosed post-hoc correction, not a retry of `l`. It keeps
+the full candidate-last input, exact score-only schema, temperature zero, seed
+zero, one request, no fallback, and the same zero-tolerance qualification. Its
+only elicitation change is to permit Qwen's native private reasoning before
+the final constrained JSON and raise the completion ceiling from 256 to 4,096
+tokens so that reasoning cannot crowd out that JSON. It uses a fresh launch,
+canonical qualification audit, grade IDs, reports, and comparison namespace.
+If `m` qualification fails, no benchmark call is permitted.
+
 The immutable `h` generation populations are
 the only answer populations eligible for this screen. The `d` generation grids
 and failed judge smoke are invalidated diagnostics; `e` failed its
@@ -1247,6 +1268,6 @@ output-bearing gate. The old partial `h` grading and the incomplete matched `i`
 grading are also terminal diagnostic evidence, not arm results. The standalone
 `i` baseline report is retained and disclosed above, but its WAUC is not paired
 with a treatment estimate. No valid full-grid arm comparison has yet been
-observed. Only uniform fresh-schema `l` grades over all 120 frozen cells, after
+observed. Only uniform `m` grades over all 120 frozen cells, after
 the all-replica qualification passes, may populate this section; such numbers
 remain explicitly post-hoc and non-claim-ready.

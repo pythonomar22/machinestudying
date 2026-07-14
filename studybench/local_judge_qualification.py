@@ -675,7 +675,10 @@ async def _run_qualification_locked(
                     usage.get("completion_tokens")
                     if isinstance(usage, dict) else None
                 )
-                if type(completion) is not int or not 0 < completion < 256:
+                if (
+                    type(completion) is not int
+                    or not 0 < completion < LOCAL_GRADER_REQUEST_OPTIONS["max_tokens"]
+                ):
                     errors.append("completion usage is invalid or reached ceiling")
                 try:
                     parsed = parse_json(content, label="qualification verdict")
@@ -991,7 +994,12 @@ def _validate_qualification_audit(
         completion_tokens = (
             usage.get("completion_tokens") if isinstance(usage, dict) else None
         )
-        if type(completion_tokens) is not int or not 0 < completion_tokens < 256:
+        if (
+            type(completion_tokens) is not int
+            or not 0
+            < completion_tokens
+            < LOCAL_GRADER_REQUEST_OPTIONS["max_tokens"]
+        ):
             raise GradeIntegrityError(
                 "qualification accepted completion usage is out of bounds"
             )

@@ -315,8 +315,10 @@ fallback or remapping. The script runs grading and reporting within the same
 authenticated launcher lifecycle, sets `GRADER_MODEL=local`, and neither
 requires nor uses an OpenAI or Sakana credential.
 
-Local judge requests use the fixed temperature-zero, seed-zero, 256-token,
-no-thinking score-only contract recorded by the grader. An answer-centered
+Local judge requests use the fixed temperature-zero, seed-zero, 4,096-token,
+thinking-enabled score-only contract recorded by the grader. Qwen may use its
+native private reasoning channel, while xgrammar constrains only the final
+score object. An answer-centered
 system message prevents facts in the gold/evidence from being credited unless
 the candidate answer itself correctly asserts them; the candidate is supplied
 last in a JSON-escaped user payload. Constrained JSON contains every exact

@@ -834,9 +834,9 @@ class GradeVerdictTests(unittest.TestCase):
         self.assertEqual(request_options, {
             "temperature": 0,
             "seed": 0,
-            "max_tokens": 256,
+            "max_tokens": 4096,
             "extra_body": {
-                "chat_template_kwargs": {"enable_thinking": False},
+                "chat_template_kwargs": {"enable_thinking": True},
             },
         })
         self.assertNotIn("reasoning_effort", calls[0])
@@ -871,11 +871,11 @@ class GradeVerdictTests(unittest.TestCase):
             grade._judge_request_options(grade.LOCAL_GRADER_MODEL, "high")
 
         copied = grade._judge_request_options(grade.LOCAL_GRADER_MODEL, "")
-        copied["extra_body"]["chat_template_kwargs"]["enable_thinking"] = True
+        copied["extra_body"]["chat_template_kwargs"]["enable_thinking"] = False
         self.assertIs(
             grade.LOCAL_GRADER_REQUEST_OPTIONS["extra_body"]
             ["chat_template_kwargs"]["enable_thinking"],
-            False,
+            True,
         )
 
     def test_judge_schema_delegates_only_atomic_claim_labels(self) -> None:
