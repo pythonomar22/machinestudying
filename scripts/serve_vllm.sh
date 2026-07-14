@@ -144,6 +144,7 @@ from pathlib import Path
 import sys
 
 import torch
+from studybench.gpu_identity import normalize_cuda_uuid
 
 tokens = sys.argv[1].split(",")
 if torch.cuda.device_count() != len(tokens):
@@ -152,9 +153,14 @@ if torch.cuda.device_count() != len(tokens):
     )
 rows = []
 for logical_index, token in enumerate(tokens):
-    uuid = torch.cuda.get_device_properties(logical_index).uuid
-    if not isinstance(uuid, str) or not uuid or "\t" in uuid or "\n" in uuid:
-        raise SystemExit(f"CUDA logical device {logical_index} has no safe UUID")
+    try:
+        uuid = normalize_cuda_uuid(
+            torch.cuda.get_device_properties(logical_index).uuid
+        )
+    except ValueError as exc:
+        raise SystemExit(
+            f"CUDA logical device {logical_index} has no safe UUID"
+        ) from exc
     rows.append(f"{token}\t{uuid}\n")
 Path(sys.argv[2]).write_text("".join(rows), encoding="utf-8")
 PY
