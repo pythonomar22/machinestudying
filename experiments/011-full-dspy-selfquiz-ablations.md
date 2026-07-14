@@ -181,8 +181,8 @@ TWO=(srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
 
 # Construction and generation smokes; never reuse these namespaces or prefixes.
 "${SIX[@]}" env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smoke-semantic-a SB_PORT_BASE=30000 \
-  SB_STUDY_ID=smoke-dspy-semantic-react-20260713a SB_STUDY_SEED=43001 \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smoke-semantic-b SB_PORT_BASE=30010 \
+  SB_STUDY_ID=smoke-dspy-semantic-react-20260713b SB_STUDY_SEED=43001 \
   SB_ATTEMPT_ACCESS=react-corpus SB_SMOKE=1 SB_DEBUG=1 \
   bash scripts/selfquiz.sbatch
 "${SIX[@]}" env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 \
@@ -202,6 +202,18 @@ TWO=(srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   SB_DEBUG=1 SB_GRADE_CONCURRENCY=1 SB_EVIDENCE_MODE=excerpt_evidence \
   bash scripts/grade_local.sbatch
 ```
+
+Execution amendment, 2026-07-13: the original semantic smoke namespace
+`smoke-dspy-semantic-react-20260713a`, launcher prefix
+`vllm-16142825-smoke-semantic-a`, and port base `30000` were attempted once
+from source commit `93caa53`. The launcher exited during GPU-identity preflight
+before writing a topology, starting a model server, contacting a provider, or
+creating a study directory. PyTorch 2.11 returned a typed `_CUuuid` object
+where the launcher had required `str`; commit `6e4b137` added strict canonical
+conversion and a live six-GPU validation. The failed `-a` identifiers remain
+retired. The replacement above changes only the diagnostic smoke identifiers
+and port to `-b`/`30010`; the construction protocol, seeds, and all full-run
+identifiers remain frozen.
 
 Stop here. Inspect every smoke artifact before running anything below: confirm
 the served/response model identities, exact six-GPU/three-server construction
@@ -569,7 +581,7 @@ same-dataset success as confirmation.
 
 ## Gates before any GPU-hour evaluation
 
-Offline preflight completed on 2026-07-13: all 325 DSPy-environment tests and
+Offline preflight completed on 2026-07-13: all 328 DSPy-environment tests and
 all 11 sandbox-environment tests passed; both environments compiled the Python
 tree; every shell launcher passed `bash -n`; `git diff --check` passed; and
 `AGENTS.md` was byte-identical to `CLAUDE.md`. The frozen full and smoke
