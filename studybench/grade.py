@@ -63,6 +63,7 @@ from .provenance import (
     validate_local_server_urls,
 )
 from .study_protocol import (
+    DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
     HUMAN_AUDITED_NOTE_MANIFEST_TYPE,
     SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
     STATIC_GRAPH_NOTE_MANIFEST_TYPE,
@@ -1529,7 +1530,17 @@ def validate_episode(ep: dict, row: dict) -> None:
         raise GradeIntegrityError(f"{ep['qid']}: k5 episode exceeded its budget")
     if ep["budget"] == "k20" and tool_iters + finish_catches > 20:
         raise GradeIntegrityError(f"{ep['qid']}: k20 episode exceeded its budget")
-    if ep["budget"] == "k20f" and tool_iters + finish_catches != 20:
+    forced_partial_parse_non_answer = (
+        ep["status"] == "no_answer"
+        and ep.get("dspy_request_audit_schema")
+        == DSPY_REQUEST_AUDIT_SCHEMA_VERSION
+        and isinstance(ep.get("non_answer_audit"), dict)
+        and ep["non_answer_audit"].get("kind") == "adapter_parse_failure"
+        and ep["non_answer_audit"].get("stage") == "react"
+        and ep.get("forced_budget_complete") is False
+    )
+    if (ep["budget"] == "k20f" and tool_iters + finish_catches != 20
+            and not forced_partial_parse_non_answer):
         raise GradeIntegrityError(
             f"{ep['qid']}: forced k20 recorded {tool_iters + finish_catches} iterations")
 
@@ -1576,7 +1587,8 @@ def validate_episode(ep: dict, row: dict) -> None:
     dspy_audit_schema = ep.get("dspy_request_audit_schema")
     non_answer_audit = ep.get("non_answer_audit")
     if dspy_audit_schema is not None:
-        if type(dspy_audit_schema) is not int or dspy_audit_schema != 1 \
+        if (type(dspy_audit_schema) is not int
+                or dspy_audit_schema != DSPY_REQUEST_AUDIT_SCHEMA_VERSION) \
                 or "usage_ledger" not in ep:
             raise GradeIntegrityError(
                 f"{ep['qid']}: invalid DSPy request-audit schema")
@@ -1592,7 +1604,8 @@ def validate_episode(ep: dict, row: dict) -> None:
             if (not isinstance(non_answer_audit, dict)
                     or set(non_answer_audit) != expected_keys
                     or type(non_answer_audit.get("schema_version")) is not int
-                    or non_answer_audit.get("schema_version") != 1
+                    or non_answer_audit.get("schema_version")
+                    != DSPY_REQUEST_AUDIT_SCHEMA_VERSION
                     or non_answer_audit.get("kind") not in {
                         "adapter_parse_failure", "parsed_empty_answer"
                     }
@@ -1615,10 +1628,29 @@ def validate_episode(ep: dict, row: dict) -> None:
             kind = non_answer_audit["kind"]
             if ((ep["budget"] == "direct" and stage != "direct")
                     or (ep["budget"] != "direct" and stage == "direct")
-                    or (kind == "parsed_empty_answer" and stage == "react")
-                    or (ep["budget"] in {"k20f", "s50"} and stage != "extract")):
+                    or (kind == "parsed_empty_answer" and stage == "react")):
                 raise GradeIntegrityError(
                     f"{ep['qid']}: DSPy non-answer stage violates its budget")
+        if ep["budget"] in {"k20f", "s50"}:
+            forced_iters = 20 if ep["budget"] == "k20f" else 50
+            observed_iters = tool_iters + finish_catches
+            complete = ep.get("forced_budget_complete")
+            if (type(complete) is not bool
+                    or complete != (observed_iters == forced_iters)
+                    or (ep["status"] == "ok" and not complete)
+                    or (ep["status"] == "no_answer"
+                        and non_answer_audit["stage"] == "extract"
+                        and not complete)
+                    or (ep["status"] == "no_answer"
+                        and non_answer_audit["stage"] == "react"
+                        and (complete
+                             or non_answer_audit["kind"]
+                             != "adapter_parse_failure"))):
+                raise GradeIntegrityError(
+                    f"{ep['qid']}: forced-budget completion audit is invalid")
+        elif "forced_budget_complete" in ep:
+            raise GradeIntegrityError(
+                f"{ep['qid']}: non-forced episode declares forced-budget completion")
     elif non_answer_audit is not None:
         raise GradeIntegrityError(
             f"{ep['qid']}: non-answer audit has no declared DSPy schema")

@@ -50,11 +50,11 @@ STATIC_GRAPH_TASK_MANIFEST_TYPE = "deterministic-static-graph-study-task"
 STATIC_GRAPH_NOTE_MANIFEST_TYPE = "deterministic-static-graph-note"
 HUMAN_AUDITED_NOTE_MANIFEST_TYPE = "human-audited-note"
 
-FORCED50_CONFIG_SCHEMA_VERSION = 3
+FORCED50_CONFIG_SCHEMA_VERSION = 4
 FORCED50_ITERATIONS = 50
 DSPY_ADAPTER_NAME = "studybench.react.ParseOnlyFallbackChatAdapter"
 DSPY_ADAPTER_POLICY = "parse-only-chat-to-json-fallback-v1"
-DSPY_REQUEST_AUDIT_SCHEMA_VERSION = 1
+DSPY_REQUEST_AUDIT_SCHEMA_VERSION = 2
 FORCED50_CONFIG_KEYS = frozenset({
     "schema_version",
     "study_id",

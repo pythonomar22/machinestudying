@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import copy
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -11,6 +13,7 @@ from dspy.adapters.base import Adapter
 from dspy.utils.exceptions import AdapterParseError
 
 from studybench.integrity import sha256_json, sha256_text, write_immutable_json
+from studybench.grade import GradeIntegrityError, validate_episode
 from studybench.react import (
     READ_MAX_LINES,
     ParseOnlyFallbackChatAdapter,
@@ -22,7 +25,11 @@ from studybench.react import (
     make_tools,
     runtime_dspy_tool_contract,
 )
-from studybench.study_protocol import DSPY_REPOSITORY_TOOL_CONTRACT
+from studybench.rollout import _validate_final_episode
+from studybench.study_protocol import (
+    DSPY_REPOSITORY_TOOL_CONTRACT,
+    DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
+)
 from studybench.tools import READ_MAX_LINES as NATIVE_READ_MAX_LINES
 
 
@@ -220,6 +227,61 @@ class ReactStudyIntegrityTests(unittest.TestCase):
             root = Path(directory)
             config, manifest = self.make_study(root)
             _validate_completed_study(manifest, root / "intent.json", root, config)
+
+    def test_forced_adapter_parse_non_answer_preserves_partial_budget_truth(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.make_study(root)
+            episode = json.loads((root / "episode.json").read_text())
+        episode.update({
+            "qid": "q1",
+            "budget": "k20f",
+            "status": "no_answer",
+            "answer": "",
+            "turns": episode["turns"][:7],
+            "n_react_iters": 7,
+            "n_tool_iters": 7,
+            "finish_catches": 0,
+            "n_lm_calls": 9,
+            "usage_ledger": episode["usage_ledger"][:9],
+            "prompt_tokens": 9,
+            "completion_tokens": 9,
+            "total_tokens": 18,
+            "gen_tokens": 9,
+            "dspy_request_audit_schema": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
+            "forced_budget_complete": False,
+        })
+        episode["non_answer_audit"] = {
+            "schema_version": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
+            "kind": "adapter_parse_failure",
+            "stage": "react",
+            "adapter": "JSONAdapter",
+            "provider_call": 8,
+            "outputs_sha256": episode["usage_ledger"][8]["outputs_sha256"],
+        }
+        validate_episode(episode, {"id": "q1"})
+        _validate_final_episode(
+            episode,
+            {
+                "task": "dspy", "qid": "q1", "budget": "k20f",
+                "rollout": 0, "seed": episode["seed"],
+            },
+            expected_model="model",
+            expected_model_revision="revision",
+            expected_harness="dspy.ReAct",
+            expected_response_model="served-model",
+        )
+
+        for mutation in (
+            lambda value: value.update(forced_budget_complete=True),
+            lambda value: value["non_answer_audit"].update(stage="extract"),
+        ):
+            invalid = copy.deepcopy(episode)
+            mutation(invalid)
+            with self.assertRaisesRegex(
+                GradeIntegrityError, "forced k20|forced-budget completion"
+            ):
+                validate_episode(invalid, {"id": "q1"})
 
     def test_completed_study_rejects_note_or_episode_drift(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

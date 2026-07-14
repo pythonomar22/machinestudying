@@ -17,9 +17,10 @@ Status: implementation and infrastructure preflight complete. Replacement `b`
 smoke passed, but the first `b` full baseline exposed a second harness defect:
 completed Qwen responses containing reasoning but no parseable DSPy output were
 misclassified as infrastructure errors, so strict grading was impossible. The
-run was stopped after 15 final episodes and four retained failures; no cell is
-reused. The corrected parse-only fallback and provider-attempt audit are frozen
-in fresh `c` namespaces below. Full-grid results remain pending.
+run was stopped after 15 final episodes and four retained failures. A `c` run
+then proved that the remaining forced-action case was still misclassified as a
+protocol shortfall. No prior cell is reused. The final ITT correction is frozen
+in fresh `d` namespaces below. Full-grid results remain pending.
 
 ## What this dataset is—and is not
 
@@ -106,7 +107,7 @@ This is another reason to treat the comparison as diagnostic only.
 The treatment note is generated once by the existing forced-50 study protocol
 over only the scoped corpus, without benchmark access. It is not the historical
 full-DSPy `cheatsheets/dspy.md`. The immutable construction is
-`studies/cheatsheet/smalldspy-cheatsheet-s50-20260713c/smalldspy/`; evaluation
+`studies/cheatsheet/smalldspy-cheatsheet-s50-20260713d/smalldspy/`; evaluation
 must supply both its content-addressed note and manifest. Study tokens are
 reported separately and excluded from the evaluation token axis, matching the
 paper's estimand.
@@ -164,11 +165,23 @@ episodes, four failed attempts, and the log remain preserved. The correction
 counts provider attempts independently, allows Chat-to-JSON fallback only after
 a typed parse failure, preserves escaped trajectories, and accepts a parse
 non-answer only when every attempted provider call has a complete usage ledger.
-It never promotes `reasoning_content` into an action or answer. Forced action
-failure remains `forced_short`; only full-budget forced extraction failure can
-be a final zero. This is an adaptive implementation correction, so the screen
-remains non-confirmatory. All `b` IDs, prefix `generation-b`, and ports
+It never promotes `reasoning_content` into an action or answer. This is an
+adaptive implementation correction, so the screen remains non-confirmatory.
+All `b` IDs, prefix `generation-b`, and ports
 `34300`-`34302` are retired.
+
+The `c` smoke passed 2/2 and the full baseline produced 45 valid finals before
+the forced budget exposed three typed action-format failures at 7, 4, and 0 of
+20 recorded iterations. Treating those completed model-response failures as
+`forced_short` made the one-shot screen terminal even though the same failure
+in an unforced budget was correctly an ITT zero. The final policy therefore
+records typed forced-action parse exhaustion as `no_answer`, retains the exact
+partial trajectory and token ledger, and records `forced_budget_complete=false`.
+Full-budget forced answers and extraction failures remain explicitly marked
+complete; context, transport, tool, and program failures remain nonfinal. The
+`c` namespace and all its 60 attempt intents, 45 finals, three failed attempts,
+and interrupted cells remain preserved and are never spliced into `d`. All `c`
+IDs, prefix `generation-c`, and ports `34500`-`34502` are retired.
 
 ## Execution namespaces and phase commands
 
@@ -184,8 +197,8 @@ next dependent phase. The two 60-episode evaluation grids remain sequential:
 ```bash
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=60 --cpu-bind=none --gres=gpu:l40s:6 \
-  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34500 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-generation-c \
+  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34700 \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-generation-d \
   bash --noprofile --norc
 
 # Inside that step, after setup and authenticated readiness:
@@ -198,18 +211,18 @@ source scripts/serve_and_wait.sh
 PY=.venv-dspy/bin/python
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-generation-smoke-20260713c --seed 43999 \
-  --seed-group smalldspy-generation-smoke-20260713c \
+  --run-id smalldspy-generation-smoke-20260713d --seed 43999 \
+  --seed-group smalldspy-generation-smoke-20260713d \
   --budgets direct,k5 --rollouts 1 --limit 1 --smoke \
   --base-urls "$BASE_URLS" --concurrency 2
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-local-base-20260713c --seed 44001 \
+  --run-id smalldspy-local-base-20260713d --seed 44001 \
   --seed-group smalldspy-local-cheatsheet-screen-20260713 \
   --budgets direct,k5,k20,k20f --rollouts 3 --exploratory \
   --base-urls "$BASE_URLS" --concurrency 12
 
-STUDY_ID=smalldspy-cheatsheet-s50-20260713c
+STUDY_ID=smalldspy-cheatsheet-s50-20260713d
 "$PY" -m studybench.react --task smalldspy --study \
   --study-id "$STUDY_ID" --seed 43001 --base-urls "$BASE_URLS"
 MANIFEST="studies/cheatsheet/$STUDY_ID/smalldspy/manifest.json"
@@ -217,14 +230,14 @@ NOTE=$("$PY" -c 'import json,sys; from pathlib import Path; m=Path(sys.argv[1]);
 test -f "$MANIFEST" -a ! -L "$MANIFEST" -a -f "$NOTE" -a ! -L "$NOTE"
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-treatment-smoke-20260713c --seed 43999 \
-  --seed-group smalldspy-treatment-smoke-20260713c \
+  --run-id smalldspy-treatment-smoke-20260713d --seed 43999 \
+  --seed-group smalldspy-treatment-smoke-20260713d \
   --budgets direct,k5 --rollouts 1 --limit 1 --smoke \
   --note "$NOTE" --note-manifest "$MANIFEST" \
   --base-urls "$BASE_URLS" --concurrency 2
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-local-cheatsheet-20260713c --seed 44001 \
+  --run-id smalldspy-local-cheatsheet-20260713d --seed 44001 \
   --seed-group smalldspy-local-cheatsheet-screen-20260713 \
   --budgets direct,k5,k20,k20f --rollouts 3 --exploratory \
   --note "$NOTE" --note-manifest "$MANIFEST" \
@@ -241,8 +254,8 @@ note`:
 ```bash
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=20 --cpu-bind=none --gres=gpu:l40s:2 \
-  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34600 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-c \
+  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34800 \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-d \
   bash --noprofile --norc
 
 # Inside that step, after setup and authenticated readiness:
@@ -257,28 +270,28 @@ PY=.venv/bin/python
 JUDGE_BASE_URL=$BASE_URLS
 
 "$PY" -m studybench.grade --task smalldspy \
-  --run-id smalldspy-generation-smoke-20260713c \
-  --grade-id qwen-local-smoke-20260713c \
+  --run-id smalldspy-generation-smoke-20260713d \
+  --grade-id qwen-local-smoke-20260713d \
   --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
   --concurrency 1 --local-smoke
 
 for arm in base cheatsheet; do
   "$PY" -m studybench.grade --task smalldspy \
-    --run-id "smalldspy-local-$arm-20260713c" \
-    --grade-id "qwen-local-$arm-20260713c" \
+    --run-id "smalldspy-local-$arm-20260713d" \
+    --grade-id "qwen-local-$arm-20260713d" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence --concurrency 8
   "$PY" -m studybench.report --tasks smalldspy \
-    --run-id "smalldspy-local-$arm-20260713c" --grader local \
-    --grade-id "qwen-local-$arm-20260713c" \
+    --run-id "smalldspy-local-$arm-20260713d" --grader local \
+    --grade-id "qwen-local-$arm-20260713d" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
     --ci 10000 --ci-seed 45001
 done
 
 mapfile -t BASE_REPORTS < <(find \
-  reports/smalldspy-local-base-20260713c/qwen-local-base-20260713c/smalldspy \
+  reports/smalldspy-local-base-20260713d/qwen-local-base-20260713d/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 mapfile -t CHEAT_REPORTS < <(find \
-  reports/smalldspy-local-cheatsheet-20260713c/qwen-local-cheatsheet-20260713c/smalldspy \
+  reports/smalldspy-local-cheatsheet-20260713d/qwen-local-cheatsheet-20260713d/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 test "${#BASE_REPORTS[@]}" -eq 1 -a "${#CHEAT_REPORTS[@]}" -eq 1
 "$PY" -m studybench.screen_compare \

@@ -480,13 +480,11 @@ def run_episode(corpus, tools_fns, q: dict, budget: str, rollout: int,
                 parse_stage = module.last_stage
             else:
                 parse_stage = "direct"
-            if forced and parse_stage == "react":
-                ep["status"] = "forced_short"
-                ep["error"] = (
-                    "forced trajectory ended on exhausted adapter format repair"
-                )
-            else:
-                ep["status"] = "no_answer"
+            # Exhausted typed format repair is a genuine model non-answer even
+            # when it prevents a forced trajectory from consuming its full
+            # action budget.  Preserve the observed prefix and score the
+            # intention-to-run cell zero; never invent or retry an action.
+            ep["status"] = "no_answer"
         except ForcedTrajectoryError as error:
             trajectory = error.trajectory
             ep["status"] = error.status
@@ -512,6 +510,8 @@ def run_episode(corpus, tools_fns, q: dict, budget: str, rollout: int,
         else:
             ep["n_tool_iters"] += 1
     ep["n_react_iters"] = len(steps)
+    if forced:
+        ep["forced_budget_complete"] = len(steps) == max_iters
     if forced and ep["status"] == "ok" and len(steps) != max_iters:
         ep["status"] = "forced_short"
         ep["error"] = f"forced trajectory has {len(steps)} of {max_iters} required iterations"

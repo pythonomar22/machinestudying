@@ -35,6 +35,7 @@ from .provenance import (
     write_screen_attempt_intent,
     write_episode_result,
 )
+from .study_protocol import DSPY_REQUEST_AUDIT_SCHEMA_VERSION
 from .tools import TOOL_SCHEMAS, RepoTools
 
 MODEL = "Qwen/Qwen3.5-9B"
@@ -152,9 +153,21 @@ def _validate_final_episode(
         else:
             observed_iters = episode.get("n_tool_iters", 0) \
                 + episode.get("finish_catches", 0)
+        forced_partial_parse_non_answer = (
+            forced
+            and episode.get("status") == "no_answer"
+            and episode.get("dspy_request_audit_schema")
+            == DSPY_REQUEST_AUDIT_SCHEMA_VERSION
+            and isinstance(episode.get("non_answer_audit"), dict)
+            and episode["non_answer_audit"].get("kind")
+            == "adapter_parse_failure"
+            and episode["non_answer_audit"].get("stage") == "react"
+            and episode.get("forced_budget_complete") is False
+        )
         if (type(observed_iters) is not int or observed_iters < 0
                 or observed_iters > max_iters
-                or (forced and observed_iters != max_iters)):
+                or (forced and observed_iters != max_iters
+                    and not forced_partial_parse_non_answer)):
             raise ValueError("episode iteration counters violate the declared budget")
 
         native = "usage_ledger" not in episode
