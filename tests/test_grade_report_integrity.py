@@ -13,7 +13,11 @@ from unittest.mock import patch
 
 from studybench import grade, provenance, report
 from studybench.integrity import canonical_json_bytes, sha256_json, stable_seed
-from studybench.provenance import _load_note, environment_contract_record
+from studybench.provenance import (
+    _load_note,
+    environment_contract_record,
+    server_assignment_record,
+)
 from studybench.study_protocol import (
     DSPY_ADAPTER_NAME,
     DSPY_ADAPTER_POLICY,
@@ -1336,6 +1340,7 @@ class EvaluationFixture:
                 ],
                 "episode_seeds": episode_seeds,
             },
+            "server_assignment": server_assignment_record(self.expected, 1),
             "budgets": report.BUDGET_ORDER,
             "rollouts": 1,
             "questions": [{
@@ -1385,6 +1390,7 @@ class EvaluationFixture:
             "extra": {
                 "model_revision": "revision-a",
                 "expected_response_model": "generation-revision",
+                "server_transport": {"server_count": 1},
             },
         }
         if self.local:
@@ -1419,6 +1425,9 @@ class EvaluationFixture:
                     self.questions[0]["question"].encode("utf-8")),
                 "note_sha256": None,
                 "seed": self.manifest["spec"]["seed_policy"]["episode_seeds"][relative],
+                "server_slot": self.manifest["spec"]["server_assignment"][
+                    "episode_slots"
+                ][relative],
                 "environment_snapshot": {
                     "schema_version": 1,
                     "sha256": "9" * 64,

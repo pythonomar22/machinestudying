@@ -581,7 +581,7 @@ async def _run_evaluation_locked(
     sem = asyncio.Semaphore(args.concurrency)
     done = 0
 
-    async def one(i, raw_q, q, budget, rollout, out, seed, identity):
+    async def one(raw_q, q, budget, rollout, out, seed, identity):
         nonlocal done
         async with sem:
             try:
@@ -605,7 +605,7 @@ async def _run_evaluation_locked(
                         context, out, identity, episode_contract
                     )
                     ep = await run_episode(
-                        clients[i % len(clients)], corpus, tools, q,
+                        clients[identity["server_slot"]], corpus, tools, q,
                         budget, rollout, think_history, seed=seed, identity=identity,
                     )
                     _reject_invalid_final_episode(ep, identity, **episode_contract)
@@ -639,7 +639,7 @@ async def _run_evaluation_locked(
                     budget, q["id"], rollout, ep["answer"][:2000],
                 )
 
-    await asyncio.gather(*(one(index, *case) for index, case in enumerate(pending)))
+    await asyncio.gather(*(one(*case) for case in pending))
 
     statuses: dict[str, int] = {}
     for _, _, _, _, out, _, identity in cases:

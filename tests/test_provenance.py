@@ -23,6 +23,8 @@ from studybench.model_cache import ATTESTATION_POLICY as MODEL_CACHE_ATTESTATION
 from studybench.provenance import (
     MODEL_ID,
     MODEL_REVISION,
+    SERVER_ASSIGNMENT_POLICY,
+    SERVER_ENDPOINT_ORDER_POLICY,
     VLLM_PYTHON_VERSION,
     VLLM_VERSION,
     _build_installed_distribution_inventory,
@@ -35,11 +37,13 @@ from studybench.provenance import (
     episode_identity,
     normalized_environment,
     prepare_run,
+    server_assignment_record,
     source_record,
     validate_current_source,
     validate_id,
     validate_environment_snapshot,
     validate_resumable_episode,
+    validate_server_assignment_record,
     validate_local_server_urls,
     validate_persisted_screen_attempt_tree,
     validate_screen_attempt_tree,
@@ -341,6 +345,27 @@ def reallocated_environment(environment: dict[str, object]) -> dict[str, object]
 
 
 class ProvenanceTests(unittest.TestCase):
+    def test_server_assignment_is_canonical_and_fail_closed(self) -> None:
+        episodes = [f"direct/r0/q{index}.json" for index in range(7)]
+        record = server_assignment_record(episodes, 3)
+        self.assertEqual(
+            list(record["episode_slots"].values()),
+            [0, 1, 2, 0, 1, 2, 0],
+        )
+        self.assertEqual(
+            record["endpoint_order_policy"], SERVER_ENDPOINT_ORDER_POLICY
+        )
+        self.assertEqual(
+            validate_server_assignment_record(record, episodes, 3),
+            record["episode_slots"],
+        )
+        drifted = deepcopy(record)
+        drifted["episode_slots"][episodes[-1]] = 1
+        with self.assertRaisesRegex(ValueError, "canonical grid policy"):
+            validate_server_assignment_record(drifted, episodes, 3)
+        with self.assertRaisesRegex(ValueError, "positive integer"):
+            server_assignment_record(episodes, True)
+
     @staticmethod
     def _initialize_source_repo(root: Path) -> None:
         (root / "studybench").mkdir()
@@ -572,7 +597,7 @@ class ProvenanceTests(unittest.TestCase):
 
     def test_model_endpoints_are_loopback_only_and_counted(self) -> None:
         urls = validate_local_server_urls(
-            "http://localhost:8100/v1,http://127.0.0.1:8101/v1/",
+            "http://127.0.0.1:8101/v1/,http://localhost:8100/v1",
             expected_count=2,
         )
         self.assertEqual(
@@ -1172,13 +1197,14 @@ class ProvenanceTests(unittest.TestCase):
                 "qid": "q1",
                 "budget": "direct",
                 "rollout": 0,
+                "server_slot": 0,
             }
             path.write_text(json.dumps({**identity, "status": "ok"}), encoding="utf-8")
             self.assertEqual(validate_resumable_episode(path, identity)["status"], "ok")
             changed = {**identity, "seed": 2}
             with self.assertRaises(ValueError):
                 validate_resumable_episode(path, changed)
-            for field in ("seed", "rollout"):
+            for field in ("seed", "rollout", "server_slot"):
                 boolean_identity = {**identity, field: bool(identity[field])}
                 path.write_text(
                     json.dumps({**boolean_identity, "status": "ok"}), encoding="utf-8"
@@ -1234,6 +1260,7 @@ class ProvenanceTests(unittest.TestCase):
                 extra={
                     "model_revision": "c" * 40,
                     "expected_response_model": "model",
+                    "server_transport": {"server_count": 1},
                 },
             )
             with (
@@ -1262,12 +1289,21 @@ class ProvenanceTests(unittest.TestCase):
                         "k5/r0/q1.json", "k5/r1/q1.json",
                     ],
                 )
+                self.assertEqual(
+                    spec["server_assignment"],
+                    server_assignment_record(spec["expected_episodes"], 1),
+                )
+                self.assertEqual(
+                    spec["server_assignment"]["policy"],
+                    SERVER_ASSIGNMENT_POLICY,
+                )
                 seed = spec["seed_policy"]["episode_seeds"]["k5/r1/q1.json"]
                 identity = episode_identity(
                     context, q=questions[0], prompt="Question?",
                     budget="k5", rollout=1, seed=seed,
                 )
                 self.assertEqual(identity["seed"], seed)
+                self.assertEqual(identity["server_slot"], 0)
                 self.assertEqual(
                     identity["environment_snapshot"],
                     context.launch_environment_record,
@@ -1445,6 +1481,7 @@ class ProvenanceTests(unittest.TestCase):
                     extra={
                         "model_revision": "c" * 40,
                         "expected_response_model": "Qwen/Qwen3.5-9B",
+                        "server_transport": {"server_count": 1},
                     },
                 )
             spec = context.manifest["spec"]
@@ -1489,6 +1526,7 @@ class ProvenanceTests(unittest.TestCase):
                         extra={
                             "model_revision": "c" * 40,
                             "expected_response_model": "m",
+                            "server_transport": {"server_count": 1},
                         },
                     )
 
@@ -1726,6 +1764,7 @@ class ProvenanceTests(unittest.TestCase):
                     "environment": {},
                     "environment_contract": {},
                     "expected_episodes": [relative],
+                    "server_assignment": server_assignment_record([relative], 1),
                     "questions": [{
                         "id": "q1",
                         "sha256": "q" * 64,
@@ -1740,7 +1779,10 @@ class ProvenanceTests(unittest.TestCase):
                     "model": "model",
                     "model_revision": "revision",
                     "harness": "dspy.ReAct",
-                    "extra": {"expected_response_model": "served-model"},
+                    "extra": {
+                        "expected_response_model": "served-model",
+                        "server_transport": {"server_count": 1},
+                    },
                 },
             }
             write_immutable_json(root / "manifest.json", manifest)
@@ -1757,6 +1799,7 @@ class ProvenanceTests(unittest.TestCase):
                 "qid": "q1",
                 "budget": "direct",
                 "rollout": 0,
+                "server_slot": 0,
                 "environment_snapshot": {"snapshot": "environment/fake.json"},
             }
             contract = {
@@ -1802,6 +1845,7 @@ class ProvenanceTests(unittest.TestCase):
             self.assertEqual(len(records), 1)
             self.assertEqual(records[0]["expected_episode"], relative)
             self.assertEqual(records[0]["outcome"], "final")
+            self.assertEqual(records[0]["server_slot"], 0)
 
     def test_screen_failure_usage_preserves_legitimate_partial_ledgers(self) -> None:
         def exercise(harness: str, failure_fields: dict) -> dict:

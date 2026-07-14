@@ -594,6 +594,18 @@ def load_claim_manifest(
     ]
     if spec.get("expected_episodes") != expected:
         raise GradeIntegrityError("run manifest expected_episodes is inconsistent")
+    server_transport = extra.get("server_transport")
+    server_count = (
+        server_transport.get("server_count")
+        if isinstance(server_transport, dict)
+        else None
+    )
+    try:
+        episode_server_slots = provenance.validate_server_assignment_record(
+            spec.get("server_assignment"), expected, server_count
+        )
+    except (TypeError, ValueError) as exc:
+        raise GradeIntegrityError(f"run server assignment is invalid: {exc}") from exc
 
     seed_policy = spec.get("seed_policy")
     expected_seed_parts = [
@@ -1101,6 +1113,7 @@ def load_claim_manifest(
         "question_sha256": {row["id"]: sha256_json(row) for row in questions},
         "prompt_sha256": presented_prompts,
         "episode_seeds": expected_seeds,
+        "episode_server_slots": episode_server_slots,
         "note_sha256": note_sha256,
         "note_construction_manifest_sha256": (
             note_record["construction_manifest"]["sha256"] if note_record else None
@@ -1150,6 +1163,7 @@ def validate_manifest_episode(ep: dict, row: dict, manifest_context: dict) -> No
         "prompt_sha256": manifest_context["prompt_sha256"][row["id"]],
         "note_sha256": manifest_context["note_sha256"],
         "seed": manifest_context["episode_seeds"].get(relative),
+        "server_slot": manifest_context["episode_server_slots"].get(relative),
     }
     for field, value in expected.items():
         if ep.get(field) != value:

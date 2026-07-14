@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from studybench import grade, report, screen_compare
 from studybench.integrity import canonical_json_bytes, sha256_bytes, sha256_json
+from studybench.provenance import server_assignment_record
 from tests.test_compare_integrity import loaded_arm, set_generation_identities
 
 
@@ -616,6 +617,7 @@ class LocalReportLoaderTests(unittest.TestCase):
             "budgets": report.BUDGET_ORDER,
             "questions": [{"id": "q1", "sha256": "1" * 64}],
             "expected_episodes": expected_episodes,
+            "server_assignment": server_assignment_record(expected_episodes, 1),
             "seed_policy": {
                 "algorithm": "sha256-canonical-json-mod-2147483647",
                 "namespace": "native-react",
@@ -639,6 +641,7 @@ class LocalReportLoaderTests(unittest.TestCase):
                 "status": "not_provided",
                 "reason": "exploratory",
             },
+            "extra": {"server_transport": {"server_count": 1}},
         }
         config = {
             "grade_schema_version": grade.GRADE_SCHEMA_VERSION,
@@ -702,6 +705,9 @@ class LocalReportLoaderTests(unittest.TestCase):
                         "response_models": ["generation-model"],
                         "system_fingerprints": [],
                         "missing_system_fingerprint_calls": 1,
+                        "server_slot": spec["server_assignment"]["episode_slots"][
+                            relative
+                        ],
                     }
                     for relative in expected_episodes
                 },

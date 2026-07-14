@@ -20,12 +20,17 @@ from studybench.react import (
     TrajectoryRecordingReAct,
     _artifact_inventory,
     _dspy_usage_record,
+    _episode_server_url,
     _stored_completed_study_config,
     _validate_completed_study,
     make_tools,
     runtime_dspy_tool_contract,
 )
 from studybench.rollout import _validate_final_episode
+from studybench.provenance import (
+    server_assignment_record,
+    validate_local_server_urls,
+)
 from studybench.study_protocol import (
     DSPY_REPOSITORY_TOOL_CONTRACT,
     DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
@@ -34,6 +39,27 @@ from studybench.tools import READ_MAX_LINES as NATIVE_READ_MAX_LINES
 
 
 class ReactStudyIntegrityTests(unittest.TestCase):
+    def test_episode_routing_uses_canonical_slot_after_pending_filtering(self) -> None:
+        episodes = [f"direct/r0/q{index}.json" for index in range(6)]
+        slots = server_assignment_record(episodes, 3)["episode_slots"]
+        pending = [episodes[2], episodes[5]]
+        urls = validate_local_server_urls(
+            "http://localhost:8302/v1,http://localhost:8300/v1,"
+            "http://localhost:8301/v1"
+        )
+        permuted = validate_local_server_urls(
+            "http://127.0.0.1:8301/v1,http://localhost:8302/v1,"
+            "http://[::1]:8300/v1"
+        )
+        self.assertEqual(permuted, urls)
+        self.assertEqual(
+            [
+                _episode_server_url(urls, {"server_slot": slots[relative]})
+                for relative in pending
+            ],
+            ["http://localhost:8302/v1", "http://localhost:8302/v1"],
+        )
+
     def test_chat_to_json_fallback_is_parse_only_and_response_audited(self) -> None:
         signature = dspy.Signature("question -> answer")
         lm = SimpleNamespace(provider_attempt_count=0, history=[])

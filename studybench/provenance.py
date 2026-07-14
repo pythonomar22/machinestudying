@@ -68,6 +68,8 @@ from .study_protocol import (
 
 
 SCHEMA_VERSION = 1
+SERVER_ASSIGNMENT_POLICY = "canonical-grid-modulo-server-count-v1"
+SERVER_ENDPOINT_ORDER_POLICY = "ascending-canonical-loopback-port-v1"
 VLLM_VERSION = "0.24.0"
 VLLM_PYTHON_VERSION = "3.12.11"
 MAIN_PYTHON_VERSION = "3.14.6"
@@ -134,7 +136,9 @@ def validate_local_server_urls(raw: str, *, expected_count: int | None = None) -
 
     Endpoint ports are deliberately not part of run identity because Slurm
     assigns a fresh collision-free port range on retry.  The server count and
-    all model/environment identities remain manifest-bound.
+    all model/environment identities remain manifest-bound. Normalized URLs
+    are returned in ascending numeric-port order so a permuted CLI list cannot
+    silently change the meaning of a manifest-bound server slot.
     """
 
     if not isinstance(raw, str) or not raw:
@@ -173,7 +177,57 @@ def validate_local_server_urls(raw: str, *, expected_count: int | None = None) -
             f"received {len(canonical)} model server URL(s), environment declares "
             f"{expected_count}"
         )
+    canonical.sort(key=lambda value: urlsplit(value).port)
     return canonical
+
+
+def server_assignment_record(
+    expected_episodes: list[str], server_count: int
+) -> dict[str, object]:
+    """Bind every canonical grid cell to one stable model-server slot.
+
+    Slots derive from the complete manifest grid, never from a filtered pending
+    queue.  A resumed run therefore preserves the original endpoint assignment
+    even when an arbitrary subset of cells is already complete.
+    """
+
+    if (
+        not isinstance(expected_episodes, list)
+        or not expected_episodes
+        or any(not isinstance(relative, str) or not relative for relative in expected_episodes)
+        or len(expected_episodes) != len(set(expected_episodes))
+    ):
+        raise ValueError("expected episodes for server assignment are invalid")
+    if type(server_count) is not int or server_count <= 0:
+        raise ValueError("server assignment requires a positive integer server count")
+    return {
+        "policy": SERVER_ASSIGNMENT_POLICY,
+        "endpoint_order_policy": SERVER_ENDPOINT_ORDER_POLICY,
+        "server_count": server_count,
+        "episode_slots": {
+            relative: index % server_count
+            for index, relative in enumerate(expected_episodes)
+        },
+    }
+
+
+def validate_server_assignment_record(
+    record: object,
+    expected_episodes: list[str],
+    server_count: int,
+) -> dict[str, int]:
+    """Return an exact canonical episode-slot map or fail closed on drift."""
+
+    expected = server_assignment_record(expected_episodes, server_count)
+    if (
+        not isinstance(record, dict)
+        or set(record) != {
+            "policy", "endpoint_order_policy", "server_count", "episode_slots"
+        }
+        or canonical_json_bytes(record) != canonical_json_bytes(expected)
+    ):
+        raise ValueError("run server assignment differs from its canonical grid policy")
+    return expected["episode_slots"]
 
 
 def _git(*args: str, cwd: Path | None = None) -> str:
@@ -2833,6 +2887,16 @@ def prepare_run(
         or not extra_record["expected_response_model"]
     ):
         raise ValueError("an explicit expected response-model identity is required")
+    server_transport = extra_record.get("server_transport")
+    server_count = (
+        server_transport.get("server_count")
+        if isinstance(server_transport, dict)
+        else None
+    )
+    if type(server_count) is not int or server_count <= 0:
+        raise ValueError(
+            "extra.server_transport.server_count must be a positive JSON integer"
+        )
     if not isinstance(questions, list) or not questions or any(
         not isinstance(question, dict) for question in questions
     ):
@@ -3030,6 +3094,7 @@ def prepare_run(
                 episode_seeds[relative] = stable_seed(
                     master_seed, seed_namespace, seed_group, task, qid, budget, rollout
                 )
+    server_assignment = server_assignment_record(expected, server_count)
     presented_prompt_hashes = {
         q["id"]: sha256_bytes((prompt_prefix + q["question"]).encode("utf-8"))
         for q in questions
@@ -3060,6 +3125,7 @@ def prepare_run(
             ],
             "episode_seeds": episode_seeds,
         },
+        "server_assignment": server_assignment,
         "budgets": budgets,
         "rollouts": rollouts,
         "questions": question_records,
@@ -3143,8 +3209,18 @@ def episode_identity(
     relative = f"{budget}/r{rollout}/{q['id']}.json"
     expected_seed = spec["seed_policy"]["episode_seeds"].get(relative)
     expected_prompt = spec["prompt_policy"]["presented_prompt_sha256"].get(q["id"])
+    server_transport = spec.get("extra", {}).get("server_transport") \
+        if isinstance(spec.get("extra"), dict) else None
+    server_count = server_transport.get("server_count") \
+        if isinstance(server_transport, dict) else None
+    episode_slots = validate_server_assignment_record(
+        spec.get("server_assignment"), spec.get("expected_episodes"), server_count
+    )
+    identity["server_slot"] = episode_slots.get(relative)
     if expected_seed != seed or expected_prompt != identity["prompt_sha256"]:
         raise ValueError("episode seed or presented prompt does not match the run manifest")
+    if type(identity["server_slot"]) is not int:
+        raise ValueError("episode server slot does not match the run manifest")
     return identity
 
 
@@ -3167,7 +3243,7 @@ def validate_resumable_episode(
             continue
         observed = episode.get(key)
         if (
-            key in {"seed", "rollout"}
+            key in {"seed", "rollout", "server_slot"}
             and type(observed) is not int
             or type(observed) is not type(expected)
             or observed != expected
@@ -3536,7 +3612,7 @@ def validate_screen_failure_state(
                 continue
             observed = intent["identity"].get(key)
             if (
-                key in {"seed", "rollout"}
+                key in {"seed", "rollout", "server_slot"}
                 and type(observed) is not int
                 or type(observed) is not type(expected)
                 or canonical_json_bytes(observed) != canonical_json_bytes(expected)
@@ -3820,6 +3896,9 @@ def validate_persisted_screen_attempt_tree(
         if isinstance(spec.get("seed_policy"), dict) else None
     prompts = spec.get("prompt_policy", {}).get("presented_prompt_sha256") \
         if isinstance(spec.get("prompt_policy"), dict) else None
+    server_transport = extra.get("server_transport") if isinstance(extra, dict) else None
+    server_count = server_transport.get("server_count") \
+        if isinstance(server_transport, dict) else None
     note = spec.get("note")
     if (
         not isinstance(extra, dict)
@@ -3831,6 +3910,9 @@ def validate_persisted_screen_attempt_tree(
         or (note is not None and not isinstance(note, dict))
     ):
         raise ValueError("screen manifest ledger inputs are invalid")
+    episode_slots = validate_server_assignment_record(
+        spec.get("server_assignment"), expected, server_count
+    )
     contract = _validate_producer_contract({
         "expected_model": spec.get("model"),
         "expected_model_revision": spec.get("model_revision"),
@@ -3903,12 +3985,13 @@ def validate_persisted_screen_attempt_tree(
             "qid": qid,
             "budget": budget,
             "rollout": int(rollout_dir[1:]),
+            "server_slot": episode_slots.get(raw_relative),
             "environment_snapshot": intent_environment,
         }
         cells.append((run_task_root.joinpath(*relative.parts), identity))
     states = validate_screen_attempt_tree(context, cells, contract)
     records = []
-    for path, _ in cells:
+    for path, identity in cells:
         relative = path.relative_to(run_task_root).as_posix()
         state = states[relative]
         if require_complete and not path.is_file():
@@ -3925,6 +4008,7 @@ def validate_persisted_screen_attempt_tree(
             "path": state["intent"].relative_to(run_task_root).as_posix(),
             "sha256": sha256_bytes(intent_bytes),
             "bytes": len(intent_bytes),
+            "server_slot": identity["server_slot"],
             "outcome": (
                 "final" if path.is_file()
                 else ("failed" if state["failed_attempts"] else "ambiguous")

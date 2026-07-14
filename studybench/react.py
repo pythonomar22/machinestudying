@@ -433,6 +433,17 @@ def _dspy_usage_record(history: object, index: int) -> dict:
     }
 
 
+def _episode_server_url(
+    urls: list[str], identity: dict[str, object]
+) -> str:
+    """Resolve transport from the manifest-bound slot, never queue position."""
+
+    slot = identity.get("server_slot") if isinstance(identity, dict) else None
+    if type(slot) is not int or slot < 0 or slot >= len(urls):
+        raise ValueError("episode identity has no valid server slot")
+    return urls[slot]
+
+
 def run_episode(corpus, tools_fns, q: dict, budget: str, rollout: int,
                 base_url: str, *, seed: int,
                 identity: dict[str, object] | None = None) -> dict:
@@ -788,7 +799,7 @@ def _run_evaluation_locked(
 
     done = 0
 
-    def one(i, raw_q, q, budget, rollout, out, seed, identity):
+    def one(raw_q, q, budget, rollout, out, seed, identity):
         nonlocal done
         try:
             lock = (
@@ -811,7 +822,8 @@ def _run_evaluation_locked(
                     context, out, identity, episode_contract
                 )
                 ep = run_episode(
-                    corpus, tools_fns, q, budget, rollout, urls[i % len(urls)],
+                    corpus, tools_fns, q, budget, rollout,
+                    _episode_server_url(urls, identity),
                     seed=seed, identity=identity,
                 )
                 _reject_invalid_final_episode(ep, identity, **episode_contract)
@@ -840,9 +852,7 @@ def _run_evaluation_locked(
             log.warning("retained failed attempt at %s", artifact)
 
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        list(pool.map(lambda item: one(*item), [
-            (index, *case) for index, case in enumerate(pending)
-        ]))
+        list(pool.map(lambda item: one(*item), pending))
 
     statuses = {}
     for _, _, _, _, out, _, identity in cases:

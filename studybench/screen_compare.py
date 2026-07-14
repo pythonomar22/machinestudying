@@ -40,6 +40,7 @@ from .provenance import (
     normalized_environment,
     validate_id,
     validate_local_server_urls,
+    validate_server_assignment_record,
 )
 
 
@@ -593,6 +594,19 @@ def _validate_complete_grid(arm: LoadedScreenArm) -> None:
         for rollout in range(arm.spec["rollouts"])
         for qid in qids
     ]
+    extra = arm.spec.get("extra")
+    server_transport = extra.get("server_transport") \
+        if isinstance(extra, dict) else None
+    server_count = server_transport.get("server_count") \
+        if isinstance(server_transport, dict) else None
+    try:
+        validate_server_assignment_record(
+            arm.spec.get("server_assignment"), expected_paths, server_count
+        )
+    except (TypeError, ValueError) as exc:
+        raise ScreenComparisonIntegrityError(
+            f"local screen server assignment is invalid: {exc}"
+        ) from exc
     seed_policy = arm.spec.get("seed_policy")
     episode_seeds = (
         seed_policy.get("episode_seeds")
@@ -996,6 +1010,7 @@ def _pairing_records(
     control_records = strict_compare._population_record_map(control)
     treatment_records = strict_compare._population_record_map(treatment)
     seeds = control.spec["seed_policy"]["episode_seeds"]
+    slots = control.spec["server_assignment"]["episode_slots"]
     question_hashes = {
         record["id"]: record["sha256"] for record in control.spec["questions"]
     }
@@ -1017,6 +1032,7 @@ def _pairing_records(
                 "budget": budget,
                 "rollout": rollout,
                 "paired_seed": seeds[relative],
+                "server_slot": slots[relative],
                 "control": {
                     "episode_sha256": control_records[key]["episode_sha256"],
                     "grade_sha256": control_records[key]["grade_sha256"],

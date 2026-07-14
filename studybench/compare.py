@@ -32,7 +32,11 @@ from .integrity import (
     write_immutable_json,
 )
 from .preregistration import PreregistrationError, validate_preregistration
-from .provenance import normalized_environment, validate_id
+from .provenance import (
+    normalized_environment,
+    validate_id,
+    validate_server_assignment_record,
+)
 from . import report
 
 
@@ -726,6 +730,21 @@ def _generation_identity_map(
         f"{budget}/r{rollout}/{qid}.json": (budget, rollout, qid)
         for budget, rollout, qid in grades
     }
+    extra = arm.spec.get("extra")
+    server_transport = extra.get("server_transport") \
+        if isinstance(extra, dict) else None
+    server_count = server_transport.get("server_count") \
+        if isinstance(server_transport, dict) else None
+    try:
+        episode_slots = validate_server_assignment_record(
+            arm.spec.get("server_assignment"),
+            arm.spec.get("expected_episodes"),
+            server_count,
+        )
+    except (TypeError, ValueError) as exc:
+        raise ComparisonIntegrityError(
+            f"run server assignment is invalid: {exc}"
+        ) from exc
     if set(raw) != set(expected_paths):
         raise ComparisonIntegrityError(
             "generation identity grid does not match the population"
@@ -743,6 +762,7 @@ def _generation_identity_map(
             "response_models",
             "system_fingerprints",
             "missing_system_fingerprint_calls",
+            "server_slot",
         }:
             raise ComparisonIntegrityError(
                 "per-episode generation identity fields are invalid"
@@ -751,6 +771,7 @@ def _generation_identity_map(
         system_fingerprints = identity.get("system_fingerprints")
         provider_call_count = identity.get("provider_call_count")
         missing_calls = identity.get("missing_system_fingerprint_calls")
+        server_slot = identity.get("server_slot")
         if (
             identity.get("harness_usage")
             not in {"native_turns", "dspy_usage_ledger"}
@@ -773,6 +794,8 @@ def _generation_identity_map(
             or len(system_fingerprints) > provider_call_count - missing_calls
             or bool(system_fingerprints)
             != (missing_calls < provider_call_count)
+            or type(server_slot) is not int
+            or server_slot != episode_slots.get(relative)
         ):
             raise ComparisonIntegrityError(
                 "per-episode generation identity is invalid"
@@ -842,6 +865,7 @@ def _paired_generation_runtime(
             left["harness_usage"] != right["harness_usage"]
             or left["response_models"] != right["response_models"]
             or left["system_fingerprints"] != right["system_fingerprints"]
+            or left["server_slot"] != right["server_slot"]
         ):
             mismatches.append(record)
         if (
@@ -1563,6 +1587,7 @@ def _pairing_records(control: LoadedArm, treatment: LoadedArm) -> list[dict[str,
     control_records = _population_record_map(control)
     treatment_records = _population_record_map(treatment)
     seeds = control.spec["seed_policy"]["episode_seeds"]
+    slots = control.spec["server_assignment"]["episode_slots"]
     question_hashes = {
         record["id"]: record["sha256"] for record in control.spec["questions"]
     }
@@ -1585,6 +1610,7 @@ def _pairing_records(control: LoadedArm, treatment: LoadedArm) -> list[dict[str,
                     "budget": budget,
                     "rollout": rollout,
                     "paired_seed": seeds[relative],
+                    "server_slot": slots[relative],
                     "control": {
                         "episode_sha256": control_records[key]["episode_sha256"],
                         "grade_sha256": control_records[key]["grade_sha256"],

@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from studybench import compare, grade as grade_module, report
 from studybench.integrity import canonical_json_bytes, sha256_bytes, sha256_json, stable_seed
-from studybench.provenance import environment_contract_record
+from studybench.provenance import environment_contract_record, server_assignment_record
 
 
 QIDS = ("q1", "q2")
@@ -203,6 +203,7 @@ def run_spec(run_id: str, *, treatment: bool) -> dict:
             ],
             "episode_seeds": seeds,
         },
+        "server_assignment": server_assignment_record(expected, 2),
         "budgets": report.BUDGET_ORDER,
         "rollouts": ROLLOUTS,
         "questions": [{"id": qid, "sha256": sha256_json({"id": qid})} for qid in QIDS],
@@ -239,6 +240,7 @@ def run_spec(run_id: str, *, treatment: bool) -> dict:
         "extra": {
             "model_revision": "a" * 40,
             "expected_response_model": "generation-revision",
+            "server_transport": {"server_count": 2},
         },
     }
     spec["environment_contract"] = environment_contract_record(environment)
@@ -292,6 +294,9 @@ def loaded_arm(run_id: str, *, treatment: bool, score_offset: int) -> compare.Lo
             "response_models": ["generation-revision"],
             "system_fingerprints": ["generation-fingerprint"],
             "missing_system_fingerprint_calls": 0,
+            "server_slot": spec["server_assignment"]["episode_slots"][
+                f"{budget}/r{grade['rollout']}/{grade['qid']}.json"
+            ],
         }
         for budget in report.BUDGET_ORDER
         for grade in grades[budget]
@@ -425,6 +430,37 @@ class PairContractTests(unittest.TestCase):
             self.assertEqual(
                 point["budgets"][budget]["lenient"]["treatment_minus_control"],
                 10,
+            )
+
+    def test_generation_server_slot_mismatch_is_fatal(self) -> None:
+        treatment = deepcopy(self.treatment)
+        relative, identity = next(iter(
+            treatment.audit["generation_runtime"]["provider_identity_by_episode"].items()
+        ))
+        identity["server_slot"] = 1 - identity["server_slot"]
+        with self.assertRaisesRegex(
+            compare.ComparisonIntegrityError,
+            "per-episode generation identity is invalid",
+        ):
+            compare.validate_pair(
+                self.control, treatment, intervention_description=INTERVENTION
+            )
+
+    def test_shared_manifest_server_assignment_drift_is_fatal(self) -> None:
+        control = deepcopy(self.control)
+        treatment = deepcopy(self.treatment)
+        for arm in (control, treatment):
+            assignment = arm.audit["run_manifest"]["spec"]["server_assignment"]
+            relative = next(iter(assignment["episode_slots"]))
+            assignment["episode_slots"][relative] = (
+                assignment["episode_slots"][relative] + 1
+            ) % assignment["server_count"]
+        with self.assertRaisesRegex(
+            compare.ComparisonIntegrityError,
+            "run server assignment is invalid",
+        ):
+            compare.validate_pair(
+                control, treatment, intervention_description=INTERVENTION
             )
 
     def test_preregistration_roles_and_intervention_are_exact(self) -> None:

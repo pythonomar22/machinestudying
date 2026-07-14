@@ -845,7 +845,10 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             population[budget].append(grade)
             if diagnostic_local:
                 judge_transport_urls.add(grade["judge_base_url"])
-            generation_identity = episode_provider_identity(ep)
+            generation_identity = {
+                **episode_provider_identity(ep),
+                "server_slot": ep["server_slot"],
+            }
             generation_models.update(generation_identity["response_models"])
             generation_fingerprints.update(generation_identity["system_fingerprints"])
             generation_provider_calls += generation_identity[
