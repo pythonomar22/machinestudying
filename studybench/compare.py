@@ -36,14 +36,15 @@ from .provenance import normalized_environment, validate_id
 from . import report
 
 
-COMPARISON_SCHEMA_VERSION = 4
+COMPARISON_SCHEMA_VERSION = 5
 INTERVENTION_KIND = "study-note"
 _CLAIM_READY_JUDGE_REVISION_STATUSES = {
     "matched_complete_accepted_fingerprints_by_paired_cell",
     "not_applicable_no_judged_answers",
 }
 _CLAIM_READY_GENERATION_REVISION_STATUSES = {
-    "matched_complete_provider_fingerprint_set",
+    "matched_complete_single_provider_fingerprint_by_paired_cell",
+    "matched_pinned_generation_runtime_with_missing_fingerprints_disclosed",
 }
 BOOTSTRAP_METRICS = (
     "lenient",
@@ -694,6 +695,183 @@ def _runtime_models(arm: LoadedArm) -> tuple[list[str], list[str]]:
     return generation_models, judge_models
 
 
+def _generation_identity_map(
+    arm: LoadedArm,
+) -> dict[tuple[str, int, str], dict[str, Any]]:
+    """Validate per-episode generation identity against its arm summary."""
+
+    generation = arm.audit.get("generation_runtime")
+    raw = (
+        generation.get("provider_identity_by_episode")
+        if isinstance(generation, dict)
+        else None
+    )
+    if (
+        not isinstance(generation, dict)
+        or generation.get("provider_identity_scope")
+        != "final_manifest_episodes"
+        or not isinstance(raw, dict)
+    ):
+        raise ComparisonIntegrityError(
+            "report has no per-episode generation identity record"
+        )
+    grades = _grade_map(arm.population)
+    expected_paths = {
+        f"{budget}/r{rollout}/{qid}.json": (budget, rollout, qid)
+        for budget, rollout, qid in grades
+    }
+    if set(raw) != set(expected_paths):
+        raise ComparisonIntegrityError(
+            "generation identity grid does not match the population"
+        )
+    mapped = {}
+    models = set()
+    fingerprints = set()
+    missing = 0
+    provider_calls = 0
+    for relative, key in expected_paths.items():
+        identity = raw[relative]
+        if not isinstance(identity, dict) or set(identity) != {
+            "harness_usage",
+            "provider_call_count",
+            "response_models",
+            "system_fingerprints",
+            "missing_system_fingerprint_calls",
+        }:
+            raise ComparisonIntegrityError(
+                "per-episode generation identity fields are invalid"
+            )
+        response_models = identity.get("response_models")
+        system_fingerprints = identity.get("system_fingerprints")
+        provider_call_count = identity.get("provider_call_count")
+        missing_calls = identity.get("missing_system_fingerprint_calls")
+        if (
+            identity.get("harness_usage")
+            not in {"native_turns", "dspy_usage_ledger"}
+            or not isinstance(response_models, list)
+            or len(response_models) != 1
+            or not all(
+                isinstance(value, str) and value for value in response_models
+            )
+            or not isinstance(system_fingerprints, list)
+            or not all(
+                isinstance(value, str) and value
+                for value in system_fingerprints
+            )
+            or system_fingerprints != sorted(set(system_fingerprints))
+            or type(provider_call_count) is not int
+            or provider_call_count <= 0
+            or type(missing_calls) is not int
+            or missing_calls < 0
+            or missing_calls > provider_call_count
+            or len(system_fingerprints) > provider_call_count - missing_calls
+            or bool(system_fingerprints)
+            != (missing_calls < provider_call_count)
+        ):
+            raise ComparisonIntegrityError(
+                "per-episode generation identity is invalid"
+            )
+        models.update(response_models)
+        fingerprints.update(system_fingerprints)
+        provider_calls += provider_call_count
+        missing += missing_calls
+        mapped[key] = identity
+    if (
+        generation.get("response_models") != sorted(models)
+        or generation.get("system_fingerprints") != sorted(fingerprints)
+        or generation.get("provider_call_count") != provider_calls
+        or generation.get("missing_system_fingerprint_calls") != missing
+    ):
+        raise ComparisonIntegrityError(
+            "generation identity summary disagrees with its per-episode records"
+        )
+    return mapped
+
+
+def _paired_generation_runtime(
+    control: LoadedArm, treatment: LoadedArm
+) -> dict[str, Any]:
+    """Require matched-cell generation identities, disclosing missing counts."""
+
+    control_identity = _generation_identity_map(control)
+    treatment_identity = _generation_identity_map(treatment)
+    if set(control_identity) != set(treatment_identity):
+        raise ComparisonIntegrityError(
+            "paired generation identity grids do not match"
+        )
+    control_grades = _grade_map(control.population)
+    treatment_grades = _grade_map(treatment.population)
+    control_available = control.audit["generation_runtime"]["system_fingerprints"]
+    treatment_available = treatment.audit["generation_runtime"][
+        "system_fingerprints"
+    ]
+    if len(control_available) > 1 or len(treatment_available) > 1:
+        raise ComparisonIntegrityError(
+            "generation population contains multiple available provider "
+            "fingerprints; homogeneous generation runtime is required"
+        )
+    records = []
+    mismatches = []
+    all_fingerprints_complete = True
+    for key in sorted(
+        control_identity,
+        key=lambda value: (
+            report.BUDGET_ORDER.index(value[0]), value[1], value[2]
+        ),
+    ):
+        budget, rollout, qid = key
+        left = control_identity[key]
+        right = treatment_identity[key]
+        record = {
+            "budget": budget,
+            "rollout": rollout,
+            "qid": qid,
+            "control_episode_status": control_grades[key]["episode_status"],
+            "treatment_episode_status": treatment_grades[key]["episode_status"],
+            "control": left,
+            "treatment": right,
+        }
+        records.append(record)
+        if (
+            left["harness_usage"] != right["harness_usage"]
+            or left["response_models"] != right["response_models"]
+            or left["system_fingerprints"] != right["system_fingerprints"]
+        ):
+            mismatches.append(record)
+        if (
+            left["missing_system_fingerprint_calls"]
+            or right["missing_system_fingerprint_calls"]
+        ):
+            all_fingerprints_complete = False
+    if mismatches:
+        preview = ", ".join(
+            f"{record['budget']}/r{record['rollout']}/{record['qid']}"
+            for record in mismatches[:10]
+        )
+        raise ComparisonIntegrityError(
+            "paired generation identities differ at " + preview
+        )
+    if all_fingerprints_complete:
+        verification = (
+            "matched_complete_single_provider_fingerprint_by_paired_cell"
+        )
+    else:
+        verification = (
+            "matched_pinned_generation_runtime_with_missing_fingerprints_"
+            "disclosed"
+        )
+    return {
+        "comparison_scope": "exact_question_rollout_cells",
+        "verification": verification,
+        "claim_ready_requires_at_most_one_available_fingerprint_per_arm": True,
+        "missing_fingerprint_calls_are_claim_readiness_gated": False,
+        "missing_call_counts_are_equality_gated": False,
+        "provider_call_counts_are_equality_gated": False,
+        "records": records,
+        "sha256": sha256_json(records),
+    }
+
+
 _BOUND_PREREGISTRATION_KEYS = {
     "schema_version",
     "status",
@@ -842,16 +1020,12 @@ def validate_pair(
             "paired run specifications differ outside the disclosed note intervention"
             + (f": {preview}" if preview else "")
         )
-    control_generation, control_judge = _runtime_models(control)
-    treatment_generation, treatment_judge = _runtime_models(treatment)
-    if control_generation != treatment_generation or control_judge != treatment_judge:
+    _, control_judge = _runtime_models(control)
+    _, treatment_judge = _runtime_models(treatment)
+    if control_judge != treatment_judge:
         raise ComparisonIntegrityError("paired arms resolved to different provider models")
+    generation_runtime_pairing = _paired_generation_runtime(control, treatment)
     control_fingerprints = control.audit["generation_runtime"].get("system_fingerprints")
-    treatment_fingerprints = treatment.audit["generation_runtime"].get(
-        "system_fingerprints"
-    )
-    if control_fingerprints != treatment_fingerprints:
-        raise ComparisonIntegrityError("paired arms have different generation fingerprints")
 
     control_grading = control.audit["grading_manifest"]["config"]
     treatment_grading = treatment.audit["grading_manifest"]["config"]
@@ -1015,13 +1189,10 @@ def validate_pair(
         },
         "matched_run_specification_sha256": sha256_json(normalized_control),
         "matched_grading_contract_sha256": sha256_json(control_grading_contract),
-        "generation_revision_verification": (
-            "matched_complete_provider_fingerprint_set"
-            if control_fingerprints
-            and control_missing_generation == 0
-            and treatment_missing_generation == 0
-            else "provider_fingerprint_incomplete_and_disclosed"
-        ),
+        "generation_revision_verification": generation_runtime_pairing[
+            "verification"
+        ],
+        "generation_runtime_pairing": generation_runtime_pairing,
         "judge_revision_verification": judge_revision_verification,
         "accepted_judge_fingerprint_pairing": {
             "records": fingerprint_pairing,

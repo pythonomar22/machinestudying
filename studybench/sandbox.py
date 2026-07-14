@@ -16,14 +16,19 @@ wall-clock and POSIX resource limits. This is container isolation, not a VM: the
 Apptainer runtime, image, system mounts, and host kernel remain trusted.
 
 Tree-sitter is a TypeScript *syntax* check only. Strict compilation fails closed
-unless ``STUDYBENCH_TYPESCRIPT_CHECKER`` and its
-``STUDYBENCH_TYPESCRIPT_CHECKER_SHA256`` pin an absolute executable. The checker
-contract is ``CHECKER SOURCE_PATH typescript|tsx``; it must return zero only after
-performing a real repository-appropriate compile/type check.
+unless ``STUDYBENCH_TYPESCRIPT_CHECKER`` and its SHA-256 pin an absolute
+executable, while ``STUDYBENCH_TYPESCRIPT_CHECKER_BUNDLE`` and its SHA-256 pin a
+canonical manifest of the checker, compiler, and all supporting artifacts. The
+checker contract is ``CHECKER SOURCE_PATH typescript|tsx``. Before it is treated
+as ready, the checker must pass the built-in well-typed, type-error, and
+import-dependent calibration protocol. This rejects an unconditional-success
+wrapper; the manifest still requires human review for completeness and for the
+checker command's suitability to the target repository.
 """
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import dataclass
 import hashlib
 from importlib.metadata import PackageNotFoundError, version
@@ -38,6 +43,7 @@ import tempfile
 import threading
 
 from .dataset import ROOT
+from .integrity import canonical_json_bytes, read_artifact_bytes, strict_json_loads
 
 PYTHON_BIN = ROOT / ".venv-dspy/bin/python"
 RESOURCE_LAUNCHER_VERSION = "3.12.11"
@@ -55,6 +61,11 @@ APPTAINER_BIN_ENV = "STUDYBENCH_APPTAINER_BIN"
 APPTAINER_SHA256_ENV = "STUDYBENCH_APPTAINER_SHA256"
 TYPESCRIPT_CHECKER_ENV = "STUDYBENCH_TYPESCRIPT_CHECKER"
 TYPESCRIPT_CHECKER_SHA256_ENV = "STUDYBENCH_TYPESCRIPT_CHECKER_SHA256"
+TYPESCRIPT_CHECKER_BUNDLE_ENV = "STUDYBENCH_TYPESCRIPT_CHECKER_BUNDLE"
+TYPESCRIPT_CHECKER_BUNDLE_SHA256_ENV = (
+    "STUDYBENCH_TYPESCRIPT_CHECKER_BUNDLE_SHA256"
+)
+TYPESCRIPT_CALIBRATION_PROTOCOL = "studybench-typescript-checker-v1"
 
 FENCE = re.compile(r"```[ \t]*([\w+-]*)[^\n]*\n(.*?)```", re.DOTALL)
 SHA256 = re.compile(r"[0-9a-f]{64}")
@@ -91,6 +102,10 @@ def _configuration_sha256(value: dict) -> str:
 
 _HASH_CACHE: dict[tuple[str, int, int, int, int, int], str] = {}
 _HASH_LOCK = threading.Lock()
+_TS_CALIBRATION_CACHE: dict[
+    tuple[str, str, str, str], tuple[dict, str | None]
+] = {}
+_TS_CALIBRATION_LOCK = threading.Lock()
 
 
 def _sha256_file(path: Path) -> str:
@@ -334,6 +349,21 @@ def _canonical_executable(raw: str, label: str) -> tuple[Path | None, str | None
         return None, f"configured executable is not a canonical executable file: {path}"
     if path.stat().st_mode & 0o022:
         return None, f"configured executable must not be group/world writable: {path}"
+    return path, None
+
+
+def _canonical_regular_file(raw: str, label: str) -> tuple[Path | None, str | None]:
+    path = Path(raw)
+    if not path.is_absolute():
+        return None, f"{label} must be an absolute path"
+    try:
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        return None, f"configured file is unavailable: {path}: {exc}"
+    if resolved != path or path.is_symlink() or not path.is_file():
+        return None, f"configured file is not a canonical regular file: {path}"
+    if path.stat().st_mode & 0o022:
+        return None, f"configured file must not be group/world writable: {path}"
     return path, None
 
 
@@ -613,6 +643,341 @@ def _configured_typescript_checker(
     return checker, observed, None
 
 
+_TYPESCRIPT_BUNDLE_ROLES = {
+    "checker",
+    "compiler",
+    "configuration",
+    "dependency",
+    "library",
+    "runtime",
+}
+_TYPESCRIPT_CALIBRATION_CASES = (
+    {
+        "name": "well_typed",
+        "mode": "typescript",
+        "filename": "answer.ts",
+        "source": "export const studybenchValue: number = 1;\n",
+        "support": (),
+        "expected": "accept",
+    },
+    {
+        "name": "type_error",
+        "mode": "typescript",
+        "filename": "answer.ts",
+        "source": 'export const studybenchValue: number = "not a number";\n',
+        "support": (),
+        "expected": "reject",
+    },
+    {
+        "name": "relative_import",
+        "mode": "tsx",
+        "filename": "answer.tsx",
+        "source": (
+            'import { dependency } from "./dependency";\n'
+            "declare const React: { createElement(...args: unknown[]): unknown };\n"
+            "declare namespace JSX {\n"
+            "  interface IntrinsicElements { div: { value: number } }\n"
+            "}\n"
+            "export const studybenchElement = <div value={dependency} />;\n"
+        ),
+        "support": (("dependency.ts", "export const dependency: number = 1;\n"),),
+        "expected": "accept",
+    },
+)
+
+
+def _typescript_bundle_configuration(
+    checker: Path,
+    checker_sha256: str,
+) -> tuple[dict, str | None]:
+    raw = os.environ.get(TYPESCRIPT_CHECKER_BUNDLE_ENV, "")
+    expected = os.environ.get(TYPESCRIPT_CHECKER_BUNDLE_SHA256_ENV, "").lower()
+    metadata = {
+        "checker_bundle": raw or None,
+        "checker_bundle_sha256": None,
+        "expected_checker_bundle_sha256": expected or None,
+        "checker_bundle_artifacts": None,
+        "checker_bundle_artifacts_sha256": None,
+    }
+    if not raw:
+        return metadata, f"{TYPESCRIPT_CHECKER_BUNDLE_ENV} is not configured"
+    if not SHA256.fullmatch(expected):
+        return metadata, (
+            f"{TYPESCRIPT_CHECKER_BUNDLE_SHA256_ENV} must be exactly 64 hex digits"
+        )
+
+    bundle, error = _canonical_regular_file(raw, TYPESCRIPT_CHECKER_BUNDLE_ENV)
+    if error:
+        return metadata, error
+    assert bundle is not None
+    try:
+        bundle_bytes = read_artifact_bytes(bundle)
+    except (OSError, ValueError) as exc:
+        return metadata, f"cannot read TypeScript checker bundle: {exc}"
+    observed_bundle_sha256 = hashlib.sha256(bundle_bytes).hexdigest()
+    metadata["checker_bundle"] = str(bundle)
+    metadata["checker_bundle_sha256"] = observed_bundle_sha256
+    if observed_bundle_sha256 != expected:
+        return metadata, (
+            "TypeScript checker bundle hash mismatch: observed "
+            f"{observed_bundle_sha256}, expected {expected}"
+        )
+
+    try:
+        manifest = strict_json_loads(
+            bundle_bytes,
+            label="TypeScript checker bundle",
+        )
+    except ValueError as exc:
+        return metadata, str(exc)
+    if not isinstance(manifest, dict):
+        return metadata, "TypeScript checker bundle must be a JSON object"
+    if set(manifest) != {"artifacts", "calibration_protocol", "schema_version"}:
+        return metadata, (
+            "TypeScript checker bundle must contain exactly artifacts, "
+            "calibration_protocol, and schema_version"
+        )
+    if canonical_json_bytes(manifest) != bundle_bytes:
+        return metadata, "TypeScript checker bundle is not canonical JSON"
+    if type(manifest["schema_version"]) is not int or manifest["schema_version"] != 1:
+        return metadata, "TypeScript checker bundle schema_version must be 1"
+    if manifest["calibration_protocol"] != TYPESCRIPT_CALIBRATION_PROTOCOL:
+        return metadata, (
+            "TypeScript checker bundle calibration_protocol must be "
+            f"{TYPESCRIPT_CALIBRATION_PROTOCOL!r}"
+        )
+
+    artifacts = manifest["artifacts"]
+    if not isinstance(artifacts, list) or not artifacts:
+        return metadata, "TypeScript checker bundle artifacts must be a non-empty list"
+    validated: list[dict] = []
+    for index, artifact in enumerate(artifacts):
+        label = f"TypeScript checker bundle artifact {index}"
+        if not isinstance(artifact, dict) or set(artifact) != {
+            "path", "roles", "sha256",
+        }:
+            return metadata, f"{label} must contain exactly path, roles, and sha256"
+        raw_path = artifact["path"]
+        declared_sha256 = artifact["sha256"]
+        roles = artifact["roles"]
+        if not isinstance(raw_path, str) or not raw_path:
+            return metadata, f"{label} path must be a non-empty string"
+        if not isinstance(declared_sha256, str) or not SHA256.fullmatch(
+            declared_sha256
+        ):
+            return metadata, f"{label} sha256 must be exactly 64 lowercase hex digits"
+        if (
+            not isinstance(roles, list)
+            or not roles
+            or any(not isinstance(role, str) for role in roles)
+            or roles != sorted(set(roles))
+            or not set(roles).issubset(_TYPESCRIPT_BUNDLE_ROLES)
+        ):
+            return metadata, (
+                f"{label} roles must be a sorted unique non-empty subset of "
+                f"{sorted(_TYPESCRIPT_BUNDLE_ROLES)}"
+            )
+        validator = (
+            _canonical_executable
+            if "checker" in roles or "runtime" in roles
+            else _canonical_regular_file
+        )
+        path, path_error = validator(raw_path, f"{label} path")
+        if path_error:
+            return metadata, path_error
+        assert path is not None
+        observed_sha256 = _sha256_file(path)
+        if observed_sha256 != declared_sha256:
+            return metadata, (
+                f"{label} hash mismatch: observed {observed_sha256}, "
+                f"expected {declared_sha256}"
+            )
+        validated.append(
+            {"path": str(path), "roles": roles, "sha256": observed_sha256}
+        )
+
+    paths = [artifact["path"] for artifact in validated]
+    if paths != sorted(paths) or len(paths) != len(set(paths)):
+        return metadata, (
+            "TypeScript checker bundle artifacts must have unique paths sorted "
+            "lexicographically"
+        )
+    checker_artifacts = [
+        artifact for artifact in validated if "checker" in artifact["roles"]
+    ]
+    if len(checker_artifacts) != 1:
+        return metadata, (
+            "TypeScript checker bundle must identify exactly one checker artifact"
+        )
+    if (
+        checker_artifacts[0]["path"] != str(checker)
+        or checker_artifacts[0]["sha256"] != checker_sha256
+    ):
+        return metadata, (
+            "TypeScript checker bundle checker artifact does not match the "
+            "configured checker"
+        )
+    if not any("compiler" in artifact["roles"] for artifact in validated):
+        return metadata, (
+            "TypeScript checker bundle must identify at least one compiler artifact"
+        )
+
+    metadata["checker_bundle_artifacts"] = validated
+    metadata["checker_bundle_artifacts_sha256"] = hashlib.sha256(
+        canonical_json_bytes(validated)
+    ).hexdigest()
+    return metadata, None
+
+
+def _typescript_checker_calibration(
+    checker: Path,
+    checker_sha256: str,
+    bundle_metadata: dict,
+) -> tuple[dict, str | None]:
+    bundle_sha256 = bundle_metadata["checker_bundle_sha256"]
+    artifacts_sha256 = bundle_metadata["checker_bundle_artifacts_sha256"]
+    assert isinstance(bundle_sha256, str)
+    assert isinstance(artifacts_sha256, str)
+    key = (str(checker), checker_sha256, bundle_sha256, artifacts_sha256)
+
+    with _TS_CALIBRATION_LOCK:
+        cached = _TS_CALIBRATION_CACHE.get(key)
+        if cached is not None:
+            record, error = cached
+            return deepcopy(record), error
+
+        results = []
+        with tempfile.TemporaryDirectory(
+            prefix="studybench-ts-calibration-"
+        ) as temporary:
+            root = Path(temporary)
+            for case in _TYPESCRIPT_CALIBRATION_CASES:
+                scratch = root / case["name"]
+                scratch.mkdir(mode=0o700)
+                source = scratch / case["filename"]
+                source.write_text(case["source"], encoding="utf-8")
+                support_records = []
+                for filename, contents in case["support"]:
+                    support = scratch / filename
+                    support.write_text(contents, encoding="utf-8")
+                    support_records.append(
+                        {
+                            "path": filename,
+                            "sha256": hashlib.sha256(
+                                contents.encode("utf-8")
+                            ).hexdigest(),
+                        }
+                    )
+                code, _output, timed_out, launched = _run_limited(
+                    [str(checker), str(source), case["mode"]],
+                    scratch,
+                )
+                if not launched or code is None or timed_out:
+                    observed = "infrastructure-error"
+                elif code < 0:
+                    observed = "signal"
+                else:
+                    observed = "accept" if code == 0 else "reject"
+                passed = observed == case["expected"]
+                results.append(
+                    {
+                        "expected": case["expected"],
+                        "mode": case["mode"],
+                        "name": case["name"],
+                        "observed": observed,
+                        "passed": passed,
+                        "source_sha256": hashlib.sha256(
+                            case["source"].encode("utf-8")
+                        ).hexdigest(),
+                        "support_artifacts": support_records,
+                    }
+                )
+                if observed in {"infrastructure-error", "signal"}:
+                    break
+
+        passed = len(results) == len(_TYPESCRIPT_CALIBRATION_CASES) and all(
+            result["passed"] for result in results
+        )
+        record = {
+            "cases": results,
+            "passed": passed,
+            "protocol": TYPESCRIPT_CALIBRATION_PROTOCOL,
+        }
+        if not passed:
+            failures = [
+                f"{result['name']} expected {result['expected']} but observed "
+                f"{result['observed']}"
+                for result in results
+                if not result["passed"]
+            ]
+            if len(results) != len(_TYPESCRIPT_CALIBRATION_CASES):
+                failures.append("calibration stopped after an infrastructure failure")
+            error = (
+                "TypeScript checker semantic calibration failed: "
+                + "; ".join(failures)
+            )
+            _TS_CALIBRATION_CACHE[key] = (deepcopy(record), error)
+            return record, error
+
+        _TS_CALIBRATION_CACHE[key] = (deepcopy(record), None)
+        return record, None
+
+
+def _typescript_checker_configuration(
+    explicit: str | Path | None,
+    explicit_sha256: str | None,
+) -> tuple[Path | None, dict, str | None]:
+    raw = (
+        str(explicit)
+        if explicit is not None
+        else os.environ.get(TYPESCRIPT_CHECKER_ENV, "")
+    )
+    expected = (
+        explicit_sha256
+        if explicit_sha256 is not None
+        else os.environ.get(TYPESCRIPT_CHECKER_SHA256_ENV, "")
+    ).lower()
+    metadata = {
+        "configured_checker": raw or None,
+        "configured_checker_sha256": None,
+        "expected_checker_sha256": expected or None,
+        "checker_bundle": os.environ.get(TYPESCRIPT_CHECKER_BUNDLE_ENV) or None,
+        "checker_bundle_sha256": None,
+        "expected_checker_bundle_sha256": (
+            os.environ.get(TYPESCRIPT_CHECKER_BUNDLE_SHA256_ENV, "").lower() or None
+        ),
+        "checker_bundle_artifacts": None,
+        "checker_bundle_artifacts_sha256": None,
+        "checker_calibration": None,
+    }
+    checker, observed_sha256, error = _configured_typescript_checker(
+        explicit,
+        explicit_sha256,
+    )
+    metadata["configured_checker_sha256"] = observed_sha256
+    if error:
+        return None, metadata, error
+    if checker is None or observed_sha256 is None:
+        return None, metadata, f"{TYPESCRIPT_CHECKER_ENV} is not configured"
+
+    bundle_metadata, error = _typescript_bundle_configuration(
+        checker,
+        observed_sha256,
+    )
+    metadata.update(bundle_metadata)
+    if error:
+        return None, metadata, error
+    calibration, error = _typescript_checker_calibration(
+        checker,
+        observed_sha256,
+        bundle_metadata,
+    )
+    metadata["checker_calibration"] = calibration
+    if error:
+        return None, metadata, error
+    return checker, metadata, None
+
+
 def configuration_record(language: str) -> dict:
     """Return the immutable checker identity without evaluating generated code."""
 
@@ -642,7 +1007,10 @@ def configuration_record(language: str) -> dict:
                 "checker_sha256": None,
                 "error": f"TypeScript syntax checker unavailable: {exc}",
             }
-        configured, observed_sha, error = _configured_typescript_checker(None, None)
+        configured, checker_metadata, error = _typescript_checker_configuration(
+            None,
+            None,
+        )
         launcher, launcher_error = _resource_launcher_record()
         ready = configured is not None and launcher is not None
         return {
@@ -652,12 +1020,12 @@ def configuration_record(language: str) -> dict:
             "sandboxed": False,
             "checker": str(configured) if ready else parser["syntax_checker"],
             "checker_version": None if ready else parser["syntax_checker_version"],
-            "checker_sha256": observed_sha if ready else parser["syntax_checker_sha256"],
-            "configured_checker": os.environ.get(TYPESCRIPT_CHECKER_ENV) or None,
-            "configured_checker_sha256": observed_sha,
-            "expected_checker_sha256": (
-                os.environ.get(TYPESCRIPT_CHECKER_SHA256_ENV, "").lower() or None
+            "checker_sha256": (
+                checker_metadata["configured_checker_sha256"]
+                if ready
+                else parser["syntax_checker_sha256"]
             ),
+            **checker_metadata,
             **parser,
             **(launcher or {
                 "resource_launcher": None,
@@ -666,11 +1034,7 @@ def configuration_record(language: str) -> dict:
                 "resource_launcher_config": None,
                 "resource_launcher_config_sha256": None,
             }),
-            "error": launcher_error or error or (
-                None
-                if ready
-                else f"{TYPESCRIPT_CHECKER_ENV} is not configured"
-            ),
+            "error": launcher_error or error,
         }
     return {
         "language": language,
@@ -707,28 +1071,16 @@ def _check_typescript(
     if not syntax["syntax_ok"]:
         return {**base, "detail": syntax["detail"]}
 
-    configured, observed_sha, error = _configured_typescript_checker(
+    configured, checker_metadata, error = _typescript_checker_configuration(
         checker, checker_sha256
     )
     if error:
         return {
             **base,
-            "configured_checker": (
-                str(checker)
-                if checker is not None
-                else os.environ.get(TYPESCRIPT_CHECKER_ENV)
-            ),
-            "configured_checker_sha256": observed_sha,
+            **checker_metadata,
             "detail": f"{syntax['detail']}; {error}",
         }
-    if configured is None:
-        return {
-            **base,
-            "detail": (
-                f"{syntax['detail']}; strict compilation unavailable because "
-                f"{TYPESCRIPT_CHECKER_ENV} is not configured"
-            ),
-        }
+    assert configured is not None
 
     with tempfile.TemporaryDirectory() as temporary:
         scratch = Path(temporary)
@@ -753,8 +1105,9 @@ def _check_typescript(
         "check_level": "configured-compiler",
         "checker": str(configured),
         "checker_version": None,
-        "checker_sha256": observed_sha,
+        "checker_sha256": checker_metadata["configured_checker_sha256"],
         "checker_launched": launched,
+        **checker_metadata,
         "syntax_checker": syntax["checker"],
         "syntax_checker_version": syntax["checker_version"],
         "syntax_checker_sha256": syntax["checker_sha256"],

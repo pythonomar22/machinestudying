@@ -14,6 +14,12 @@ class ScriptContractTests(unittest.TestCase):
     def read(self, name: str) -> str:
         return (SCRIPTS / name).read_text(encoding="utf-8")
 
+    def test_agent_instruction_files_are_byte_identical(self) -> None:
+        self.assertEqual(
+            (ROOT / "AGENTS.md").read_bytes(),
+            (ROOT / "CLAUDE.md").read_bytes(),
+        )
+
     def test_every_runner_is_valid_bash(self) -> None:
         paths = sorted((*SCRIPTS.glob("*.sh"), *SCRIPTS.glob("*.sbatch")))
         self.assertTrue(paths)
@@ -126,6 +132,11 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn('"policy": "clear-and-allowlist-v1"', serve)
         self.assertIn('"proxy_policy": "cleared"', serve)
         self.assertIn("--host 127.0.0.1", serve)
+        self.assertIn("--enable-request-id-headers", serve)
+        self.assertIn(
+            "--structured-outputs-config '{\"enable_in_reasoning\":true}'",
+            serve,
+        )
         self.assertIn("chmod 600 \"$TOPOLOGY_TMP\"", serve)
         self.assertIn("$LOG_PREFIX.topology", serve)
         self.assertIn("missing or concurrently changing snapshot", serve)
@@ -171,6 +182,7 @@ class ScriptContractTests(unittest.TestCase):
         rollout = self.read("rollout.sbatch")
         retry = self.read("retry-errors.sbatch")
         selfquiz = self.read("selfquiz.sbatch")
+        grade_local = self.read("grade_local.sbatch")
         for text in (react, rollout, retry):
             self.assertIn("SB_SEED_GROUP", text)
             self.assertIn("--seed-group", text)
@@ -185,6 +197,9 @@ class ScriptContractTests(unittest.TestCase):
             self.assertIn("#SBATCH --partition=matx", text)
             self.assertIn("#SBATCH --gpus-per-node=6", text)
             self.assertNotIn("#SBATCH --partition=a3", text)
+        self.assertIn("#SBATCH --partition=matx", grade_local)
+        self.assertIn("#SBATCH --gpus-per-node=2", grade_local)
+        self.assertNotIn("#SBATCH --partition=a3", grade_local)
         launch_loop = react[react.index("for task in ${TASKS//,/ }") :]
         study_launch, evaluation_launch = launch_loop.split("    else\n", 1)
         self.assertNotIn("--preregistration", study_launch)
@@ -206,6 +221,35 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn("sync_main_environment", retry)
         self.assertIn("sync_dspy_environment", react)
         self.assertIn("sync_main_environment", rollout)
+
+    def test_local_grading_runner_is_isolated_and_diagnostic(self) -> None:
+        runner = self.read("grade_local.sbatch")
+        self.assertIn("export SB_TP=2", runner)
+        self.assertIn("export GRADER_MODEL=local", runner)
+        self.assertIn("export OPENAI_API_KEY=", runner)
+        self.assertIn("export SAKANA_API_KEY=", runner)
+        self.assertNotIn("OPENAI_API_KEY:?", runner)
+        self.assertNotIn("SAKANA_API_KEY:?", runner)
+        self.assertNotIn("api.openai.com", runner)
+        self.assertNotIn("api.sakana.ai", runner)
+        self.assertIn("sync_main_environment", runner)
+        self.assertIn("source scripts/serve_and_wait.sh", runner)
+        self.assertIn('[ "$SB_NGPU" -eq 2 ]', runner)
+        self.assertIn('[ "$SB_NSERVE" -eq 1 ]', runner)
+        self.assertIn('[ "$SB_TP_EFFECTIVE" -eq 2 ]', runner)
+        self.assertIn('require_single_csv_value BASE_URLS "$BASE_URLS"', runner)
+        self.assertIn("JUDGE_BASE_URL=$BASE_URLS", runner)
+        self.assertIn("SB_EVIDENCE_MODE", runner)
+        self.assertIn("SB_GRADE_CONCURRENCY", runner)
+        self.assertIn("SB_CI_REPLICATES", runner)
+        self.assertIn("SB_CI_SEED", runner)
+        self.assertIn("SB_LOCAL_SMOKE", runner)
+        self.assertIn("--local-smoke", runner)
+        self.assertIn("intentionally unreportable", runner)
+        self.assertIn("-m studybench.grade", runner)
+        self.assertIn("-m studybench.report", runner)
+        self.assertEqual(runner.count('--judge-base-url "$JUDGE_BASE_URL"'), 2)
+        self.assertIn("--grader local", runner)
 
     def test_shell_ids_match_python_provenance_constraints(self) -> None:
         valid = subprocess.run(

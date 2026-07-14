@@ -6,7 +6,7 @@ Be a perfectionist. Read every line of every diff, meticulously, and read the co
 
 Your first priority on any task is to understand what I actually want. That is, you can ask questions and interview me first, and only then write the code — and for every single line, ask: *is this the cleanest, simplest, most elegant way to implement that intent?* The code should be simple, elegant, and impeccably clean in service of the intent, never more complex than it needs to be.
 
-Please be minimalist hi where possible: continously clean the codebase, every file and every part of the codebase should have a well-defined and easy-to-understand and intuitive use. 
+Please be minimalist where possible: continuously clean the codebase; every file and every part of the codebase should have a well-defined, easy-to-understand, and intuitive use.
 
 ## Research integrity
 
@@ -55,4 +55,4 @@ Be aware of the GPUs that we are on. Sometimes, we will have H100s, and sometime
 
 Another thing: sometimes, we have to switch contexts: whether that means pass this off to other engineers or other coding agents: this means you must create and maintain extensive documentation about what you tried and what's currently running, and maintain all experiments and history, to the point where someone who has access to the codebase can have your same intuition and just pick up where you left off.
 
-Again, above all, we want to do true, honest, and robust research. Make sure your findings are actually findings, and you can claim them legitimately and they are true. 
+Again, above all, we want to do true, honest, and robust research. Make sure your findings are actually findings, and you can claim them legitimately and they are true.

@@ -628,8 +628,8 @@ def usage_records(lm: dspy.LM, *, phase: str, owner_id: str, seed: int) -> list[
             isinstance(value, int) and not isinstance(value, bool) and value >= 0
             for value in (prompt_raw, completion_raw)
         )
-        prompt = prompt_raw if usage_reported else 0
-        completion = completion_raw if usage_reported else 0
+        prompt = prompt_raw if usage_reported else None
+        completion = completion_raw if usage_reported else None
         records.append({
             "call_id": _record_id("call", owner_id, phase, seed, index),
             "owner_id": owner_id,
@@ -647,23 +647,47 @@ def usage_records(lm: dspy.LM, *, phase: str, owner_id: str, seed: int) -> list[
             "outputs_available": history.get("outputs") is not None,
             "prompt_tokens": prompt,
             "completion_tokens": completion,
-            "total_tokens": prompt + completion,
+            "total_tokens": prompt + completion if usage_reported else None,
             "usage_reported": usage_reported,
             "provider_usage": raw,
         })
     return records
 
 
-def usage_totals(records: list[dict]) -> dict[str, int]:
+def usage_totals(records: list[dict]) -> dict[str, object]:
+    """Summarize provider usage without converting unknown counts to zero."""
+
+    known: list[tuple[int, int, int]] = []
+    for record in records:
+        values = tuple(
+            record.get(field) if isinstance(record, dict) else None
+            for field in ("prompt_tokens", "completion_tokens", "total_tokens")
+        )
+        if (
+            isinstance(record, dict)
+            and record.get("usage_reported") is True
+            and all(type(value) is int and value >= 0 for value in values)
+            and values[2] == values[0] + values[1]
+        ):
+            known.append(values)
+    complete = len(known) == len(records)
+    known_prompt = sum(value[0] for value in known)
+    known_generated = sum(value[1] for value in known)
+    known_total = sum(value[2] for value in known)
     return {
+        "status": "complete" if complete else "incomplete",
         "calls": len(records),
-        "prompt_tokens": sum(int(record.get("prompt_tokens") or 0) for record in records),
-        "generated_tokens": sum(int(record.get("completion_tokens") or 0) for record in records),
-        "total_tokens": sum(int(record.get("total_tokens") or 0) for record in records),
+        "reported_calls": len(known),
+        "prompt_tokens": known_prompt if complete else None,
+        "generated_tokens": known_generated if complete else None,
+        "total_tokens": known_total if complete else None,
+        "known_prompt_tokens": known_prompt,
+        "known_generated_tokens": known_generated,
+        "known_total_tokens": known_total,
     }
 
 
-def usage_by_phase(records: list[dict]) -> dict[str, dict[str, int]]:
+def usage_by_phase(records: list[dict]) -> dict[str, dict[str, object]]:
     grouped: dict[str, list[dict]] = defaultdict(list)
     for record in records:
         grouped[str(record.get("phase", ""))].append(record)

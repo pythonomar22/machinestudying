@@ -1227,7 +1227,11 @@ class TrajectoryAndUsageTests(unittest.TestCase):
         ])
         records = usage_records(lm, phase="quiz", owner_id="owner", seed=11)
         self.assertEqual(usage_totals(records), {
-            "calls": 2, "prompt_tokens": 30, "generated_tokens": 8, "total_tokens": 38})
+            "status": "complete", "calls": 2, "reported_calls": 2,
+            "prompt_tokens": 30, "generated_tokens": 8, "total_tokens": 38,
+            "known_prompt_tokens": 30, "known_generated_tokens": 8,
+            "known_total_tokens": 38,
+        })
         self.assertEqual(records[0]["provider_usage"]["cached_tokens"], 2)
         self.assertEqual(records[0]["response_model"], "served-model")
         self.assertEqual(records[0]["response_id"], "response-1")
@@ -1250,6 +1254,11 @@ class TrajectoryAndUsageTests(unittest.TestCase):
         self.assertFalse(usage_ledger_audit(calls, calls + calls)["complete"])
         unreported = [dict(calls[0], usage_reported=False)]
         self.assertFalse(usage_ledger_audit(unreported, unreported)["complete"])
+        unknown = usage_totals(unreported)
+        self.assertEqual(unknown["status"], "incomplete")
+        self.assertIsNone(unknown["prompt_tokens"])
+        self.assertIsNone(unknown["generated_tokens"])
+        self.assertIsNone(unknown["total_tokens"])
         unidentified = [dict(calls[0], response_id=None)]
         self.assertFalse(usage_ledger_audit(unidentified, unidentified)["complete"])
         unhashed = [dict(calls[0], request_messages_available=False)]

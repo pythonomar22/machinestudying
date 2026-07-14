@@ -21,10 +21,11 @@ their artifacts cannot become claim-ready later.
 5. Run both arms from that clean commit, passing the same preregistration path
    and the appropriate `control` or `treatment` role.
 
-The validator requires `source_commit` to be an ancestor of the execution
-commit and permits only direct `preregistrations/*.json` changes between them.
-This two-commit design avoids asking a commit to contain its own hash while
-still proving that code and protocol files did not change after registration.
+The validator requires the execution commit to be the single-parent direct
+child of `source_commit` and permits only direct `preregistrations/*.json`
+changes in that one commit. This two-commit design avoids asking a commit to
+contain its own hash while still proving that code and protocol files did not
+change after registration.
 Any implementation, dataset, script, README, paper, human-audit protocol,
 experiment note, or other research-document change requires a new baseline
 commit and a new preregistration ID.

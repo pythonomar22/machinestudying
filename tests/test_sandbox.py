@@ -8,10 +8,50 @@ import unittest
 from unittest.mock import patch
 
 from studybench import sandbox
+from studybench.integrity import canonical_json_bytes
 
 
 def sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def typescript_checker_environment(
+    root: Path,
+    checker: Path,
+) -> tuple[dict[str, str], Path]:
+    compiler = root / "typescript-compiler.js"
+    compiler.write_text("// pinned TypeScript compiler fixture\n", encoding="utf-8")
+    artifacts = sorted(
+        [
+            {
+                "path": str(checker),
+                "roles": ["checker"],
+                "sha256": sha256(checker),
+            },
+            {
+                "path": str(compiler),
+                "roles": ["compiler"],
+                "sha256": sha256(compiler),
+            },
+        ],
+        key=lambda artifact: artifact["path"],
+    )
+    bundle = root / "typescript-checker-bundle.json"
+    bundle.write_bytes(
+        canonical_json_bytes(
+            {
+                "artifacts": artifacts,
+                "calibration_protocol": sandbox.TYPESCRIPT_CALIBRATION_PROTOCOL,
+                "schema_version": 1,
+            }
+        )
+    )
+    return {
+        sandbox.TYPESCRIPT_CHECKER_ENV: str(checker),
+        sandbox.TYPESCRIPT_CHECKER_SHA256_ENV: sha256(checker),
+        sandbox.TYPESCRIPT_CHECKER_BUNDLE_ENV: str(bundle),
+        sandbox.TYPESCRIPT_CHECKER_BUNDLE_SHA256_ENV: sha256(bundle),
+    }, compiler
 
 
 class SandboxTests(unittest.TestCase):
@@ -176,32 +216,111 @@ class SandboxTests(unittest.TestCase):
         self.assertFalse(record["ready"])
         self.assertEqual(record["syntax_core_version"], "0.26.0")
 
-    def test_typescript_compiler_must_be_content_pinned(self) -> None:
+    def test_exit_zero_wrapper_is_not_made_ready_by_hash_pinning(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
-            checker = (Path(temporary) / "ts-checker").resolve()
+            root = Path(temporary).resolve()
+            checker = root / "ts-checker"
             checker.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
             checker.chmod(0o755)
-            with patch("studybench.sandbox._run_limited") as run:
+            environment, _compiler = typescript_checker_environment(root, checker)
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch("studybench.sandbox._run_limited") as run,
+            ):
                 unpinned = sandbox._check_typescript(
                     "const value = 1;", checker=checker
                 )
             run.assert_not_called()
             self.assertFalse(unpinned["compile_ok"])
 
-            with patch(
-                "studybench.sandbox._run_limited",
-                return_value=(0, "", False, True),
-            ) as run:
-                pinned = sandbox._check_typescript(
-                    "const value = 1;",
-                    checker=checker,
-                    checker_sha256=sha256(checker),
-                )
-            run.assert_called_once()
-            self.assertTrue(pinned["compile_ok"])
-            self.assertEqual(pinned["check_level"], "configured-compiler")
-            self.assertFalse(pinned["sandboxed"])
-            self.assertEqual(pinned["checker_sha256"], sha256(checker))
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "studybench.sandbox._run_limited",
+                    return_value=(0, "", False, True),
+                ) as run,
+            ):
+                record = sandbox.configuration_record("typescript")
+                pinned = sandbox._check_typescript("const value = 1;")
+            self.assertEqual(run.call_count, 3)
+            self.assertFalse(record["ready"])
+            self.assertFalse(record["checker_calibration"]["passed"])
+            self.assertFalse(pinned["compile_ok"])
+            self.assertEqual(pinned["check_level"], "syntax-only")
+            self.assertFalse(pinned["checker_calibration"]["passed"])
+            self.assertIn("type_error", pinned["detail"])
+
+    def test_typescript_checker_requires_all_three_semantic_calibrations(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            checker = root / "ts-checker"
+            checker.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+            checker.chmod(0o755)
+            environment, _compiler = typescript_checker_environment(root, checker)
+            outcomes = iter(
+                [
+                    (0, "", False, True),
+                    (2, "type error", False, True),
+                    (0, "", False, True),
+                    (0, "", False, True),
+                ]
+            )
+            observed_import: dict[str, str] = {}
+
+            def run_checker(command: list[str], _scratch: Path):
+                if Path(command[1]).parent.name == "relative_import":
+                    observed_import["mode"] = command[2]
+                    observed_import["source"] = Path(command[1]).read_text(
+                        encoding="utf-8"
+                    )
+                    observed_import["dependency"] = (
+                        Path(command[1]).parent / "dependency.ts"
+                    ).read_text(encoding="utf-8")
+                return next(outcomes)
+
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch(
+                    "studybench.sandbox._run_limited",
+                    side_effect=run_checker,
+                ) as run,
+            ):
+                record = sandbox.configuration_record("typescript")
+                result = sandbox._check_typescript("const value: number = 1;")
+
+            self.assertEqual(run.call_count, 4)
+            self.assertTrue(record["ready"])
+            self.assertTrue(record["checker_calibration"]["passed"])
+            self.assertEqual(
+                [case["name"] for case in record["checker_calibration"]["cases"]],
+                ["well_typed", "type_error", "relative_import"],
+            )
+            self.assertEqual(observed_import["mode"], "tsx")
+            self.assertIn('from "./dependency"', observed_import["source"])
+            self.assertIn("<div value={dependency} />", observed_import["source"])
+            self.assertIn("dependency: number", observed_import["dependency"])
+            self.assertTrue(result["compile_ok"])
+            self.assertEqual(result["check_level"], "configured-compiler")
+            self.assertFalse(result["sandboxed"])
+            self.assertEqual(result["checker_sha256"], sha256(checker))
+
+    def test_typescript_bundle_artifact_drift_never_launches(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            checker = root / "ts-checker"
+            checker.write_text("#!/bin/sh\nexit 99\n", encoding="utf-8")
+            checker.chmod(0o755)
+            environment, compiler = typescript_checker_environment(root, checker)
+            compiler.write_text("// changed after attestation\n", encoding="utf-8")
+            with (
+                patch.dict(os.environ, environment, clear=True),
+                patch("studybench.sandbox._run_limited") as run,
+            ):
+                record = sandbox.configuration_record("typescript")
+            run.assert_not_called()
+            self.assertFalse(record["ready"])
+            self.assertIn("artifact", record["error"])
+            self.assertIn("hash mismatch", record["error"])
 
     def test_child_environment_does_not_inherit_credentials_or_gpus(self) -> None:
         with patch.dict(

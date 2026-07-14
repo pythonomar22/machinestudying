@@ -1,4 +1,4 @@
-"""Offline grading: sandbox compilation check, then GPT-5.4 rubric judge.
+"""Evaluation grading: deterministic code check, then a configured rubric judge.
 
 The judge prompt follows the paper's Appendix A.5 rubric-grading protocol. Claims
 use the first-author correction of 0 or 1 only (the 0.5 partial-credit level was
@@ -14,8 +14,10 @@ in runs/{run_id}/. Claim-ready grading requires an immutable run manifest; legac
 artifacts are preserved but are not silently mixed into new result populations.
 
 The judge is selected by the GRADER_MODEL env var: "openai" (gpt-5.4, the paper's
-grader — default) or "fugu" (Sakana API). Judge, evidence, and effort settings are
-encoded in separate immutable grade namespaces so populations cannot mix.
+grader — default), "fugu" (Sakana API), or "local" (the pinned Qwen model through
+an authenticated loopback vLLM endpoint). Local grades are diagnostic proxies,
+never claim-ready results. Judge, evidence, and effort settings are encoded in
+separate immutable grade namespaces so populations cannot mix.
 """
 
 import argparse
@@ -32,7 +34,7 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from . import sandbox
+from . import provenance, sandbox
 from .dataset import CORPORA, ROOT, load_questions, read_pinned_code_bytes
 from .env import load_private_env
 from .human_audit import (
@@ -46,21 +48,37 @@ from .preregistration import PreregistrationError, revalidate_run_preregistratio
 from .provenance import (
     environment_contract_is_valid,
     environment_is_claim_ready,
+    grading_runtime_record,
+    grading_runtime_sha256 as provenance_grading_runtime_sha256,
+    local_judge_runtime_record,
+    local_judge_runtime_sha256 as provenance_local_judge_runtime_sha256,
     validate_current_source,
     validate_environment_snapshot,
     validate_id,
+    validate_local_server_urls,
 )
 
 CANONICAL_OPENAI_BASE_URL = "https://api.openai.com/v1"
+LOCAL_GRADER_MODEL = "Qwen/Qwen3.5-9B"
+LOCAL_GRADER_MODEL_REVISION = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+LOCAL_GRADER_ENDPOINT_IDENTITY = "authenticated-loopback-openai-v1"
+LOCAL_GRADER_REQUEST_OPTIONS = {
+    "temperature": 0,
+    "seed": 0,
+    "max_tokens": 8192,
+}
 
 GRADERS = {  # GRADER_MODEL env var -> (judge model id, base_url, api key env var)
     "openai": ("gpt-5.4", CANONICAL_OPENAI_BASE_URL, "OPENAI_API_KEY"),
     "fugu": ("fugu", "https://api.sakana.ai/v1", "SAKANA_API_KEY"),
+    # The endpoint is allocation-local and must be supplied explicitly. It is
+    # never read from OPENAI_BASE_URL or another ambient SDK setting.
+    "local": (LOCAL_GRADER_MODEL, None, "SB_VLLM_API_KEY"),
 }
 
-GRADE_SCHEMA_VERSION = 4
+GRADE_SCHEMA_VERSION = 5
 MAX_JUDGE_ATTEMPTS = 2
-FAILED_JUDGE_AUDIT_SCHEMA_VERSION = 2
+FAILED_JUDGE_AUDIT_SCHEMA_VERSION = 3
 
 
 class GradeIntegrityError(ValueError):
@@ -75,7 +93,9 @@ class JudgeAttemptsFailed(GradeIntegrityError):
         self.audit = audit
 
 
-def grader_identity_for_model(judge_model: str) -> tuple[str, str]:
+def grader_identity_for_model(
+    judge_model: str, judge_base_url: str | None = None,
+) -> tuple[str, str]:
     """Return the unique configured grader name and its explicit API endpoint."""
     matches = [
         (grader, base_url)
@@ -86,7 +106,8 @@ def grader_identity_for_model(judge_model: str) -> tuple[str, str]:
         raise GradeIntegrityError(
             f"judge model {judge_model!r} does not identify exactly one configured grader"
         )
-    grader, base_url = matches[0]
+    grader, _ = matches[0]
+    base_url = _resolve_judge_base_url(judge_model, judge_base_url)
     if not isinstance(base_url, str) or not base_url:
         raise GradeIntegrityError(f"grader {grader!r} has no explicit API endpoint")
     return grader, base_url
@@ -101,8 +122,12 @@ def _resolve_judge_base_url(
         for model, base_url, _ in GRADERS.values()
         if model == judge_model
     ]
-    if configured:
-        if len(configured) != 1 or not isinstance(configured[0], str) or not configured[0]:
+    if len(configured) > 1:
+        raise GradeIntegrityError(
+            f"judge model {judge_model!r} has an ambiguous API endpoint"
+        )
+    if configured and configured[0] is not None:
+        if not isinstance(configured[0], str) or not configured[0]:
             raise GradeIntegrityError(
                 f"judge model {judge_model!r} has an ambiguous or missing API endpoint"
             )
@@ -111,6 +136,15 @@ def _resolve_judge_base_url(
                 f"judge endpoint does not match configured model {judge_model!r}"
             )
         return configured[0]
+    if judge_model == LOCAL_GRADER_MODEL:
+        try:
+            return validate_local_server_urls(
+                judge_base_url, expected_count=1
+            )[0]
+        except (TypeError, ValueError) as exc:
+            raise GradeIntegrityError(
+                "local Qwen grading requires one explicit loopback --judge-base-url"
+            ) from exc
     if (
         not isinstance(judge_base_url, str)
         or not judge_base_url
@@ -122,10 +156,12 @@ def _resolve_judge_base_url(
     return judge_base_url
 
 
-def _make_grader_client(grader: str, api_key: str) -> AsyncOpenAI:
+def _make_grader_client(
+    grader: str, api_key: str, *, judge_base_url: str | None = None,
+) -> AsyncOpenAI:
     """Construct a grader client without consulting ambient SDK endpoint settings."""
     try:
-        judge_model, judge_base_url, _ = GRADERS[grader]
+        judge_model, _, _ = GRADERS[grader]
     except KeyError as exc:
         raise GradeIntegrityError(f"unknown grader {grader!r}") from exc
     judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
@@ -135,6 +171,53 @@ def _make_grader_client(grader: str, api_key: str) -> AsyncOpenAI:
         base_url=judge_base_url,
         api_key=api_key,
     )
+
+
+def _judge_request_options(judge_model: str, effort: str) -> dict[str, Any]:
+    """Return the exact provider request options bound by the grading spec."""
+
+    if judge_model == LOCAL_GRADER_MODEL:
+        if effort:
+            raise GradeIntegrityError(
+                "local Qwen grading uses fixed request options; --judge-effort must be empty"
+            )
+        return dict(LOCAL_GRADER_REQUEST_OPTIONS)
+    return {"reasoning_effort": effort} if effort else {}
+
+
+def _validate_local_grader_environment(judge_base_url: str) -> None:
+    """Bind the local client to the authenticated pinned vLLM launcher."""
+
+    api_key = os.environ.get("SB_VLLM_API_KEY")
+    api_key_sha256 = (
+        sha256_bytes(api_key.encode("utf-8"))
+        if isinstance(api_key, str) and api_key else None
+    )
+    if (api_key_sha256 is None
+            or os.environ.get("SB_VLLM_API_KEY_SHA256") != api_key_sha256
+            or os.environ.get("SB_SERVER_LAUNCH_ID") != api_key_sha256):
+        raise GradeIntegrityError(
+            "local grader has no valid authenticated vLLM server identity"
+        )
+    if os.environ.get("SB_MODEL_ID") != LOCAL_GRADER_MODEL:
+        raise GradeIntegrityError(
+            f"local grader requires SB_MODEL_ID={LOCAL_GRADER_MODEL!r}"
+        )
+    if os.environ.get("SB_MODEL_REVISION") != LOCAL_GRADER_MODEL_REVISION:
+        raise GradeIntegrityError(
+            "local grader model revision does not match the pinned Qwen revision"
+        )
+    raw_urls = os.environ.get("BASE_URLS")
+    try:
+        launched_urls = validate_local_server_urls(raw_urls)
+    except (TypeError, ValueError) as exc:
+        raise GradeIntegrityError(
+            "local grader has no valid authenticated vLLM launcher topology"
+        ) from exc
+    if judge_base_url not in launched_urls:
+        raise GradeIntegrityError(
+            "--judge-base-url is not part of the authenticated vLLM launcher topology"
+        )
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -191,13 +274,18 @@ def _path_component(value: object, *, label: str) -> str:
     return value
 
 
-def _validate_source_record(value: object, *, label: str) -> None:
+def _validate_source_record(
+    value: object, *, label: str, require_clean: bool = True
+) -> None:
     """Validate the exact clean-source record emitted by provenance.source_record."""
+    if type(require_clean) is not bool:
+        raise GradeIntegrityError("source cleanliness policy must be a boolean")
     if (not isinstance(value, dict)
             or set(value) != {"git_commit", "dirty", "files", "tree_sha256"}
-            or value.get("dirty") is not False
+            or type(value.get("dirty")) is not bool
+            or (require_clean and value.get("dirty") is not False)
             or not _valid_git_commit(value.get("git_commit"))):
-        raise GradeIntegrityError(f"{label} source record is malformed or dirty")
+        raise GradeIntegrityError(f"{label} source record is malformed or disallowed dirty")
     files = value.get("files")
     if (not isinstance(files, dict)
             or value.get("tree_sha256") != sha256_json(files)):
@@ -314,8 +402,27 @@ def _validate_human_audit_integer_fields(
             "bundled human-audit declarations must be JSON booleans")
 
 
-def load_claim_manifest(run_task_root: Path, corpus, questions: list[dict]) -> dict:
-    """Validate a claim-ready run manifest and its immutable note snapshot."""
+def load_claim_manifest(
+    run_task_root: Path,
+    corpus,
+    questions: list[dict],
+    *,
+    require_claim_ready: bool = True,
+    allow_smoke: bool = False,
+) -> dict:
+    """Validate a complete run manifest and its immutable note snapshot.
+
+    The default path retains the claim-ready confirmatory contract. The sole
+    relaxed path is for local proxy grading and accepts only an explicitly
+    exploratory, non-claim-ready run. ``allow_smoke`` is narrower still: it
+    accepts one isolated generation-smoke manifest so the live local judge
+    interface can be tested before a full exploratory population is generated.
+    """
+
+    if type(require_claim_ready) is not bool or type(allow_smoke) is not bool:
+        raise GradeIntegrityError("manifest research-mode policies must be booleans")
+    if allow_smoke and require_claim_ready:
+        raise GradeIntegrityError("a diagnostic smoke cannot require claim readiness")
     manifest_path = run_task_root / "manifest.json"
     try:
         manifest_bytes = read_artifact_bytes(manifest_path)
@@ -333,18 +440,41 @@ def load_claim_manifest(run_task_root: Path, corpus, questions: list[dict]) -> d
             or type(spec.get("schema_version")) is not int
             or spec["schema_version"] != 1):
         raise GradeIntegrityError("unknown run specification schema")
-    if spec.get("claim_ready") is not True or spec.get("purpose") != "confirmatory":
-        raise GradeIntegrityError("run manifest is not claim-ready confirmatory research")
+    if allow_smoke:
+        if spec.get("claim_ready") is not False or spec.get("purpose") != "smoke":
+            raise GradeIntegrityError(
+                "local grading smoke requires an explicitly non-claim-ready smoke run"
+            )
+    elif require_claim_ready:
+        if spec.get("claim_ready") is not True or spec.get("purpose") != "confirmatory":
+            raise GradeIntegrityError("run manifest is not claim-ready confirmatory research")
+    elif spec.get("claim_ready") is not False or spec.get("purpose") != "exploratory":
+        raise GradeIntegrityError(
+            "local proxy grading requires an explicitly non-claim-ready exploratory run"
+        )
     if spec.get("task") != corpus.name:
         raise GradeIntegrityError("run manifest task does not match the requested corpus")
     if not isinstance(spec.get("run_id"), str) or not spec["run_id"]:
         raise GradeIntegrityError("run manifest has no run_id")
-    try:
-        preregistration = revalidate_run_preregistration(spec, run_task_root)
-    except PreregistrationError as exc:
-        raise GradeIntegrityError(
-            f"run preregistration is invalid: {exc}"
-        ) from exc
+    if require_claim_ready:
+        try:
+            preregistration = revalidate_run_preregistration(spec, run_task_root)
+        except PreregistrationError as exc:
+            raise GradeIntegrityError(
+                f"run preregistration is invalid: {exc}"
+            ) from exc
+    else:
+        reason = "smoke" if allow_smoke else "exploratory"
+        preregistration_record = spec.get("preregistration")
+        if preregistration_record != {
+            "schema_version": 1,
+            "status": "not_provided",
+            "reason": reason,
+        }:
+            raise GradeIntegrityError(
+                f"{reason} run has an invalid preregistration declaration"
+            )
+        preregistration = None
     extra = spec.get("extra")
     if (
         not isinstance(spec.get("model_revision"), str)
@@ -357,7 +487,7 @@ def load_claim_manifest(run_task_root: Path, corpus, questions: list[dict]) -> d
         raise GradeIntegrityError("run manifest model revision identity is incomplete")
 
     source = spec.get("source")
-    _validate_source_record(source, label="run")
+    _validate_source_record(source, label="run", require_clean=not allow_smoke)
     try:
         validate_current_source(source)
     except ValueError as exc:
@@ -379,16 +509,34 @@ def load_claim_manifest(run_task_root: Path, corpus, questions: list[dict]) -> d
             raise GradeIntegrityError(f"run corpus {field} does not match the pinned corpus")
 
     environment = spec.get("environment")
-    if not isinstance(environment, dict) or not environment_is_claim_ready(environment):
+    if (not isinstance(environment, dict)
+            or (not allow_smoke and not environment_is_claim_ready(environment))):
         raise GradeIntegrityError("run environment is incomplete, inconsistent, or unpinned")
     if not environment_contract_is_valid(spec.get("environment_contract"), environment):
         raise GradeIntegrityError("run stable environment contract is invalid")
 
+    question_records = spec.get("questions")
+    if not isinstance(question_records, list) or not question_records:
+        raise GradeIntegrityError("run manifest question records are invalid")
+    if allow_smoke:
+        current_by_id = {
+            row.get("id"): row
+            for row in questions
+            if isinstance(row, dict) and isinstance(row.get("id"), str)
+        }
+        smoke_ids = [
+            record.get("id") if isinstance(record, dict) else None
+            for record in question_records
+        ]
+        if (any(not isinstance(qid, str) or qid not in current_by_id
+                for qid in smoke_ids)
+                or len(smoke_ids) != len(set(smoke_ids))):
+            raise GradeIntegrityError(
+                "smoke run questions are not a unique subset of the current dataset"
+            )
+        questions = [current_by_id[qid] for qid in smoke_ids]
     if spec.get("question_bundle_sha256") != sha256_json(questions):
         raise GradeIntegrityError("run question bundle does not match the current dataset")
-    question_records = spec.get("questions")
-    if not isinstance(question_records, list):
-        raise GradeIntegrityError("run manifest question records are invalid")
     for row in questions:
         _path_component(row.get("id"), label="question id")
     expected_questions = [
@@ -449,6 +597,10 @@ def load_claim_manifest(run_task_root: Path, corpus, questions: list[dict]) -> d
     note = ""
     note_sha256 = None
     note_manifest = None
+    if allow_smoke and note_record is not None:
+        raise GradeIntegrityError(
+            "local end-to-end smoke requires a no-note generation episode"
+        )
     if note_record is not None:
         if not isinstance(note_record, dict):
             raise GradeIntegrityError("run note record is invalid")
@@ -486,19 +638,74 @@ def load_claim_manifest(run_task_root: Path, corpus, questions: list[dict]) -> d
         construction_claim_ready = construction.get("claim_ready")
         if construction_claim_ready is None and isinstance(construction.get("config"), dict):
             construction_claim_ready = construction["config"].get("claim_ready")
-        if construction_claim_ready is not True:
+        if require_claim_ready and construction_claim_ready is not True:
             raise GradeIntegrityError("note construction manifest is not claim-ready")
+        if type(construction_claim_ready) is not bool:
+            raise GradeIntegrityError(
+                "note construction manifest has invalid claim readiness")
         if construction.get("note_sha256") != note_sha256:
             raise GradeIntegrityError("note construction manifest names different note bytes")
         if construction.get("task") != corpus.name:
             raise GradeIntegrityError("note construction task does not match the run")
         if construction.get("corpus_commit") != pinned_commit:
             raise GradeIntegrityError("note construction corpus does not match the run")
-        if not isinstance(construction.get("study_id"), str) or not construction["study_id"]:
-            raise GradeIntegrityError("note construction manifest has no study ID")
+        try:
+            validate_id(construction.get("study_id"), "study ID")
+        except (TypeError, ValueError) as exc:
+            raise GradeIntegrityError(
+                "note construction manifest has no valid study ID"
+            ) from exc
 
         manifest_type = construction.get("manifest_type")
-        if manifest_type == "human-audited-note":
+        if construction_claim_ready is False:
+            readiness = construction.get("automated_readiness")
+            inventory = construction.get("construction_artifacts")
+            inventory_sha256 = construction.get("construction_artifacts_sha256")
+            bundle = note_record.get("provenance_bundle")
+            contradictory_readiness = any(
+                field in construction and construction.get(field) is not False
+                for field in (
+                    "publication_claim_ready",
+                    "confirmatory_claim_ready",
+                )
+            )
+            if (type(construction.get("schema_version")) is not int
+                    or construction["schema_version"] <= 0
+                    or contradictory_readiness
+                    or construction.get("automated_claim_ready") is not True
+                    or not isinstance(readiness, dict) or not readiness
+                    or any(type(value) is not bool or value is not True
+                           for value in readiness.values())
+                    or not isinstance(bundle, dict)
+                    or set(bundle) != {
+                        "root", "manifest_snapshot", "note_snapshot",
+                        "construction_artifacts",
+                    }):
+                raise GradeIntegrityError(
+                    "exploratory note did not pass its automated construction gates")
+            bundle_root = Path(str(bundle.get("root", "")))
+            if (bundle_root.is_absolute() or not bundle_root.parts
+                    or any(part in ("", ".", "..") for part in bundle_root.parts)):
+                raise GradeIntegrityError(
+                    "exploratory note provenance bundle has an unsafe root")
+            bundled_manifest = _safe_relative_file(
+                run_task_root, bundle.get("manifest_snapshot"),
+                label="bundled exploratory-note manifest")
+            bundled_note = _safe_relative_file(
+                run_task_root, bundle.get("note_snapshot"),
+                label="bundled exploratory note")
+            if (read_artifact_bytes(bundled_manifest) != construction_bytes
+                    or read_artifact_bytes(bundled_note) != note_bytes):
+                raise GradeIntegrityError(
+                    "exploratory note provenance bundle changed its manifest or note")
+            _load_bundled_construction_dependencies(
+                run_task_root,
+                bundle,
+                bundle_root,
+                inventory,
+                inventory_sha256,
+            )
+        elif manifest_type == "human-audited-note":
             if "automated_readiness" not in construction:
                 raise GradeIntegrityError(
                     "human-audited note has no automated readiness record")
@@ -801,7 +1008,7 @@ def validate_manifest_episode(ep: dict, row: dict, manifest_context: dict) -> No
             manifest_context["run_task_root"],
             ep.get("environment_snapshot"),
             baseline=spec.get("environment"),
-            require_claim_ready=True,
+            require_claim_ready=spec.get("purpose") != "smoke",
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise GradeIntegrityError(
@@ -958,23 +1165,60 @@ def sandbox_configuration_sha256(language: str) -> str:
 
 def grade_spec_sha256(corpus, row: dict, judge_model: str,
                       whole_files: bool = False, effort: str = "", *,
-                      judge_base_url: str | None = None) -> str:
+                      judge_base_url: str | None = None,
+                      grading_runtime: dict[str, object] | None = None,
+                      local_judge_runtime: dict[str, object] | None = None) -> str:
     """Hash every static input that defines how this question is graded."""
     judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
-    return stable_sha256({
+    grading_runtime = (
+        grading_runtime_record() if grading_runtime is None else grading_runtime
+    )
+    provenance_grading_runtime_sha256(grading_runtime)
+    endpoint_identity = (
+        LOCAL_GRADER_ENDPOINT_IDENTITY
+        if judge_model == LOCAL_GRADER_MODEL else judge_base_url
+    )
+    specification = {
         "grade_schema_version": GRADE_SCHEMA_VERSION,
         "grader_source": {
             "studybench/grade.py": file_sha256(Path(__file__).resolve()),
+            "studybench/provenance.py": file_sha256(
+                Path(provenance.__file__).resolve()
+            ),
             "studybench/sandbox.py": file_sha256(Path(sandbox.__file__).resolve()),
         },
+        "grading_runtime": grading_runtime,
         "sandbox_configuration": sandbox_configuration_record(corpus.language),
         "judge_model": judge_model,
-        "judge_base_url": judge_base_url,
+        # A loopback port is an allocation transport detail, not a grading
+        # policy. The authenticated launcher and exact model/revision/options
+        # establish local identity; retaining a port here would make a safe
+        # interrupted grade impossible to resume in a later Slurm allocation.
+        "judge_endpoint_identity": endpoint_identity,
         "whole_files": whole_files,
         "judge_effort": effort,
         "prompt": build_prompt(corpus, row, "<MODEL_ANSWER>", whole_files),
         "response_format": judge_schema(row),
-    })
+    }
+    if judge_model == LOCAL_GRADER_MODEL:
+        local_judge_runtime = (
+            local_judge_runtime_record()
+            if local_judge_runtime is None
+            else local_judge_runtime
+        )
+        provenance_local_judge_runtime_sha256(local_judge_runtime)
+        specification.update({
+            "claim_ready": False,
+            "grading_tier": "diagnostic-local-proxy",
+            "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_options": _judge_request_options(judge_model, effort),
+            "local_judge_runtime": local_judge_runtime,
+        })
+    elif local_judge_runtime is not None:
+        raise GradeIntegrityError(
+            "local judge runtime provenance is valid only for local grading"
+        )
+    return stable_sha256(specification)
 
 
 def score_from_claims(row: dict, claim_scores: dict[str, int], compile_ok: bool) -> dict:
@@ -1277,6 +1521,7 @@ def episode_provider_identity(ep: dict) -> dict[str, Any]:
             f"{ep.get('qid')}: episode resolved to multiple response models: {sorted(models)}")
     return {
         "harness_usage": "native_turns" if native else "dspy_usage_ledger",
+        "provider_call_count": len(records),
         "response_models": sorted(models),
         "system_fingerprints": sorted(fingerprints),
         "missing_system_fingerprint_calls": missing_fingerprints,
@@ -1715,7 +1960,10 @@ def _validate_judge_audit(grade: dict, corpus, row: dict, ep: dict,
 
 
 def _failed_judge_audit(*, ep: dict, episode_sha256: str,
-                        grading_spec_sha256: str, judge_model: str,
+                        grading_spec_sha256: str,
+                        grading_runtime_sha256: str,
+                        local_judge_runtime_sha256: str | None,
+                        judge_model: str,
                         judge_prompt_sha256: str,
                         attempts: list[dict[str, Any]], failure: BaseException,
                         request_attempt_count: int | None = None) -> dict:
@@ -1726,10 +1974,11 @@ def _failed_judge_audit(*, ep: dict, episode_sha256: str,
     if request_attempt_count is None:
         request_attempt_count = len(attempts)
     usage_summary = judge_usage_summary(attempts, request_attempt_count)
-    return {
+    audit = {
         "failed_judge_audit_schema_version": FAILED_JUDGE_AUDIT_SCHEMA_VERSION,
         "episode_sha256": episode_sha256,
         "grading_spec_sha256": grading_spec_sha256,
+        "grading_runtime_sha256": grading_runtime_sha256,
         "manifest_sha256": ep.get("manifest_sha256"),
         "question_sha256": ep.get("question_sha256"),
         "prompt_sha256": ep.get("prompt_sha256"),
@@ -1748,6 +1997,17 @@ def _failed_judge_audit(*, ep: dict, episode_sha256: str,
         "judge_usage_status": usage_summary["status"],
         "failure": {"type": type(failure).__name__, "message": safe_failure_message},
     }
+    if judge_model == LOCAL_GRADER_MODEL:
+        audit.update({
+            "claim_ready": False,
+            "grading_tier": "diagnostic-local-proxy",
+            "local_proxy": True,
+            "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
+            "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_options": dict(LOCAL_GRADER_REQUEST_OPTIONS),
+            "local_judge_runtime_sha256": local_judge_runtime_sha256,
+        })
+    return audit
 
 
 def write_failed_judge_audit(out_root: Path, source_episode: str,
@@ -1767,13 +2027,35 @@ def write_failed_judge_audit(out_root: Path, source_episode: str,
 async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict,
                         ep: dict, whole_files: bool = False, effort: str = "",
                         *, episode_sha256: str, grading_spec_sha256: str,
-                        judge_base_url: str | None = None) -> dict:
+                        judge_base_url: str | None = None,
+                        grading_runtime: dict[str, object] | None = None,
+                        local_judge_runtime: dict[str, object] | None = None) -> dict:
     validate_episode(ep, row)
     judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
+    request_options = _judge_request_options(judge_model, effort)
+    grading_runtime = (
+        grading_runtime_record() if grading_runtime is None else grading_runtime
+    )
+    grading_runtime_digest = provenance_grading_runtime_sha256(grading_runtime)
+    local_judge_runtime_digest = None
+    if judge_model == LOCAL_GRADER_MODEL:
+        local_judge_runtime = (
+            local_judge_runtime_record()
+            if local_judge_runtime is None
+            else local_judge_runtime
+        )
+        local_judge_runtime_digest = provenance_local_judge_runtime_sha256(
+            local_judge_runtime
+        )
+    elif local_judge_runtime is not None:
+        raise GradeIntegrityError(
+            "local judge runtime provenance is valid only for local grading"
+        )
     grade = {
         "grade_schema_version": GRADE_SCHEMA_VERSION,
         "episode_sha256": episode_sha256,
         "grading_spec_sha256": grading_spec_sha256,
+        "grading_runtime_sha256": grading_runtime_digest,
         "manifest_sha256": ep.get("manifest_sha256"),
         "question_sha256": ep.get("question_sha256"),
         "prompt_sha256": ep.get("prompt_sha256"),
@@ -1786,6 +2068,16 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
         "gen_tokens": ep["gen_tokens"],
         "graded_at": datetime.now(timezone.utc).isoformat(),
     }
+    if judge_model == LOCAL_GRADER_MODEL:
+        grade.update({
+            "claim_ready": False,
+            "grading_tier": "diagnostic-local-proxy",
+            "local_proxy": True,
+            "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
+            "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_options": request_options,
+            "local_judge_runtime_sha256": local_judge_runtime_digest,
+        })
     answer = ep.get("answer", "")
     sandbox_config = sandbox_configuration_record(corpus.language)
     sandbox_config_sha256 = stable_sha256(sandbox_config)
@@ -1830,13 +2122,15 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
                 model=judge_model,
                 messages=[{"role": "user", "content": judge_prompt}],
                 response_format=judge_schema(row),
-                **({"reasoning_effort": effort} if effort else {}),
+                **request_options,
             )
         except Exception as exc:
             audit = _failed_judge_audit(
                 ep=ep,
                 episode_sha256=episode_sha256,
                 grading_spec_sha256=grading_spec_sha256,
+                grading_runtime_sha256=grading_runtime_digest,
+                local_judge_runtime_sha256=local_judge_runtime_digest,
                 judge_model=judge_model,
                 judge_prompt_sha256=grade["judge_prompt_sha256"],
                 attempts=attempts,
@@ -1870,6 +2164,8 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
                     ep=ep,
                     episode_sha256=episode_sha256,
                     grading_spec_sha256=grading_spec_sha256,
+                    grading_runtime_sha256=grading_runtime_digest,
+                    local_judge_runtime_sha256=local_judge_runtime_digest,
                     judge_model=judge_model,
                     judge_prompt_sha256=grade["judge_prompt_sha256"],
                     attempts=attempts,
@@ -1902,6 +2198,8 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
             ep=ep,
             episode_sha256=episode_sha256,
             grading_spec_sha256=grading_spec_sha256,
+            grading_runtime_sha256=grading_runtime_digest,
+            local_judge_runtime_sha256=local_judge_runtime_digest,
             judge_model=judge_model,
             judge_prompt_sha256=grade["judge_prompt_sha256"],
             attempts=attempts,
@@ -1937,7 +2235,9 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
                           judge_model: str, judge_base_url: str | None = None,
                           corpus=None, whole_files: bool = False,
                           source_episode: str | None = None,
-                          recheck_checker: bool = True) -> None:
+                          recheck_checker: bool = True,
+                          grading_runtime: dict[str, object] | None = None,
+                          local_judge_runtime: dict[str, object] | None = None) -> None:
     """Validate provenance and recompute every stored deterministic score."""
     validate_episode(ep, row)
     if not isinstance(grade, dict):
@@ -1948,11 +2248,61 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
         raise GradeIntegrityError("grade episode hash does not match the run file")
     if grade.get("grading_spec_sha256") != grading_spec_sha256:
         raise GradeIntegrityError("grade was produced by a different grading specification")
+    grading_runtime = (
+        grading_runtime_record() if grading_runtime is None else grading_runtime
+    )
+    expected_runtime_sha256 = provenance_grading_runtime_sha256(grading_runtime)
+    if grade.get("grading_runtime_sha256") != expected_runtime_sha256:
+        raise GradeIntegrityError(
+            "grade was produced by a different Python/package runtime"
+        )
     if grade.get("judge_model") != judge_model:
         raise GradeIntegrityError("grade judge model does not match the requested judge")
     judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
-    if grade.get("judge_base_url") != judge_base_url:
-        raise GradeIntegrityError("grade judge endpoint does not match the requested judge")
+    if judge_model == LOCAL_GRADER_MODEL:
+        local_judge_runtime = (
+            local_judge_runtime_record()
+            if local_judge_runtime is None
+            else local_judge_runtime
+        )
+        expected_local_runtime_sha256 = provenance_local_judge_runtime_sha256(
+            local_judge_runtime
+        )
+        expected_local_identity = {
+            "claim_ready": False,
+            "grading_tier": "diagnostic-local-proxy",
+            "local_proxy": True,
+            "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
+            "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
+            "local_judge_runtime_sha256": expected_local_runtime_sha256,
+        }
+        for field, expected in expected_local_identity.items():
+            if grade.get(field) != expected:
+                raise GradeIntegrityError(
+                    f"local proxy grade has invalid {field} provenance"
+                )
+        try:
+            validate_local_server_urls(
+                grade.get("judge_base_url"), expected_count=1
+            )
+        except (TypeError, ValueError) as exc:
+            raise GradeIntegrityError(
+                "local proxy grade has an invalid recorded loopback transport"
+            ) from exc
+    else:
+        if local_judge_runtime is not None:
+            raise GradeIntegrityError(
+                "local judge runtime provenance is valid only for local grading"
+            )
+        if "local_judge_runtime_sha256" in grade:
+            raise GradeIntegrityError(
+                "external grade contains local judge runtime provenance"
+            )
+        if grade.get("judge_base_url") != judge_base_url:
+            raise GradeIntegrityError(
+                "grade judge endpoint does not match the requested judge"
+            )
     try:
         graded_at = datetime.fromisoformat(grade.get("graded_at", ""))
     except (TypeError, ValueError) as exc:
@@ -2038,6 +2388,11 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
             )
 
     _validate_judge_audit(grade, corpus, row, ep, judge_model, whole_files)
+    if (judge_model == LOCAL_GRADER_MODEL
+            and grade.get("judge_response_model") != LOCAL_GRADER_MODEL):
+        raise GradeIntegrityError(
+            "local grader response model does not match the pinned Qwen model"
+        )
 
     verdict = {
         "claims": grade.get("claims"),
@@ -2061,6 +2416,12 @@ def stored_grade_is_current(grade_path: Path, episode_path: Path, corpus, row: d
                             judge_base_url: str | None = None) -> bool:
     """Content-based replacement for unreliable mtime freshness checks."""
     try:
+        grading_runtime = grading_runtime_record()
+        local_judge_runtime = (
+            local_judge_runtime_record()
+            if judge_model == LOCAL_GRADER_MODEL
+            else None
+        )
         episode_bytes = read_artifact_bytes(episode_path)
         ep = parse_json(episode_bytes, label=f"episode {episode_path}")
         grade = parse_json(read_artifact_bytes(grade_path), label=f"grade {grade_path}")
@@ -2069,12 +2430,16 @@ def stored_grade_is_current(grade_path: Path, episode_path: Path, corpus, row: d
             episode_sha256=sha256_bytes(episode_bytes),
             grading_spec_sha256=grade_spec_sha256(
                 corpus, row, judge_model, whole_files, effort,
-                judge_base_url=judge_base_url),
+                judge_base_url=judge_base_url,
+                grading_runtime=grading_runtime,
+                local_judge_runtime=local_judge_runtime),
             judge_model=judge_model,
             judge_base_url=judge_base_url,
             corpus=corpus,
             whole_files=whole_files,
             source_episode=episode_path.relative_to(ROOT).as_posix(),
+            grading_runtime=grading_runtime,
+            local_judge_runtime=local_judge_runtime,
         )
     except (OSError, KeyError, GradeIntegrityError, ValueError):
         return False
@@ -2085,8 +2450,26 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
                                questions: list[dict], manifest_context: dict,
                                judge_model: str, whole_files: bool,
                                effort: str,
-                               judge_base_url: str | None = None) -> list[dict[str, Any]]:
+                               judge_base_url: str | None = None,
+                               grading_runtime: dict[str, object] | None = None,
+                               local_judge_runtime: dict[str, object] | None = None,
+                               ) -> list[dict[str, Any]]:
     """Validate the entire run grid before allowing the first judge request."""
+    grading_runtime = (
+        grading_runtime_record() if grading_runtime is None else grading_runtime
+    )
+    provenance_grading_runtime_sha256(grading_runtime)
+    if judge_model == LOCAL_GRADER_MODEL:
+        local_judge_runtime = (
+            local_judge_runtime_record()
+            if local_judge_runtime is None
+            else local_judge_runtime
+        )
+        provenance_local_judge_runtime_sha256(local_judge_runtime)
+    elif local_judge_runtime is not None:
+        raise GradeIntegrityError(
+            "local judge runtime provenance is valid only for local grading"
+        )
     rows = {question["id"]: question for question in questions}
     run_task_root = runs_root / corpus.name
     expected_run_files = {
@@ -2136,7 +2519,9 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
             validate_manifest_episode(episode, row, manifest_context)
             spec_sha256 = grade_spec_sha256(
                 corpus, row, judge_model, whole_files, effort,
-                judge_base_url=judge_base_url)
+                judge_base_url=judge_base_url,
+                grading_runtime=grading_runtime,
+                local_judge_runtime=local_judge_runtime)
             source_episode = run_path.relative_to(ROOT).as_posix()
         except (OSError, KeyError, TypeError, ValueError, GradeIntegrityError) as exc:
             errors.append(f"invalid run episode {run_path.relative_to(ROOT)}: {exc}")
@@ -2159,6 +2544,8 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
                     corpus=corpus,
                     whole_files=whole_files,
                     source_episode=source_episode,
+                    grading_runtime=grading_runtime,
+                    local_judge_runtime=local_judge_runtime,
                 )
             except (OSError, KeyError, TypeError, ValueError, GradeIntegrityError) as exc:
                 errors.append(
@@ -2185,6 +2572,32 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
     return records
 
 
+def select_local_smoke_record(
+    pending: list[dict[str, Any]], *, expected_count: int, grader: str
+) -> list[dict[str, Any]]:
+    """Select exactly one answered cell from a fresh, fully preflighted grid."""
+
+    if grader != "local":
+        raise GradeIntegrityError("--local-smoke is available only for local grading")
+    if type(expected_count) is not int or expected_count <= 0:
+        raise GradeIntegrityError("local grading smoke has an invalid manifest grid")
+    if len(pending) != expected_count:
+        raise GradeIntegrityError(
+            "local grading smoke requires a fresh empty --grade-id"
+        )
+    judged = [
+        record for record in pending
+        if isinstance(record, dict)
+        and isinstance(record.get("episode"), dict)
+        and record["episode"].get("status") == "ok"
+    ]
+    if not judged:
+        raise GradeIntegrityError(
+            "local grading smoke requires at least one valid answered episode"
+        )
+    return judged[:1]
+
+
 async def main_async(args):
     corpus = CORPORA[args.task]
     questions = load_questions(args.task)
@@ -2197,33 +2610,62 @@ async def main_async(args):
     if grader not in GRADERS:
         raise GradeIntegrityError(
             f"unknown GRADER_MODEL={grader!r}; choose one of {sorted(GRADERS)}")
-    judge_model, judge_base_url, key_var = GRADERS[grader]
-    judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
+    judge_model, _, key_var = GRADERS[grader]
+    local_smoke = bool(getattr(args, "local_smoke", False))
+    if local_smoke and grader != "local":
+        raise GradeIntegrityError("--local-smoke is available only for local grading")
+    judge_base_url = _resolve_judge_base_url(judge_model, args.judge_base_url)
+    _judge_request_options(judge_model, args.judge_effort)
+    if grader == "local":
+        _validate_local_grader_environment(judge_base_url)
+    try:
+        grading_runtime = grading_runtime_record()
+        local_runtime = local_judge_runtime_record() if grader == "local" else None
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise GradeIntegrityError(
+            f"grading runtime attestation failed before judge contact: {exc}"
+        ) from exc
     log.info(
         "grader=%s judge_model=%s judge_base_url=%s",
         grader, judge_model, judge_base_url,
     )
-    runs_root = ROOT / "runs" / args.run_id
-    judge_dir = (judge_model + ("-wholefiles" if args.whole_files else "-excerpts")
+    runs_base = ROOT / "runs" / "smoke" if local_smoke else ROOT / "runs"
+    grades_base = ROOT / "grades" / "smoke" if local_smoke else ROOT / "grades"
+    runs_root = runs_base / args.run_id
+    judge_name = "local-qwen3.5-9b" if grader == "local" else judge_model
+    judge_dir = (judge_name + ("-wholefiles" if args.whole_files else "-excerpts")
                  + (f"-effort-{args.judge_effort}" if args.judge_effort else ""))
     grade_id = args.grade_id or judge_dir
-    out_root = ROOT / "grades" / args.run_id / grade_id
+    out_root = grades_base / args.run_id / grade_id
 
-    manifest_context = load_claim_manifest(runs_root / args.task, corpus, questions)
+    manifest_context = load_claim_manifest(
+        runs_root / args.task,
+        corpus,
+        questions,
+        require_claim_ready=grader != "local",
+        allow_smoke=local_smoke,
+    )
     if manifest_context["spec"]["run_id"] != runs_root.name:
         raise GradeIntegrityError("run manifest ID does not match its directory")
-    validate_preregistered_grading_policy(
-        manifest_context["preregistration"],
-        grader=grader,
-        judge_model=judge_model,
-        whole_files=args.whole_files,
-        effort=args.judge_effort,
-    )
+    if grader != "local":
+        validate_preregistered_grading_policy(
+            manifest_context["preregistration"],
+            grader=grader,
+            judge_model=judge_model,
+            whole_files=args.whole_files,
+            effort=args.judge_effort,
+        )
     sandbox_config = sandbox_configuration_record(corpus.language)
-    if sandbox_config.get("ready") is not True:
+    if sandbox_config.get("ready") is not True and grader != "local":
         raise GradeIntegrityError(
             "configured deterministic checker is not claim-ready: "
             f"{sandbox_config.get('error') or sandbox_config}")
+    if sandbox_config.get("ready") is not True:
+        log.warning(
+            "local proxy grading is continuing with a non-claim-ready %s checker; "
+            "lenient scores remain diagnostic and strict scores fail closed",
+            corpus.language,
+        )
     pending = preflight_grade_population(
         runs_root=runs_root,
         out_root=out_root,
@@ -2234,7 +2676,19 @@ async def main_async(args):
         whole_files=args.whole_files,
         effort=args.judge_effort,
         judge_base_url=judge_base_url,
+        grading_runtime=grading_runtime,
+        local_judge_runtime=local_runtime,
     )
+    if local_smoke:
+        pending = select_local_smoke_record(
+            pending,
+            expected_count=len(manifest_context["expected_episodes"]),
+            grader=grader,
+        )
+        log.warning(
+            "LOCAL GRADING SMOKE: grading one answered episode only; "
+            "the namespace will remain intentionally incomplete and unreportable"
+        )
     log.info("%d episodes to grade (task=%s)", len(pending), args.task)
 
     client = None
@@ -2243,7 +2697,8 @@ async def main_async(args):
         if not api_key:
             raise GradeIntegrityError(
                 f"{key_var} is required for {grader} grading; no judge request made")
-        client = _make_grader_client(grader, api_key)
+        client = _make_grader_client(
+            grader, api_key, judge_base_url=judge_base_url)
 
     sem = asyncio.Semaphore(args.concurrency)
     done = 0
@@ -2280,6 +2735,8 @@ async def main_async(args):
                             corpus=corpus,
                             whole_files=args.whole_files,
                             source_episode=record["source_episode"],
+                            grading_runtime=grading_runtime,
+                            local_judge_runtime=local_runtime,
                         )
                         done += 1
                         log.info(
@@ -2293,6 +2750,8 @@ async def main_async(args):
                         episode_sha256=sha256_bytes(episode_bytes),
                         grading_spec_sha256=record["grading_spec_sha256"],
                         judge_base_url=judge_base_url,
+                        grading_runtime=grading_runtime,
+                        local_judge_runtime=local_runtime,
                     )
                     grade["source_episode"] = record["source_episode"]
                     validate_stored_grade(
@@ -2309,6 +2768,8 @@ async def main_async(args):
                         # independently rerun it; doing so here would execute
                         # generated code twice before the immutable write.
                         recheck_checker=False,
+                        grading_runtime=grading_runtime,
+                        local_judge_runtime=local_runtime,
                     )
                     if read_artifact_bytes(rf) != episode_bytes:
                         raise GradeIntegrityError(
@@ -2348,7 +2809,10 @@ async def main_async(args):
         raise RuntimeError(
             f"grading failed for {len(failures)}/{len(pending)} episodes; "
             "no new grade was written for those episodes")
-    log.info("all done: %d grades current", len(manifest_context["expected_episodes"]))
+    if local_smoke:
+        log.info("local grading smoke complete: one answered episode graded")
+    else:
+        log.info("all done: %d grades current", len(manifest_context["expected_episodes"]))
 
 
 def main():
@@ -2359,6 +2823,13 @@ def main():
     p.add_argument(
         "--grade-id",
         help="immutable output namespace (default: judge/config name); choose a new one to regrade",
+    )
+    p.add_argument(
+        "--judge-base-url",
+        help=(
+            "explicit OpenAI-compatible endpoint; required for the local grader and "
+            "restricted to one authenticated loopback /v1 URL"
+        ),
     )
     p.add_argument("--concurrency", type=int, default=8)
     evidence = p.add_mutually_exclusive_group(required=True)
@@ -2374,6 +2845,14 @@ def main():
                    choices=["", "low", "medium", "high", "xhigh"],
                    help="judge reasoning effort (default: API default)")
     p.add_argument("--debug", action="store_true")
+    p.add_argument(
+        "--local-smoke",
+        action="store_true",
+        help=(
+            "LOCAL ONLY: grade exactly one answered episode into a fresh, "
+            "intentionally incomplete diagnostic namespace"
+        ),
+    )
     args = p.parse_args()
     try:
         args.run_id = validate_id(args.run_id)
@@ -2384,7 +2863,10 @@ def main():
     if args.concurrency <= 0:
         p.error("--concurrency must be positive")
 
-    load_private_env(ROOT / ".env")
+    # The authenticated local server key is supplied by the launcher. Local
+    # grading has no reason to import unrelated private values from .env.
+    if os.environ.get("GRADER_MODEL", "openai") != "local":
+        load_private_env(ROOT / ".env")
     (ROOT / "logs").mkdir(exist_ok=True)
     logging.basicConfig(
         level=logging.DEBUG if args.debug else logging.INFO,

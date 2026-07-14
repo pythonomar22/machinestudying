@@ -621,7 +621,14 @@ async def main_async(args):
                     _reject_invalid_final_episode(
                         ep, identity, **episode_contract
                     )
-                    artifact = write_episode_result(context, out, ep)
+                    artifact = write_episode_result(
+                        context,
+                        out,
+                        ep,
+                        validate_final=lambda value: _validate_final_episode(
+                            value, identity, **episode_contract
+                        ),
+                    )
             except Exception:
                 log.exception("episode %s/%s/r%d failed outside run_episode",
                               budget, q["id"], rollout)

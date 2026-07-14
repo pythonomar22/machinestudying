@@ -441,6 +441,8 @@ os.execv(sys.argv[1], sys.argv[1:])
         --port $((PORT_BASE + i)) \
         --tensor-parallel-size "$TP" \
         --max-model-len 262144 \
+        --enable-request-id-headers \
+        --structured-outputs-config '{"enable_in_reasoning":true}' \
         --reasoning-parser qwen3 \
         --enable-auto-tool-choice --tool-call-parser qwen3_coder \
         --language-model-only \

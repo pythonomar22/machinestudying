@@ -31,16 +31,29 @@ from statistics import mean
 
 from .dataset import CORPORA, ROOT, load_questions
 from .grade import (FAILED_JUDGE_AUDIT_SCHEMA_VERSION, GRADE_SCHEMA_VERSION,
-                    GRADERS, MAX_JUDGE_ATTEMPTS, GradeIntegrityError, file_sha256,
+                    GRADERS, LOCAL_GRADER_ENDPOINT_IDENTITY, LOCAL_GRADER_MODEL,
+                    LOCAL_GRADER_MODEL_REVISION,
+                    LOCAL_GRADER_REQUEST_OPTIONS, MAX_JUDGE_ATTEMPTS,
+                    GradeIntegrityError, file_sha256,
                     episode_provider_identity, grade_spec_sha256,
                     grader_identity_for_model, judge_usage_summary,
                     load_claim_manifest, parse_json, sha256_bytes,
+                    sandbox_configuration_record,
+                    sandbox_configuration_sha256,
                     validate_judge_attempt_record, validate_manifest_episode,
                     validate_stored_grade)
 from .grade import validate_preregistered_grading_policy
 from .integrity import (canonical_json_bytes, read_artifact_bytes, sha256_json,
                         write_immutable_json)
-from .provenance import validate_id
+from .provenance import (
+    grading_runtime_record,
+    grading_runtime_sha256,
+    local_judge_runtime_record,
+    local_judge_runtime_sha256,
+    validate_grading_runtime_record,
+    validate_id,
+    validate_local_judge_runtime_record,
+)
 
 BUDGET_ORDER = ["direct", "k5", "k20", "k20f"]
 
@@ -52,12 +65,20 @@ DIAGNOSTIC_BANNER = (
     "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
 )
 
+LOCAL_DIAGNOSTIC_BANNER = (
+    "\n"
+    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+    "!!! EXPLORATORY LOCAL-QWEN PROXY: NOT CLAIM-READY                   !!!\n"
+    "!!! Use only to screen methods; do not cite or compare with Table 1. !!!\n"
+    "!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!\n"
+)
+
 
 class ReportIntegrityError(RuntimeError):
     """The requested result population is incomplete, stale, or unverifiable."""
 
 
-REPORT_SCHEMA_VERSION = 4
+REPORT_SCHEMA_VERSION = 6
 
 PAPER = {  # Table 1, lenient: (task, variant) -> budget -> (acc %, tokens k)
     ("dspy", ""): {"direct": (3.3, 4.1), "k5": (8.6, 7.9), "k20": (9.6, 8.6),
@@ -272,6 +293,8 @@ def _inventory_failed_judge_audits(
     manifest_context: dict,
     grading_specs: dict[str, str],
     judge_model: str,
+    grading_runtime_digest: str,
+    local_judge_runtime_digest: str | None,
 ) -> tuple[list[dict], list[str]]:
     """Validate and disclose judge calls that produced no grade."""
     root = grade_root / "failed-judge-audits" / task
@@ -324,6 +347,7 @@ def _inventory_failed_judge_audits(
             for field in (
                 "episode_sha256", "grading_spec_sha256", "manifest_sha256",
                 "question_sha256", "prompt_sha256", "judge_prompt_sha256",
+                "grading_runtime_sha256",
             ):
                 if not _valid_sha256(artifact.get(field)):
                     raise GradeIntegrityError(
@@ -334,6 +358,26 @@ def _inventory_failed_judge_audits(
             requested_model = artifact.get("judge_requested_model")
             if not isinstance(requested_model, str) or not requested_model:
                 raise GradeIntegrityError("failed-judge audit has no requested model")
+            if requested_model == LOCAL_GRADER_MODEL:
+                expected_local_identity = {
+                    "claim_ready": False,
+                    "grading_tier": "diagnostic-local-proxy",
+                    "local_proxy": True,
+                    "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
+                    "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+                    "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
+                    "local_judge_runtime_sha256": local_judge_runtime_digest,
+                }
+                for field, expected in expected_local_identity.items():
+                    if artifact.get(field) != expected:
+                        raise GradeIntegrityError(
+                            f"local failed-judge audit has invalid {field} provenance"
+                        )
+
+            elif "local_judge_runtime_sha256" in artifact:
+                raise GradeIntegrityError(
+                    "external failed-judge audit contains local runtime provenance"
+                )
 
             attempts = artifact.get("judge_attempts")
             request_count = artifact.get("judge_request_attempt_count")
@@ -378,6 +422,8 @@ def _inventory_failed_judge_audits(
             current_bindings = {
                 "episode": artifact["episode_sha256"] == sha256_bytes(episode_bytes),
                 "grading_spec": artifact["grading_spec_sha256"] == grading_specs[qid],
+                "grading_runtime": artifact["grading_runtime_sha256"]
+                == grading_runtime_digest,
                 "manifest": artifact["manifest_sha256"] == manifest_context["manifest_sha256"],
                 "question": artifact["question_sha256"]
                 == manifest_context["question_sha256"][qid],
@@ -418,8 +464,32 @@ def _inventory_failed_judge_audits(
 def _load_complete_evaluation(task: str, grades_dir: str | Path,
                               runs_dir: str | Path, *, rollouts: int | None,
                               judge_model: str, whole_files: bool = False,
-                              effort: str = "") -> tuple[dict[str, list[dict]], dict]:
+                              effort: str = "", judge_base_url: str | None = None,
+                              diagnostic_local: bool = False,
+                              recorded_grading_runtime: dict | None = None,
+                              recorded_local_judge_runtime: dict | None = None,
+                              ) -> tuple[dict[str, list[dict]], dict]:
     """Load one exact evaluation grid and its content-addressed audit record."""
+    if type(diagnostic_local) is not bool:
+        raise ReportIntegrityError("diagnostic_local must be a boolean")
+    if diagnostic_local != (judge_model == LOCAL_GRADER_MODEL):
+        raise ReportIntegrityError(
+            "local Qwen reports require the explicit diagnostic-local path"
+        )
+    if diagnostic_local and effort:
+        raise ReportIntegrityError("local Qwen reports require empty judge effort")
+    recorded_runtime = (
+        recorded_grading_runtime is not None
+        or recorded_local_judge_runtime is not None
+    )
+    if recorded_runtime and (
+        not diagnostic_local
+        or not isinstance(recorded_grading_runtime, dict)
+        or not isinstance(recorded_local_judge_runtime, dict)
+    ):
+        raise ReportIntegrityError(
+            "recorded runtimes require both local diagnostic runtime records"
+        )
     if rollouts is not None and (type(rollouts) is not int or rollouts <= 0):
         raise ReportIntegrityError("rollouts must be a positive integer")
     if task not in CORPORA:
@@ -434,27 +504,75 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
     grade_root = _rooted(grades_dir)
     corpus = CORPORA[task]
     try:
-        manifest_context = load_claim_manifest(run_root / task, corpus, rows_list)
-    except GradeIntegrityError as exc:
-        raise ReportIntegrityError(f"{task}: invalid claim-ready run manifest: {exc}") from exc
-    try:
-        grader, judge_base_url = grader_identity_for_model(judge_model)
-    except GradeIntegrityError as exc:
+        if recorded_runtime:
+            validate_grading_runtime_record(
+                recorded_grading_runtime, require_current=False
+            )
+            grading_runtime = grading_runtime_record()
+            validate_grading_runtime_record(
+                grading_runtime, require_current=False
+            )
+            if canonical_json_bytes(grading_runtime) != canonical_json_bytes(
+                recorded_grading_runtime
+            ):
+                raise ValueError(
+                    "current grading runtime differs from the recorded attestation"
+                )
+            local_runtime = recorded_local_judge_runtime
+            validate_local_judge_runtime_record(
+                local_runtime, require_current=False
+            )
+        else:
+            grading_runtime = grading_runtime_record()
+            local_runtime = (
+                local_judge_runtime_record() if diagnostic_local else None
+            )
+        grading_runtime_digest = grading_runtime_sha256(grading_runtime)
+        local_runtime_digest = (
+            local_judge_runtime_sha256(local_runtime)
+            if local_runtime is not None
+            else None
+        )
+    except (OSError, TypeError, UnicodeError, ValueError) as exc:
         raise ReportIntegrityError(
-            "strict reporting does not recognize the requested preregistered judge"
+            f"cannot attest the grading runtime: {exc}"
         ) from exc
     try:
-        validate_preregistered_grading_policy(
-            manifest_context["preregistration"],
-            grader=grader,
-            judge_model=judge_model,
-            whole_files=whole_files,
-            effort=effort,
+        manifest_context = load_claim_manifest(
+            run_root / task,
+            corpus,
+            rows_list,
+            require_claim_ready=not diagnostic_local,
+        )
+    except GradeIntegrityError as exc:
+        run_kind = "exploratory" if diagnostic_local else "claim-ready"
+        raise ReportIntegrityError(
+            f"{task}: invalid {run_kind} run manifest: {exc}"
+        ) from exc
+    try:
+        grader, judge_base_url = grader_identity_for_model(
+            judge_model, judge_base_url
         )
     except GradeIntegrityError as exc:
         raise ReportIntegrityError(
-            f"{task}: grading configuration differs from preregistration: {exc}"
+            "reporting does not recognize the requested judge endpoint"
         ) from exc
+    if diagnostic_local:
+        if grader != "local":
+            raise ReportIntegrityError("diagnostic-local report selected a non-local grader")
+    else:
+        try:
+            validate_preregistered_grading_policy(
+                manifest_context["preregistration"],
+                grader=grader,
+                judge_model=judge_model,
+                whole_files=whole_files,
+                effort=effort,
+            )
+        except GradeIntegrityError as exc:
+            raise ReportIntegrityError(
+                f"{task}: grading configuration differs from preregistration: {exc}"
+            ) from exc
     run_id = manifest_context["spec"]["run_id"]
     if run_root.name != run_id:
         raise ReportIntegrityError("run manifest ID does not match its directory")
@@ -510,13 +628,24 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             whole_files,
             effort,
             judge_base_url=judge_base_url,
+            grading_runtime=grading_runtime,
+            local_judge_runtime=local_runtime,
         )
         for qid, row in rows.items()
     }
     failed_judge_audits, failed_judge_errors = _inventory_failed_judge_audits(
-        grade_root, task, expected_runs, manifest_context, grading_specs, judge_model)
+        grade_root,
+        task,
+        expected_runs,
+        manifest_context,
+        grading_specs,
+        judge_model,
+        grading_runtime_digest,
+        local_runtime_digest,
+    )
     errors.extend(failed_judge_errors)
     response_models = set()
+    judge_transport_urls = set()
     # Only the final accepted attempt determines a stored score. Rejected
     # attempts remain visible in the grade/retry audit, but must not be allowed
     # to make two graders look revision-matched.
@@ -525,7 +654,9 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
     missing_judge_system_fingerprints = 0
     generation_models = set()
     generation_fingerprints = set()
+    generation_provider_calls = 0
     missing_generation_fingerprints = 0
+    generation_provider_identity_by_episode = {}
     environment_snapshot_by_episode = {}
     for key, run_path in expected_runs.items():
         budget, rollout, qid = key
@@ -554,14 +685,24 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                 corpus=corpus,
                 whole_files=whole_files,
                 source_episode=_display_path(run_path),
+                grading_runtime=grading_runtime,
+                local_judge_runtime=local_runtime,
             )
             population[budget].append(grade)
+            if diagnostic_local:
+                judge_transport_urls.add(grade["judge_base_url"])
             generation_identity = episode_provider_identity(ep)
             generation_models.update(generation_identity["response_models"])
             generation_fingerprints.update(generation_identity["system_fingerprints"])
+            generation_provider_calls += generation_identity[
+                "provider_call_count"
+            ]
             missing_generation_fingerprints += generation_identity[
                 "missing_system_fingerprint_calls"]
             relative = f"{budget}/r{rollout}/{qid}.json"
+            generation_provider_identity_by_episode[relative] = (
+                generation_identity
+            )
             environment_snapshot_by_episode[relative] = ep[
                 "environment_snapshot"
             ]["sha256"]
@@ -635,8 +776,38 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
         "missing_judge_system_fingerprint_calls": missing_judge_system_fingerprints,
         "whole_files": whole_files,
         "judge_effort": effort,
+        "grading_runtime_sha256": grading_runtime_digest,
+        "grading_runtime": grading_runtime,
         "grading_spec_sha256_by_question": grading_specs,
     }
+    if diagnostic_local:
+        grading_config.update({
+            "claim_ready": False,
+            "grading_tier": "diagnostic-local-proxy",
+            "local_proxy": True,
+            "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
+            "judge_transport_urls": sorted(judge_transport_urls),
+            "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
+            "local_judge_runtime_sha256": local_runtime_digest,
+            "local_judge_runtime": local_runtime,
+            "checker_interpretation": {
+                "language": corpus.language,
+                "sandbox_configuration_sha256": (
+                    sandbox_configuration_sha256(corpus.language)
+                ),
+                "ready": (
+                    sandbox_configuration_record(corpus.language).get("ready")
+                    is True
+                ),
+                "score_interpretation": (
+                    "all-metrics"
+                    if sandbox_configuration_record(corpus.language).get("ready")
+                    is True
+                    else "lenient-only-checker-unavailable"
+                ),
+            },
+        })
     note_manifest = manifest_context.get("note_manifest")
     note_config = (
         note_manifest.get("config")
@@ -657,7 +828,12 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
         "generation_runtime": {
             "response_models": sorted(generation_models),
             "system_fingerprints": sorted(generation_fingerprints),
+            "provider_call_count": generation_provider_calls,
             "missing_system_fingerprint_calls": missing_generation_fingerprints,
+            "provider_identity_scope": "final_manifest_episodes",
+            "provider_identity_by_episode": (
+                generation_provider_identity_by_episode
+            ),
             "environment_snapshot_scope": "final_manifest_episodes",
             "environment_snapshot_sha256s": sorted(
                 set(environment_snapshot_by_episode.values())
@@ -700,6 +876,66 @@ def load_complete_evaluation(task: str, grades_dir: str | Path,
     return _load_complete_evaluation(
         task, grades_dir, runs_dir, rollouts=rollouts,
         judge_model=judge_model, whole_files=whole_files, effort=effort)
+
+
+def load_local_diagnostic_evaluation(
+    task: str,
+    grades_dir: str | Path,
+    runs_dir: str | Path,
+    *,
+    rollouts: int | None,
+    judge_base_url: str,
+    whole_files: bool = False,
+) -> tuple[dict[str, list[dict]], dict]:
+    """Load a complete local-Qwen population without making it claim-ready."""
+
+    return _load_complete_evaluation(
+        task,
+        grades_dir,
+        runs_dir,
+        rollouts=rollouts,
+        judge_model=LOCAL_GRADER_MODEL,
+        whole_files=whole_files,
+        effort="",
+        judge_base_url=judge_base_url,
+        diagnostic_local=True,
+    )
+
+
+def revalidate_recorded_local_diagnostic_evaluation(
+    task: str,
+    grades_dir: str | Path,
+    runs_dir: str | Path,
+    *,
+    rollouts: int | None,
+    judge_base_url: str,
+    grading_runtime: dict,
+    local_judge_runtime: dict,
+    whole_files: bool = False,
+) -> tuple[dict[str, list[dict]], dict]:
+    """Revalidate stored local artifacts without recreating their GPU runtime.
+
+    Report creation continues to use :func:`load_local_diagnostic_evaluation`
+    and live-attest the active launcher.  This read-only path still requires
+    the current grading Python/package runtime, source, and checker to match;
+    only the GPU/server runtime is structurally revalidated from its exact
+    content-bound record.  Both records are used to recompute every grade
+    specification and population audit.
+    """
+
+    return _load_complete_evaluation(
+        task,
+        grades_dir,
+        runs_dir,
+        rollouts=rollouts,
+        judge_model=LOCAL_GRADER_MODEL,
+        whole_files=whole_files,
+        effort="",
+        judge_base_url=judge_base_url,
+        diagnostic_local=True,
+        recorded_grading_runtime=grading_runtime,
+        recorded_local_judge_runtime=local_judge_runtime,
+    )
 
 
 def load_complete_population(task: str, grades_dir: str | Path,
@@ -930,20 +1166,112 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
     ):
         raise ReportIntegrityError("grading or run configuration is invalid")
     try:
-        _, configured_base_url = grader_identity_for_model(judge_model)
+        validate_grading_runtime_record(
+            config.get("grading_runtime"), require_current=False
+        )
+        if canonical_json_bytes(config["grading_runtime"]) != canonical_json_bytes(
+            grading_runtime_record()
+        ):
+            raise ValueError("grading runtime differs from the live process")
+        if config.get("grading_runtime_sha256") != grading_runtime_sha256(
+            config["grading_runtime"]
+        ):
+            raise ValueError("grading runtime digest does not match its summary")
+    except (OSError, TypeError, ValueError) as error:
+        raise ReportIntegrityError(
+            f"report grading runtime is stale or invalid: {error}"
+        ) from error
+    diagnostic_local = judge_model == LOCAL_GRADER_MODEL
+    if diagnostic_local:
+        checker_configuration = sandbox_configuration_record(
+            CORPORA[task].language
+        )
+        checker_ready = checker_configuration.get("ready") is True
+        expected_local_identity = {
+            "claim_ready": False,
+            "grading_tier": "diagnostic-local-proxy",
+            "local_proxy": True,
+            "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
+            "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
+            "checker_interpretation": {
+                "language": CORPORA[task].language,
+                "sandbox_configuration_sha256": sandbox_configuration_sha256(
+                    CORPORA[task].language
+                ),
+                "ready": checker_ready,
+                "score_interpretation": (
+                    "all-metrics"
+                    if checker_ready
+                    else "lenient-only-checker-unavailable"
+                ),
+            },
+        }
+        try:
+            validate_local_judge_runtime_record(
+                config.get("local_judge_runtime"), require_current=False
+            )
+            if canonical_json_bytes(
+                config["local_judge_runtime"]
+            ) != canonical_json_bytes(local_judge_runtime_record()):
+                raise ValueError("local judge runtime differs from the live launch")
+            if config.get(
+                "local_judge_runtime_sha256"
+            ) != local_judge_runtime_sha256(config["local_judge_runtime"]):
+                raise ValueError(
+                    "local judge runtime digest does not match its summary"
+                )
+        except (OSError, TypeError, ValueError) as error:
+            raise ReportIntegrityError(
+                f"local judge runtime is stale or invalid: {error}"
+            ) from error
+        if any(
+            config.get(field) != expected
+            for field, expected in expected_local_identity.items()
+        ):
+            raise ReportIntegrityError(
+                "local report has invalid diagnostic grading provenance"
+            )
+        transport_urls = config.get("judge_transport_urls")
+        if (
+            not isinstance(transport_urls, list)
+            or not transport_urls
+            or transport_urls != sorted(set(transport_urls))
+        ):
+            raise ReportIntegrityError(
+                "local report has an invalid transport disclosure"
+            )
+        if paper_comparison is not None:
+            raise ReportIntegrityError(
+                "paper comparison is prohibited for local proxy reports"
+            )
+    try:
+        _, configured_base_url = grader_identity_for_model(
+            judge_model, judge_base_url
+        )
     except GradeIntegrityError as error:
         raise ReportIntegrityError("grading endpoint identity is invalid") from error
     if judge_base_url != configured_base_url:
         raise ReportIntegrityError("grading endpoint differs from the configured grader")
-    fresh_population, fresh_audit = _load_complete_evaluation(
-        task,
-        grade_root,
-        run_root,
-        rollouts=spec["rollouts"],
-        judge_model=judge_model,
-        whole_files=whole_files,
-        effort=effort,
-    )
+    if diagnostic_local:
+        fresh_population, fresh_audit = load_local_diagnostic_evaluation(
+            task,
+            grade_root,
+            run_root,
+            rollouts=spec["rollouts"],
+            judge_base_url=judge_base_url,
+            whole_files=whole_files,
+        )
+    else:
+        fresh_population, fresh_audit = load_complete_evaluation(
+            task,
+            grade_root,
+            run_root,
+            rollouts=spec["rollouts"],
+            judge_model=judge_model,
+            whole_files=whole_files,
+            effort=effort,
+        )
     if canonical_json_bytes(fresh_audit) != canonical_json_bytes(audit):
         raise ReportIntegrityError("caller-supplied report audit is not current")
 
@@ -988,7 +1316,7 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
 
     artifact = {
         "report_schema_version": REPORT_SCHEMA_VERSION,
-        "claim_ready": True,
+        "claim_ready": not diagnostic_local,
         "task": task,
         "run_id": run_id,
         "budget_order": BUDGET_ORDER,
@@ -1023,10 +1351,17 @@ def main():
     p.add_argument("--tasks", default="dspy,openclaw")
     p.add_argument("--run-id",
                    help="immutable run ID (required unless --legacy-partial is used)")
-    p.add_argument("--grader", default="openai", choices=["openai", "fugu"])
+    p.add_argument("--grader", default="openai", choices=sorted(GRADERS))
     p.add_argument(
         "--grade-id",
         help="immutable grading namespace (default: judge/config name used by grade.py)",
+    )
+    p.add_argument(
+        "--judge-base-url",
+        help=(
+            "explicit authenticated loopback /v1 endpoint; required only for "
+            "exploratory local-Qwen reports"
+        ),
     )
     p.add_argument("--rollouts", type=int,
                    help="optional assertion; strict mode normally reads this from the manifest")
@@ -1074,6 +1409,17 @@ def main():
         p.error("strict reporting requires --whole-files or --excerpt-evidence")
     if args.legacy_partial and args.paper_variant:
         p.error("paper comparison is unavailable for legacy/partial diagnostics")
+    if args.grader == "local":
+        if args.legacy_partial:
+            p.error("the local grader uses the complete diagnostic path, not --legacy-partial")
+        if not args.judge_base_url:
+            p.error("--grader local requires --judge-base-url")
+        if args.judge_effort:
+            p.error("--grader local requires empty --judge-effort")
+        if args.paper_variant:
+            p.error("paper comparison is unavailable for local proxy reports")
+    elif args.judge_base_url is not None:
+        p.error("--judge-base-url is only available with --grader local")
     if not args.legacy_partial and (args.legacy_grades_dir or args.legacy_runs_dir):
         p.error("--legacy-*-dir options require --legacy-partial")
     run_id = args.run_id or "base"
@@ -1085,12 +1431,16 @@ def main():
         p.error(str(exc))
     if args.legacy_partial:
         print(DIAGNOSTIC_BANNER, file=sys.stderr)
+    diagnostic_local = args.grader == "local"
+    if diagnostic_local:
+        print(LOCAL_DIAGNOSTIC_BANNER, file=sys.stderr)
     judge_model = GRADERS[args.grader][0]
     if args.legacy_partial and args.whole_files is None:
         args.whole_files = False
         judge_dir = judge_model
     else:
-        judge_dir = (judge_model + ("-wholefiles" if args.whole_files else "-excerpts")
+        judge_name = "local-qwen3.5-9b" if diagnostic_local else judge_model
+        judge_dir = (judge_name + ("-wholefiles" if args.whole_files else "-excerpts")
                      + (f"-effort-{args.judge_effort}" if args.judge_effort else ""))
     grade_id = args.grade_id or judge_dir
     grades = args.legacy_grades_dir or f"grades/{run_id}/{grade_id}"
@@ -1100,6 +1450,16 @@ def main():
             if args.legacy_partial:
                 agg = _legacy_aggregate(task, grades, runs)
                 audit = population = None
+            elif diagnostic_local:
+                population, audit = load_local_diagnostic_evaluation(
+                    task,
+                    grades,
+                    runs,
+                    rollouts=args.rollouts,
+                    judge_base_url=args.judge_base_url,
+                    whole_files=args.whole_files,
+                )
+                agg = aggregate_population(population)
             else:
                 population, audit = load_complete_evaluation(
                     task, grades, runs, rollouts=args.rollouts,
@@ -1135,6 +1495,8 @@ def main():
         label = f"run={run_id}, grade-id={grade_id}, judge={args.grader}"
         if args.legacy_partial:
             label += ", DIAGNOSTIC-LEGACY-PARTIAL-NOT-A-RESULT"
+        elif diagnostic_local:
+            label += ", EXPLORATORY-LOCAL-PROXY-NOT-CLAIM-READY"
         print(f"\n== {CORPORA[task].display} ({label}) ==")
         if not args.legacy_partial:
             print(
@@ -1145,22 +1507,45 @@ def main():
                 "retained failed judge audits (no grade; excluded from ITT population): "
                 f"{audit['failed_judge_audits']['count']}"
             )
-        header = (
-            f"{'budget':8} {'n':>4} {'lenient':>8} {'len-cc':>7} "
-            f"{'strict':>7} {'tok(k)':>7} {'compile':>8} {'no-ans':>6} "
-            f"{'regrade':>8} {'bad':>4}"
-        )
+        checker_ready = True
+        if diagnostic_local:
+            checker_interpretation = audit["grading_manifest"]["config"][
+                "checker_interpretation"
+            ]
+            checker_ready = checker_interpretation["ready"]
+            print(
+                "deterministic checker interpretation: "
+                f"{checker_interpretation['score_interpretation']}"
+            )
+        if diagnostic_local and not checker_ready:
+            header = (
+                f"{'budget':8} {'n':>4} {'lenient':>8} {'tok(k)':>7} "
+                f"{'no-ans':>6} {'regrade':>8} {'bad':>4}"
+            )
+        else:
+            header = (
+                f"{'budget':8} {'n':>4} {'lenient':>8} {'len-cc':>7} "
+                f"{'strict':>7} {'tok(k)':>7} {'compile':>8} {'no-ans':>6} "
+                f"{'regrade':>8} {'bad':>4}"
+            )
         if paper is not None:
             header += "   paper-ref-lenient  paper-ref-tok(k)"
         print(header)
         for budget, b in agg["budgets"].items():
-            line = (
-                f"{budget:8} {b['n']:>4} {b['lenient']:>8.1f} "
-                f"{b['len_cc']:>7.1f} {b['strict']:>7.1f} "
-                f"{b['tokens'] / 1000:>7.1f} {b['compile_rate']:>8.1%} "
-                f"{b['no_answer']:>6} {b['needs_regrade']:>8} "
-                f"{b['bad_episodes']:>4}"
-            )
+            if diagnostic_local and not checker_ready:
+                line = (
+                    f"{budget:8} {b['n']:>4} {b['lenient']:>8.1f} "
+                    f"{b['tokens'] / 1000:>7.1f} {b['no_answer']:>6} "
+                    f"{b['needs_regrade']:>8} {b['bad_episodes']:>4}"
+                )
+            else:
+                line = (
+                    f"{budget:8} {b['n']:>4} {b['lenient']:>8.1f} "
+                    f"{b['len_cc']:>7.1f} {b['strict']:>7.1f} "
+                    f"{b['tokens'] / 1000:>7.1f} {b['compile_rate']:>8.1%} "
+                    f"{b['no_answer']:>6} {b['needs_regrade']:>8} "
+                    f"{b['bad_episodes']:>4}"
+                )
             if paper is not None:
                 paper_accuracy, paper_tokens = paper[budget]
                 line += f"   {paper_accuracy:>13.1f} {paper_tokens:>12.1f}"
@@ -1169,7 +1554,8 @@ def main():
             line = f"expertise (lenient WAUC): {agg['expertise_lenient']:.2f}"
             if paper is not None:
                 line += f" (paper reference: {paper['expertise']:.2f})"
-            line += f"; strict WAUC: {agg['expertise_strict']:.2f}"
+            if not (diagnostic_local and not checker_ready):
+                line += f"; strict WAUC: {agg['expertise_strict']:.2f}"
             print(line)
         bootstrap_result = None
         if args.ci:
@@ -1190,8 +1576,9 @@ def main():
             if paper is not None:
                 line += f" (paper reference: {paper['expertise']:.2f})"
             print(line)
-            m, lo, hi = b["wauc_cc"]
-            print(f"  WAUC len-cc  {m:5.2f} [{lo:5.2f}, {hi:5.2f}]")
+            if not (diagnostic_local and not checker_ready):
+                m, lo, hi = b["wauc_cc"]
+                print(f"  WAUC len-cc  {m:5.2f} [{lo:5.2f}, {hi:5.2f}]")
         if not args.legacy_partial:
             report_path = write_report_artifact(
                 task=task,

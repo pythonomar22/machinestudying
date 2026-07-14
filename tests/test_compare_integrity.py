@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
+import json
 from pathlib import Path
 import tempfile
 import unittest
@@ -284,6 +285,17 @@ def loaded_arm(run_id: str, *, treatment: bool, score_offset: int) -> compare.Lo
         "judge_effort": "high",
         "grading_spec_sha256_by_question": {qid: "2" * 64 for qid in QIDS},
     }
+    generation_identities = {
+        f"{budget}/r{grade['rollout']}/{grade['qid']}.json": {
+            "harness_usage": "native_turns",
+            "provider_call_count": 1,
+            "response_models": ["generation-revision"],
+            "system_fingerprints": ["generation-fingerprint"],
+            "missing_system_fingerprint_calls": 0,
+        }
+        for budget in report.BUDGET_ORDER
+        for grade in grades[budget]
+    }
     audit = {
         "run_manifest": {
             "path": f"runs/{run_id}/fake/manifest.json",
@@ -298,7 +310,10 @@ def loaded_arm(run_id: str, *, treatment: bool, score_offset: int) -> compare.Lo
         "generation_runtime": {
             "response_models": ["generation-revision"],
             "system_fingerprints": ["generation-fingerprint"],
+            "provider_call_count": len(generation_identities),
             "missing_system_fingerprint_calls": 0,
+            "provider_identity_scope": "final_manifest_episodes",
+            "provider_identity_by_episode": generation_identities,
         },
         "note_provenance": {
             "construction_manifest_sha256": "c" * 64 if treatment else None,
@@ -355,6 +370,31 @@ def set_accepted_judge_fingerprints(
     arm.audit["grading_manifest"]["sha256"] = sha256_json(config)
 
 
+def set_generation_identities(
+    arm: compare.LoadedArm, values: dict[str, dict]
+) -> None:
+    runtime = arm.audit["generation_runtime"]
+    runtime["provider_identity_scope"] = "final_manifest_episodes"
+    runtime["provider_identity_by_episode"] = values
+    runtime["response_models"] = sorted({
+        model
+        for identity in values.values()
+        for model in identity["response_models"]
+    })
+    runtime["system_fingerprints"] = sorted({
+        fingerprint
+        for identity in values.values()
+        for fingerprint in identity["system_fingerprints"]
+    })
+    runtime["provider_call_count"] = sum(
+        identity["provider_call_count"] for identity in values.values()
+    )
+    runtime["missing_system_fingerprint_calls"] = sum(
+        identity["missing_system_fingerprint_calls"]
+        for identity in values.values()
+    )
+
+
 class PairContractTests(unittest.TestCase):
     def setUp(self) -> None:
         self.control = loaded_arm("control-a", treatment=False, score_offset=0)
@@ -373,7 +413,7 @@ class PairContractTests(unittest.TestCase):
         )
         self.assertEqual(
             intervention["generation_revision_verification"],
-            "matched_complete_provider_fingerprint_set",
+            "matched_complete_single_provider_fingerprint_by_paired_cell",
         )
         self.assertIn(
             "/environment/slurm_job_id",
@@ -483,8 +523,15 @@ class PairContractTests(unittest.TestCase):
             for key in sorted(values)[:missing]:
                 values[key] = None
             set_accepted_judge_fingerprints(arm, values)
-        control.audit["generation_runtime"]["missing_system_fingerprint_calls"] = 2
-        treatment.audit["generation_runtime"]["missing_system_fingerprint_calls"] = 5
+        for missing, arm in ((2, control), (5, treatment)):
+            identities = deepcopy(
+                arm.audit["generation_runtime"]["provider_identity_by_episode"]
+            )
+            keys = sorted(identities)
+            for index in range(missing):
+                identities[keys[index]]["missing_system_fingerprint_calls"] = 1
+                identities[keys[index]]["provider_call_count"] = 2
+            set_generation_identities(arm, identities)
         intervention = compare.validate_pair(
             control, treatment, intervention_description=INTERVENTION
         )
@@ -527,11 +574,18 @@ class PairContractTests(unittest.TestCase):
                 bootstrap_seed=9,
             )
 
-    def test_missing_generation_fingerprint_is_diagnostic(self) -> None:
+    def test_missing_generation_fingerprint_is_disclosed_but_nonfatal(self) -> None:
         control = loaded_arm("control-a", treatment=False, score_offset=0)
         treatment = loaded_arm("treatment-a", treatment=True, score_offset=10)
-        control.audit["generation_runtime"]["missing_system_fingerprint_calls"] = 1
-        treatment.audit["generation_runtime"]["missing_system_fingerprint_calls"] = 1
+        for arm in (control, treatment):
+            identities = deepcopy(
+                arm.audit["generation_runtime"]["provider_identity_by_episode"]
+            )
+            identities[sorted(identities)[0]][
+                "missing_system_fingerprint_calls"
+            ] = 1
+            identities[sorted(identities)[0]]["provider_call_count"] = 2
+            set_generation_identities(arm, identities)
         artifact = compare.build_comparison(
             control,
             treatment,
@@ -541,9 +595,130 @@ class PairContractTests(unittest.TestCase):
         )
         self.assertEqual(
             artifact["intervention"]["generation_revision_verification"],
-            "provider_fingerprint_incomplete_and_disclosed",
+            "matched_pinned_generation_runtime_with_missing_fingerprints_"
+            "disclosed",
         )
-        self.assertFalse(artifact["claim_ready"])
+        self.assertTrue(artifact["claim_ready"])
+
+        for arm in (control, treatment):
+            identities = deepcopy(
+                arm.audit["generation_runtime"]["provider_identity_by_episode"]
+            )
+            for identity in identities.values():
+                identity["system_fingerprints"] = []
+                identity["missing_system_fingerprint_calls"] = identity[
+                    "provider_call_count"
+                ]
+            set_generation_identities(arm, identities)
+        fully_unavailable = compare.build_comparison(
+            control,
+            treatment,
+            intervention_description=INTERVENTION,
+            bootstrap_replicates=20,
+            bootstrap_seed=9,
+        )
+        self.assertEqual(
+            fully_unavailable["intervention"][
+                "generation_revision_verification"
+            ],
+            "matched_pinned_generation_runtime_with_missing_fingerprints_"
+            "disclosed",
+        )
+        self.assertTrue(fully_unavailable["claim_ready"])
+
+    def test_single_available_generation_fingerprint_mismatch_is_fatal(
+        self,
+    ) -> None:
+        treatment = loaded_arm("treatment-a", treatment=True, score_offset=10)
+        identities = deepcopy(
+            treatment.audit["generation_runtime"]["provider_identity_by_episode"]
+        )
+        for identity in identities.values():
+            identity["system_fingerprints"] = ["different-fingerprint"]
+        set_generation_identities(treatment, identities)
+        with self.assertRaisesRegex(
+            compare.ComparisonIntegrityError,
+            "paired generation identities differ",
+        ):
+            compare.validate_pair(
+                self.control, treatment, intervention_description=INTERVENTION
+            )
+
+    def test_generation_identity_is_matched_per_paired_cell(self) -> None:
+        control = loaded_arm("control-a", treatment=False, score_offset=0)
+        treatment = loaded_arm("treatment-a", treatment=True, score_offset=10)
+        control_identities = deepcopy(
+            control.audit["generation_runtime"]["provider_identity_by_episode"]
+        )
+        treatment_identities = deepcopy(
+            treatment.audit["generation_runtime"]["provider_identity_by_episode"]
+        )
+        first, second = sorted(control_identities)[:2]
+        control_identities[first]["system_fingerprints"] = ["fingerprint-a"]
+        control_identities[second]["system_fingerprints"] = ["fingerprint-b"]
+        treatment_identities[first]["system_fingerprints"] = ["fingerprint-b"]
+        treatment_identities[second]["system_fingerprints"] = ["fingerprint-a"]
+        set_generation_identities(control, control_identities)
+        set_generation_identities(treatment, treatment_identities)
+        self.assertEqual(
+            control.audit["generation_runtime"]["system_fingerprints"],
+            treatment.audit["generation_runtime"]["system_fingerprints"],
+        )
+        with self.assertRaisesRegex(
+            compare.ComparisonIntegrityError,
+            "multiple available provider fingerprints",
+        ):
+            compare.validate_pair(
+                control, treatment, intervention_description=INTERVENTION
+            )
+
+    def test_generation_missing_counts_need_not_match_within_a_cell(self) -> None:
+        treatment = loaded_arm("treatment-a", treatment=True, score_offset=10)
+        identities = deepcopy(
+            treatment.audit["generation_runtime"]["provider_identity_by_episode"]
+        )
+        target = sorted(identities)[0]
+        identities[target]["missing_system_fingerprint_calls"] = 3
+        identities[target]["provider_call_count"] = 4
+        set_generation_identities(treatment, identities)
+        intervention = compare.validate_pair(
+            self.control, treatment, intervention_description=INTERVENTION
+        )
+        pairing = intervention["generation_runtime_pairing"]
+        self.assertFalse(pairing["missing_call_counts_are_equality_gated"])
+        record = next(
+            item
+            for item in pairing["records"]
+            if f"{item['budget']}/r{item['rollout']}/{item['qid']}.json"
+            == target
+        )
+        self.assertEqual(
+            record["treatment"]["missing_system_fingerprint_calls"], 3
+        )
+
+    def test_multiple_generation_fingerprints_in_one_population_are_rejected(
+        self,
+    ) -> None:
+        control = loaded_arm("control-a", treatment=False, score_offset=0)
+        treatment = loaded_arm("treatment-a", treatment=True, score_offset=10)
+        for arm in (control, treatment):
+            identities = deepcopy(
+                arm.audit["generation_runtime"]["provider_identity_by_episode"]
+            )
+            target = sorted(identities)[0]
+            identities[target]["provider_call_count"] = 3
+            identities[target]["system_fingerprints"] = [
+                "fingerprint-a",
+                "fingerprint-b",
+            ]
+            set_generation_identities(arm, identities)
+        with self.assertRaisesRegex(
+            compare.ComparisonIntegrityError,
+            "multiple available provider fingerprints",
+        ):
+            compare.validate_pair(
+                control, treatment, intervention_description=INTERVENTION
+            )
 
     def test_static_grading_contract_drift_is_fatal(self) -> None:
         drifted = loaded_arm("treatment-a", treatment=True, score_offset=10)
@@ -686,7 +861,19 @@ class SourceReportTests(unittest.TestCase):
             "generation_runtime": {
                 "response_models": ["generation-revision"],
                 "system_fingerprints": [],
+                "provider_call_count": 4,
                 "missing_system_fingerprint_calls": 4,
+                "provider_identity_scope": "final_manifest_episodes",
+                "provider_identity_by_episode": {
+                    f"{budget}/r0/q1.json": {
+                        "harness_usage": "native_turns",
+                        "provider_call_count": 1,
+                        "response_models": ["generation-revision"],
+                        "system_fingerprints": [],
+                        "missing_system_fingerprint_calls": 1,
+                    }
+                    for budget in report.BUDGET_ORDER
+                },
             },
             "note_provenance": {
                 "construction_manifest_sha256": None,
@@ -773,6 +960,27 @@ class SourceReportTests(unittest.TestCase):
                 self.assertRaises(compare.ComparisonIntegrityError),
             ):
                 compare.load_source_report(path)
+
+    def test_non_claim_ready_local_report_cannot_enter_strict_comparison(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, _, _ = self._fixture(root)
+            artifact = json.loads(path.read_bytes())
+            artifact["claim_ready"] = False
+            raw = canonical_json_bytes(artifact)
+            diagnostic = path.with_name(f"report-{sha256_bytes(raw)}.json")
+            diagnostic.write_bytes(raw)
+            with (
+                patch.object(compare, "ROOT", root),
+                patch.object(report, "ROOT", root),
+                patch.object(report, "load_complete_evaluation") as strict_loader,
+                self.assertRaisesRegex(
+                    compare.ComparisonIntegrityError,
+                    "not claim-ready strict output",
+                ),
+            ):
+                compare.load_source_report(diagnostic)
+            strict_loader.assert_not_called()
 
     def test_study_token_metadata_is_bound_and_totals_are_checked(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

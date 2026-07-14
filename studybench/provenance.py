@@ -10,6 +10,7 @@ from __future__ import annotations
 from copy import deepcopy
 from dataclasses import dataclass
 from fnmatch import fnmatchcase
+from functools import lru_cache
 from importlib import metadata
 import hashlib
 import importlib.util
@@ -22,7 +23,7 @@ import socket
 import stat
 import subprocess
 import sys
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import urlsplit
 
 from .dataset import ROOT, Corpus, validate_corpus_snapshot
@@ -62,6 +63,10 @@ DSPY_COMMIT = "9cdb0aac28b2a04b064e40697ccd301872cf6a43"
 MODEL_ID = "Qwen/Qwen3.5-9B"
 MODEL_REVISION = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
 ENVIRONMENT_COMPATIBILITY_POLICY = "allocation-and-transport-nuisances-v1"
+GRADING_RUNTIME_ATTESTATION_POLICY = (
+    "python-executable-uv-lock-installed-distributions-sha256-v1"
+)
+LOCAL_JUDGE_RUNTIME_ATTESTATION_POLICY = "normalized-launch-environment-sha256-v1"
 _ID = re.compile(r"[a-z0-9][a-z0-9._-]{2,79}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _PACKAGE = re.compile(r"[a-z0-9][a-z0-9._-]*==[^\s=]+\Z")
@@ -1224,6 +1229,215 @@ def _runner_lock_is_valid(
     return dspy_corpus is None and dspy_import is None
 
 
+def _validate_grading_runtime_record(record: object) -> None:
+    """Validate the compact grading-process identity stored in reports.
+
+    The installed-code tree digest commits to the full RECORD-derived byte
+    inventory.  Keeping only its aggregate here makes the attestation small
+    enough for report provenance without weakening that commitment.
+    """
+
+    if not isinstance(record, dict) or set(record) != {
+        "schema_version",
+        "attestation_policy",
+        "python",
+        "packages",
+        "packages_sha256",
+        "runner_lock",
+        "installed_code",
+    }:
+        raise ValueError("grading-runtime attestation fields are invalid")
+    python_identity = record.get("python")
+    packages = record.get("packages")
+    installed_code = record.get("installed_code")
+    if (
+        type(record.get("schema_version")) is not int
+        or record["schema_version"] != 1
+        or record.get("attestation_policy") != GRADING_RUNTIME_ATTESTATION_POLICY
+        or not isinstance(python_identity, dict)
+        or set(python_identity) != {
+            "version",
+            "implementation",
+            "executable",
+            "resolved_executable",
+            "executable_sha256",
+            "prefix",
+            "base_prefix",
+            "pyvenv_cfg",
+        }
+        or not isinstance(packages, list)
+        or not packages
+        or packages
+        != sorted(
+            packages,
+            key=lambda row: (
+                str(row.get("name", "")) if isinstance(row, dict) else "",
+                str(row.get("version", "")) if isinstance(row, dict) else "",
+            ),
+        )
+        or record.get("packages_sha256") != sha256_json(packages)
+        or not isinstance(record.get("runner_lock"), dict)
+        or not isinstance(installed_code, dict)
+        or set(installed_code) != {
+            "schema_version",
+            "python_version",
+            "prefix",
+            "distribution_count",
+            "file_count",
+            "total_bytes",
+            "tree_sha256",
+        }
+    ):
+        raise ValueError("grading-runtime attestation header is invalid")
+
+    names = []
+    for package in packages:
+        if (
+            not isinstance(package, dict)
+            or set(package) != {"name", "version"}
+            or not isinstance(package.get("name"), str)
+            or not re.fullmatch(r"[a-z0-9][a-z0-9-]*", package["name"])
+            or not isinstance(package.get("version"), str)
+            or not package["version"]
+            or any(character.isspace() for character in package["version"])
+        ):
+            raise ValueError("grading-runtime package identity is invalid")
+        names.append(package["name"])
+    if len(names) != len(set(names)):
+        raise ValueError("grading-runtime package names are not unique")
+
+    pyvenv = python_identity.get("pyvenv_cfg")
+    if (
+        not isinstance(python_identity.get("version"), str)
+        or not re.fullmatch(
+            r"[0-9]+\.[0-9]+\.[0-9]+", python_identity["version"]
+        )
+        or not isinstance(python_identity.get("implementation"), str)
+        or not python_identity["implementation"]
+        or any(
+            not isinstance(python_identity.get(field), str)
+            or not Path(python_identity[field]).is_absolute()
+            for field in (
+                "executable", "resolved_executable", "prefix", "base_prefix"
+            )
+        )
+        or not _SHA256.fullmatch(
+            str(python_identity.get("executable_sha256", ""))
+        )
+        or not isinstance(pyvenv, dict)
+        or set(pyvenv) != {"path", "sha256", "bytes", "text"}
+        or not isinstance(pyvenv.get("path"), str)
+        or not Path(pyvenv["path"]).is_absolute()
+        or not isinstance(pyvenv.get("text"), str)
+        or type(pyvenv.get("bytes")) is not int
+        or pyvenv["bytes"] != len(pyvenv["text"].encode("utf-8"))
+        or pyvenv.get("sha256") != sha256_text(pyvenv["text"])
+    ):
+        raise ValueError("grading-runtime Python identity is invalid")
+
+    if (
+        type(installed_code.get("schema_version")) is not int
+        or installed_code["schema_version"] != 1
+        or installed_code.get("python_version") != python_identity["version"]
+        or not isinstance(installed_code.get("prefix"), str)
+        or not Path(installed_code["prefix"]).is_absolute()
+        or Path(installed_code["prefix"]).resolve()
+        != Path(python_identity["prefix"]).resolve()
+        or type(installed_code.get("distribution_count")) is not int
+        or installed_code["distribution_count"] != len(packages)
+        or type(installed_code.get("file_count")) is not int
+        or installed_code["file_count"] <= 0
+        or type(installed_code.get("total_bytes")) is not int
+        or installed_code["total_bytes"] <= 0
+        or not _SHA256.fullmatch(str(installed_code.get("tree_sha256", "")))
+    ):
+        raise ValueError("grading-runtime installed-code summary is invalid")
+    canonical_json_bytes(record)
+
+
+@lru_cache(maxsize=1)
+def _grading_runtime_record_bytes() -> bytes:
+    """Build and cache one immutable current-process grading attestation."""
+
+    runner = _runner_environment_record()
+    runner_lock = _runner_lock_attestation(runner)
+    if not _runner_lock_is_valid(runner_lock, runner):
+        raise ValueError("grading runner lock attestation is invalid")
+    inventory = installed_distribution_inventory()
+    _validate_installed_distribution_inventory(inventory)
+    installed_packages = [
+        {
+            "name": distribution["name"],
+            "version": distribution["version"],
+        }
+        for distribution in inventory["distributions"]
+    ]
+    if runner["packages"] != installed_packages:
+        raise ValueError(
+            "grading runner package identities disagree with installed-code inventory"
+        )
+    python_identity = runner["python"]
+    if (
+        inventory["python_version"] != python_identity["version"]
+        or Path(inventory["prefix"]).resolve()
+        != Path(python_identity["prefix"]).resolve()
+    ):
+        raise ValueError(
+            "grading runner Python identity disagrees with installed-code inventory"
+        )
+    record = {
+        "schema_version": 1,
+        "attestation_policy": GRADING_RUNTIME_ATTESTATION_POLICY,
+        "python": python_identity,
+        "packages": runner["packages"],
+        "packages_sha256": runner["packages_sha256"],
+        "runner_lock": runner_lock,
+        "installed_code": {
+            field: inventory[field]
+            for field in (
+                "schema_version",
+                "python_version",
+                "prefix",
+                "distribution_count",
+                "file_count",
+                "total_bytes",
+                "tree_sha256",
+            )
+        },
+    }
+    _validate_grading_runtime_record(record)
+    return canonical_json_bytes(record)
+
+
+def grading_runtime_record() -> dict[str, object]:
+    """Return a mutation-safe compact identity for the live grading process."""
+
+    record = strict_json_loads(
+        _grading_runtime_record_bytes(), label="grading-runtime attestation"
+    )
+    if not isinstance(record, dict):  # pragma: no cover - guarded by construction
+        raise ValueError("grading-runtime attestation is not an object")
+    return record
+
+
+def grading_runtime_sha256(record: object | None = None) -> str:
+    """Hash a compact grading-runtime record after structural validation."""
+
+    value = grading_runtime_record() if record is None else record
+    _validate_grading_runtime_record(value)
+    return sha256_json(value)
+
+
+def validate_grading_runtime_record(
+    record: object, *, require_current: bool = True
+) -> None:
+    """Validate a report record and, by default, reattest the live runtime."""
+
+    _validate_grading_runtime_record(record)
+    if require_current and canonical_json_bytes(record) != _grading_runtime_record_bytes():
+        raise ValueError("grading runtime differs from the recorded attestation")
+
+
 def environment_is_claim_ready(environment: dict[str, object]) -> bool:
     """Validate exact identities emitted by the pinned authenticated launcher."""
 
@@ -1591,6 +1805,229 @@ def environment_contract_is_valid(record: object, environment: object) -> bool:
         return False
 
 
+def _validate_local_judge_runtime_record(record: object) -> None:
+    """Validate the compact, allocation-normalized local judge identity."""
+
+    if not isinstance(record, dict) or set(record) != {
+        "schema_version",
+        "attestation_policy",
+        "environment_contract",
+        "model",
+        "server",
+        "hardware",
+    }:
+        raise ValueError("local judge runtime fields are invalid")
+    contract = record.get("environment_contract")
+    model = record.get("model")
+    server = record.get("server")
+    hardware = record.get("hardware")
+    if (
+        type(record.get("schema_version")) is not int
+        or record["schema_version"] != 1
+        or record.get("attestation_policy")
+        != LOCAL_JUDGE_RUNTIME_ATTESTATION_POLICY
+        or not isinstance(contract, dict)
+        or set(contract) != {"schema_version", "policy", "sha256"}
+        or type(contract.get("schema_version")) is not int
+        or contract["schema_version"] != 1
+        or contract.get("policy") != ENVIRONMENT_COMPATIBILITY_POLICY
+        or not _SHA256.fullmatch(str(contract.get("sha256", "")))
+        or not isinstance(model, dict)
+        or set(model) != {
+            "id",
+            "revision",
+            "cache_inventory_sha256",
+            "cache_file_count",
+            "cache_total_bytes",
+            "cache_tree_sha256",
+        }
+        or model.get("id") != MODEL_ID
+        or model.get("revision") != MODEL_REVISION
+        or not _SHA256.fullmatch(str(model.get("cache_inventory_sha256", "")))
+        or type(model.get("cache_file_count")) is not int
+        or model["cache_file_count"] <= 0
+        or type(model.get("cache_total_bytes")) is not int
+        or model["cache_total_bytes"] <= 0
+        or not _SHA256.fullmatch(str(model.get("cache_tree_sha256", "")))
+        or not isinstance(server, dict)
+        or set(server) != {
+            "vllm_version",
+            "installed_inventory_sha256",
+            "installed_distribution_count",
+            "installed_file_count",
+            "installed_total_bytes",
+            "installed_tree_sha256",
+            "runtime_inventory_sha256",
+            "tensor_parallel_size",
+            "visible_gpu_count",
+            "server_count",
+        }
+        or server.get("vllm_version") != VLLM_VERSION
+        or any(
+            not _SHA256.fullmatch(str(server.get(field, "")))
+            for field in (
+                "installed_inventory_sha256",
+                "installed_tree_sha256",
+                "runtime_inventory_sha256",
+            )
+        )
+        or any(
+            type(server.get(field)) is not int or server[field] <= 0
+            for field in (
+                "installed_distribution_count",
+                "installed_file_count",
+                "installed_total_bytes",
+                "tensor_parallel_size",
+                "visible_gpu_count",
+                "server_count",
+            )
+        )
+        or server["tensor_parallel_size"] * server["server_count"]
+        != server["visible_gpu_count"]
+        or not isinstance(hardware, dict)
+        or set(hardware) != {"gpu_models", "nvidia_driver", "gpu_profiles"}
+        or not isinstance(hardware.get("gpu_models"), list)
+        or not hardware["gpu_models"]
+        or any(
+            not isinstance(value, str) or not value
+            for value in hardware["gpu_models"]
+        )
+        or hardware["gpu_models"] != sorted(set(hardware["gpu_models"]))
+        or not isinstance(hardware.get("nvidia_driver"), list)
+        or not hardware["nvidia_driver"]
+        or any(
+            not isinstance(value, str) or not value
+            for value in hardware["nvidia_driver"]
+        )
+        or hardware["nvidia_driver"] != sorted(set(hardware["nvidia_driver"]))
+        or not isinstance(hardware.get("gpu_profiles"), list)
+        or not hardware["gpu_profiles"]
+        or hardware["gpu_profiles"]
+        != sorted(
+            hardware["gpu_profiles"],
+            key=lambda row: (
+                str(row.get("name", "")) if isinstance(row, dict) else "",
+                row.get("memory_mib", -1)
+                if isinstance(row, dict)
+                and type(row.get("memory_mib")) is int
+                else -1,
+                str(row.get("driver_version", ""))
+                if isinstance(row, dict)
+                else "",
+            ),
+        )
+    ):
+        raise ValueError("local judge runtime identity is invalid")
+    for profile in hardware["gpu_profiles"]:
+        if (
+            not isinstance(profile, dict)
+            or set(profile) != {"name", "memory_mib", "driver_version", "count"}
+            or not isinstance(profile.get("name"), str)
+            or not profile["name"]
+            or type(profile.get("memory_mib")) is not int
+            or profile["memory_mib"] <= 0
+            or not isinstance(profile.get("driver_version"), str)
+            or not profile["driver_version"]
+            or type(profile.get("count")) is not int
+            or profile["count"] <= 0
+        ):
+            raise ValueError("local judge GPU profile is invalid")
+    if sum(profile["count"] for profile in hardware["gpu_profiles"]) != server[
+        "visible_gpu_count"
+    ]:
+        raise ValueError("local judge GPU profile count is inconsistent")
+    canonical_json_bytes(record)
+
+
+@lru_cache(maxsize=1)
+def _local_judge_runtime_record_bytes() -> bytes:
+    """Capture one validated local judge launch and discard its large inventories."""
+
+    environment = environment_record()
+    if not environment_is_claim_ready(environment):
+        errors = environment.get("inventory_errors")
+        detail = f": {errors}" if errors else ""
+        raise ValueError(f"local judge launch environment is not claim-ready{detail}")
+    installed_code = environment["vllm_environment"]["inventory"]
+    model_cache = environment["model_cache"]["inventory"]
+    allocation = environment["allocation"]["inventory"]
+    profiles: dict[tuple[str, int, str], int] = {}
+    for gpu in allocation["gpus"]:
+        key = (gpu["name"], gpu["memory_mib"], gpu["driver_version"])
+        profiles[key] = profiles.get(key, 0) + 1
+    record = {
+        "schema_version": 1,
+        "attestation_policy": LOCAL_JUDGE_RUNTIME_ATTESTATION_POLICY,
+        # This commits to every validated substantive field in the full launch
+        # record while excluding only the explicit allocation/transport nuisances.
+        "environment_contract": environment_contract_record(environment),
+        "model": {
+            "id": environment["model_id"],
+            "revision": environment["model_revision"],
+            "cache_inventory_sha256": environment["model_cache"]["sha256"],
+            "cache_file_count": model_cache["file_count"],
+            "cache_total_bytes": model_cache["total_bytes"],
+            "cache_tree_sha256": model_cache["tree_sha256"],
+        },
+        "server": {
+            "vllm_version": environment["vllm_version"],
+            "installed_inventory_sha256": environment["vllm_environment"]["sha256"],
+            "installed_distribution_count": installed_code["distribution_count"],
+            "installed_file_count": installed_code["file_count"],
+            "installed_total_bytes": installed_code["total_bytes"],
+            "installed_tree_sha256": installed_code["tree_sha256"],
+            "runtime_inventory_sha256": environment["vllm_runtime"]["sha256"],
+            "tensor_parallel_size": int(environment["tensor_parallel_size"]),
+            "visible_gpu_count": int(environment["visible_gpu_count"]),
+            "server_count": int(environment["server_count"]),
+        },
+        "hardware": {
+            "gpu_models": environment["gpu_models"],
+            "nvidia_driver": environment["nvidia_driver"],
+            "gpu_profiles": [
+                {
+                    "name": name,
+                    "memory_mib": memory_mib,
+                    "driver_version": driver,
+                    "count": count,
+                }
+                for (name, memory_mib, driver), count in sorted(profiles.items())
+            ],
+        },
+    }
+    _validate_local_judge_runtime_record(record)
+    return canonical_json_bytes(record)
+
+
+def local_judge_runtime_record() -> dict[str, object]:
+    """Return the compact substantive identity of the live local judge launch."""
+
+    record = strict_json_loads(
+        _local_judge_runtime_record_bytes(), label="local judge runtime attestation"
+    )
+    if not isinstance(record, dict):  # pragma: no cover - guarded by construction
+        raise ValueError("local judge runtime attestation is not an object")
+    return record
+
+
+def local_judge_runtime_sha256(record: object | None = None) -> str:
+    """Hash a compact local judge identity after structural validation."""
+
+    value = local_judge_runtime_record() if record is None else record
+    _validate_local_judge_runtime_record(value)
+    return sha256_json(value)
+
+
+def validate_local_judge_runtime_record(
+    record: object, *, require_current: bool = True
+) -> None:
+    """Validate a stored local judge identity and optionally reattest the launch."""
+
+    _validate_local_judge_runtime_record(record)
+    if require_current and canonical_json_bytes(record) != _local_judge_runtime_record_bytes():
+        raise ValueError("local judge runtime differs from the recorded attestation")
+
+
 def write_environment_snapshot(
     root: Path,
     relative_directory: PurePosixPath,
@@ -1680,11 +2117,23 @@ def _load_note(
     note_manifest_path: Path | None,
     *,
     require_manifest: bool,
+    require_claim_ready: bool | None = None,
     expected_task: str | None = None,
     expected_corpus_commit: str | None = None,
     expected_note_sha256: str | None = None,
     expected_note_manifest_sha256: str | None = None,
 ) -> tuple[str, dict[str, object] | None]:
+    if type(require_manifest) is not bool:
+        raise ValueError("require_manifest must be boolean")
+    if require_claim_ready is None:
+        # Preserve the historical direct-call contract while allowing
+        # prepare_run to distinguish full exploratory runs from confirmation.
+        require_claim_ready = require_manifest
+    if type(require_claim_ready) is not bool:
+        raise ValueError("require_claim_ready must be boolean")
+    if require_claim_ready and not require_manifest:
+        raise ValueError("claim-ready notes require a construction manifest")
+
     def contained_regular_file(parent: Path, relative: Path, label: str) -> Path:
         """Validate a manifest-relative file without resolving through symlinks."""
 
@@ -1744,13 +2193,17 @@ def _load_note(
                 raise ValueError("note manifest task does not match the evaluation task")
             if construction.get("corpus_commit") != expected_corpus_commit:
                 raise ValueError("note manifest corpus commit does not match the evaluation corpus")
-            if not isinstance(construction.get("study_id"), str):
-                raise ValueError("note manifest has no study_id")
+            try:
+                validate_id(construction.get("study_id"), "study ID")
+            except (TypeError, ValueError) as error:
+                raise ValueError("note manifest has no valid study_id") from error
             claim_ready = construction.get("claim_ready")
             if claim_ready is None and isinstance(construction.get("config"), dict):
                 claim_ready = construction["config"].get("claim_ready")
-            if claim_ready is not True:
+            if require_claim_ready and claim_ready is not True:
                 raise ValueError("note construction manifest is not claim-ready")
+            if claim_ready not in (True, False) or type(claim_ready) is not bool:
+                raise ValueError("note construction manifest has invalid claim readiness")
             raw_note_path = construction.get("note_path")
             relative_note = Path(str(raw_note_path))
             if (not isinstance(raw_note_path, str) or not raw_note_path
@@ -1764,7 +2217,64 @@ def _load_note(
                 raise ValueError("note manifest's recorded note artifact is missing or changed")
 
             manifest_type = construction.get("manifest_type")
-            if manifest_type == "human-audited-note":
+            if claim_ready is False:
+                readiness = construction.get("automated_readiness")
+                inventory = construction.get("construction_artifacts")
+                construction_inventory_sha256 = construction.get(
+                    "construction_artifacts_sha256")
+                contradictory_readiness = any(
+                    field in construction and construction.get(field) is not False
+                    for field in (
+                        "publication_claim_ready",
+                        "confirmatory_claim_ready",
+                    )
+                )
+                if (type(construction.get("schema_version")) is not int
+                        or construction["schema_version"] <= 0
+                        or contradictory_readiness
+                        or construction.get("automated_claim_ready") is not True
+                        or not isinstance(readiness, dict) or not readiness
+                        or any(type(value) is not bool or value is not True
+                               for value in readiness.values())
+                        or not isinstance(inventory, dict) or not inventory
+                        or not isinstance(construction_inventory_sha256, str)
+                        or not re.fullmatch(
+                            r"[0-9a-f]{64}", construction_inventory_sha256)
+                        or sha256_json(inventory) != construction_inventory_sha256):
+                    raise ValueError(
+                        "exploratory note did not pass its automated construction gates")
+                study_root = note_manifest_path.parent.parent.absolute()
+                for raw_relative, artifact_record in inventory.items():
+                    if (not isinstance(raw_relative, str) or not raw_relative
+                            or "\\" in raw_relative):
+                        raise ValueError(
+                            "construction inventory contains an unsafe path")
+                    relative = PurePosixPath(raw_relative)
+                    if (relative.is_absolute() or ".." in relative.parts
+                            or str(relative) != raw_relative or not relative.parts):
+                        raise ValueError(
+                            "construction inventory contains an unsafe path")
+                    if (not isinstance(artifact_record, dict)
+                            or set(artifact_record) != {"sha256", "bytes"}
+                            or not isinstance(artifact_record.get("sha256"), str)
+                            or not re.fullmatch(
+                                r"[0-9a-f]{64}", artifact_record["sha256"])
+                            or type(artifact_record.get("bytes")) is not int
+                            or artifact_record["bytes"] < 0):
+                        raise ValueError(
+                            f"construction inventory metadata is invalid: {raw_relative}")
+                    artifact = study_root.joinpath(*relative.parts)
+                    try:
+                        data = read_artifact_bytes(artifact)
+                    except (OSError, ValueError) as error:
+                        raise ValueError(
+                            f"construction dependency is missing: {raw_relative}") from error
+                    if (len(data) != artifact_record["bytes"]
+                            or sha256_bytes(data) != artifact_record["sha256"]):
+                        raise ValueError(
+                            f"construction dependency changed: {raw_relative}")
+                    construction_dependencies[raw_relative] = (artifact_record, data)
+            elif manifest_type == "human-audited-note":
                 if "automated_readiness" not in construction:
                     raise ValueError("human-audited note has no automated readiness record")
                 human = construction.get("human_audit")
@@ -2248,6 +2758,7 @@ def prepare_run(
         note_path,
         note_manifest_path,
         require_manifest=not smoke,
+        require_claim_ready=not (smoke or exploratory),
         expected_task=task,
         expected_corpus_commit=corpus.commit,
         expected_note_sha256=(existing_note or {}).get("sha256"),
@@ -2469,8 +2980,15 @@ def write_episode_result(
     context: RunContext,
     expected_path: Path,
     episode: dict[str, Any],
+    *,
+    validate_final: Callable[[dict[str, Any]], None] | None = None,
 ) -> Path:
-    """Write a final outcome or retain a non-final attempt without overwriting."""
+    """Write a validated final outcome or retain a failed attempt.
+
+    Harness-specific producer validation is mandatory at this persistence
+    boundary. That keeps a future runner from accidentally making an alleged
+    ``ok``/``no_answer`` artifact durable merely by calling this shared helper.
+    """
 
     if context.launch_environment_record is not None:
         if episode.get("environment_snapshot") != context.launch_environment_record:
@@ -2490,6 +3008,11 @@ def write_episode_result(
         )
     status = episode.get("status")
     if status in ("ok", "no_answer"):
+        if not callable(validate_final):
+            raise ValueError(
+                "final episode persistence requires a producer validator"
+            )
+        validate_final(episode)
         write_immutable_json(expected_path, episode)
         return expected_path
 

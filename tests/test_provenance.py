@@ -978,6 +978,143 @@ class ProvenanceTests(unittest.TestCase):
                     expected_task="dspy", expected_corpus_commit="abc",
                 )
 
+    def test_automated_ready_note_is_valid_only_for_exploratory_use(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            study_root = root / "studies" / "study-r1" / "dspy"
+            notes = study_root / "notes"
+            note_text = "automatically constructed note\n"
+            note_hash = sha256_text(note_text)
+            note = notes / "by-sha256" / f"{note_hash}.md"
+            note.parent.mkdir(parents=True)
+            note.write_text(note_text, encoding="utf-8")
+            dependency = study_root / "r1" / "summary.json"
+            dependency.parent.mkdir()
+            dependency.write_text('{"complete":true}\n', encoding="utf-8")
+            inventory = {
+                relative: {
+                    "sha256": sha256_file(study_root / relative),
+                    "bytes": (study_root / relative).stat().st_size,
+                }
+                for relative in (
+                    f"notes/by-sha256/{note_hash}.md",
+                    "r1/summary.json",
+                )
+            }
+            manifest = notes / "note-r1.manifest.json"
+            write_immutable_json(manifest, {
+                "schema_version": 1,
+                "study_id": "study-r1",
+                "task": "dspy",
+                "round": 1,
+                "corpus_commit": "abc",
+                "claim_ready": False,
+                "automated_claim_ready": True,
+                "automated_readiness": {
+                    "complete": True,
+                    "evidence_valid": True,
+                },
+                "note_sha256": note_hash,
+                "note_path": f"by-sha256/{note_hash}.md",
+                "construction_artifacts": inventory,
+                "construction_artifacts_sha256": sha256_json(inventory),
+            })
+
+            text, record = _load_note(
+                root / "exploratory-run",
+                note,
+                manifest,
+                require_manifest=True,
+                require_claim_ready=False,
+                expected_task="dspy",
+                expected_corpus_commit="abc",
+            )
+            self.assertEqual(text, note_text)
+            bundled = record["provenance_bundle"]["construction_artifacts"]
+            self.assertEqual(set(bundled["artifacts"]), set(inventory))
+            self.assertEqual(
+                bundled["inventory_sha256"], sha256_json(inventory)
+            )
+
+            with self.assertRaisesRegex(ValueError, "not claim-ready"):
+                _load_note(
+                    root / "confirmatory-run",
+                    note,
+                    manifest,
+                    require_manifest=True,
+                    require_claim_ready=True,
+                    expected_task="dspy",
+                    expected_corpus_commit="abc",
+                )
+
+            contradictory = json.loads(manifest.read_text(encoding="utf-8"))
+            contradictory["publication_claim_ready"] = True
+            write_immutable_json(
+                notes / "contradictory.manifest.json", contradictory
+            )
+            with self.assertRaisesRegex(ValueError, "automated construction gates"):
+                _load_note(
+                    root / "contradictory-run",
+                    note,
+                    notes / "contradictory.manifest.json",
+                    require_manifest=True,
+                    require_claim_ready=False,
+                    expected_task="dspy",
+                    expected_corpus_commit="abc",
+                )
+
+            dependency.write_text('{"complete":false}\n', encoding="utf-8")
+            with self.assertRaisesRegex(ValueError, "construction dependency changed"):
+                _load_note(
+                    root / "drifted-run",
+                    note,
+                    manifest,
+                    require_manifest=True,
+                    require_claim_ready=False,
+                    expected_task="dspy",
+                    expected_corpus_commit="abc",
+                )
+
+    def test_exploratory_note_requires_passing_automated_gates(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            study_root = root / "studies" / "study-r1" / "dspy"
+            notes = study_root / "notes"
+            notes.mkdir(parents=True)
+            note = notes / "note.md"
+            note.write_text("note\n", encoding="utf-8")
+            dependency = study_root / "construction.json"
+            dependency.write_text("{}\n", encoding="utf-8")
+            inventory = {
+                "construction.json": {
+                    "sha256": sha256_file(dependency),
+                    "bytes": dependency.stat().st_size,
+                }
+            }
+            manifest = notes / "failed.manifest.json"
+            write_immutable_json(manifest, {
+                "study_id": "study-r1",
+                "task": "dspy",
+                "corpus_commit": "abc",
+                "claim_ready": False,
+                "automated_claim_ready": False,
+                "automated_readiness": {"complete": False},
+                "note_sha256": sha256_text("note\n"),
+                "note_path": "note.md",
+                "construction_artifacts": inventory,
+                "construction_artifacts_sha256": sha256_json(inventory),
+            })
+            with self.assertRaisesRegex(ValueError, "automated construction gates"):
+                _load_note(
+                    root / "run",
+                    note,
+                    manifest,
+                    require_manifest=True,
+                    require_claim_ready=False,
+                    expected_task="dspy",
+                    expected_corpus_commit="abc",
+                )
+
     def test_unknown_claim_ready_note_manifest_type_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -1322,7 +1459,14 @@ class ProvenanceTests(unittest.TestCase):
             self.assertFalse(expected.exists())
             self.assertEqual(first.name, "attempt-1.json")
             self.assertEqual(second.name, "attempt-2.json")
-            final = write_episode_result(context, expected, {"status": "ok"})
+            with self.assertRaisesRegex(ValueError, "producer validator"):
+                write_episode_result(context, expected, {"status": "ok"})
+            final = write_episode_result(
+                context,
+                expected,
+                {"status": "ok"},
+                validate_final=lambda episode: None,
+            )
             self.assertEqual(final, expected)
             self.assertTrue(expected.is_file())
 

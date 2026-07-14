@@ -8,18 +8,26 @@ memorization.
 
 The current honest result is narrower than a successful new studying method.
 Under the local `dspy.ReAct` harness matching the author-confirmed ReAct
-mechanics, none of the tested self-quizzing or static-note variants beat the
-cheap cheatsheet produced by 50 forced ReAct study steps with a paired 95%
-confidence interval excluding zero. The pre-registered self-quizzing success
-criterion failed. Hybrid2 is incomplete, and hybrid3 is not a fresh DSPy
-replication because all 75 generated DSPy quiz questions repeated the first
-pipeline. These are useful negative and diagnostic results, not evidence that
-studying or weight updates cannot work in general.
+mechanics, the executed pre-registered self-quizzing milestones (R1/R2/R4) did
+not demonstrate superiority over the forced-50 cheatsheet by the paired 95%
+confidence-interval criterion. That cheatsheet had lower reported study
+completion-token cost; total compute and inference-context cost were not
+matched. The planned R8 milestone was not run after the earlier outcomes were
+inspected, so the complete pre-registered sequence was not executed. Later
+static-note variants were adaptive and likewise supplied no robust superiority
+evidence. Hybrid2 is incomplete, and hybrid3 is not a fresh DSPy replication
+because all 75 generated DSPy quiz questions repeated the first pipeline.
+These are useful diagnostic results showing a failure to demonstrate
+superiority, not evidence of equivalence, no effect, or a general failure of
+studying or weight updates.
 
-The detailed paper interpretation, dataset inventory, experiment ledger,
-artifact audit, supported claims, and defects are in
+The detailed paper interpretation, dataset inventory, experiment ledger, and
+initial defect register are in
 [experiments/008-repository-and-artifact-audit.md](experiments/008-repository-and-artifact-audit.md).
-That audit is the authoritative project handoff.
+[experiments/010-audit-009-disposition-and-selfquiz-review.md](experiments/010-audit-009-disposition-and-selfquiz-review.md)
+is the current project handoff: it challenges the later independent audit,
+corrects parity/equivalence language, and reviews self-quizzing from first
+principles.
 
 ## What is measured
 
@@ -53,9 +61,9 @@ the reported Table 1 calculation.
 
 | Dataset or material | Local contents | What has been attempted | Current status |
 |---|---:|---|---|
-| Study-DSPy | 30 public questions, 143 claims, 183 evidence spans; DSPy at `9cdb0aac28b2a04b064e40697ccd301872cf6a43` | native and faithful base/cheatsheet runs; four selfquiz rounds; select, usage, hybrid, summary, hybrid2, hybrid3 arms | useful historical evidence; no new method has a robust positive paired effect; hybrid3 DSPy study set is not fresh |
+| Study-DSPy | 30 public questions, 143 claims, 183 evidence spans; DSPy at `9cdb0aac28b2a04b064e40697ccd301872cf6a43` | native and faithful base/cheatsheet runs; executed selfquiz milestones R1/R2/R4; select, usage, hybrid, summary, hybrid2, hybrid3 arms | useful historical evidence; the superiority criterion was not met at any executed pre-registered milestone, planned R8 was not run, and hybrid3 DSPy is not fresh |
 | Study-OpenClaw | 20 public questions, 100 claims, 111 evidence spans; OpenClaw at `da228660306b55a9cce3b973946f3aacfc515848` | the same local static-note families | faithful base row tracks the paper reasonably well; small sample and no contained TypeScript execution currently limit claims |
-| Generated selfquiz material | archived and fresh round artifacts, including internal train/dev records | error-delta note construction and cumulative internal dev exams | generated study/development material, not external ground truth; future claim-ready use requires the complete pre-registered human audit |
+| Generated selfquiz material | archived and fresh round artifacts, including internal train/dev records | error-delta note construction and cumulative internal dev exams | generated study/development material, not external ground truth; historical material cannot be promoted retroactively, while newly generated material intended for confirmation requires the complete pre-registered human audit |
 | Study-Literature | not present | none | paper discussion only; no local result |
 | CPT(code), CPT(doc), SFT+OPSD | no local implementation | none locally | paper baselines only; not reproduced here |
 
@@ -63,10 +71,14 @@ The complete per-arm episode, grade, result, and reproducibility table is in
 §3 of the repository audit. Historical Markdown numbers are preserved as
 historical records; the hardening work does not retroactively certify them.
 
-## Claim-ready artifact lifecycle
+## Mechanically claim-ready artifact lifecycle
 
-A new confirmatory comparison is valid only if every stage below succeeds.
-The implementation fails closed when an identity or completeness check fails.
+A new confirmatory comparison satisfies the repository's mechanical contract
+only if every stage below succeeds. The implementation fails closed when an
+identity or completeness check fails. This is necessary, not sufficient, for a
+scientific or publication claim: the design must also use an appropriate
+held-out population, estimand, controls, precision/power, and real independent
+processes where those are claimed.
 
 1. **Pre-register.** Freeze the hypothesis, intervention, datasets, harness,
    budgets, rollout count, failure policy, evidence mode, grader, master seed,
@@ -114,8 +126,14 @@ The implementation fails closed when an identity or completeness check fails.
    disclosed allocation-only nuisance differences, and rejects substantive
    drift. Its two-stage bootstrap samples the same questions and rollout
    indices in both arms. Before writing, the complete comparison is independently
-   rebuilt from both reports. Missing generation or accepted-judge provider
-   fingerprints make it diagnostic rather than claim-ready. Exploratory
+   rebuilt from both reports. Generation model and available fingerprint sets
+   must match within every paired question/rollout cell; call counts and
+   unavailable fingerprints are disclosed without requiring equal turn counts.
+   More than one available generation fingerprint in either arm is invalid.
+   Missing generation fingerprints remain disclosed but do not gate readiness,
+   because the exact model revision, cache, launcher runtime, and environment
+   are independently bound. A missing accepted-judge fingerprint makes the
+   comparison diagnostic rather than claim-ready. Exploratory
    observations remain labelled exploratory and do not become confirmatory
    through post-hoc reporting.
 
@@ -126,15 +144,15 @@ metadata, not a result; an active lock prevents duplicate concurrent work.
 ## Future command templates
 
 These templates document the intended handoff; none was executed during the
-hardening pass. Run setup, serving, generation, selfquiz, external-API grading,
-reporting, and comparison from an appropriate Slurm compute allocation under
-the repository's cluster policy. Generation and selfquiz use local vLLM
-servers. Grading does not use that local server, but it still contacts the
-selected external judge API and requires its provider key. `scripts/setup.sh`
-may clone corpora and download Python packages.
+hardening pass. Run setup, serving, generation, selfquiz, grading, reporting,
+and comparison from an appropriate Slurm compute allocation under the
+repository's cluster policy. Generation, selfquiz, and exploratory local
+grading use authenticated local vLLM servers. Confirmatory grading instead
+contacts the selected external judge API and requires its provider key.
+`scripts/setup.sh` may clone corpora and download Python packages.
 
-First refresh the pinned environments, then perform a one-question diagnostic
-before spending on a full population:
+First refresh the pinned environments, then generate and locally grade one
+purpose-smoke record before executing a full population:
 
 ```bash
 scripts/setup.sh
@@ -144,7 +162,18 @@ scripts/setup.sh
 SB_TASKS=dspy SB_RUN_ID=smoke-dspy-001 SB_RUN_SEED=41001 \
 SB_SEED_GROUP=smoke-pair-001 SB_SMOKE=1 SB_LIMIT=1 SB_ROLLOUTS=1 \
 SB_BUDGETS=direct sbatch scripts/react.sbatch
+
+SB_TASK=dspy SB_RUN_ID=smoke-dspy-001 \
+SB_GRADE_ID=local-smoke-dspy-001 SB_LOCAL_SMOKE=1 \
+SB_EVIDENCE_MODE=excerpt_evidence sbatch scripts/grade_local.sbatch
 ```
+
+The generation smoke writes under `runs/smoke/`; the matching grading smoke
+writes under `grades/smoke/`, grades exactly one answered cell, and exits
+without a report. It exercises generation persistence, local judge structured
+output, grading persistence, runtime binding, and checker plumbing. It is
+deliberately partial and unreportable, so a passing smoke says nothing about
+full-grid completion or method quality.
 
 The explicit download is a cache-population step and uses the network. The
 claim-ready launcher itself runs Hugging Face in offline mode and inventories
@@ -186,6 +215,114 @@ independent audit; creating a syntactically passing declaration is not an
 audit. Subsequent selfquiz rounds reuse the same study ID and seed, increment
 `SB_ROUND`, and do not accept a new protocol.
 
+### Exploratory local-Qwen screening
+
+During method development, evaluate complete exploratory control and treatment
+runs before using an external judge. Use distinct run IDs, the same
+master seed and seed group, and the immutable note and construction manifest
+emitted by the candidate method. For example, this launches one treatment arm:
+
+```bash
+SB_TASKS=dspy SB_RUN_ID=screen-method-dspy-001 SB_RUN_SEED=44001 \
+SB_SEED_GROUP=screen-pair-dspy-001 SB_ROLLOUTS=3 SB_EXPLORATORY=1 \
+SB_NOTE_PATH=PATH_TO_IMMUTABLE_NOTE \
+SB_NOTE_MANIFEST=PATH_TO_CONSTRUCTION_MANIFEST \
+sbatch scripts/react.sbatch
+```
+
+Replace both `PATH_TO_...` values with the content-addressed artifacts emitted
+by the method; they are not literal filenames.
+
+Repeat the evaluation without the note under a distinct control run ID. Then
+grade and report each arm locally:
+
+```bash
+SB_TASK=dspy SB_RUN_ID=screen-method-dspy-001 \
+SB_GRADE_ID=local-qwen-excerpts-001 \
+SB_EVIDENCE_MODE=excerpt_evidence SB_GRADE_CONCURRENCY=8 \
+SB_CI_REPLICATES=1000 SB_CI_SEED=45001 \
+sbatch scripts/grade_local.sbatch
+```
+
+`grade_local.sbatch` reserves exactly two GPUs, launches one authenticated TP=2
+server for the exact pinned `Qwen/Qwen3.5-9B` model and revision used by the
+generator, and runs grading and reporting before shutting that server down. It
+sets `GRADER_MODEL=local`, passes the sole loopback endpoint explicitly, and
+neither requires nor uses an OpenAI or Sakana credential. Local judge requests
+use the fixed temperature-zero, seed-zero, 8,192-token contract recorded by the
+grader. The grade/report binds the local judge's model-cache, software, CUDA,
+GPU/topology, and launcher runtime; a loopback port is disclosed transport, not
+a model identity. `excerpt_evidence` is the lower-context screening mode;
+`SB_EVIDENCE_MODE=whole_files` supplies the full evidence files but still does
+not make Qwen grading paper-faithful. Give every regrade a fresh
+`SB_GRADE_ID`.
+
+Local scores are a local adaptive ranking proxy, not ground truth. Their GPU,
+wall-time, energy, and opportunity costs have not yet been measured. The exact
+same pinned Qwen model is both generator and local judge, so
+self-preference and correlated blind spots, factual errors, and stylistic
+preferences are a central limitation. Inspect paired control/treatment changes
+rather than comparing local absolute scores with Table 1. There is currently
+no valid same-population local-versus-external calibration protocol: local and
+external lanes intentionally accept different exploratory/confirmatory
+populations, so agreement must not be inferred by comparing their scores. A
+future calibration study needs its own frozen population, independent labels,
+and protocol. Local grades and reports remain exploratory, non-claim-ready,
+non-promotable, and unavailable for paper comparison or the strict confirmatory
+comparison path.
+
+When the deterministic checker configuration is ready, a local report may show
+strict and compile-aware metrics as secondary diagnostics. When it is not
+ready, the report explicitly labels the interpretation
+`lenient-only-checker-unavailable`. Raw aggregate JSON retains zero-valued
+strict/compile fields as fail-closed sentinels; they are unavailable and must
+not be reported as model failures or measured strict performance.
+
+After both complete local reports exist, compare the matched arms with the
+separate screening command:
+
+```bash
+.venv/bin/python -m studybench.screen_compare \
+  --control-report reports/CONTROL_RUN/LOCAL_GRADE/dspy/report-SHA256.json \
+  --treatment-report reports/TREATMENT_RUN/LOCAL_GRADE/dspy/report-SHA256.json \
+  --intervention-description "frozen candidate note versus no note" \
+  --bootstrap-replicates 10000 --bootstrap-seed 45001
+```
+
+Use the content-addressed report paths actually emitted by local reporting,
+not the placeholders. No live Qwen server or GPU allocation is needed after
+both reports exist: the command reuses the reports' content-bound local-server
+attestations while independently requiring the current grading Python,
+installed package bytes, repository source, and checker configuration to match.
+It rejects stale or tampered runtime cross-bindings, smoke/partial grids, and
+substantive generation, seed, runtime, grading, or checker differences outside
+the note intervention. Generation model and available fingerprint identities
+must match in every paired episode; per-episode provider-call and missing-
+fingerprint counts, including no-answer cells and variable-turn methods, are
+recorded but are not equality gates. Its shared two-stage bootstrap resamples
+only questions and rollout indices. It does not include local-judge bias,
+systematic grader error, topic/dependency clustering beyond that sampling unit,
+adaptive public-set reuse, or other design uncertainty. A 95% interval
+containing zero is inconclusive—not parity or equivalence—and even an interval
+excluding zero is only a screening signal.
+
+Choosing a method after seeing local StudyBench scores is adaptive development.
+Once the method is frozen, confirmation requires a new preregistration, fresh
+control/treatment run IDs, and a genuinely held-out question population. The
+public 50 have already been reused adaptively; new run IDs do not make them
+held out. Do not externally regrade the exploratory population and call it
+confirmatory.
+
+### External confirmation template (held-out population still required)
+
+The commands below document the external lane, but the checked-in 30 + 20
+public questions have already been reused adaptively and cannot supply the
+genuinely held-out population required after local screening. Before treating
+this as scientific confirmation, add and freeze a new evaluation population
+through a reviewed dataset/protocol change. The existing public loaders can
+produce a mechanically validated replication artifact, not erase prior
+exposure.
+
 For a paired control/treatment evaluation, first commit the reviewed
 implementation baseline, then add and commit only one canonical two-arm
 preregistration whose `source_commit` names that baseline. It must already
@@ -215,10 +352,10 @@ SB_NOTE_MANIFEST=study-selfquiz/studies/selfquiz-dspy-001/dspy/notes/note-r1.aud
 sbatch scripts/react.sbatch
 ```
 
-Grade and report both arms with the same explicit evidence mode, judge effort,
-grader selection, and fresh grade ID. `GRADER_MODEL=openai` selects GPT-5.4 and
-requires `OPENAI_API_KEY`; `GRADER_MODEL=fugu` selects the configured Fugu
-provider and key. The matching report flag is `--grader openai` or
+Grade and report both fresh arms with the same explicit evidence mode, judge
+effort, grader selection, and fresh grade ID. `GRADER_MODEL=openai` selects
+GPT-5.4 and requires `OPENAI_API_KEY`; `GRADER_MODEL=fugu` selects the configured
+Fugu provider and key. The matching report flag is `--grader openai` or
 `--grader fugu`:
 
 ```bash
@@ -249,10 +386,41 @@ GRADER_MODEL=openai .venv/bin/python -m studybench.grade \
 Do not type the literal `HASH` or `SHA256`: select the content-addressed files
 actually emitted by the preceding stage. Python grading is deliberately blocked
 until the configured checker image is pinned; OpenClaw grading is blocked until
-the real TypeScript compiler is pinned. A changed method, population, seed,
-evidence mode, judge configuration, or note requires a new namespace.
+an attested TypeScript checker bundle passes semantic calibration. A changed
+method, population, seed, evidence mode, judge configuration, or note requires
+a new namespace.
 The comparison description, bootstrap count, and bootstrap seed must equal the
 preregistered values exactly; they are not free post-hoc reporting choices.
+
+TypeScript compile credit requires all four
+`STUDYBENCH_TYPESCRIPT_CHECKER`,
+`STUDYBENCH_TYPESCRIPT_CHECKER_SHA256`,
+`STUDYBENCH_TYPESCRIPT_CHECKER_BUNDLE`, and
+`STUDYBENCH_TYPESCRIPT_CHECKER_BUNDLE_SHA256` variables. The checker is an
+absolute executable implementing `CHECKER SOURCE_PATH typescript|tsx`. The
+bundle is canonical, compact, sorted-key JSON with a trailing newline and this
+schema (the artifact array itself is sorted by absolute path):
+
+```json
+{"artifacts":[{"path":"/absolute/checker","roles":["checker"],"sha256":"CHECKER_SHA256"},{"path":"/absolute/typescript-compiler","roles":["compiler"],"sha256":"COMPILER_SHA256"}],"calibration_protocol":"studybench-typescript-checker-v1","schema_version":1}
+```
+
+Each artifact is a canonical, non-group/world-writable regular file; artifacts
+with a `checker` or `runtime` role must be executable. Roles are sorted unique
+subsets of `checker`, `compiler`, `configuration`, `dependency`, `library`, and
+`runtime`. Exactly one checker artifact must match the configured executable,
+and at least one compiler artifact is required. Include every semantically
+relevant wrapper, runtime, compiler, configuration, standard-library, and
+dependency file, then pin the exact manifest bytes. Neither `scripts/setup.sh`
+nor `scripts/setup_grading.sh` constructs or certifies this external bundle.
+
+Readiness runs three source-bound cases through the configured command: a
+well-typed program must pass, a real type error must fail, and a TSX-mode program
+with a relative TypeScript import must pass. This prevents an unconditional
+exit-zero wrapper from receiving compile credit. It does not prove that a
+manifest is complete, that a checker is non-adversarial, or that its policy is
+appropriate for the target repository; those remain explicit human-audit
+responsibilities.
 
 ## Failure and stopping policy
 
@@ -287,15 +455,17 @@ claim-ready path:
   compute node;
 - configure and hash an absolute Apptainer executable and Python SIF before
   Python answers can receive contained-execution credit;
-- configure and hash a real TypeScript compiler before TypeScript answers can
+- configure and hash the complete TypeScript checker bundle described above,
+  and pass its built-in semantic calibration, before TypeScript answers can
   receive compile credit (tree-sitter is syntax-only);
 - pre-populate the exact pinned model revision in the local cache; the launcher
   then performs stable-descriptor inventory plus pre-load/post-readiness cache
   equality checks and records the vLLM runtime, CUDA toolkit, allocated
   GPUs/driver, server count, and tensor parallelism automatically;
-- provide the selected external judge credential for grading; the grader
-  refuses to make a request when its key is unavailable, pins OpenAI grading to
-  `https://api.openai.com/v1`, and does not honor an ambient endpoint override;
+- provide the selected external judge credential for confirmatory grading; the
+  grader refuses to make a request when its key is unavailable, pins OpenAI
+  grading to `https://api.openai.com/v1`, and does not honor an ambient endpoint
+  override;
   and
 - create and snapshot the independent human-audit protocol before selfquiz
   round 1.
@@ -307,9 +477,10 @@ gates:
   package reconstruction is required; the vLLM environment attests the
   installed `RECORD`-declared bytes but does not preserve the original wheel
   archives or every host/runtime byte; and
-- use a genuinely new study curriculum and, preferably, a new hidden question
-  split for the next confirmation, because repeated public questions cannot
-  establish a fresh confirmatory result.
+- use a genuinely new study curriculum and a genuinely held-out question
+  population for confirmation after adaptive method selection; the reused
+  public questions can support only an explicitly labeled replication or
+  diagnostic analysis, not a fresh confirmatory result.
 
 Without the mechanically enforced prerequisites, the relevant strict stage is
 expected to stop rather than produce a persuasive-looking but invalid number.
@@ -334,9 +505,13 @@ use.
 | `scripts/` | pinned setup and Slurm entry points with strict argument/allocation validation |
 | `experiments/` | chronological protocol, result, interpretation, and audit record |
 | `studies/` | namespaced forced-50 cheatsheet studies |
-| `runs/`, `grades/`, `reports/`, `comparisons/` | evaluation, grading, reporting, and paired-comparison artifacts |
+| `runs/`, `grades/`, `reports/`, `comparisons/`, `screen-comparisons/` | evaluation, grading, strict comparison, and nonclaim local-screen artifacts |
 | `study-selfquiz/studies/` | namespaced selfquiz construction and human-audit artifacts |
 | `tests/` | offline research-integrity and boundary tests |
+
+Artifact roots such as `studies/`, `reports/`, `comparisons/`,
+`screen-comparisons/`, and `preregistrations/` are created on first use and may
+be absent in a fresh checkout.
 
 `CLAUDE.md` and root `AGENTS.md` are intentionally byte-for-byte identical and
 state the repository's operating and research-integrity rules.
@@ -348,5 +523,7 @@ uncertainty, populations, failure counts, evidence mode, judge, and all adaptive
 decisions. Do not turn a high cell, a point estimate, or a confidence interval
 that includes zero into a finding. The 50 questions and their rubrics are
 public, repeated across many adaptive arms, and therefore cannot substitute for
-a fresh hidden confirmatory set. Negative results and invalidated hypotheses
-are first-class outcomes and should remain visible.
+a fresh hidden confirmatory set. Failed success criteria, inconclusive results,
+and invalidated predictions are first-class outcomes and should remain visible;
+do not strengthen them into proof of no effect, parity, or a general negative
+claim.
