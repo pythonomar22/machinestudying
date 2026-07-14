@@ -39,11 +39,14 @@ grading when all three replicas failed its synthetic candidate-entailment
 check. That failure remains immutable and `k` has no score. The user's earlier
 instruction to continue engineering the local judge until it is sound
 authorized the separately disclosed `l` screen. `l` then failed its expanded
-qualification before benchmark contact. Protocol `m` changes only the local
-judge's thinking setting and completion ceiling, as documented in Results.
+qualification before benchmark contact. Protocol `m` then changed only the
+local judge's thinking setting and completion ceiling and likewise failed its
+expanded qualification before benchmark contact, as documented in Results.
 Neither `l` nor `m` complies with, rescues, or replaces `k`: both are post-hoc
 local engineering experiments. Every correction followed observed failures,
-so any completed `m` numbers remain adaptive, exploratory, and non-claim-ready.
+and neither protocol produced an arm number. The next raw-Qwen screen is not a
+qualification retry and is explicitly unqualified, adaptive, exploratory, and
+non-claim-ready.
 
 ## What this dataset is—and is not
 
@@ -114,9 +117,9 @@ The design is an adaptive exploratory screen:
 | generator and local judge | `Qwen/Qwen3.5-9B` @ `c202236235762e1c871ad0ccb60c8ee5ba337b9a` |
 | harness | author-confirmed `dspy.ReAct`; parse-only Chat-to-JSON format repair with independent provider-attempt audit; structured JSON constrained only after Qwen reasoning ends |
 | answer generation mode | paper sampling parameters with Qwen thinking enabled |
-| current local-judge mode (`m`) | temperature 0, seed 0, maximum 4,096 output tokens, and `chat_template_kwargs.enable_thinking=true`; Qwen may reason privately before an answer-centered, xgrammar-constrained final JSON object; the JSON-escaped candidate-last payload contains every exact keyed binary claim label and `needs_regrade`, with no rationale or total |
+| terminal local-judge qualification mode (`m`) | temperature 0, seed 0, maximum 4,096 output tokens, and `chat_template_kwargs.enable_thinking=true`; Qwen may reason privately before an answer-centered, xgrammar-constrained final JSON object; the JSON-escaped candidate-last payload contains every exact keyed binary claim label and `needs_regrade`, with no rationale or total |
 | local-judge topology | three homogeneous TP=2 replicas on six L40S GPUs; the immutable generation-manifest `episode.server_slot` routes each cell to the same slot in both arms |
-| local-judge lifecycle | one authenticated `m` launcher lifecycle for the 20-case qualification, both arm grades, both reports, and the paired comparison; its high-entropy non-secret launch ID is grading-spec-bound, so interruption/relaunch makes the namespace terminal rather than resumable |
+| terminal `m` lifecycle | one authenticated launcher was reserved for the 20-case qualification, both arm grades, both reports, and the paired comparison, but qualification failure stopped it before any benchmark request; its high-entropy non-secret launch ID is grading-spec-bound, so interruption/relaunch makes the namespace terminal rather than resumable |
 | lenient scoring | binary `0/1` claims following Jacob's correction; the harness alone computes the pure weighted sum, following Jacob's clarification that lenient is just the weights summed together |
 | arms | no note; exact forced-50 SmallDSPy note prepended |
 | answer-time corpus access | `grep`, `glob`, and pinned `read_file` in both arms |
@@ -127,6 +130,15 @@ The design is an adaptive exploratory screen:
 | judge evidence | dataset excerpts, identically in both arms |
 | bootstrap | 10,000 paired replicates, seed `45001` |
 | primary summary | pure-sum lenient WAUC for each arm |
+
+This table records the terminal `m` design, not a pending qualification recipe.
+The next planned raw-Qwen screen explicitly waives synthetic qualification; it
+does not rerun, replace, or claim to pass `m`. It sends each frozen answered
+benchmark cell once with the complete configured grading input, including the
+entire candidate answer, and retains the exact Qwen response. An unusable exact
+verdict is neither coerced to a score nor dropped: the screen fails closed and
+reports no arm number. Even a complete raw screen remains unqualified,
+post-hoc, non-claim-ready, and unavailable for a paper comparison.
 
 The published Appendix A.5 still shows the older `0/0.5/1` claim scale, asks
 the judge to echo `question_score`, and requests concise rationales. In
@@ -169,11 +181,11 @@ retain its diagnostic banner.
 ## Infrastructure preflight
 
 On 2026-07-13, allocation `16142825` exposed seven idle L40S GPUs. The 262k
-context requires TP=2 on this GPU class, so both generation and final local
-grading use six GPUs as three homogeneous TP=2 servers; no scientifically
-different TP=1 seventh server is introduced. The seventh GPU remains idle
+context requires TP=2 on this GPU class, so generation and the terminal local
+grading protocols used six GPUs as three homogeneous TP=2 servers; no
+scientifically different TP=1 seventh server is introduced. The seventh GPU remains idle
 *inside Omar's seven-GPU parent allocation* and is therefore not advertised as
-free to another Slurm user. The final grader now has an explicit ordered
+free to another Slurm user. The local grader has an explicit ordered
 multi-endpoint contract: endpoint count must equal the immutable run-manifest
 server count, every cell routes strictly through its stored slot with no
 fallback or modulo remapping, grades and failure audits retain their complete
@@ -187,17 +199,15 @@ namespace terminal.
 The `j` grader used one TP=2 replica. The frozen `k` grader instead used three
 TP=2 replicas because the user requested full useful GPU utilization and the
 paired slot block is now implemented and tested. The earlier `f` diagnostic
-already showed temperature-zero replica divergence, so neither `k` nor `l` is
-comparable to `j` and replica is not treated as exchangeable. `l` retains the
-same three-replica topology but uses a fresh launch, ports, IDs, policy, and
-source commit; it never reuses `k` responses. Across the same one-launch
-lifecycle, each paired cell uses the same manifest slot in baseline and
-treatment. The only planned `l` chat-completion calls before shutdown are 60
-synthetic qualification calls (20 frozen cases exactly once per endpoint) and
-119 benchmark judge calls (60
-answered baseline cells and 59 answered treatment cells; the treatment's one
-generation `no_answer` contacts no judge). Three post-qualification model-list
-health requests do not generate text and are recorded separately.
+already showed temperature-zero replica divergence, so `k`, `l`, and `m` are
+not comparable to `j`, and replica is not treated as exchangeable. `l` retained
+the same three-replica topology but used a fresh launch, ports, IDs, policy, and
+source commit; it never reused `k` responses. Its declared lifecycle allowed 60
+synthetic qualification calls and then 119 benchmark judge calls, but it
+stopped after qualification and made no benchmark request. Protocol `m` used
+another fresh three-replica lifecycle and likewise made exactly 60 synthetic
+qualification calls, followed by three non-generating model-list health
+checks, before stopping without benchmark contact.
 
 The first full-corpus launcher diagnostics exposed two pre-provider failures:
 PyTorch 2.11 returns a typed CUDA UUID, and Hugging Face's offline repository-ID
@@ -489,8 +499,8 @@ and report namespaces remain absent. No SmallDSPy judge request was made.
 
 This outcome fulfills the original frozen rule that `k` itself is terminal and
 has no local comparison. Continuing after it is an explicit post-hoc protocol
-amendment, not a favorable retry. The new `l` contract retains the score-only
-schema but changes the request policy to
+amendment, not a favorable retry. The `l` contract retained the score-only
+schema but changed the request policy to
 `qwen-answer-centered-system-json-binary-one-attempt-v4` and grade schema 10.
 The corresponding judge-attempt-intent, failed-judge-audit, report, and paired
 screen schemas are 5, 8, 14, and 6. Qualification audit, qualification intent,
@@ -504,7 +514,7 @@ is JSON-escaped and placed last in a fixed user payload. The complete ordered
 message array—not only one prompt string—is content-hashed into every intent,
 grade, failure audit, report revalidation, and grade specification.
 
-Before any benchmark contact, `l` must pass the source-frozen
+Before any benchmark contact, `l` was required to pass the source-frozen
 `studybench.local_judge_qualification` suite: 20 fictional LumaKit cases, 44
 atomic labels balanced at exactly 22 zeros and 22 ones, one inconsistent
 gold/evidence bundle that must set `needs_regrade=true`, and one claim-ID/order
@@ -517,8 +527,8 @@ evaluated. Before constructing a client or making the first request, the runner
 writes and re-reads a canonical immutable intent binding the exact 60 request
 hashes, frozen suite, clean source, local runtime, launch ID, and ordered
 topology. An orphan intent or any pre-existing intent/audit permanently
-terminalizes that namespace. Grading and reporting then revalidate the complete
-passing audit and intent before benchmark contact and bind the exact audit-byte
+terminalizes that namespace. Grading and reporting would then revalidate the
+complete passing audit and intent before benchmark contact and bind the exact audit-byte
 SHA-256 into every grading specification, cell intent, successful/no-answer
 grade, terminal failure audit, report, and paired comparison. All 132 labels,
 all 60 `needs_regrade` values, identities, finishes,
@@ -526,11 +536,12 @@ usage records, per-case cross-replica verdicts, and three post-suite health
 checks must pass with zero tolerance. Raw JSON whitespace is recorded but is
 not a gate. Any failure makes `l` terminal and no benchmark request is made.
 
-The fixed full-census manual answer/rubric/evidence audit below applies to a
-complete `m` population without selectively repairing labels. Even a perfect
-synthetic qualification establishes only minimum face validity for this local
-screen, not agreement with GPT-5.4 or reliable grading of real technical
-rubrics. Publication claims still require an independent qualified judge and
+The fixed full-census manual answer/rubric/evidence audit below would have
+applied to a complete `m` population without selectively repairing labels; no
+such population exists. It remains the completeness and sensitivity audit for
+any complete raw-Qwen screen. Even a complete raw screen establishes neither
+agreement with GPT-5.4 nor reliable grading of real technical rubrics.
+Publication claims still require an independent qualified judge and
 a fresh preregistered held-out/full-corpus evaluation.
 
 Because correcting grader code necessarily changes `HEAD`, the immutable `h`
@@ -614,9 +625,10 @@ clean at `9cdb0aac28b2a04b064e40697ccd301872cf6a43`.
 
 ## Frozen post-score integrity and manual-audit protocol
 
-This protocol was fixed before `k` calibration and is carried forward unchanged
-for any complete `m` population. It is an audit of immutable outputs, not a
-second adaptive grader and not a way to repair a preferred result.
+This protocol was fixed before `k` calibration and was never reached by `m`.
+It is carried forward for any complete raw-Qwen population as an audit of
+immutable outputs, not a second adaptive grader and not a way to repair a
+preferred result.
 
 First, a machine census covers all 120 generation cells and all 120 terminal
 grade artifacts. It rechecks canonical encoding, schema versions, source and
@@ -627,8 +639,8 @@ launch ID, request policy/options, response model, accepted response identity,
 deterministic weighted-score recomputation. For the 119 answered cells there
 must be exactly 119 pre-contact intents, 119 accepted one-request judge audits,
 and zero failed-judge audits; the no-answer cell must have neither a judge
-intent nor a provider contact. Any mismatch makes `m` incomplete and prevents
-reporting the two scores.
+intent nor a provider contact. Any mismatch makes the raw screen incomplete
+and prevents reporting the two scores.
 
 Second, the human/agent-assisted review is a full census rather than a sample:
 
@@ -1087,14 +1099,15 @@ test "${#BASE_REPORTS[@]}" -eq 1 -a "${#CHEAT_REPORTS[@]}" -eq 1
 ```
 
 `k` exited at its calibration command, so none of the grading/report/comparison
-commands in that historical block ran. The following is the separately frozen
-post-hoc `l` recipe. It uses a fresh source commit, launch, port range, log
-prefix, qualification artifact, grade IDs, and report paths. The qualification
+commands in that historical block ran. The following preserved block is the
+separately frozen, executed post-hoc `l` recipe. It uses a fresh source commit,
+launch, port range, log prefix, qualification artifact, grade IDs, and report
+paths. The qualification
 module itself validates the exact 20-case/44-label fixture and clean source,
 collects all 60 request/response records, performs one authenticated model-list
 health check per endpoint, and then writes the canonical terminal audit before
-evaluating and returning zero-tolerance success. Both grades still complete
-before either report:
+evaluating and returning zero-tolerance success. In its unreached success
+branch, both grades would have completed before either report:
 
 ```bash
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
@@ -1231,10 +1244,9 @@ PY
   --bootstrap-replicates 10000 --bootstrap-seed 45001
 ```
 
-The `l` content-addressed report paths are resolved after reporting and supplied to
-`studybench.screen_compare` with 10,000 paired bootstrap replicates and seed
-`45001`. The comparison is an additional diagnostic artifact, not one of the
-two requested primary numbers.
+In `l`'s unreached success branch, its content-addressed report paths would have
+been supplied to `studybench.screen_compare` with 10,000 paired bootstrap
+replicates and seed `45001`. No `l` report or comparison exists.
 
 ## Results
 
@@ -1251,14 +1263,35 @@ immutable audit is
 SHA-256
 `cc3615daedbbbae96802e93369d7b21a97feaea91da374f51f5f8c4c9ce924c6`.
 
-Protocol `m` is a disclosed post-hoc correction, not a retry of `l`. It keeps
+Protocol `m` was a disclosed post-hoc correction, not a retry of `l`. It kept
 the full candidate-last input, exact score-only schema, temperature zero, seed
 zero, one request, no fallback, and the same zero-tolerance qualification. Its
-only elicitation change is to permit Qwen's native private reasoning before
-the final constrained JSON and raise the completion ceiling from 256 to 4,096
-tokens so that reasoning cannot crowd out that JSON. It uses a fresh launch,
-canonical qualification audit, grade IDs, reports, and comparison namespace.
-If `m` qualification fails, no benchmark call is permitted.
+only elicitation changes permitted Qwen's native private reasoning before the
+final constrained JSON and raised the completion ceiling from 256 to 4,096
+tokens. The terminal audit is
+`logs/local-judge-qualification-bad4968a8136d02104ac6e082875588a52eba1822d7326c7fbb89998c9e0a1a9.json`,
+SHA-256
+`fcda8bc117f3d22c45eb8a754682f6bb1ad5634ee0cb7f85eb45a2da69c2d9c8`.
+
+Only 15 of 60 exact requests passed every frozen check. Of the 45 failures, 44
+reached the 4,096-token completion ceiling with `finish_reason=length` and
+`content=null`. The remaining failure was a complete, schema-valid,
+stop-terminated C18 verdict that assigned the wrong claim score. Cross-replica
+consensus errors were recorded for C04, C05, C08, C09, C12, C13, and C18. All
+three post-qualification model-list health checks passed and the source record
+remained stable. These 44 records are ceiling-length synthetic Qwen judge
+responses, not truncated or malformed SmallDSPy run outputs: protocol `m`
+never contacted the benchmark. No `m` grade, report, comparison, or arm number
+exists.
+
+The next raw-Qwen screen explicitly proceeds without synthetic qualification;
+it is not another qualification attempt and cannot retroactively rescue `m`.
+It will judge each complete frozen grading input once and retain Qwen's exact
+output. If any response lacks a usable exact verdict, it will be preserved as a
+judge failure rather than coerced, dropped, or selectively retried, and no arm
+number will be reported. This screen is intentionally unqualified and remains
+adaptive, exploratory, non-claim-ready, and unavailable for paper comparison,
+regardless of its eventual outcome.
 
 The immutable `h` generation populations are
 the only answer populations eligible for this screen. The `d` generation grids
@@ -1268,6 +1301,6 @@ output-bearing gate. The old partial `h` grading and the incomplete matched `i`
 grading are also terminal diagnostic evidence, not arm results. The standalone
 `i` baseline report is retained and disclosed above, but its WAUC is not paired
 with a treatment estimate. No valid full-grid arm comparison has yet been
-observed. Only uniform `m` grades over all 120 frozen cells, after
-the all-replica qualification passes, may populate this section; such numbers
-remain explicitly post-hoc and non-claim-ready.
+observed. A complete raw-Qwen screen may add only explicitly unqualified
+diagnostic numbers under the fail-closed rule above; it cannot populate a
+qualified or claim-ready result.

@@ -21,6 +21,16 @@ These are useful diagnostic results showing a failure to demonstrate
 superiority, not evidence of equivalence, no effect, or a general failure of
 studying or weight updates.
 
+The SmallDSPy iteration screen likewise has no valid two-arm number. Its
+terminal thinking-enabled local-Qwen protocol `m` passed only 15 of 60 frozen
+synthetic requests. Forty-four responses reached 4,096 completion tokens with
+`finish_reason=length` and `content=null`; the one other failure was a complete
+but wrong C18 verdict. Consensus errors covered C04, C05, C08, C09, C12, C13,
+and C18. No benchmark request was made. The immutable audit is
+`logs/local-judge-qualification-bad4968a8136d02104ac6e082875588a52eba1822d7326c7fbb89998c9e0a1a9.json`,
+SHA-256
+`fcda8bc117f3d22c45eb8a754682f6bb1ad5634ee0cb7f85eb45a2da69c2d9c8`.
+
 The detailed paper interpretation, dataset inventory, experiment ledger, and
 initial defect register are in
 [experiments/008-repository-and-artifact-audit.md](experiments/008-repository-and-artifact-audit.md).
@@ -62,7 +72,7 @@ the reported Table 1 calculation.
 | Dataset or material | Local contents | What has been attempted | Current status |
 |---|---:|---|---|
 | Study-DSPy | 30 public questions, 143 claims, 183 evidence spans; DSPy at `9cdb0aac28b2a04b064e40697ccd301872cf6a43` | native and faithful base/cheatsheet runs; executed selfquiz milestones R1/R2/R4; select, usage, hybrid, summary, hybrid2, hybrid3 arms | useful historical evidence; the superiority criterion was not met at any executed pre-registered milestone, planned R8 was not run, and hybrid3 DSPy is not fresh |
-| SmallDSPy iteration slice | five public Study-DSPy `react_agents_and_tools` questions and 59 Python files under four pinned DSPy source roots | paired no-note versus newly generated forced-50 cheatsheet screen, documented in experiment 012 | adaptive public subset for fast plumbing/method iteration only; it is not an independent held-out benchmark and cannot support a general DSPy claim |
+| SmallDSPy iteration slice | five public Study-DSPy `react_agents_and_tools` questions and 59 Python files under four pinned DSPy source roots | paired no-note versus newly generated forced-50 cheatsheet generation; local-Qwen protocols through `m`, documented in experiment 012 | immutable paired generation exists, but `k`, `l`, and `m` stopped before benchmark grading and no valid arm comparison exists; the adaptive public subset cannot support a general DSPy claim |
 | Study-OpenClaw | 20 public questions, 100 claims, 111 evidence spans; OpenClaw at `da228660306b55a9cce3b973946f3aacfc515848` | the same local static-note families | faithful base row tracks the paper reasonably well; small sample and no contained TypeScript execution currently limit claims |
 | Generated selfquiz material | archived and fresh round artifacts, including internal train/dev records | error-delta note construction and cumulative internal dev exams | generated study/development material, not external ground truth; historical material cannot be promoted retroactively, while newly generated material intended for confirmation requires the complete pre-registered human audit |
 | Study-Literature | not present | none | paper discussion only; no local result |
@@ -296,14 +306,16 @@ Do not feed those separately launched reports into a paired screen: their
 qualification and judge-launch identities necessarily differ. A paired
 control/treatment screen must qualify once, grade both frozen arms, and build
 both reports inside one uninterrupted server lifecycle. Experiment 012 records
-the exact multi-arm recipe used for the current SmallDSPy comparison.
+the terminal qualified recipes and the constraints for the next explicitly
+unqualified SmallDSPy raw-Qwen screen; it does not yet report a comparison.
 
 ### Exploratory local-Qwen screening
 
 During method development, evaluate complete exploratory control and treatment
 runs before using an external judge. Use distinct run IDs, the same master seed
 and seed group, and the exact immutable note and construction manifest emitted
-by each candidate method. The commands above are the frozen current screen.
+by each candidate method. The commands above are the frozen full-DSPy candidate
+screen.
 
 `grade_local.sbatch` defaults to six GPUs and launches three homogeneous TP=2
 servers for the exact pinned `Qwen/Qwen3.5-9B` model and revision used by the
@@ -315,10 +327,10 @@ fallback or remapping. The script runs grading and reporting within the same
 authenticated launcher lifecycle, sets `GRADER_MODEL=local`, and neither
 requires nor uses an OpenAI or Sakana credential.
 
-Local judge requests use the fixed temperature-zero, seed-zero, 4,096-token,
-thinking-enabled score-only contract recorded by the grader. Qwen may use its
-native private reasoning channel, while xgrammar constrains only the final
-score object. An answer-centered
+Protocol `m` local judge requests used the fixed temperature-zero, seed-zero,
+4,096-token, thinking-enabled score-only contract recorded by the grader. Qwen
+could use its native private reasoning channel, while xgrammar constrained only
+the final score object. An answer-centered
 system message prevents facts in the gold/evidence from being credited unless
 the candidate answer itself correctly asserts them; the candidate is supplied
 last in a JSON-escaped user payload. Constrained JSON contains every exact
@@ -336,14 +348,26 @@ predeclared calibration gate. `studybench.local_judge_qualification` provides
 experiment 012's balanced 20-case, 44-label, all-replica synthetic gate; it
 contains no StudyBench content. It writes an immutable complete 60-request
 pre-contact intent before its first judge call, then writes the terminal audit
-before returning pass or failure. Local grading and reporting refuse to run
-without revalidating and binding that exact same-launch passing audit. The
+before returning pass or failure. Qualification-bound local grading and
+reporting refuse to run without revalidating and binding that exact same-launch
+passing audit. The
 audit path is canonical and keyed only by the authenticated server-launch ID,
 so a failed or orphaned intent cannot be bypassed by choosing another filename.
 `excerpt_evidence` is the lower-context screening mode;
 `SB_EVIDENCE_MODE=whole_files` supplies the full evidence files but still does
 not make Qwen grading paper-faithful. Give every regrade a fresh
 `SB_GRADE_ID`.
+
+Protocol `m` failed that gate on synthetic Qwen responses before any benchmark
+contact; the ceiling-length records above are not truncated SmallDSPy run
+outputs. The next raw-Qwen screen therefore does not rerun or claim to pass the
+qualification. It explicitly waives that gate, submits every complete frozen
+grading input once—including the entire candidate answer—and retains the exact
+Qwen response. Any unusable exact verdict is a preserved judge failure, not a
+coerced zero, dropped cell, or selective retry, and prevents either arm number
+from being reported. This separate lane is intentionally unqualified,
+adaptive, exploratory, non-claim-ready, and unavailable for paper comparison;
+no IDs or results for it exist yet.
 
 Local scores are a local adaptive ranking proxy, not ground truth. Their GPU,
 wall-time, energy, and opportunity costs have not yet been measured. The exact
