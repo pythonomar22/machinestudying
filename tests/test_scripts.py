@@ -145,9 +145,14 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn("--host 127.0.0.1", serve)
         self.assertIn("--enable-request-id-headers", serve)
         self.assertIn(
+            "--structured-outputs-config '{\"enable_in_reasoning\":false}'",
+            serve,
+        )
+        self.assertNotIn(
             "--structured-outputs-config '{\"enable_in_reasoning\":true}'",
             serve,
         )
+        self.assertIn("OpenAI-compatible final content field null", serve)
         self.assertIn("chmod 600 \"$TOPOLOGY_TMP\"", serve)
         self.assertIn("$LOG_PREFIX.topology", serve)
         self.assertIn("missing or concurrently changing snapshot", serve)

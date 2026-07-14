@@ -424,6 +424,11 @@ for ((i = 0; i < NSERVE; i++)); do
     # Feed the ephemeral credential over a pipe to a tiny exec launcher.  It
     # enters vLLM's environment only at execve; it is never an argv element of
     # env, Python, or vLLM (including during the launcher transition).
+    # Qwen begins each completion in its reasoning channel. Constraining that
+    # channel can make schema-valid JSON terminate before </think>, leaving the
+    # OpenAI-compatible final content field null. Keep the grammar on final
+    # content so DSPy repairs and judge verdicts remain parseable without
+    # promoting hidden reasoning to an answer.
     printf '%s' "$SB_VLLM_API_KEY" | \
     "${SANITIZED_ENV[@]}" \
         "CUDA_VISIBLE_DEVICES=$DEVS" \
@@ -450,7 +455,7 @@ os.execv(sys.argv[1], sys.argv[1:])
         --tensor-parallel-size "$TP" \
         --max-model-len 262144 \
         --enable-request-id-headers \
-        --structured-outputs-config '{"enable_in_reasoning":true}' \
+        --structured-outputs-config '{"enable_in_reasoning":false}' \
         --reasoning-parser qwen3 \
         --enable-auto-tool-choice --tool-call-parser qwen3_coder \
         --language-model-only \

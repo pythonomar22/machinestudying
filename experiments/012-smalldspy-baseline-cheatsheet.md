@@ -13,14 +13,20 @@ summary is the local-Qwen pure weighted-rubric lenient WAUC for each arm; the
 four budget-level means, token costs, compile diagnostics, uncertainty, and
 paired deltas remain mandatory context.
 
-Status: implementation and infrastructure preflight complete. Replacement `b`
-smoke passed, but the first `b` full baseline exposed a second harness defect:
-completed Qwen responses containing reasoning but no parseable DSPy output were
-misclassified as infrastructure errors, so strict grading was impossible. The
-run was stopped after 15 final episodes and four retained failures. A `c` run
-then proved that the remaining forced-action case was still misclassified as a
-protocol shortfall. No prior cell is reused. The final ITT correction is frozen
-in fresh `d` namespaces below. Full-grid results remain pending.
+Status: implementation and infrastructure preflight complete, but no valid
+two-arm score has yet been observed. Replacement `b` and `c` runs exposed
+harness accounting defects and were stopped without reuse. Both `d` generation
+grids later completed, but the first isolated grading smoke exposed a deeper
+vLLM structured-output configuration defect that also contaminated generation:
+JSON schemas were enforced inside Qwen's hidden reasoning channel, where a
+schema-complete response could terminate with final `content=null`. Because the
+same path powered DSPy's JSON format repair, the defect contaminated all 11
+baseline and 18 treatment adapter failures; it does not prove what their
+counterfactual answers would have been. All `d` artifacts are preserved as
+invalidated diagnostics. No `d` population will be graded or scored further;
+the one failed grading smoke remains diagnostic. The corrected protocol is
+frozen in fresh `e` namespaces below; no prior episode, study note, or judge
+response is reused.
 
 ## What this dataset is—and is not
 
@@ -87,7 +93,7 @@ The design is an adaptive exploratory screen:
 | field | frozen value |
 |---|---|
 | generator and local judge | `Qwen/Qwen3.5-9B` @ `c202236235762e1c871ad0ccb60c8ee5ba337b9a` |
-| harness | author-confirmed `dspy.ReAct`; parse-only Chat-to-JSON format repair with independent provider-attempt audit |
+| harness | author-confirmed `dspy.ReAct`; parse-only Chat-to-JSON format repair with independent provider-attempt audit; structured JSON constrained only after Qwen reasoning ends |
 | arms | no note; exact forced-50 SmallDSPy note prepended |
 | answer-time corpus access | `grep`, `glob`, and pinned `read_file` in both arms |
 | budgets | `direct`, `k5`, `k20`, `k20f` |
@@ -107,7 +113,7 @@ This is another reason to treat the comparison as diagnostic only.
 The treatment note is generated once by the existing forced-50 study protocol
 over only the scoped corpus, without benchmark access. It is not the historical
 full-DSPy `cheatsheets/dspy.md`. The immutable construction is
-`studies/cheatsheet/smalldspy-cheatsheet-s50-20260713d/smalldspy/`; evaluation
+`studies/cheatsheet/smalldspy-cheatsheet-s50-20260714e/smalldspy/`; evaluation
 must supply both its content-addressed note and manifest. Study tokens are
 reported separately and excluded from the evaluation token axis, matching the
 paper's estimand.
@@ -183,6 +189,36 @@ complete; context, transport, tool, and program failures remain nonfinal. The
 and interrupted cells remain preserved and are never spliced into `d`. All `c`
 IDs, prefix `generation-c`, and ports `34500`-`34502` are retired.
 
+The `d` generation smoke passed, its baseline and treatment grids each wrote
+all 60 terminal episodes, and its forced-50 study completed. The baseline had
+48 `ok` episodes and 12 `no_answer` episodes: 11 DSPy adapter parse failures
+and one parsed empty answer. It used 351 LM calls and 456,283 generated tokens.
+The forced-50 study used 51 LM calls across 50 turns, 898,618 prompt tokens,
+and 53,490 generated tokens; its note hash was
+`a6be8b2162f49a042d3769743540951250735d22b12894773389d918a447618e`.
+The treatment had 42 `ok` episodes and 18 `no_answer` episodes, all DSPy
+adapter parse failures, and used 303 LM calls and 358,763 generated tokens. A
+two-attempt isolated judge smoke then returned HTTP 200 twice with complete
+model identities and usage ledgers—4,173 prompt and 418 completion tokens per
+attempt—but final `message.content=null` both times, so the grader correctly
+wrote no grade and preserved its failed-attempt audit.
+
+The shared cause was the vLLM launch option
+`structured-outputs-config={"enable_in_reasoning":true}`. The pinned Qwen chat
+template begins in a reasoning channel, and vLLM's Qwen reasoning parser does
+not enter final content until that channel closes. Applying the JSON grammar
+inside reasoning allowed a schema-complete sequence to terminate before final
+content began. This affected the judge's mandatory verdict schema and DSPy's
+schema-based answer-format repair. It therefore cannot be interpreted as an
+honest model non-answer, and the asymmetric failures cannot be scored as
+intention-to-treat zeroes. Hidden reasoning is never promoted into a final
+answer or verdict. The launcher now explicitly sets
+`enable_in_reasoning=false`, preserving reasoning while applying schemas only
+to final content, and a script-contract regression test rejects the retired
+setting. Every `d` ID, its note, prefixes `generation-d`/`grading-d`, and ports
+`34700`-`34800` are retired. The artifacts remain available for diagnosis but
+are excluded from all scores and comparisons.
+
 ## Execution namespaces and phase commands
 
 The outcome-bearing source tree must be committed, pushed, and clean. A failed
@@ -194,11 +230,21 @@ grid, then the forced-50 construction, a one-question note-bearing smoke, and
 the full treatment grid. Each smoke/construction gate is inspected before the
 next dependent phase. The two 60-episode evaluation grids remain sequential:
 
+Before any SmallDSPy prompt, every generation endpoint receives a
+benchmark-free strict-JSON-schema request using the pinned model identity,
+temperature zero, seed zero, and a complete usage ledger. Continue only if
+each HTTP response has a nonempty final-content string that parses to exactly
+the requested keys and types, and each new server log records
+`enable_in_reasoning=False`. Record response IDs, fingerprints, content hashes,
+and token counts—but not hidden reasoning—in
+`logs/vllm-16142825-smalldspy-generation-e.structured-smoke.jsonl`. A failure
+retires the entire `e` namespace before any benchmark contact.
+
 ```bash
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=60 --cpu-bind=none --gres=gpu:l40s:6 \
-  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34700 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-generation-d \
+  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34900 \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-generation-e \
   bash --noprofile --norc
 
 # Inside that step, after setup and authenticated readiness:
@@ -211,18 +257,18 @@ source scripts/serve_and_wait.sh
 PY=.venv-dspy/bin/python
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-generation-smoke-20260713d --seed 43999 \
-  --seed-group smalldspy-generation-smoke-20260713d \
+  --run-id smalldspy-generation-smoke-20260714e --seed 43999 \
+  --seed-group smalldspy-generation-smoke-20260714e \
   --budgets direct,k5 --rollouts 1 --limit 1 --smoke \
   --base-urls "$BASE_URLS" --concurrency 2
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-local-base-20260713d --seed 44001 \
+  --run-id smalldspy-local-base-20260714e --seed 44001 \
   --seed-group smalldspy-local-cheatsheet-screen-20260713 \
   --budgets direct,k5,k20,k20f --rollouts 3 --exploratory \
   --base-urls "$BASE_URLS" --concurrency 12
 
-STUDY_ID=smalldspy-cheatsheet-s50-20260713d
+STUDY_ID=smalldspy-cheatsheet-s50-20260714e
 "$PY" -m studybench.react --task smalldspy --study \
   --study-id "$STUDY_ID" --seed 43001 --base-urls "$BASE_URLS"
 MANIFEST="studies/cheatsheet/$STUDY_ID/smalldspy/manifest.json"
@@ -230,14 +276,14 @@ NOTE=$("$PY" -c 'import json,sys; from pathlib import Path; m=Path(sys.argv[1]);
 test -f "$MANIFEST" -a ! -L "$MANIFEST" -a -f "$NOTE" -a ! -L "$NOTE"
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-treatment-smoke-20260713d --seed 43999 \
-  --seed-group smalldspy-treatment-smoke-20260713d \
+  --run-id smalldspy-treatment-smoke-20260714e --seed 43999 \
+  --seed-group smalldspy-treatment-smoke-20260714e \
   --budgets direct,k5 --rollouts 1 --limit 1 --smoke \
   --note "$NOTE" --note-manifest "$MANIFEST" \
   --base-urls "$BASE_URLS" --concurrency 2
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-local-cheatsheet-20260713d --seed 44001 \
+  --run-id smalldspy-local-cheatsheet-20260714e --seed 44001 \
   --seed-group smalldspy-local-cheatsheet-screen-20260713 \
   --budgets direct,k5,k20,k20f --rollouts 3 --exploratory \
   --note "$NOTE" --note-manifest "$MANIFEST" \
@@ -254,8 +300,8 @@ note`:
 ```bash
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=20 --cpu-bind=none --gres=gpu:l40s:2 \
-  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34800 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-d \
+  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=35000 \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-e \
   bash --noprofile --norc
 
 # Inside that step, after setup and authenticated readiness:
@@ -270,28 +316,28 @@ PY=.venv/bin/python
 JUDGE_BASE_URL=$BASE_URLS
 
 "$PY" -m studybench.grade --task smalldspy \
-  --run-id smalldspy-generation-smoke-20260713d \
-  --grade-id qwen-local-smoke-20260713d \
+  --run-id smalldspy-generation-smoke-20260714e \
+  --grade-id qwen-local-smoke-20260714e \
   --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
   --concurrency 1 --local-smoke
 
 for arm in base cheatsheet; do
   "$PY" -m studybench.grade --task smalldspy \
-    --run-id "smalldspy-local-$arm-20260713d" \
-    --grade-id "qwen-local-$arm-20260713d" \
+    --run-id "smalldspy-local-$arm-20260714e" \
+    --grade-id "qwen-local-$arm-20260714e" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence --concurrency 8
   "$PY" -m studybench.report --tasks smalldspy \
-    --run-id "smalldspy-local-$arm-20260713d" --grader local \
-    --grade-id "qwen-local-$arm-20260713d" \
+    --run-id "smalldspy-local-$arm-20260714e" --grader local \
+    --grade-id "qwen-local-$arm-20260714e" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
     --ci 10000 --ci-seed 45001
 done
 
 mapfile -t BASE_REPORTS < <(find \
-  reports/smalldspy-local-base-20260713d/qwen-local-base-20260713d/smalldspy \
+  reports/smalldspy-local-base-20260714e/qwen-local-base-20260714e/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 mapfile -t CHEAT_REPORTS < <(find \
-  reports/smalldspy-local-cheatsheet-20260713d/qwen-local-cheatsheet-20260713d/smalldspy \
+  reports/smalldspy-local-cheatsheet-20260714e/qwen-local-cheatsheet-20260714e/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 test "${#BASE_REPORTS[@]}" -eq 1 -a "${#CHEAT_REPORTS[@]}" -eq 1
 "$PY" -m studybench.screen_compare \
@@ -309,5 +355,6 @@ two requested primary numbers.
 
 ## Results
 
-Pending. Only the explicitly isolated, ungraded plumbing smoke above has been
-observed; no full-grid grade, WAUC, or arm comparison has been observed.
+Pending. The `d` generation grids and failed judge smoke are invalidated
+diagnostics, not results. No valid full-grid grade, WAUC, or arm comparison has
+yet been observed; only fresh `e` artifacts may populate this section.
