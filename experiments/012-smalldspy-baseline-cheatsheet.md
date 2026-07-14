@@ -13,11 +13,13 @@ summary is the local-Qwen pure weighted-rubric lenient WAUC for each arm; the
 four budget-level means, token costs, compile diagnostics, uncertainty, and
 paired deltas remain mandatory context.
 
-Status: implementation and infrastructure preflight complete. The first
-baseline smoke completed, then the first non-smoke study attempt failed closed
-before any model request because the runner check rejected DSPy's intentional
-editable install. That validator is corrected; replacement `b` namespaces are
-frozen below, and full-grid results remain pending.
+Status: implementation and infrastructure preflight complete. Replacement `b`
+smoke passed, but the first `b` full baseline exposed a second harness defect:
+completed Qwen responses containing reasoning but no parseable DSPy output were
+misclassified as infrastructure errors, so strict grading was impossible. The
+run was stopped after 15 final episodes and four retained failures; no cell is
+reused. The corrected parse-only fallback and provider-attempt audit are frozen
+in fresh `c` namespaces below. Full-grid results remain pending.
 
 ## What this dataset is—and is not
 
@@ -84,7 +86,7 @@ The design is an adaptive exploratory screen:
 | field | frozen value |
 |---|---|
 | generator and local judge | `Qwen/Qwen3.5-9B` @ `c202236235762e1c871ad0ccb60c8ee5ba337b9a` |
-| harness | author-confirmed `dspy.ReAct` implementation |
+| harness | author-confirmed `dspy.ReAct`; parse-only Chat-to-JSON format repair with independent provider-attempt audit |
 | arms | no note; exact forced-50 SmallDSPy note prepended |
 | answer-time corpus access | `grep`, `glob`, and pinned `read_file` in both arms |
 | budgets | `direct`, `k5`, `k20`, `k20f` |
@@ -104,7 +106,7 @@ This is another reason to treat the comparison as diagnostic only.
 The treatment note is generated once by the existing forced-50 study protocol
 over only the scoped corpus, without benchmark access. It is not the historical
 full-DSPy `cheatsheets/dspy.md`. The immutable construction is
-`studies/cheatsheet/smalldspy-cheatsheet-s50-20260713b/smalldspy/`; evaluation
+`studies/cheatsheet/smalldspy-cheatsheet-s50-20260713c/smalldspy/`; evaluation
 must supply both its content-addressed note and manifest. Study tokens are
 reported separately and excluded from the evaluation token axis, matching the
 paper's estimand.
@@ -151,6 +153,23 @@ requires the exact pinned origin `corpora/dspy/dspy/__init__.py` and its exact
 hash; substituted editable or site-package origins remain invalid. The used
 smoke/study IDs, `generation-a` prefix, and ports `34100`-`34102` are retired.
 
+The replacement smoke `smalldspy-generation-smoke-20260713b` completed both
+plumbing cells. The full baseline `smalldspy-local-base-20260713b` then exposed
+four completed provider-response parse failures (`content=None` with only
+`reasoning_content`) among the first 19 terminal cells. Pinned DSPy discarded
+the partial ReAct trajectory and the harness labeled these `error`, contrary to
+the repository policy that exhausted model format repair is a model non-answer.
+Generation was deliberately stopped; all 54 written attempt intents, 15 final
+episodes, four failed attempts, and the log remain preserved. The correction
+counts provider attempts independently, allows Chat-to-JSON fallback only after
+a typed parse failure, preserves escaped trajectories, and accepts a parse
+non-answer only when every attempted provider call has a complete usage ledger.
+It never promotes `reasoning_content` into an action or answer. Forced action
+failure remains `forced_short`; only full-budget forced extraction failure can
+be a final zero. This is an adaptive implementation correction, so the screen
+remains non-confirmatory. All `b` IDs, prefix `generation-b`, and ports
+`34300`-`34302` are retired.
+
 ## Execution namespaces and phase commands
 
 The outcome-bearing source tree must be committed, pushed, and clean. A failed
@@ -165,8 +184,8 @@ next dependent phase. The two 60-episode evaluation grids remain sequential:
 ```bash
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=60 --cpu-bind=none --gres=gpu:l40s:6 \
-  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34300 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-generation-b \
+  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34500 \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-generation-c \
   bash --noprofile --norc
 
 # Inside that step, after setup and authenticated readiness:
@@ -179,18 +198,18 @@ source scripts/serve_and_wait.sh
 PY=.venv-dspy/bin/python
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-generation-smoke-20260713b --seed 43999 \
-  --seed-group smalldspy-generation-smoke-20260713b \
+  --run-id smalldspy-generation-smoke-20260713c --seed 43999 \
+  --seed-group smalldspy-generation-smoke-20260713c \
   --budgets direct,k5 --rollouts 1 --limit 1 --smoke \
   --base-urls "$BASE_URLS" --concurrency 2
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-local-base-20260713b --seed 44001 \
+  --run-id smalldspy-local-base-20260713c --seed 44001 \
   --seed-group smalldspy-local-cheatsheet-screen-20260713 \
   --budgets direct,k5,k20,k20f --rollouts 3 --exploratory \
-  --base-urls "$BASE_URLS" --concurrency 48
+  --base-urls "$BASE_URLS" --concurrency 12
 
-STUDY_ID=smalldspy-cheatsheet-s50-20260713b
+STUDY_ID=smalldspy-cheatsheet-s50-20260713c
 "$PY" -m studybench.react --task smalldspy --study \
   --study-id "$STUDY_ID" --seed 43001 --base-urls "$BASE_URLS"
 MANIFEST="studies/cheatsheet/$STUDY_ID/smalldspy/manifest.json"
@@ -198,18 +217,18 @@ NOTE=$("$PY" -c 'import json,sys; from pathlib import Path; m=Path(sys.argv[1]);
 test -f "$MANIFEST" -a ! -L "$MANIFEST" -a -f "$NOTE" -a ! -L "$NOTE"
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-treatment-smoke-20260713b --seed 43999 \
-  --seed-group smalldspy-treatment-smoke-20260713b \
+  --run-id smalldspy-treatment-smoke-20260713c --seed 43999 \
+  --seed-group smalldspy-treatment-smoke-20260713c \
   --budgets direct,k5 --rollouts 1 --limit 1 --smoke \
   --note "$NOTE" --note-manifest "$MANIFEST" \
   --base-urls "$BASE_URLS" --concurrency 2
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-local-cheatsheet-20260713b --seed 44001 \
+  --run-id smalldspy-local-cheatsheet-20260713c --seed 44001 \
   --seed-group smalldspy-local-cheatsheet-screen-20260713 \
   --budgets direct,k5,k20,k20f --rollouts 3 --exploratory \
   --note "$NOTE" --note-manifest "$MANIFEST" \
-  --base-urls "$BASE_URLS" --concurrency 48
+  --base-urls "$BASE_URLS" --concurrency 12
 ```
 
 After the generation step exits and all six server processes are confirmed
@@ -222,8 +241,8 @@ note`:
 ```bash
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=20 --cpu-bind=none --gres=gpu:l40s:2 \
-  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34400 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-b \
+  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34600 \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-c \
   bash --noprofile --norc
 
 # Inside that step, after setup and authenticated readiness:
@@ -238,28 +257,28 @@ PY=.venv/bin/python
 JUDGE_BASE_URL=$BASE_URLS
 
 "$PY" -m studybench.grade --task smalldspy \
-  --run-id smalldspy-generation-smoke-20260713b \
-  --grade-id qwen-local-smoke-20260713b \
+  --run-id smalldspy-generation-smoke-20260713c \
+  --grade-id qwen-local-smoke-20260713c \
   --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
   --concurrency 1 --local-smoke
 
 for arm in base cheatsheet; do
   "$PY" -m studybench.grade --task smalldspy \
-    --run-id "smalldspy-local-$arm-20260713b" \
-    --grade-id "qwen-local-$arm-20260713b" \
+    --run-id "smalldspy-local-$arm-20260713c" \
+    --grade-id "qwen-local-$arm-20260713c" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence --concurrency 8
   "$PY" -m studybench.report --tasks smalldspy \
-    --run-id "smalldspy-local-$arm-20260713b" --grader local \
-    --grade-id "qwen-local-$arm-20260713b" \
+    --run-id "smalldspy-local-$arm-20260713c" --grader local \
+    --grade-id "qwen-local-$arm-20260713c" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
     --ci 10000 --ci-seed 45001
 done
 
 mapfile -t BASE_REPORTS < <(find \
-  reports/smalldspy-local-base-20260713b/qwen-local-base-20260713b/smalldspy \
+  reports/smalldspy-local-base-20260713c/qwen-local-base-20260713c/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 mapfile -t CHEAT_REPORTS < <(find \
-  reports/smalldspy-local-cheatsheet-20260713b/qwen-local-cheatsheet-20260713b/smalldspy \
+  reports/smalldspy-local-cheatsheet-20260713c/qwen-local-cheatsheet-20260713c/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 test "${#BASE_REPORTS[@]}" -eq 1 -a "${#CHEAT_REPORTS[@]}" -eq 1
 "$PY" -m studybench.screen_compare \

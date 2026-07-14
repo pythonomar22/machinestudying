@@ -12,8 +12,11 @@ from studybench.integrity import (
 from studybench.provenance import _load_note
 from studybench.report import validated_note_provenance
 from studybench.study_protocol import (
+    DSPY_ADAPTER_NAME,
+    DSPY_ADAPTER_POLICY,
     DSPY_SEMANTIC_CHAPTER_SYLLABUS,
     DSPY_REPOSITORY_TOOL_CONTRACT,
+    DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
     FORCED50_CONFIG_SCHEMA_VERSION,
     FORCED50_ITERATIONS,
     REACT_SAMPLING,
@@ -203,6 +206,9 @@ def forced_config() -> dict:
         "model_revision": "revision",
         "expected_response_model": "served-model",
         "sampling": deepcopy(REACT_SAMPLING),
+        "adapter": DSPY_ADAPTER_NAME,
+        "adapter_fallback_policy": DSPY_ADAPTER_POLICY,
+        "dspy_request_audit_schema": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
         "master_seed": master_seed,
         "episode_seed": stable_seed(master_seed, "cheatsheet", "forced-a", "fake"),
         "study_prompt_sha256": sha256_text(question["question"]),

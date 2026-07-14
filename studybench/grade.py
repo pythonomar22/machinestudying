@@ -1572,6 +1572,56 @@ def validate_episode(ep: dict, row: dict) -> None:
     if scalars != totals:
         raise GradeIntegrityError(
             f"{ep['qid']}: token scalars {scalars} do not match usage records {totals}")
+
+    dspy_audit_schema = ep.get("dspy_request_audit_schema")
+    non_answer_audit = ep.get("non_answer_audit")
+    if dspy_audit_schema is not None:
+        if type(dspy_audit_schema) is not int or dspy_audit_schema != 1 \
+                or "usage_ledger" not in ep:
+            raise GradeIntegrityError(
+                f"{ep['qid']}: invalid DSPy request-audit schema")
+        if ep["status"] == "ok":
+            if non_answer_audit is not None:
+                raise GradeIntegrityError(
+                    f"{ep['qid']}: ok episode has a non-answer audit")
+        else:
+            expected_keys = {
+                "schema_version", "kind", "stage", "adapter",
+                "provider_call", "outputs_sha256",
+            }
+            if (not isinstance(non_answer_audit, dict)
+                    or set(non_answer_audit) != expected_keys
+                    or type(non_answer_audit.get("schema_version")) is not int
+                    or non_answer_audit.get("schema_version") != 1
+                    or non_answer_audit.get("kind") not in {
+                        "adapter_parse_failure", "parsed_empty_answer"
+                    }
+                    or non_answer_audit.get("stage") not in {
+                        "direct", "react", "extract"
+                    }
+                    or not isinstance(non_answer_audit.get("adapter"), str)
+                    or not non_answer_audit["adapter"]):
+                raise GradeIntegrityError(
+                    f"{ep['qid']}: invalid DSPy non-answer audit")
+            provider_call = non_answer_audit.get("provider_call")
+            if (type(provider_call) is not int
+                    or not ep["usage_ledger"]
+                    or provider_call != len(ep["usage_ledger"]) - 1
+                    or non_answer_audit.get("outputs_sha256")
+                    != ep["usage_ledger"][provider_call]["outputs_sha256"]):
+                raise GradeIntegrityError(
+                    f"{ep['qid']}: DSPy non-answer audit is not bound to its final response")
+            stage = non_answer_audit["stage"]
+            kind = non_answer_audit["kind"]
+            if ((ep["budget"] == "direct" and stage != "direct")
+                    or (ep["budget"] != "direct" and stage == "direct")
+                    or (kind == "parsed_empty_answer" and stage == "react")
+                    or (ep["budget"] in {"k20f", "s50"} and stage != "extract")):
+                raise GradeIntegrityError(
+                    f"{ep['qid']}: DSPy non-answer stage violates its budget")
+    elif non_answer_audit is not None:
+        raise GradeIntegrityError(
+            f"{ep['qid']}: non-answer audit has no declared DSPy schema")
     episode_provider_identity(ep)
 
 

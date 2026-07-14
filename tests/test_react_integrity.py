@@ -4,10 +4,17 @@ from pathlib import Path
 from types import SimpleNamespace
 import tempfile
 import unittest
+from unittest.mock import Mock, patch
+
+import dspy
+from dspy.adapters.base import Adapter
+from dspy.utils.exceptions import AdapterParseError
 
 from studybench.integrity import sha256_json, sha256_text, write_immutable_json
 from studybench.react import (
     READ_MAX_LINES,
+    ParseOnlyFallbackChatAdapter,
+    TrajectoryRecordingReAct,
     _artifact_inventory,
     _dspy_usage_record,
     _stored_completed_study_config,
@@ -20,6 +27,52 @@ from studybench.tools import READ_MAX_LINES as NATIVE_READ_MAX_LINES
 
 
 class ReactStudyIntegrityTests(unittest.TestCase):
+    def test_chat_to_json_fallback_is_parse_only_and_response_audited(self) -> None:
+        signature = dspy.Signature("question -> answer")
+        lm = SimpleNamespace(provider_attempt_count=0, history=[])
+        parse_error = AdapterParseError(
+            adapter_name="ChatAdapter", signature=signature,
+            lm_response="reasoning only",
+        )
+
+        def completed_parse_failure(*_args, **_kwargs):
+            lm.provider_attempt_count += 1
+            lm.history.append({"complete": True})
+            raise parse_error
+
+        json_adapter = Mock()
+        json_adapter.return_value = [{"answer": "repaired"}]
+        with patch.object(Adapter, "__call__", side_effect=completed_parse_failure), \
+                patch("studybench.react.JSONAdapter", return_value=json_adapter):
+            result = ParseOnlyFallbackChatAdapter()(
+                lm, {}, signature, [], {"question": "q"}
+            )
+        self.assertEqual(result, [{"answer": "repaired"}])
+        json_adapter.assert_called_once()
+
+        with patch.object(Adapter, "__call__", side_effect=RuntimeError("transport")), \
+                patch("studybench.react.JSONAdapter") as json_cls:
+            with self.assertRaisesRegex(RuntimeError, "transport"):
+                ParseOnlyFallbackChatAdapter()(
+                    lm, {}, signature, [], {"question": "q"}
+                )
+            json_cls.assert_not_called()
+
+        with patch.object(Adapter, "__call__", side_effect=parse_error), \
+                patch("studybench.react.JSONAdapter") as json_cls:
+            with self.assertRaisesRegex(RuntimeError, "complete provider response"):
+                ParseOnlyFallbackChatAdapter()(
+                    lm, {}, signature, [], {"question": "q"}
+                )
+            json_cls.assert_not_called()
+
+    def test_trajectory_recorder_keeps_an_independent_failure_snapshot(self) -> None:
+        module = TrajectoryRecordingReAct("question -> answer", tools=[])
+        trajectory = {"thought_0": "look", "tool_args_0": {"path": "x"}}
+        module._format_trajectory(trajectory)
+        trajectory["tool_args_0"]["path"] = "changed"
+        self.assertEqual(module.last_trajectory["tool_args_0"]["path"], "x")
+
     def test_dspy_tool_contract_matches_runtime_and_not_native_schema(self) -> None:
         rt = SimpleNamespace(read_max_lines=READ_MAX_LINES, dispatch=lambda *args: "")
         observed = runtime_dspy_tool_contract(make_tools(rt))

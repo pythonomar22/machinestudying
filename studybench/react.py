@@ -14,6 +14,7 @@ the immutable namespace chosen with --run-id and are bound to its manifest.
 """
 
 import argparse
+import copy
 import json
 import logging
 import os
@@ -21,7 +22,10 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import dspy
+from dspy.adapters.base import Adapter
+from dspy.adapters.json_adapter import JSONAdapter
 from dspy.predict.react import _fmt_exc
+from dspy.utils.exceptions import AdapterParseError
 
 from .dataset import CORPORA, ROOT, load_questions
 from .integrity import (
@@ -59,7 +63,10 @@ from .rollout import (
     _validated_resumable_episode,
 )
 from .study_protocol import (
+    DSPY_ADAPTER_NAME,
+    DSPY_ADAPTER_POLICY,
     DSPY_REPOSITORY_TOOL_CONTRACT,
+    DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
     FORCED50_CONFIG_SCHEMA_VERSION,
     REACT_SAMPLING,
     forced50_study_question,
@@ -85,6 +92,51 @@ def study_task(corpus) -> str:
 SAMPLING = REACT_SAMPLING  # paper §B; passed through litellm to vLLM
 
 log = logging.getLogger("react")
+
+class AttemptCountingLM(dspy.LM):
+    """Count every DSPy-to-provider attempt, including attempts with no response.
+
+    ``BaseLM.history`` is appended only after a provider response has been
+    processed.  Counting at ``LM.forward`` independently makes a transport or
+    context failure visible instead of allowing a later adapter fallback to
+    hide it.  The runner sets ``num_retries=0``, so one forward entry is one
+    provider attempt.
+    """
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.provider_attempt_count = 0
+
+    def forward(self, prompt=None, messages=None, **kwargs):
+        self.provider_attempt_count += 1
+        return super().forward(prompt=prompt, messages=messages, **kwargs)
+
+
+class ParseOnlyFallbackChatAdapter(dspy.ChatAdapter):
+    """Preserve DSPy's Chat-to-JSON repair, but only for parse failures.
+
+    Pinned DSPy's ``ChatAdapter`` catches every exception before trying its JSON
+    adapter.  That can turn a transport or program failure into an apparently
+    successful request.  This behavior-identical narrow variant permits the
+    fallback only after a completed response fails typed adapter parsing.
+    """
+
+    def __call__(self, lm, lm_kwargs, signature, demos, inputs):
+        attempts_before = getattr(lm, "provider_attempt_count", None)
+        history_before = len(lm.history)
+        try:
+            return Adapter.__call__(
+                self, lm, lm_kwargs, signature, demos, inputs
+            )
+        except AdapterParseError:
+            attempts_after = getattr(lm, "provider_attempt_count", None)
+            if (type(attempts_before) is not int
+                    or attempts_after != attempts_before + 1
+                    or len(lm.history) != history_before + 1):
+                raise RuntimeError(
+                    "Chat-to-JSON fallback lacks one complete provider response"
+                )
+            return JSONAdapter()(lm, lm_kwargs, signature, demos, inputs)
 
 
 def _artifact_inventory(root: Path, relatives: tuple[str, ...]) -> dict[str, dict[str, object]]:
@@ -265,7 +317,28 @@ def runtime_dspy_tool_contract(tools_fns) -> dict:
     return observed
 
 
-class ForcedReAct(dspy.ReAct):
+class TrajectoryRecordingReAct(dspy.ReAct):
+    """Pinned ReAct behavior plus a recoverable snapshot on an escaped call."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.last_stage = "react"
+        self.last_trajectory = {}
+
+    def _call_with_potential_trajectory_truncation(
+        self, module, trajectory, **input_args
+    ):
+        self.last_stage = "react" if module is self.react else "extract"
+        return super()._call_with_potential_trajectory_truncation(
+            module, trajectory, **input_args
+        )
+
+    def _format_trajectory(self, trajectory):
+        self.last_trajectory = copy.deepcopy(trajectory)
+        return super()._format_trajectory(trajectory)
+
+
+class ForcedReAct(TrajectoryRecordingReAct):
     """dspy.ReAct with no early stopping: finish selections are caught and
     answered with a keep-searching observation; the turn stays in the
     trajectory and the loop runs its full max_iters, then extract runs."""
@@ -300,6 +373,10 @@ class ForcedReAct(dspy.ReAct):
         try:
             extract = self._call_with_potential_trajectory_truncation(
                 self.extract, trajectory, **input_args)
+        except AdapterParseError:
+            # A completed full-budget trajectory followed by exhausted format
+            # repair is a genuine model non-answer, handled by run_episode.
+            raise
         except Exception as err:
             raise ForcedTrajectoryError(
                 f"forced answer extraction failed: {_fmt_exc(err)}",
@@ -363,9 +440,10 @@ def run_episode(corpus, tools_fns, q: dict, budget: str, rollout: int,
     api_key = os.environ.get("SB_VLLM_API_KEY")
     if not api_key:
         raise RuntimeError("authenticated local server key is unavailable")
-    lm = dspy.LM(MODEL_ID, api_base=base_url, api_key=api_key, model_type="chat",
-                 cache=False, num_retries=0,
-                 **{**SAMPLING, "seed": seed})
+    lm = AttemptCountingLM(
+        MODEL_ID, api_base=base_url, api_key=api_key, model_type="chat",
+        cache=False, num_retries=0, **{**SAMPLING, "seed": seed}
+    )
     ep = {
         **(identity or {}),
         "task": corpus.name, "qid": q["id"], "budget": budget, "rollout": rollout,
@@ -374,26 +452,48 @@ def run_episode(corpus, tools_fns, q: dict, budget: str, rollout: int,
         "turns": [], "answer": "", "n_react_iters": 0, "n_tool_iters": 0,
         "finish_catches": 0, "prompt_tokens": 0, "completion_tokens": 0,
         "total_tokens": 0, "gen_tokens": 0, "status": "ok",
+        "dspy_request_audit_schema": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
     }
     trajectory = {}
-    with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+    parse_failure = None
+    parse_stage = None
+    module = None
+    with dspy.context(lm=lm, adapter=ParseOnlyFallbackChatAdapter()):
         try:
             if budget == "direct":
                 pred = dspy.Predict("question -> answer")(question=q["question"])
+                parse_stage = "direct"
             else:
-                cls = ForcedReAct if forced else dspy.ReAct
+                cls = ForcedReAct if forced else TrajectoryRecordingReAct
                 module = cls("question -> answer", tools=list(tools_fns),
                              max_iters=max_iters)
                 pred = module(question=q["question"])
                 trajectory = dict(pred.trajectory)
+                parse_stage = "extract"
             ep["answer"] = pred.answer or ""
             if not ep["answer"].strip():
+                ep["status"] = "no_answer"
+        except AdapterParseError as error:
+            parse_failure = error
+            if module is not None:
+                trajectory = copy.deepcopy(module.last_trajectory)
+                parse_stage = module.last_stage
+            else:
+                parse_stage = "direct"
+            if forced and parse_stage == "react":
+                ep["status"] = "forced_short"
+                ep["error"] = (
+                    "forced trajectory ended on exhausted adapter format repair"
+                )
+            else:
                 ep["status"] = "no_answer"
         except ForcedTrajectoryError as error:
             trajectory = error.trajectory
             ep["status"] = error.status
             ep["error"] = str(error)[:500]
         except Exception as e:
+            if module is not None:
+                trajectory = copy.deepcopy(module.last_trajectory)
             ep["status"] = "error"
             ep["error"] = f"{type(e).__name__}: {str(e)[:500]}"
 
@@ -415,7 +515,7 @@ def run_episode(corpus, tools_fns, q: dict, budget: str, rollout: int,
     if forced and ep["status"] == "ok" and len(steps) != max_iters:
         ep["status"] = "forced_short"
         ep["error"] = f"forced trajectory has {len(steps)} of {max_iters} required iterations"
-    ep["n_lm_calls"] = len(lm.history)
+    ep["n_lm_calls"] = lm.provider_attempt_count
     ep["usage_ledger"] = []
     for index, history in enumerate(lm.history):
         try:
@@ -430,6 +530,36 @@ def run_episode(corpus, tools_fns, q: dict, budget: str, rollout: int,
         ep["prompt_tokens"] += record["prompt_tokens"]
         ep["completion_tokens"] += record["completion_tokens"]
         ep["total_tokens"] += record["total_tokens"]
+    if (ep["status"] in {"ok", "no_answer"}
+            and lm.provider_attempt_count != len(lm.history)):
+        if ep["status"] in {"ok", "no_answer"}:
+            ep["invalid_final_status"] = ep["status"]
+        ep["status"] = "error"
+        ep["error"] = (
+            "provider attempt audit is incomplete: "
+            f"attempts={lm.provider_attempt_count}, responses={len(lm.history)}"
+        )
+    if ep["status"] == "no_answer":
+        if not ep["usage_ledger"]:
+            ep["invalid_final_status"] = "no_answer"
+            ep["status"] = "error"
+            ep["error"] = "model non-answer has no complete provider response"
+        else:
+            last_call = ep["usage_ledger"][-1]
+            ep["non_answer_audit"] = {
+                "schema_version": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
+                "kind": (
+                    "adapter_parse_failure" if parse_failure is not None
+                    else "parsed_empty_answer"
+                ),
+                "stage": parse_stage,
+                "adapter": (
+                    parse_failure.adapter_name if parse_failure is not None
+                    else "ParseOnlyFallbackChatAdapter"
+                ),
+                "provider_call": len(ep["usage_ledger"]) - 1,
+                "outputs_sha256": last_call["outputs_sha256"],
+            }
     ep["gen_tokens"] = ep["completion_tokens"]
     ep["finished"] = utc_now()
     expected_identity = {
@@ -483,6 +613,9 @@ def _run_study_locked(args, corpus, tools_fns, urls: list[str], out: Path) -> No
         "model_revision": MODEL_REVISION,
         "expected_response_model": MODEL_ID.removeprefix("openai/"),
         "sampling": SAMPLING,
+        "adapter": DSPY_ADAPTER_NAME,
+        "adapter_fallback_policy": DSPY_ADAPTER_POLICY,
+        "dspy_request_audit_schema": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
         "master_seed": args.seed,
         "episode_seed": seed,
         "study_prompt_sha256": sha256_text(question["question"]),
@@ -866,7 +999,9 @@ def main():
             "tool_schema_sha256": sha256_json(tool_contract),
             "read_max_lines": READ_MAX_LINES,
             "signature": "question -> answer",
-            "adapter": "dspy.ChatAdapter",
+            "adapter": DSPY_ADAPTER_NAME,
+            "adapter_fallback_policy": DSPY_ADAPTER_POLICY,
+            "dspy_request_audit_schema": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
             "server_transport": {
                 "scope": "loopback",
                 "protocol": "openai-compatible-http",

@@ -50,8 +50,11 @@ STATIC_GRAPH_TASK_MANIFEST_TYPE = "deterministic-static-graph-study-task"
 STATIC_GRAPH_NOTE_MANIFEST_TYPE = "deterministic-static-graph-note"
 HUMAN_AUDITED_NOTE_MANIFEST_TYPE = "human-audited-note"
 
-FORCED50_CONFIG_SCHEMA_VERSION = 2
+FORCED50_CONFIG_SCHEMA_VERSION = 3
 FORCED50_ITERATIONS = 50
+DSPY_ADAPTER_NAME = "studybench.react.ParseOnlyFallbackChatAdapter"
+DSPY_ADAPTER_POLICY = "parse-only-chat-to-json-fallback-v1"
+DSPY_REQUEST_AUDIT_SCHEMA_VERSION = 1
 FORCED50_CONFIG_KEYS = frozenset({
     "schema_version",
     "study_id",
@@ -61,6 +64,9 @@ FORCED50_CONFIG_KEYS = frozenset({
     "model_revision",
     "expected_response_model",
     "sampling",
+    "adapter",
+    "adapter_fallback_policy",
+    "dspy_request_audit_schema",
     "master_seed",
     "episode_seed",
     "study_prompt_sha256",
@@ -1913,6 +1919,10 @@ def validate_forced50_config(
         or not value["model_revision"]
         or not isinstance(value.get("expected_response_model"), str)
         or not value["expected_response_model"]
+        or value.get("adapter") != DSPY_ADAPTER_NAME
+        or value.get("adapter_fallback_policy") != DSPY_ADAPTER_POLICY
+        or value.get("dspy_request_audit_schema")
+        != DSPY_REQUEST_AUDIT_SCHEMA_VERSION
         or type(value.get("master_seed")) is not int
         or type(value.get("episode_seed")) is not int
         or value.get("forced_iterations") != FORCED50_ITERATIONS

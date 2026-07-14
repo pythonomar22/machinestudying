@@ -15,7 +15,10 @@ from studybench import grade, provenance, report
 from studybench.integrity import canonical_json_bytes, sha256_json, stable_seed
 from studybench.provenance import _load_note, environment_contract_record
 from studybench.study_protocol import (
+    DSPY_ADAPTER_NAME,
+    DSPY_ADAPTER_POLICY,
     DSPY_REPOSITORY_TOOL_CONTRACT,
+    DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
     FORCED50_CONFIG_SCHEMA_VERSION,
     FORCED50_ITERATIONS,
     REACT_SAMPLING,
@@ -3224,6 +3227,9 @@ class StrictReportTests(unittest.TestCase):
                 "model_revision": "revision-a",
                 "expected_response_model": "generation-revision",
                 "sampling": REACT_SAMPLING,
+                "adapter": DSPY_ADAPTER_NAME,
+                "adapter_fallback_policy": DSPY_ADAPTER_POLICY,
+                "dspy_request_audit_schema": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
                 "master_seed": master_seed,
                 "episode_seed": episode_seed,
                 "study_prompt_sha256": grade.sha256_bytes(
