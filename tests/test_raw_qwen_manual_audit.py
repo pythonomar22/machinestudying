@@ -69,6 +69,65 @@ class IdentityTests(unittest.TestCase):
                 },
             })
 
+    def test_second_pass_selection_does_not_treat_incorrect_answer_as_qwen_disagreement(
+        self,
+    ) -> None:
+        rows = {
+            "a" * 64: {
+                "visible": {"unit": "answer", "bundle_id": "1" * 64},
+                "qwen_label": None,
+            },
+            "b" * 64: {
+                "visible": {"unit": "answer", "bundle_id": "2" * 64},
+                "qwen_label": None,
+            },
+        }
+        reviews = {
+            "a" * 64: {
+                "decision": "answer_incorrect", "corpus_evidence_issue": False,
+            },
+            "b" * 64: {
+                "decision": "uncertain", "corpus_evidence_issue": False,
+            },
+        }
+        selected = manual._second_pass_selection({"rows": rows, "reviews": reviews})
+        self.assertEqual([item["row_id"] for item in selected], ["b" * 64])
+        self.assertEqual(selected[0]["selection_reasons"], ["answer_uncertain"])
+
+    def test_second_pass_reviewer_names_are_fresh_and_exact(self) -> None:
+        reviewers = [
+            "/root/raw_second_pass_a",
+            "/root/raw_second_pass_b",
+            "/root/raw_second_pass_c",
+        ]
+        self.assertEqual(
+            manual._validate_second_reviewers(
+                reviewers, first_reviewers=set(REVIEWERS)
+            ),
+            reviewers,
+        )
+        for invalid in (
+            reviewers[:2],
+            [reviewers[0], reviewers[0], reviewers[2]],
+            [REVIEWERS[0], reviewers[1], reviewers[2]],
+            ["/root/second_pass_a", reviewers[1], reviewers[2]],
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(
+                manual.ManualAuditError
+            ):
+                manual._validate_second_reviewers(
+                    invalid, first_reviewers=set(REVIEWERS)
+                )
+
+    def test_frozen_second_pass_census_is_exact(self) -> None:
+        selected = [
+            {"unit": "claim"} for _ in range(71)
+        ]
+        manual._require_frozen_selection_census(selected)
+        for wrong in (selected[:-1], selected + [{"unit": "answer"}]):
+            with self.assertRaisesRegex(manual.ManualAuditError, "71-claim"):
+                manual._require_frozen_selection_census(wrong)
+
 
 class FrozenPacketTests(unittest.TestCase):
     def setUp(self) -> None:
@@ -82,7 +141,7 @@ class FrozenPacketTests(unittest.TestCase):
     def tearDown(self) -> None:
         self.source_validator.stop()
 
-    def _build(self, root: Path) -> tuple[Path, dict]:
+    def _source_attestation(self) -> dict:
         source = {
             "dirty": False,
             "files": {
@@ -92,23 +151,26 @@ class FrozenPacketTests(unittest.TestCase):
                 }
             },
         }
+        return {
+            "clean_pushed_source": {
+                "policy": "clean-head-contained-in-remote-tracking-ref-v1",
+                "source": source,
+                "source_sha256": sha256_json(source),
+                "remote_tracking_refs": ["refs/remotes/origin/main"],
+            },
+            "module": {
+                "path": "studybench/raw_qwen_manual_audit.py",
+                "sha256": "f" * 64,
+                "bytes": 1,
+            },
+        }
+
+    def _build(self, root: Path) -> tuple[Path, dict]:
         manifest_path = manual.build_packets(
             audit_id="test-raw-manual-audit",
             reviewers=REVIEWERS,
             output_root=root,
-            source_attestor=lambda: {
-                "clean_pushed_source": {
-                    "policy": "clean-head-contained-in-remote-tracking-ref-v1",
-                    "source": source,
-                    "source_sha256": sha256_json(source),
-                    "remote_tracking_refs": ["refs/remotes/origin/main"],
-                },
-                "module": {
-                    "path": "studybench/raw_qwen_manual_audit.py",
-                    "sha256": "f" * 64,
-                    "bytes": 1,
-                },
-            },
+            source_attestor=self._source_attestation,
         )
         raw = read_artifact_bytes(manifest_path)
         manifest = strict_json_loads(raw, label="test manifest")
@@ -274,6 +336,291 @@ class FrozenPacketTests(unittest.TestCase):
                     manifest_path=manifest_path,
                     review_paths=review_paths,
                 )
+
+    def test_second_pass_is_exact_blinded_and_fail_closed_through_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest_path, manifest = self._build(root)
+            first_review_paths = []
+            answer_index = 0
+            claim_index = 0
+            for record in manifest["reviewers"]:
+                packet_path = Path(record["path"])
+                packet = strict_json_loads(
+                    read_artifact_bytes(packet_path), label="test first packet"
+                )
+                reviews = []
+                for row in packet["rows"]:
+                    if row["unit"] == "answer":
+                        decision = "answer_ok"
+                        evidence_issue = False
+                        if answer_index == 0:
+                            decision = "answer_incorrect"
+                        elif answer_index == 1:
+                            decision = "uncertain"
+                        elif answer_index == 2:
+                            evidence_issue = True
+                        answer_index += 1
+                        reviews.append({
+                            "row_id": row["row_id"],
+                            "unit": "answer",
+                            "decision": decision,
+                            "corpus_evidence_issue": evidence_issue,
+                            "note": "Synthetic answer decision for audit plumbing.",
+                        })
+                    else:
+                        decision: int | str = 0
+                        defect = False
+                        if claim_index == 0:
+                            decision = "uncertain"
+                        elif claim_index == 1:
+                            defect = True
+                        claim_index += 1
+                        reviews.append({
+                            "row_id": row["row_id"],
+                            "unit": "claim",
+                            "decision": decision,
+                            "confidence": "low" if decision == "uncertain" else "high",
+                            "ambiguity": decision == "uncertain",
+                            "rubric_evidence_defect": defect,
+                            "note": "Synthetic claim decision for audit plumbing.",
+                        })
+                review = {
+                    "review_schema_version": 1,
+                    "reviewer": record["reviewer"],
+                    "packet_sha256": record["sha256"],
+                    "review_prompt_sha256": packet["review_prompt_sha256"],
+                    "reviews": reviews,
+                }
+                path = Path(record["review_output_path"])
+                write_immutable_json(path, review)
+                first_review_paths.append(path)
+            first_validation_path = manifest_path.parent / "first-pass-validation.json"
+            manual.write_first_pass_validation(
+                manifest_path=manifest_path,
+                review_paths=first_review_paths,
+                output_path=first_validation_path,
+            )
+            manifest_sha = sha256_bytes(read_artifact_bytes(manifest_path))
+            validation_sha = sha256_bytes(read_artifact_bytes(first_validation_path))
+            second_reviewers = [
+                "/root/raw_second_pass_test_a",
+                "/root/raw_second_pass_test_b",
+                "/root/raw_second_pass_test_c",
+            ]
+            frozen = (
+                patch.object(
+                    manual, "FROZEN_MANUAL_AUDIT_ID", manifest_path.parent.name
+                ),
+                patch.object(manual, "FIRST_PASS_MANIFEST_SHA256", manifest_sha),
+                patch.object(
+                    manual, "FIRST_PASS_VALIDATION_SHA256", validation_sha
+                ),
+            )
+            for mocked in frozen:
+                mocked.start()
+            selection_patch = None
+            try:
+                first_context = manual._load_frozen_first_pass(first_validation_path)
+                selected = manual._second_pass_selection(first_context)
+                selected_ids = {item["row_id"] for item in selected}
+                self.assertEqual(
+                    sum(item["unit"] == "answer" for item in selected), 2
+                )
+                incorrect_answer_id = next(
+                    row_id for row_id, review in first_context["reviews"].items()
+                    if review["decision"] == "answer_incorrect"
+                )
+                self.assertNotIn(incorrect_answer_id, selected_ids)
+                selection_patch = patch.object(
+                    manual,
+                    "EXPECTED_SECOND_PASS_SELECTION",
+                    {
+                        "answer": sum(item["unit"] == "answer" for item in selected),
+                        "claim": sum(item["unit"] == "claim" for item in selected),
+                        "total": len(selected),
+                    },
+                )
+                selection_patch.start()
+
+                second_manifest_path = manual.build_second_pass_packets(
+                    first_pass_validation_path=first_validation_path,
+                    reviewers=second_reviewers,
+                    source_attestor=self._source_attestation,
+                )
+                second_manifest = strict_json_loads(
+                    read_artifact_bytes(second_manifest_path),
+                    label="test second manifest",
+                )
+                packet_row_ids = []
+                for record in second_manifest["reviewers"]:
+                    packet = strict_json_loads(
+                        read_artifact_bytes(Path(record["path"])),
+                        label="test second packet",
+                    )
+                    for row in packet["rows"]:
+                        self.assertNotIn("qwen_label", row)
+                        self.assertNotIn("first_pass_decision", row)
+                        self.assertNotIn("selection_reasons", row)
+                        packet_row_ids.append(row["row_id"])
+                    ids = [row["row_id"] for row in packet["rows"]]
+                    self.assertEqual(
+                        ids,
+                        sorted(
+                            ids,
+                            key=lambda row_id: manual._order("46002:", row_id),
+                        ),
+                    )
+                self.assertEqual(set(packet_row_ids), selected_ids)
+                self.assertEqual(len(packet_row_ids), len(set(packet_row_ids)))
+
+                original_packet_path = Path(second_manifest["reviewers"][0]["path"])
+                original_packet = json.loads(read_artifact_bytes(original_packet_path))
+                original_manifest = json.loads(read_artifact_bytes(second_manifest_path))
+                leaked_packet = json.loads(read_artifact_bytes(original_packet_path))
+                leaked_packet["rows"][0]["qwen_label"] = 1
+                atomic_write_json(original_packet_path, leaked_packet)
+                leaked_raw = read_artifact_bytes(original_packet_path)
+                rebound_manifest = json.loads(read_artifact_bytes(second_manifest_path))
+                rebound_manifest["reviewers"][0]["sha256"] = sha256_bytes(leaked_raw)
+                rebound_manifest["reviewers"][0]["bytes"] = len(leaked_raw)
+                atomic_write_json(second_manifest_path, rebound_manifest)
+                with self.assertRaisesRegex(manual.ManualAuditError, "leaked context"):
+                    manual._load_second_pass_manifest(second_manifest_path)
+                atomic_write_json(original_packet_path, original_packet)
+                atomic_write_json(second_manifest_path, original_manifest)
+
+                second_review_paths = []
+                for record in original_manifest["reviewers"]:
+                    packet = strict_json_loads(
+                        read_artifact_bytes(Path(record["path"])),
+                        label="test second packet",
+                    )
+                    reviews = []
+                    for row in packet["rows"]:
+                        if row["unit"] == "answer":
+                            reviews.append({
+                                "row_id": row["row_id"],
+                                "unit": "answer",
+                                "decision": "answer_incorrect",
+                                "corpus_evidence_issue": False,
+                                "note": "Independent synthetic second answer review.",
+                            })
+                        else:
+                            reviews.append({
+                                "row_id": row["row_id"],
+                                "unit": "claim",
+                                "decision": 0,
+                                "confidence": "high",
+                                "ambiguity": False,
+                                "rubric_evidence_defect": False,
+                                "note": "Independent synthetic second claim review.",
+                            })
+                    review = {
+                        "second_pass_review_schema_version": 1,
+                        "reviewer": record["reviewer"],
+                        "packet_sha256": record["sha256"],
+                        "review_prompt_sha256": record["review_prompt_sha256"],
+                        "reviews": reviews,
+                    }
+                    path = Path(record["review_output_path"])
+                    write_immutable_json(path, review)
+                    second_review_paths.append(path)
+                second_validation_path = (
+                    manifest_path.parent / "second-pass-validation.json"
+                )
+                manual.write_second_pass_validation(
+                    manifest_path=second_manifest_path,
+                    review_paths=second_review_paths,
+                    output_path=second_validation_path,
+                )
+                summary_path = manifest_path.parent / "post-review-summary.json"
+                manual.write_post_review_summary(
+                    second_pass_validation_path=second_validation_path,
+                    output_path=summary_path,
+                    source_attestor=self._source_attestation,
+                )
+                summary = strict_json_loads(
+                    read_artifact_bytes(summary_path), label="test summary"
+                )
+                self.assertEqual(len(summary["answer_reviews"]), 120)
+                self.assertEqual(len(summary["answer_non_ok_details"]), 3)
+                self.assertEqual(
+                    summary["first_pass_claim_audit"]["overall"]["claim_rows"],
+                    619,
+                )
+                self.assertFalse(summary["grade_policy"]["qwen_grades_changed"])
+                sensitivity = summary["selected_subset_sensitivity"]
+                overall = sensitivity["overall"]
+                selected_claims = sum(
+                    item["unit"] == "claim" for item in selected
+                )
+                self.assertTrue(overall["conditional_on_first_pass_selection"])
+                self.assertTrue(overall["not_an_all_rows_estimate"])
+                self.assertEqual(overall["selected_claim_rows"], selected_claims)
+                self.assertEqual(
+                    overall["second_vs_qwen"]["claim_rows"], selected_claims
+                )
+                self.assertEqual(
+                    sum(
+                        item["selected_claim_rows"]
+                        for item in sensitivity["by_arm"].values()
+                    ),
+                    selected_claims,
+                )
+                weights = overall["weight_accounting"]
+                self.assertEqual(
+                    weights["selected_weight"],
+                    weights["both_determinate_weight"]
+                    + weights["uncertain_in_either_weight"],
+                )
+                self.assertEqual(
+                    weights["both_determinate_weight"],
+                    weights["first_second_disagreement_weight"]
+                    + weights["both_confirm_qwen_agreement_weight"]
+                    + weights["both_confirm_qwen_disagreement_weight"],
+                )
+                first_second = overall["first_vs_second"]
+                self.assertEqual(
+                    sum(first_second["confusion_0_1"].values()),
+                    first_second["both_determinate_rows"],
+                )
+
+                original_review = json.loads(
+                    read_artifact_bytes(second_review_paths[0])
+                )
+                wrong_identity = json.loads(
+                    read_artifact_bytes(second_review_paths[0])
+                )
+                wrong_identity["reviewer"] = second_reviewers[1]
+                atomic_write_json(second_review_paths[0], wrong_identity)
+                with self.assertRaisesRegex(
+                    manual.ManualAuditError, "unbound|bound output path"
+                ):
+                    manual.validate_second_pass(
+                        manifest_path=second_manifest_path,
+                        review_paths=second_review_paths,
+                    )
+                atomic_write_json(second_review_paths[0], original_review)
+
+                original_first_review = json.loads(
+                    read_artifact_bytes(first_review_paths[0])
+                )
+                changed_first_review = json.loads(
+                    read_artifact_bytes(first_review_paths[0])
+                )
+                changed_first_review["reviews"][0]["note"] += " changed"
+                atomic_write_json(first_review_paths[0], changed_first_review)
+                with self.assertRaisesRegex(
+                    manual.ManualAuditError, "differs from its binding"
+                ):
+                    manual._load_second_pass_manifest(second_manifest_path)
+                atomic_write_json(first_review_paths[0], original_first_review)
+            finally:
+                if selection_patch is not None:
+                    selection_patch.stop()
+                for mocked in reversed(frozen):
+                    mocked.stop()
 
 
 if __name__ == "__main__":
