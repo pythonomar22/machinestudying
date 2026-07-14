@@ -588,16 +588,18 @@ remain immutable and eligible for ordinary grading:
 
 | Arm/cell | Finding |
 |---|---|
-| base `k5/r1/dspy_a5b116f00083` | hard-truncated 862-character answer stops inside an open Python fence and an unfinished `dspy.Predict` string |
+| base `k5/r1/dspy_a5b116f00083` | abruptly incomplete 862-character answer stops inside an open Python fence and an unfinished `dspy.Predict` string; the stored generation audit does not retain enough raw-provider detail to call the mechanism transport truncation |
 | base `k20/r0/dspy_0b4b420ebeb4` | otherwise complete answer has one extra trailing code fence |
 | cheatsheet `k20/r0/dspy_2de37073e8e4` | otherwise complete answer omits its closing code fence |
 | cheatsheet `k20/r0/dspy_7329144ef1e9` | otherwise complete answer splits `mock_search_rides` across a newline inside the function identifier |
 
 Here `status=ok` means that the preregistered generation harness durably
 captured a nonempty answer without an infrastructure failure; it does not claim
-that the answer is complete or correct. The truncated answer is therefore an
-answer defect to score as generated, not grounds for a retry, status rewrite,
-or exclusion.
+that the answer is complete or correct. The abruptly incomplete answer is
+therefore an answer defect to score as generated, not grounds for a retry,
+status rewrite, or exclusion. Its incompleteness is observed; its exact
+provider-versus-extraction mechanism is not recoverable from the historical
+hash-only provider ledger.
 
 The reviewer also inspected all 780 recorded ReAct turns: 286 `finish`, 130
 `glob`, 146 `grep`, and 218 `read_file`. Of 494 non-finish calls, 490 replayed
@@ -1284,14 +1286,15 @@ responses, not truncated or malformed SmallDSPy run outputs: protocol `m`
 never contacted the benchmark. No `m` grade, report, comparison, or arm number
 exists.
 
-The next raw-Qwen screen explicitly proceeds without synthetic qualification;
-it is not another qualification attempt and cannot retroactively rescue `m`.
-It will judge each complete frozen grading input once and retain Qwen's exact
-output. If any response lacks a usable exact verdict, it will be preserved as a
+The then-planned raw-Qwen screen explicitly proceeded without synthetic
+qualification; it was not another qualification attempt and could not
+retroactively rescue `m`. Its frozen rule was to judge each complete grading
+input once and retain Qwen's exact output. If any response lacked a usable
+exact verdict, it would be preserved as a
 judge failure rather than coerced, dropped, or selectively retried, and no arm
-number will be reported. This screen is intentionally unqualified and remains
+number would be reported. This screen is intentionally unqualified and remains
 adaptive, exploratory, non-claim-ready, and unavailable for paper comparison,
-regardless of its eventual outcome.
+regardless of outcome.
 
 The immutable `h` generation populations are
 the only answer populations eligible for this screen. The `d` generation grids
@@ -1304,3 +1307,212 @@ with a treatment estimate. No valid full-grid arm comparison has yet been
 observed. A complete raw-Qwen screen may add only explicitly unqualified
 diagnostic numbers under the fail-closed rule above; it cannot populate a
 qualified or claim-ready result.
+
+## Executed raw-Qwen screen `n`
+
+The separately declared raw screen completed on 2026-07-14. It did not rerun
+qualification or claim that the failed `l`/`m` qualifications passed. It sent
+each of the 119 nonempty frozen `h` answers to the pinned
+`Qwen/Qwen3.5-9B` judge exactly once. The one treatment generation
+`no_answer` remained an intention-to-treat zero and caused no judge contact.
+The request used temperature zero, seed zero, a 256-token ceiling,
+`enable_thinking=false`, an exact keyed binary rubric object, and the complete
+question, gold answer, rubric, cited evidence, and candidate answer, with the
+candidate last. There was no retry, repair, fallback, dropped verdict, or
+model-generated total.
+
+Three homogeneous TP=2 replicas handled 40, 40, and 39 requests. All 119
+responses had the pinned model and fingerprint, unique request/response
+identities, complete usage, `finish_reason=stop`, and canonical schema-valid
+content. Prompt-token counts ranged from 4,036 to 8,447 and totaled 769,516;
+completion tokens ranged from 46 to 55 and totaled 5,724; total judge usage was
+775,240 tokens. The vLLM logs contain exactly 119 successful HTTP 200 POSTs.
+The raw-screen audit found zero truncated, malformed, repaired, retried,
+rejected, missing, or `needs_regrade` judge responses. It also reconstructed
+the full candidate in every request byte-for-byte from the frozen episode, so
+the grading harness did not clip candidate input.
+
+The resulting **unqualified diagnostic** lenient scores are:
+
+| Arm | direct | k5 | k20 | k20f | lenient WAUC | 10,000-replicate descriptive WAUC interval |
+|---|---:|---:|---:|---:|---:|---:|
+| no-note baseline | 1.0000 | 2.3333 | 0.0000 | 12.6667 | 2.9789883944107114 | [0.0000, 7.055817925719454] |
+| forced-50 cheatsheet | 1.6667 | 2.3333 | 8.6667 | 4.0000 | 4.840131429288812 | [0.5143327389932794, 15.666230193773664] |
+
+These are the two requested raw Qwen numbers. They are not ordinary grade
+reports, not Table 1 replications, and not evidence that the cheatsheet
+improved expertise. The judge failed the frozen synthetic qualification, the
+same 9B model family generated and judged the answers, the population contains
+only five adaptively selected public questions, the intervals are very wide,
+and no paired effect interval was promoted from this post-hoc screen.
+
+### Frozen raw-screen artifacts
+
+| Artifact | SHA-256 |
+|---|---|
+| `raw-qwen-screens/smalldspy-base-cheatsheet-raw-qwen-20260714n/intent.json` | `85c0fc11ebd5e6f91264fb2aefc852ed1eab3751a5b1e2f7fecdbcc7b21601ab` |
+| `raw-qwen-screens/smalldspy-base-cheatsheet-raw-qwen-20260714n/raw-audit.json` | `59c1434044ee567aee090862b9ebe31bd362f048c4aee577e608a80af7674e42` |
+| `raw-qwen-screens/smalldspy-base-cheatsheet-raw-qwen-20260714n/result.json` | `d10ee48bc7e0ef85c696fddf195bdfe4348aeb1f85d288cc8995bc4f79631413` |
+
+The raw-screen source was clean and pushed at
+`13121d7c57d470095a3779dbbcdcab68c89a0ccc`. The screen remains explicitly
+`claim_ready=false` and `judge_qualified=false`. Its failed-qualification
+dependency is the immutable `l` audit with SHA-256
+`cc3615daedbbbae96802e93369d7b21a97feaea91da374f51f5f8c4c9ce924c6`.
+
+## Completed blinded full-census sensitivity audit
+
+The manual protocol frozen above was then executed without changing or
+substituting any Qwen label. Two preliminary namespaces were terminalized
+before producing an accepted review: the first after a reviewer pre-open
+access defect, and v2 before reviewer contact after packet/source/validator
+defects were found. Their terminal-status hashes are respectively
+`0ba8150a2b97d896126b95ab7ebd2f8cab11f246f51ce60c88fdf0d6333eb1d5`
+and
+`58aea555aee5afc0c3906efd7248dba6787386b04d99ae99f8f1ecc7fefa0a14`.
+Neither namespace supplied a label used below.
+
+The valid v3 first pass assigned whole answer bundles to three fresh isolated
+reviewers. Before any Qwen label was revealed, they reviewed all 120 candidate
+answers and all 619 answered-cell rubric claims. The first-pass validation is
+canonical, complete, and immutable at SHA-256
+`72ad9ed6c187278c27f02a428f1e23281a17f267f1e31f62bfdcbeae3ad93eea`.
+There were no uncertain claim decisions, ambiguity flags, rubric/evidence
+defects, answer uncertainties, or answer corpus/evidence issues.
+
+This was agent-assisted review, not an independent human annotation study.
+Each pass used fresh isolated reviewer contexts and disjoint packets, but the
+reviewer model/version was unavailable to the artifact interface and is
+recorded as such. Agreement between the two passes is useful sensitivity
+evidence, not external ground truth or calibration to the paper's GPT-5.4
+judge.
+
+All 120 answers were marked `answer_incorrect` under the deliberately
+conjunctive answer-level rule: an `answer_ok` must be fully relevant,
+source-grounded, factually correct, and materially complete. This does **not**
+mean every answer was wholly wrong or useless; it means none satisfied every
+answer-level condition. Claim-level decisions remain the auditable comparison
+to Qwen.
+
+The pre-reveal first-pass comparison was:
+
+| Scope | Qwen 0 / reviewer 0 | Qwen 0 / reviewer 1 | Qwen 1 / reviewer 0 | Qwen 1 / reviewer 1 | agreement | claim-weight disagreement |
+|---|---:|---:|---:|---:|---:|---:|
+| overall | 537 | 57 | 14 | 11 | 548/619 (88.53%) | 1,458/11,900 (12.25%) |
+| baseline | 285 | 15 | 7 | 5 | 290/312 (92.95%) | 358/6,000 (5.97%) |
+| cheatsheet | 252 | 42 | 7 | 6 | 258/307 (84.04%) | 1,100/5,900 (18.64%) |
+
+Exactly the 71 claim disagreements were then reordered by the frozen `46002:`
+rule and distributed as 24, 21, and 26 rows across three new isolated
+reviewers. Those reviewers remained blind to arm, budget, rollout, Qwen label,
+first-pass decision, selection reason, and aggregate results. The immutable
+second-pass validation has SHA-256
+`ba3d53a088105fd653e8fc6dbef9ad7c5e6b20931871d76ff265ee94998d3c52`.
+
+The second reviewer agreed with the first reviewer on 60/71 selected claims
+(84.51%). Both reviewers disagreed with Qwen on those 60: 46 Qwen-zero claims
+were independently judged satisfied, and all 14 Qwen-one claims were
+independently judged unsatisfied. The other 11 were Qwen-zero/first-one rows
+that the second reviewer scored zero. The jointly confirmed disagreement
+weight was 1,301/1,458 (89.23%) among the selected rows: 298/358 in baseline
+and 1,003/1,100 in cheatsheet. These second-pass rates are conditional on
+disagreement selection and cannot be extrapolated to all 619 claims.
+
+The asymmetry is the important sensitivity result: 19 of the 22 baseline
+disagreements and 41 of the 49 cheatsheet disagreements survived independent
+rereview. It materially weakens the apparent raw arm contrast. It does not
+authorize corrected scores, a reviewer-substituted WAUC, another Qwen request,
+or a research claim. Qwen's original labels and the two raw scores above remain
+unchanged.
+
+### Manual-audit artifact bindings
+
+| Artifact | SHA-256 |
+|---|---|
+| v3 pre-open manifest | `37a61ac8c843c38be9127e525d3c2e677e18c542af669632fed2bf9b5859305b` |
+| first-pass prompt | `df47690d5b91628ba712221209b90f47a1fc3e5f85e4d81e56c0ce0fb324a4a8` |
+| first-pass packets 0 / 1 / 2 | `9af4cea4cd87ce93634c8a354e465cf5fb20ad7330e23c1b10203dda4784740a` / `0df40b6834239e61b8b35c94122224a5b90b57c2df1dfba149e6ec5cea21e910` / `5e3a8e291411c0ac8382d71055ab4563a0720820760d0a95aac48f4e458c7c73` |
+| first-pass reviews 0 / 1 / 2 | `c9c7c4eed03600f32546dc14522d610d2447b47892c1159200d9c94d0b14ec8d` / `e98e9503c527631e4fdd6b8dca9306a75877b48d1b05b6450cab216e46ef7434` / `83e03629abb421a46d3d10c527141ec59a7090441fecf3c93a3e5ffafbe77304` |
+| first-pass validation | `72ad9ed6c187278c27f02a428f1e23281a17f267f1e31f62bfdcbeae3ad93eea` |
+| second-pass pre-open manifest | `cd7f00a07abbeae4b17fe5f9f99e7d429c1beb3e8b5f9bcd1c142824c4354a81` |
+| second-pass prompt | `3b125c9b7678c0d94a2d58632fa3c89cde6b2ebf56ffb50e9411ed3afdb78113` |
+| second-pass packets 0 / 1 / 2 | `3de64c5ae15c6c0b85ab5ecb1cc6d08ab4b7c987d7dbd8ebf03606c9b97848e6` / `4eb19da88eb90bca66ef43d0f1dc1f7fb6124b4950f81409881f2d50ebcdae59` / `c956b9345a4464bdea49e1e60595eb4043b169211021606ade2ce03fe6976ae8` |
+| second-pass reviews 0 / 1 / 2 | `4327df025595cebc173bfced4e78781392f75610ef4fa313766ff3342db2aa54` / `ca6132b7bc8da10cf5c1f37c5362dc0cb8bbb7c2026feeff692a7cb275d21ebe` / `c714292efb54731367844a56ba48f0ceaca418d1e011491105dab7987385e0fb` |
+| second-pass validation | `ba3d53a088105fd653e8fc6dbef9ad7c5e6b20931871d76ff265ee94998d3c52` |
+| post-review summary | `6ca792e86e37c3174c9b55c93007736676159eda82e0d7b86c2fa36d6669e63b` |
+
+The first-pass packet builder was clean and pushed at
+`37e7c7b07287865c60ecec9fd0beff94cdd00add`; the second-pass builder and
+summary code were clean and pushed at
+`9f27ce52354b376fb5e0ac39c22882d8a80fb7e7`.
+
+## Generator-versus-harness defect disposition
+
+The frozen generation grids contain 965 completed provider responses for 900
+logical DSPy predictions. Sixty-five ChatAdapter parses failed; 64 were
+successfully handled by the preregistered parse-only JSONAdapter fallback, and
+one failed both schemas and became the treatment intention-to-treat
+`no_answer`. Of the 119 stored final answers, 115 came from ChatAdapter parsing
+and four from the JSON fallback. No generated answer was discarded after
+successful extraction.
+
+No provider call approached the configured 32,768-token completion ceiling;
+the largest recorded completion was 7,685 tokens, and no stored provider or
+harness warning reports a length stop. The 119 stored answer texts nevertheless
+contain genuine model-output defects: 21 primary Python blocks fail
+`ast.parse`, three answers have unbalanced code fences, and one additional
+primary block compiles only after non-syntax handling. The abrupt base
+`k5/r1/dspy_a5b116f00083` answer used six completed provider calls, did not
+invoke JSON fallback, and ended after 1,857 completion tokens—far below the
+ceiling. The evidence therefore does not support blaming the configured token
+cap or the grading harness. These stored candidate defects were preserved and
+judged as-is; no repair, retry, or exclusion was applied.
+
+One historical auditability gap prevents a stronger retrospective mechanism
+claim: schema-2 DSPy generation ledgers retain response identity, usage, and a
+hash of DSPy's processed outputs, but not the exact processed provider output
+or `finish_reason`. Thus the episode answer is durably present and no
+extraction/clipping code path was found, but byte-level provider-output-to-answer
+identity cannot be reconstructed after the fact. This limitation does not
+change or invalidate the frozen answers; it is corrected prospectively for
+future generation runs and must not be used to relabel this population.
+
+### Prospective provider-output lineage correction
+
+Source commit `80f34b3670ea9bf78b982adaa4e192c7bb0030d5` introduces forced-study
+config schema 5 and DSPy request-audit schema 3 while retaining exact support
+for the historical schema-4/schema-2 pair. New episodes retain a detached,
+canonical projection of each completed LiteLLM response's generation fields,
+DSPy's normalized outputs, all finish reasons, response identity and
+fingerprint, and provider usage. Headers, authentication material, SDK hidden
+parameters, and mutable SDK objects are excluded. A nonempty model-side finish
+reason such as `length` is recorded but is not converted into infrastructure
+failure: if DSPy extracts an answer, that answer remains evaluable as generated.
+
+For the terminal adapter invocation, the validator independently reconstructs
+DSPy's normalized output and replays the pinned ChatAdapter or JSONAdapter
+parser. JSON replay uses the exact pinned `json-repair==0.54.2` behavior. The
+replayed result must equal the stored parsed fields and final answer or the
+stored parse failure. It also verifies the actual Chat-to-JSON fallback state
+machine, rejects a retry that bypasses an earlier valid parse, and preserves a
+provider-derived tool-call-only response as a model non-answer. It never edits
+the retained model content or substitutes or silently discards an output;
+parser-side JSON repair is independently replayed as part of pinned DSPy
+behavior.
+
+The guarantee is deliberately narrow. It proves the retained terminal
+post-LiteLLM generation projection to DSPy's normalized output to the final
+answer/non-answer; it is not raw HTTP or a complete SDK-byte capture. Every
+earlier provider response is retained, validated, and usage-accounted, but
+non-direct intermediate calls are not claimed to be fully partitioned into
+adapter-invocation groups. For tool-call-only output, the retained provider
+fields independently prove the non-answer while the SDK object's exact Python
+representation remains diagnostic rather than independently replayable.
+
+The prospective change passed 307 main-environment and 112 pinned-DSPy tests.
+The independent parser replay matched pinned DSPy on all 6,096 fixed and
+randomized Chat/JSON cases in both dependency environments. All 120 frozen `h`
+evaluation episodes still validate unchanged—baseline 60 `ok`; cheatsheet 59
+`ok` plus the original one `no_answer`—as do both historical 51-call forced
+studies. The correction therefore improves future auditability without
+changing this experiment's candidate population, raw Qwen labels, or scores.
