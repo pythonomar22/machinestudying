@@ -11,7 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from studybench import grade, provenance, report
+from studybench import grade, provenance, report, screen_compare
 from studybench.integrity import canonical_json_bytes, sha256_json, stable_seed
 from studybench.provenance import (
     _load_note,
@@ -76,10 +76,13 @@ def fake_grading_runtime(*, tree_sha256: str = "a" * 64) -> dict:
     }
 
 
-def fake_local_judge_runtime(*, contract_sha256: str = "c" * 64) -> dict:
+def fake_local_judge_runtime(*, contract_sha256: str = "c" * 64,
+                             server_count: int = 1,
+                             server_launch_id: str = "3" * 64) -> dict:
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "attestation_policy": provenance.LOCAL_JUDGE_RUNTIME_ATTESTATION_POLICY,
+        "server_launch_id": server_launch_id,
         "environment_contract": {
             "schema_version": 1,
             "policy": provenance.ENVIRONMENT_COMPATIBILITY_POLICY,
@@ -102,8 +105,8 @@ def fake_local_judge_runtime(*, contract_sha256: str = "c" * 64) -> dict:
             "installed_tree_sha256": "1" * 64,
             "runtime_inventory_sha256": "2" * 64,
             "tensor_parallel_size": 1,
-            "visible_gpu_count": 1,
-            "server_count": 1,
+            "visible_gpu_count": server_count,
+            "server_count": server_count,
         },
         "hardware": {
             "gpu_models": ["test-gpu"],
@@ -112,7 +115,7 @@ def fake_local_judge_runtime(*, contract_sha256: str = "c" * 64) -> dict:
                 "name": "test-gpu",
                 "memory_mib": 1024,
                 "driver_version": "test-driver",
-                "count": 1,
+                "count": server_count,
             }],
         },
     }
@@ -202,6 +205,13 @@ def verdict() -> dict:
     }
 
 
+def local_verdict() -> dict:
+    return {
+        "claims": {"core": 1, "detail": 0},
+        "needs_regrade": False,
+    }
+
+
 def invalid_verdict() -> dict:
     value = verdict()
     del value["claims"]["detail"]
@@ -256,6 +266,7 @@ def native_episode(*, budget: str = "direct", status: str = "ok") -> dict:
         "model": "model",
         "model_revision": "revision-a",
         "harness": "native-react",
+        "server_slot": 0,
         "seed": 7,
         "status": status,
         "answer": answer,
@@ -302,7 +313,10 @@ class FakeCompletions:
             model=self.response_model,
             system_fingerprint="judge-fingerprint",
             usage=FakeUsage(100 * self.calls, 20 * self.calls),
-            choices=[SimpleNamespace(message=SimpleNamespace(content=content))],
+            choices=[SimpleNamespace(
+                finish_reason="stop",
+                message=SimpleNamespace(content=content),
+            )],
         )
 
 
@@ -333,14 +347,20 @@ class FixedResponseClient:
 
 
 def fixed_response(*, usage: object = None, response_model: object = "judge-revision",
-                   system_fingerprint: object = "judge-fingerprint"):
+                   system_fingerprint: object = "judge-fingerprint",
+                   finish_reason: object = "stop", payload: dict | None = None):
+    if payload is None:
+        payload = verdict()
     return SimpleNamespace(
         id="response-1",
         _request_id="request-1",
         model=response_model,
         system_fingerprint=system_fingerprint,
         usage=usage,
-        choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(verdict())))],
+        choices=[SimpleNamespace(
+            finish_reason=finish_reason,
+            message=SimpleNamespace(content=json.dumps(payload)),
+        )],
     )
 
 
@@ -394,7 +414,10 @@ class GradeVerdictTests(unittest.TestCase):
 
     def test_grader_schedules_each_pending_episode_once_and_uses_a_lock(self) -> None:
         source = Path(grade.__file__).read_text()
-        self.assertEqual(source.count("await asyncio.gather"), 1)
+        self.assertEqual(
+            source.count("await asyncio.gather(*(one(record) for record in pending))"),
+            1,
+        )
         self.assertIn("with exclusive_process_lock(lock_path):", source)
         self.assertIn('out_root / ".locks" / "grading.lock"', source)
         self.assertIn("await _main_async_locked(args)", source)
@@ -487,7 +510,7 @@ class GradeVerdictTests(unittest.TestCase):
         }
         with patch.dict(os.environ, environment, clear=True):
             grade._validate_local_grader_environment(
-                "http://localhost:8123/v1"
+                ["http://localhost:8123/v1"]
             )
         for field, invalid in (
             ("SB_VLLM_API_KEY_SHA256", "0" * 64),
@@ -498,8 +521,64 @@ class GradeVerdictTests(unittest.TestCase):
                 os.environ, {**environment, field: invalid}, clear=True
             ), self.assertRaises(grade.GradeIntegrityError):
                 grade._validate_local_grader_environment(
-                    "http://localhost:8123/v1"
+                    ["http://localhost:8123/v1"]
                 )
+
+    def test_local_three_endpoint_topology_is_canonical_and_slot_routed(self) -> None:
+        urls = grade._resolve_judge_base_urls(
+            grade.LOCAL_GRADER_MODEL,
+            (
+                "http://127.0.0.1:8125/v1,"
+                "http://localhost:8123/v1,http://[::1]:8124/v1"
+            ),
+        )
+        self.assertEqual(urls, [
+            "http://localhost:8123/v1",
+            "http://localhost:8124/v1",
+            "http://localhost:8125/v1",
+        ])
+        for slot, expected in enumerate(urls):
+            episode = native_episode()
+            episode["server_slot"] = slot
+            self.assertEqual(
+                grade._episode_judge_base_url(
+                    episode, grade.LOCAL_GRADER_MODEL, urls
+                ),
+                (expected, slot),
+            )
+        episode["server_slot"] = 3
+        with self.assertRaisesRegex(
+            grade.GradeIntegrityError, "cannot be routed"
+        ):
+            grade._episode_judge_base_url(
+                episode, grade.LOCAL_GRADER_MODEL, urls
+            )
+
+    def test_local_response_model_mismatch_is_terminally_audited(self) -> None:
+        client = FakeClient([local_verdict()], response_model="wrong-model")
+        corpus = SimpleNamespace(name="fake", display="Fake", language="python")
+        with patch(
+            "studybench.grade.sandbox.check", return_value=checker_result()
+        ), self.assertRaises(grade.JudgeAttemptsFailed) as caught:
+            asyncio.run(grade.grade_episode(
+                client,
+                grade.LOCAL_GRADER_MODEL,
+                corpus,
+                question(),
+                native_episode(),
+                judge_base_url="http://localhost:8123/v1",
+                episode_sha256="a" * 64,
+                grading_spec_sha256="b" * 64,
+            ))
+        audit = caught.exception.audit
+        self.assertEqual(audit["judge_attempt_count"], 1)
+        self.assertEqual(
+            audit["judge_attempts"][0]["response_model"], "wrong-model"
+        )
+        self.assertEqual(
+            audit["failure"]["message"],
+            "local judge response model does not match the pinned model",
+        )
 
     def test_local_grader_request_options_are_fixed_and_recorded(self) -> None:
         calls = []
@@ -507,7 +586,9 @@ class GradeVerdictTests(unittest.TestCase):
         async def create(**kwargs):
             calls.append(kwargs)
             return fixed_response(
-                usage=FakeUsage(), response_model=grade.LOCAL_GRADER_MODEL)
+                usage=FakeUsage(), response_model=grade.LOCAL_GRADER_MODEL,
+                payload=local_verdict(),
+            )
 
         client = SimpleNamespace(
             chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
@@ -531,7 +612,7 @@ class GradeVerdictTests(unittest.TestCase):
         self.assertEqual(request_options, {
             "temperature": 0,
             "seed": 0,
-            "max_tokens": 8192,
+            "max_tokens": 256,
             "extra_body": {
                 "chat_template_kwargs": {"enable_thinking": False},
             },
@@ -542,6 +623,19 @@ class GradeVerdictTests(unittest.TestCase):
         self.assertEqual(
             result["judge_request_policy"], grade.LOCAL_GRADER_REQUEST_POLICY
         )
+        self.assertEqual(
+            result["judge_verdict_contract"],
+            grade.LOCAL_GRADER_VERDICT_CONTRACT,
+        )
+        self.assertEqual(
+            result["judge_rationale_policy"],
+            grade.LOCAL_GRADER_RATIONALE_POLICY,
+        )
+        self.assertEqual(result["claims"], [
+            {"claim_id": "core", "score": 1},
+            {"claim_id": "detail", "score": 0},
+        ])
+        self.assertNotIn("rationale", json.dumps(result["claims"]))
         self.assertEqual(result["judge_attempt_policy"], grade.JUDGE_ATTEMPT_POLICY)
         self.assertEqual(result["max_judge_attempts"], 1)
         self.assertNotIn("judge_question_score", result)
@@ -563,18 +657,44 @@ class GradeVerdictTests(unittest.TestCase):
         )
 
     def test_judge_schema_delegates_only_atomic_claim_labels(self) -> None:
-        schema = grade.judge_schema(question())["json_schema"]["schema"]
-        self.assertEqual(schema["required"], ["claims", "needs_regrade"])
-        self.assertEqual(set(schema["properties"]), {"claims", "needs_regrade"})
-        claims = schema["properties"]["claims"]
-        self.assertEqual(set(claims["properties"]), {"core", "detail"})
-        self.assertEqual(claims["required"], ["core", "detail"])
-        self.assertFalse(claims["additionalProperties"])
-        prompt = grade.build_prompt(
+        external = grade.judge_schema(question())["json_schema"]["schema"]
+        self.assertEqual(external["required"], ["claims", "needs_regrade"])
+        self.assertEqual(set(external["properties"]), {"claims", "needs_regrade"})
+        external_claims = external["properties"]["claims"]
+        self.assertEqual(set(external_claims["properties"]), {"core", "detail"})
+        self.assertEqual(external_claims["required"], ["core", "detail"])
+        self.assertFalse(external_claims["additionalProperties"])
+        self.assertEqual(
+            set(external_claims["properties"]["core"]["properties"]),
+            {"score", "rationale"},
+        )
+        external_prompt = grade.build_prompt(
             SimpleNamespace(display="Fake"), question(), "candidate answer"
         )
-        self.assertNotIn("`question_score`", prompt)
-        self.assertIn("Do not output a total question score", prompt)
+        self.assertIn("concise `rationale`", external_prompt)
+
+        local = grade.judge_schema(
+            question(), grade.LOCAL_GRADER_MODEL
+        )["json_schema"]["schema"]
+        local_claims = local["properties"]["claims"]
+        self.assertEqual(local_claims["required"], ["core", "detail"])
+        for claim_schema in local_claims["properties"].values():
+            self.assertEqual(
+                claim_schema, {"type": "integer", "enum": [0, 1]}
+            )
+        serialized = json.dumps(local)
+        self.assertNotIn('"type": "string"', serialized)
+        self.assertNotIn('"type": "array"', serialized)
+        local_prompt = grade.build_prompt(
+            SimpleNamespace(display="Fake"), question(), "candidate answer",
+            judge_model=grade.LOCAL_GRADER_MODEL,
+        )
+        self.assertIn("Map each claim ID directly", local_prompt)
+        self.assertIn("Do not output rationales", local_prompt)
+        self.assertNotIn("concise `rationale`", local_prompt)
+        for prompt in (external_prompt, local_prompt):
+            self.assertNotIn("`question_score`", prompt)
+            self.assertIn("total question score", prompt)
 
     def test_generation_and_grader_sources_are_exactly_bound(self) -> None:
         current = fake_source_validation()
@@ -833,6 +953,27 @@ class GradeVerdictTests(unittest.TestCase):
             **common,
         )
         self.assertNotEqual(first, second)
+        relaunched = grade.grade_spec_sha256(
+            corpus,
+            question(),
+            grade.LOCAL_GRADER_MODEL,
+            local_judge_runtime=fake_local_judge_runtime(
+                contract_sha256="1" * 64,
+                server_launch_id="4" * 64,
+            ),
+            **common,
+        )
+        self.assertNotEqual(first, relaunched)
+        moved_port = grade.grade_spec_sha256(
+            corpus,
+            question(),
+            grade.LOCAL_GRADER_MODEL,
+            local_judge_runtime=fake_local_judge_runtime(
+                contract_sha256="1" * 64
+            ),
+            **{**common, "judge_base_url": "http://localhost:9123/v1"},
+        )
+        self.assertEqual(first, moved_port)
 
     def test_local_runtime_attestation_discards_large_launcher_inventories(self) -> None:
         environment = {
@@ -867,6 +1008,7 @@ class GradeVerdictTests(unittest.TestCase):
             "tensor_parallel_size": "1",
             "visible_gpu_count": "1",
             "server_count": "1",
+            "server_launch_id": "6" * 64,
             "gpu_models": ["test-gpu"],
             "nvidia_driver": ["test-driver"],
         }
@@ -933,6 +1075,45 @@ class GradeVerdictTests(unittest.TestCase):
         blank_rationale["claims"]["core"]["rationale"] = "  \n"
         with self.assertRaises(grade.GradeIntegrityError):
             grade.validate_verdict(row, blank_rationale)
+
+    def test_local_verdict_is_exact_score_only_and_canonical(self) -> None:
+        row = question()
+        reordered = {
+            "claims": {"detail": 0, "core": 1},
+            "needs_regrade": False,
+        }
+        claims, scores = grade.validate_verdict(
+            row, reordered, grade.LOCAL_GRADER_MODEL
+        )
+        self.assertEqual(claims, [
+            {"claim_id": "core", "score": 1},
+            {"claim_id": "detail", "score": 0},
+        ])
+        self.assertEqual(scores, {"core": 1, "detail": 0})
+        self.assertNotIn("rationale", json.dumps(claims))
+
+        invalid_values = [True, 0.0, "0", None, {"score": 0}]
+        for value in invalid_values:
+            with self.subTest(value=value):
+                invalid = local_verdict()
+                invalid["claims"]["core"] = value
+                with self.assertRaises(grade.GradeIntegrityError):
+                    grade.validate_verdict(
+                        row, invalid, grade.LOCAL_GRADER_MODEL
+                    )
+        for mutation in (
+            lambda value: value["claims"].pop("detail"),
+            lambda value: value["claims"].update(extra=0),
+            lambda value: value.update(extra=False),
+        ):
+            invalid = local_verdict()
+            mutation(invalid)
+            with self.assertRaises(grade.GradeIntegrityError):
+                grade.validate_verdict(row, invalid, grade.LOCAL_GRADER_MODEL)
+        abstained = local_verdict()
+        abstained["needs_regrade"] = True
+        with self.assertRaisesRegex(grade.GradeIntegrityError, "requested regrade"):
+            grade.validate_verdict(row, abstained, grade.LOCAL_GRADER_MODEL)
 
     def test_question_score_is_derived_and_claims_are_canonicalized(self) -> None:
         row = question()
@@ -1199,6 +1380,7 @@ class GradeVerdictTests(unittest.TestCase):
                 grading_runtime_sha256="c" * 64,
                 local_judge_runtime_sha256=None,
                 judge_model="judge",
+                judge_base_url=TEST_JUDGE_BASE_URL,
                 judge_prompt_sha256="d" * 64,
                 attempts=[],
                 failure=RuntimeError("provider failed"),
@@ -1235,7 +1417,7 @@ class GradeVerdictTests(unittest.TestCase):
             self.local_judge_runtime
         )
         client = FakeClient(
-            [verdict()], response_model=grade.LOCAL_GRADER_MODEL
+            [local_verdict()], response_model=grade.LOCAL_GRADER_MODEL
         )
         with tempfile.TemporaryDirectory() as directory:
             out_root = Path(directory)
@@ -1374,6 +1556,7 @@ class GradeVerdictTests(unittest.TestCase):
                     grading_spec_sha256="b" * 64,
                     grading_runtime_sha256=runtime_digest,
                     judge_model="judge",
+                    judge_base_url=TEST_JUDGE_BASE_URL,
                     judge_prompt_sha256=caught.exception.audit[
                         "judge_prompt_sha256"
                     ],
@@ -1492,6 +1675,24 @@ class GradeVerdictTests(unittest.TestCase):
         self.assertEqual(audit["judge_usage_total"]["total_tokens"], 120)
         grade.validate_judge_attempt_record(attempt, 1, accepted=False)
 
+    def test_nonstop_finish_reason_fails_closed_and_is_audited(self) -> None:
+        corpus = SimpleNamespace(name="fake", display="Fake", language="python")
+        client = FixedResponseClient(fixed_response(
+            usage=FakeUsage(), finish_reason="length"
+        ))
+        with patch("studybench.grade.sandbox.check", return_value=checker_result()):
+            with self.assertRaises(grade.JudgeAttemptsFailed) as caught:
+                asyncio.run(grade.grade_episode(
+                    client, "judge", corpus, question(), native_episode(),
+                    judge_base_url=TEST_JUDGE_BASE_URL,
+                    episode_sha256="a" * 64, grading_spec_sha256="b" * 64,
+                ))
+        self.assertEqual(client.calls, 1)
+        attempt = caught.exception.audit["judge_attempts"][0]
+        self.assertEqual(attempt["finish_reason"], "length")
+        self.assertIn("not 'stop'", attempt["validation_error"]["message"])
+        grade.validate_judge_attempt_record(attempt, 1, accepted=False)
+
     def test_missing_judge_system_fingerprint_is_explicit_but_not_fabricated(self) -> None:
         corpus = SimpleNamespace(name="fake", display="Fake", language="python")
         client = FixedResponseClient(fixed_response(
@@ -1568,17 +1769,33 @@ class ReportMathTests(unittest.TestCase):
 
 class EvaluationFixture:
     def __init__(
-        self, root: Path, *, local: bool = False, task: str = "fake"
+        self, root: Path, *, local: bool = False, task: str = "fake",
+        local_server_count: int = 1,
     ) -> None:
+        if local_server_count != 1 and not local:
+            raise ValueError("multiple local servers require local=True")
         self.root = root
         self.local = local
+        self.local_server_count = local_server_count
+        self.local_judge_runtime = (
+            fake_local_judge_runtime(server_count=local_server_count)
+            if local else None
+        )
         self.task = task
         self.run_id = "run-a"
         self.judge_model = (
             grade.LOCAL_GRADER_MODEL if local else "gpt-5.4"
         )
-        self.judge_base_url = (
-            "http://localhost:8123/v1" if local else None
+        self.judge_base_urls = (
+            [
+                f"http://localhost:{8123 + index}/v1"
+                for index in range(local_server_count)
+            ]
+            if local else []
+        )
+        self.judge_base_url = self.judge_base_urls[0] if local else None
+        self.judge_base_url_csv = (
+            ",".join(self.judge_base_urls) if local else None
         )
         self.judge_dir = (
             "local-qwen3.5-9b-excerpts" if local else "gpt-5.4-excerpts"
@@ -1638,7 +1855,9 @@ class EvaluationFixture:
                 ],
                 "episode_seeds": episode_seeds,
             },
-            "server_assignment": server_assignment_record(self.expected, 1),
+            "server_assignment": server_assignment_record(
+                self.expected, self.local_server_count
+            ),
             "budgets": report.BUDGET_ORDER,
             "rollouts": 1,
             "questions": [{
@@ -1676,14 +1895,14 @@ class EvaluationFixture:
                 "vllm_version": "0.24.0",
                 "vllm_environment_sha256": "e" * 64,
                 "tensor_parallel_size": "1",
-                "visible_gpu_count": "1",
-                "server_count": "1",
+                "visible_gpu_count": str(self.local_server_count),
+                "server_count": str(self.local_server_count),
             },
             "note": None,
             "extra": {
                 "model_revision": "revision-a",
                 "expected_response_model": "generation-revision",
-                "server_transport": {"server_count": 1},
+                "server_transport": {"server_count": self.local_server_count},
             },
         }
         if self.local:
@@ -1702,7 +1921,7 @@ class EvaluationFixture:
 
     def _write_population(self) -> None:
         client = FakeClient(
-            [verdict()] * 3,
+            [local_verdict() if self.local else verdict()] * 3,
             response_model=(
                 grade.LOCAL_GRADER_MODEL if self.local else "judge-revision"
             ),
@@ -1728,6 +1947,10 @@ class EvaluationFixture:
                     "snapshot": "inputs/environments/environment-" + "9" * 64 + ".json",
                 },
             })
+            episode_judge_base_url = (
+                self.judge_base_urls[episode["server_slot"]]
+                if self.local else None
+            )
             episode_path = self.run_task_root / relative
             episode_path.parent.mkdir(parents=True, exist_ok=True)
             episode_path.write_bytes(canonical_json_bytes(episode))
@@ -1738,6 +1961,7 @@ class EvaluationFixture:
                 self.questions[0],
                 self.judge_model,
                 judge_base_url=self.judge_base_url,
+                local_judge_runtime=self.local_judge_runtime,
                 generation_source_validation=self.source_validation,
             )
             if status == "ok":
@@ -1753,14 +1977,15 @@ class EvaluationFixture:
                         ),
                         local_judge_runtime_sha256=(
                             provenance.local_judge_runtime_sha256(
-                                grade.local_judge_runtime_record()
+                                self.local_judge_runtime
                             )
                             if self.local
                             else None
                         ),
                         judge_model=self.judge_model,
                         judge_base_url=(
-                            self.judge_base_url or grade.CANONICAL_OPENAI_BASE_URL
+                            episode_judge_base_url
+                            or grade.CANONICAL_OPENAI_BASE_URL
                         ),
                         judge_prompt_sha256=prompt_digest,
                     )
@@ -1777,7 +2002,11 @@ class EvaluationFixture:
                         episode,
                         episode_sha256=grade.sha256_bytes(episode_bytes),
                         grading_spec_sha256=spec_sha256,
-                        judge_base_url=self.judge_base_url,
+                        judge_base_url=episode_judge_base_url,
+                        judge_base_urls=(
+                            self.judge_base_urls if self.local else None
+                        ),
+                        local_judge_runtime=self.local_judge_runtime,
                         judge_attempt_intent_writer=write_intent,
                     ))
             else:
@@ -1789,7 +2018,11 @@ class EvaluationFixture:
                     episode,
                     episode_sha256=grade.sha256_bytes(episode_bytes),
                     grading_spec_sha256=spec_sha256,
-                    judge_base_url=self.judge_base_url,
+                    judge_base_url=episode_judge_base_url,
+                    judge_base_urls=(
+                        self.judge_base_urls if self.local else None
+                    ),
+                    local_judge_runtime=self.local_judge_runtime,
                 ))
             stored["source_episode"] = source_episode
             grade_path = self.grade_root / self.task / relative
@@ -1821,6 +2054,7 @@ def judge_population_bindings(fixture: EvaluationFixture) -> list[dict]:
                 fixture.questions[0],
                 fixture.judge_model,
                 judge_base_url=fixture.judge_base_url,
+                local_judge_runtime=fixture.local_judge_runtime,
                 generation_source_validation=fixture.source_validation,
             ),
             "judge_prompt_sha256": (
@@ -1946,7 +2180,7 @@ class StrictReportTests(unittest.TestCase):
                 fixture.grade_root,
                 fixture.run_root,
                 rollouts=1,
-                judge_base_url=fixture.judge_base_url,
+                judge_base_url=fixture.judge_base_url_csv,
             )
 
     def test_paper_comparison_requires_an_exact_explicit_configuration(self) -> None:
@@ -2135,6 +2369,14 @@ class StrictReportTests(unittest.TestCase):
                 grade.LOCAL_GRADER_REQUEST_POLICY,
             )
             self.assertEqual(
+                config["judge_verdict_contract"],
+                grade.LOCAL_GRADER_VERDICT_CONTRACT,
+            )
+            self.assertEqual(
+                config["judge_rationale_policy"],
+                grade.LOCAL_GRADER_RATIONALE_POLICY,
+            )
+            self.assertEqual(
                 config["judge_request_options"], grade.LOCAL_GRADER_REQUEST_OPTIONS)
             self.assertEqual(
                 config["generation_source_validation"],
@@ -2321,6 +2563,86 @@ class StrictReportTests(unittest.TestCase):
                 self.assertIsNotNone(values["lenient"])
             self.assertIsNotNone(artifact["bootstrap"]["results"]["wauc_cc"])
             self.assertIsNotNone(artifact["bootstrap"]["results"]["wauc"])
+
+    def test_three_endpoint_local_population_routes_and_revalidates(self) -> None:
+        """Exercise the production three-replica topology through report loading."""
+
+        runtime = fake_local_judge_runtime(server_count=3)
+        with (
+            patch.object(
+                grade, "local_judge_runtime_record", return_value=runtime
+            ),
+            patch.object(
+                report, "local_judge_runtime_record", return_value=runtime
+            ),
+            tempfile.TemporaryDirectory() as directory,
+        ):
+            fixture = EvaluationFixture(
+                Path(directory), local=True, local_server_count=3
+            )
+            population, audit = self._load_local(fixture)
+            config = audit["grading_manifest"]["config"]
+            expected_slots = fixture.manifest["spec"]["server_assignment"][
+                "episode_slots"
+            ]
+            self.assertEqual(
+                config["judge_validation_urls"], fixture.judge_base_urls
+            )
+            self.assertEqual(
+                config["judge_transport_urls"], fixture.judge_base_urls
+            )
+            self.assertEqual(
+                config["judge_contacted_urls"], fixture.judge_base_urls
+            )
+            self.assertEqual(config["judge_server_assignment"], {
+                "policy": grade.LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY,
+                "server_count": 3,
+                "source_field": "episode.server_slot",
+                "server_slot_by_episode": expected_slots,
+            })
+            for grades in population.values():
+                for stored in grades:
+                    relative = (
+                        f"{stored['budget']}/r{stored['rollout']}/"
+                        f"{stored['qid']}.json"
+                    )
+                    slot = expected_slots[relative]
+                    self.assertEqual(stored["judge_server_slot"], slot)
+                    self.assertEqual(
+                        stored["judge_base_url"], fixture.judge_base_urls[slot]
+                    )
+                    self.assertEqual(
+                        stored["judge_transport_topology"],
+                        fixture.judge_base_urls,
+                    )
+
+            aggregate = report.aggregate_population(population)
+            root_patch, corpora_patch, questions_patch = fixture.patches()
+            with (
+                root_patch,
+                corpora_patch,
+                questions_patch,
+                patch.object(
+                    screen_compare.strict_compare, "ROOT", fixture.root
+                ),
+            ):
+                artifact_path = report.write_report_artifact(
+                    task="fake",
+                    run_id=fixture.run_id,
+                    judge_dir=fixture.judge_dir,
+                    aggregate_result=aggregate,
+                    bootstrap_result=None,
+                    bootstrap_replicates=0,
+                    bootstrap_seed=23,
+                    audit=audit,
+                )
+                loaded = screen_compare.load_local_report(artifact_path)
+            self.assertEqual(
+                loaded.audit["grading_manifest"]["config"][
+                    "judge_server_assignment"
+                ],
+                config["judge_server_assignment"],
+            )
 
     def test_local_console_keeps_core_conjunctive_metrics_without_checker(self) -> None:
         population = {
@@ -2517,6 +2839,9 @@ class StrictReportTests(unittest.TestCase):
             path = fixture.grade_root / "fake/k5/r0/q1.json"
             stored = json.loads(path.read_bytes())
             stored["judge_base_url"] = "http://localhost:9123/v1"
+            stored["judge_transport_topology"] = [
+                "http://localhost:9123/v1"
+            ]
             path.write_bytes(canonical_json_bytes(stored))
             _, audit = self._load_local(fixture)
             self.assertEqual(
@@ -2956,6 +3281,7 @@ class StrictReportTests(unittest.TestCase):
                 ),
                 local_judge_runtime_sha256=None,
                 judge_model=fixture.judge_model,
+                judge_base_url=grade.CANONICAL_OPENAI_BASE_URL,
                 judge_prompt_sha256=grade.sha256_bytes(
                     grade.build_prompt(
                         fixture.corpus, fixture.questions[0], episode["answer"]
@@ -3120,6 +3446,7 @@ class StrictReportTests(unittest.TestCase):
                 ),
                 local_judge_runtime_sha256=None,
                 judge_model=fixture.judge_model,
+                judge_base_url=grade.CANONICAL_OPENAI_BASE_URL,
                 judge_prompt_sha256=prompt_digest,
                 attempts=[],
                 failure=RuntimeError("provider unavailable"),

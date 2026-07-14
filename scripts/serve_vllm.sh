@@ -455,7 +455,8 @@ os.execv(sys.argv[1], sys.argv[1:])
         --tensor-parallel-size "$TP" \
         --max-model-len 262144 \
         --enable-request-id-headers \
-        --structured-outputs-config '{"enable_in_reasoning":false}' \
+        --structured-outputs-config \
+        '{"backend":"xgrammar","disable_any_whitespace":true,"enable_in_reasoning":false}' \
         --reasoning-parser qwen3 \
         --enable-auto-tool-choice --tool-call-parser qwen3_coder \
         --language-model-only \

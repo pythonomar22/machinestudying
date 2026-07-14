@@ -80,7 +80,9 @@ ENVIRONMENT_COMPATIBILITY_POLICY = "allocation-and-transport-nuisances-v1"
 GRADING_RUNTIME_ATTESTATION_POLICY = (
     "python-executable-uv-lock-installed-distributions-sha256-v1"
 )
-LOCAL_JUDGE_RUNTIME_ATTESTATION_POLICY = "normalized-launch-environment-sha256-v1"
+LOCAL_JUDGE_RUNTIME_ATTESTATION_POLICY = (
+    "launch-id-bound-normalized-environment-sha256-v2"
+)
 _ID = re.compile(r"[a-z0-9][a-z0-9._-]{2,79}\Z")
 _SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 _PACKAGE = re.compile(r"[a-z0-9][a-z0-9._-]*==[^\s=]+\Z")
@@ -1956,6 +1958,7 @@ def _validate_local_judge_runtime_record(record: object) -> None:
     if not isinstance(record, dict) or set(record) != {
         "schema_version",
         "attestation_policy",
+        "server_launch_id",
         "environment_contract",
         "model",
         "server",
@@ -1968,9 +1971,10 @@ def _validate_local_judge_runtime_record(record: object) -> None:
     hardware = record.get("hardware")
     if (
         type(record.get("schema_version")) is not int
-        or record["schema_version"] != 1
+        or record["schema_version"] != 2
         or record.get("attestation_policy")
         != LOCAL_JUDGE_RUNTIME_ATTESTATION_POLICY
+        or not _SHA256.fullmatch(str(record.get("server_launch_id", "")))
         or not isinstance(contract, dict)
         or set(contract) != {"schema_version", "policy", "sha256"}
         or type(contract.get("schema_version")) is not int
@@ -2101,8 +2105,13 @@ def _local_judge_runtime_record_bytes() -> bytes:
         key = (gpu["name"], gpu["memory_mib"], gpu["driver_version"])
         profiles[key] = profiles.get(key, 0) + 1
     record = {
-        "schema_version": 1,
+        "schema_version": 2,
         "attestation_policy": LOCAL_JUDGE_RUNTIME_ATTESTATION_POLICY,
+        # Replica behavior differed across otherwise identical temperature-zero
+        # launches during protocol development.  The authenticated per-launch
+        # identity is therefore substantive: a relaunch cannot be spliced into
+        # a partially graded population or paired across arms.
+        "server_launch_id": environment["server_launch_id"],
         # This commits to every validated substantive field in the full launch
         # record while excluding only the explicit allocation/transport nuisances.
         "environment_contract": environment_contract_record(environment),

@@ -297,15 +297,28 @@ runs before using an external judge. Use distinct run IDs, the same master seed
 and seed group, and the exact immutable note and construction manifest emitted
 by each candidate method. The commands above are the frozen current screen.
 
-`grade_local.sbatch` reserves exactly two GPUs, launches one authenticated TP=2
-server for the exact pinned `Qwen/Qwen3.5-9B` model and revision used by the
-generator, and runs grading and reporting before shutting that server down. It
-sets `GRADER_MODEL=local`, passes the sole loopback endpoint explicitly, and
-neither requires nor uses an OpenAI or Sakana credential. Local judge requests
-use the fixed temperature-zero, seed-zero, 8,192-token contract recorded by the
-grader. The grade/report binds the local judge's model-cache, software, CUDA,
-GPU/topology, and launcher runtime; a loopback port is disclosed transport, not
-a model identity. `excerpt_evidence` is the lower-context screening mode;
+`grade_local.sbatch` defaults to six GPUs and launches three homogeneous TP=2
+servers for the exact pinned `Qwen/Qwen3.5-9B` model and revision used by the
+generator. Set `SB_EXPECTED_LOCAL_SERVERS` and override Slurm's GPU request
+together only when the target run manifest has a different immutable server
+count. The grader orders authenticated loopback endpoints by numeric port and
+routes every cell through its manifest-bound server slot; there is no endpoint
+fallback or remapping. The script runs grading and reporting within the same
+authenticated launcher lifecycle, sets `GRADER_MODEL=local`, and neither
+requires nor uses an OpenAI or Sakana credential.
+
+Local judge requests use the fixed temperature-zero, seed-zero, 256-token,
+no-thinking score-only contract recorded by the grader. The compact constrained
+JSON contains every exact rubric claim ID mapped directly to binary `0/1`, plus
+`needs_regrade`; it requests no rationale and no model-generated total. The
+harness computes weighted scores deterministically. Grades and reports bind the
+local judge's model cache, software, CUDA, homogeneous GPU/topology, complete
+endpoint count and slot map, request contract, and high-entropy non-secret
+launcher ID. A loopback port remains disclosed transport, but a relaunch is a
+different substantive grading lifecycle and cannot be spliced into an existing
+population. The generic sbatch runner does not replace an experiment-specific
+predeclared calibration gate such as experiment 012's three-endpoint gate.
+`excerpt_evidence` is the lower-context screening mode;
 `SB_EVIDENCE_MODE=whole_files` supplies the full evidence files but still does
 not make Qwen grading paper-faithful. Give every regrade a fresh
 `SB_GRADE_ID`.

@@ -196,6 +196,7 @@ TWO=(srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   SB_BUDGETS=direct SB_SMOKE=1 SB_LIMIT=1 SB_EXPLORATORY=0 SB_STUDY=0 \
   SB_ALLOW_DIRTY=0 SB_NOTE_PATH= SB_NOTE_MANIFEST= bash scripts/react.sbatch
 "${TWO[@]}" env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 \
+  SB_EXPECTED_LOCAL_SERVERS=1 \
   SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smoke-grade-a SB_PORT_BASE=30300 \
   SB_TASK=dspy SB_RUN_ID=smoke-dspy-base-20260713a \
   SB_GRADE_ID=qwen-local-smoke-base-20260713a SB_LOCAL_SMOKE=1 \
@@ -346,14 +347,17 @@ test -f "$G_NOTE"
   SB_SMOKE=0 SB_LIMIT=0 SB_STUDY=0 SB_ALLOW_DIRTY=0 \
   SB_NOTE_PATH="$G_NOTE" SB_NOTE_MANIFEST="$G_MANIFEST" bash scripts/react.sbatch
 
-# Local grading/reporting is a separate phase on one TP=2 server.
+# Historical local grading/reporting used one TP=2 server. The current generic
+# runner defaults to three and therefore receives the explicit historical count.
 "${TWO[@]}" env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 \
+  SB_EXPECTED_LOCAL_SERVERS=1 \
   SB_VLLM_LOG_PREFIX=logs/vllm-16142825-grade-base-a SB_PORT_BASE=33000 \
   SB_TASK=dspy SB_RUN_ID=dspy-local-base-20260713 \
   SB_GRADE_ID=qwen-local-base-20260713 SB_EVIDENCE_MODE=excerpt_evidence \
   SB_GRADE_CONCURRENCY=8 SB_LOCAL_SMOKE=0 SB_DEBUG=0 \
   SB_CI_REPLICATES=10000 SB_CI_SEED=45001 bash scripts/grade_local.sbatch
 "${TWO[@]}" env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 \
+  SB_EXPECTED_LOCAL_SERVERS=1 \
   SB_VLLM_LOG_PREFIX=logs/vllm-16142825-grade-semantic-a SB_PORT_BASE=33100 \
   SB_TASK=dspy SB_RUN_ID=dspy-local-semantic-react-r4-20260713 \
   SB_GRADE_ID=qwen-local-semantic-react-r4-20260713 \
@@ -361,6 +365,7 @@ test -f "$G_NOTE"
   SB_LOCAL_SMOKE=0 SB_DEBUG=0 SB_CI_REPLICATES=10000 SB_CI_SEED=45001 \
   bash scripts/grade_local.sbatch
 "${TWO[@]}" env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 \
+  SB_EXPECTED_LOCAL_SERVERS=1 \
   SB_VLLM_LOG_PREFIX=logs/vllm-16142825-grade-graph-a SB_PORT_BASE=33200 \
   SB_TASK=dspy SB_RUN_ID=dspy-local-callgraph-r1-20260713 \
   SB_GRADE_ID=qwen-local-callgraph-20260713 SB_EVIDENCE_MODE=excerpt_evidence \

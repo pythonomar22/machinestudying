@@ -27,8 +27,11 @@ from .grade import (
     LOCAL_GRADER_ENDPOINT_IDENTITY,
     LOCAL_GRADER_MODEL,
     LOCAL_GRADER_MODEL_REVISION,
+    LOCAL_GRADER_RATIONALE_POLICY,
     LOCAL_GRADER_REQUEST_OPTIONS,
     LOCAL_GRADER_REQUEST_POLICY,
+    LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY,
+    LOCAL_GRADER_VERDICT_CONTRACT,
     MAX_JUDGE_ATTEMPTS,
     file_sha256,
     parse_json,
@@ -50,7 +53,7 @@ from .provenance import (
 )
 
 
-SCREEN_COMPARISON_SCHEMA_VERSION = 3
+SCREEN_COMPARISON_SCHEMA_VERSION = 5
 INTERVENTION_KIND = "study-note"
 DIAGNOSTIC_BANNER = (
     "DIAGNOSTIC LOCAL-QWEN SCREEN ONLY — NOT CLAIM-READY; "
@@ -200,6 +203,8 @@ def _local_grading_config(artifact: dict[str, Any]) -> dict[str, Any]:
         "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
         "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
         "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
+        "judge_verdict_contract": LOCAL_GRADER_VERDICT_CONTRACT,
+        "judge_rationale_policy": LOCAL_GRADER_RATIONALE_POLICY,
         "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
         "judge_effort": "",
     }
@@ -268,13 +273,21 @@ def _local_grading_config(artifact: dict[str, Any]) -> dict[str, Any]:
                 f"local report has invalid {field.replace('_', ' ')} provenance"
             )
     base_url = config.get("judge_base_url")
+    validation_urls = config.get("judge_validation_urls")
     transport_urls = config.get("judge_transport_urls")
+    contacted_urls = config.get("judge_contacted_urls")
     if (
         not isinstance(base_url, str)
+        or not isinstance(validation_urls, list)
+        or not validation_urls
         or not isinstance(transport_urls, list)
         or not transport_urls
+        or not isinstance(contacted_urls, list)
         or not all(isinstance(value, str) and value for value in transport_urls)
+        or not all(isinstance(value, str) and value for value in contacted_urls)
         or transport_urls != sorted(set(transport_urls))
+        or contacted_urls != sorted(set(contacted_urls))
+        or not set(contacted_urls).issubset(transport_urls)
     ):
         raise ScreenComparisonIntegrityError(
             "local report has an invalid loopback transport disclosure"
@@ -283,17 +296,63 @@ def _local_grading_config(artifact: dict[str, Any]) -> dict[str, Any]:
         canonical_base_url = validate_local_server_urls(
             base_url, expected_count=1
         )[0]
-        observed = [
+        canonical_validation_urls = validate_local_server_urls(
+            ",".join(validation_urls)
+        )
+        recorded = [
             validate_local_server_urls(value, expected_count=1)[0]
             for value in transport_urls
+        ]
+        contacted = [
+            validate_local_server_urls(value, expected_count=1)[0]
+            for value in contacted_urls
         ]
     except (TypeError, ValueError) as exc:
         raise ScreenComparisonIntegrityError(
             "local report contains a non-loopback judge transport"
         ) from exc
-    if canonical_base_url != base_url or observed != transport_urls:
+    if (
+        canonical_base_url != base_url
+        or canonical_validation_urls != validation_urls
+        or recorded != transport_urls
+        or contacted != contacted_urls
+        or base_url != validation_urls[0]
+    ):
         raise ScreenComparisonIntegrityError(
             "local report contains a non-canonical judge transport"
+        )
+    specification = artifact.get("run_manifest", {}).get("spec")
+    expected_slots = (
+        specification.get("server_assignment", {}).get("episode_slots")
+        if isinstance(specification, dict) else None
+    )
+    run_server_count = (
+        specification.get("server_assignment", {}).get("server_count")
+        if isinstance(specification, dict) else None
+    )
+    transport_server_count = (
+        specification.get("extra", {}).get("server_transport", {}).get(
+            "server_count"
+        )
+        if isinstance(specification, dict) else None
+    )
+    runtime_server_count = config["local_judge_runtime"].get(
+        "server", {}
+    ).get("server_count")
+    expected_assignment = {
+        "policy": LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY,
+        "server_count": len(validation_urls),
+        "source_field": "episode.server_slot",
+        "server_slot_by_episode": expected_slots,
+    }
+    if (
+        config.get("judge_server_assignment") != expected_assignment
+        or runtime_server_count != len(validation_urls)
+        or run_server_count != len(validation_urls)
+        or transport_server_count != len(validation_urls)
+    ):
+        raise ScreenComparisonIntegrityError(
+            "local report has an invalid manifest-bound judge assignment"
         )
     return config
 
@@ -310,7 +369,8 @@ def _validate_checker_binding(
     ):
         raise ScreenComparisonIntegrityError("checker configuration is invalid")
     config = _local_grading_config({
-        "grading_manifest": arm.audit.get("grading_manifest")
+        "grading_manifest": arm.audit.get("grading_manifest"),
+        "run_manifest": arm.audit.get("run_manifest"),
     })
     if config["generation_source_validation"]["generation_source"] != arm.spec.get(
         "source"
@@ -365,7 +425,8 @@ def _accepted_judge_runtime_map(
     """Validate and map only final accepted judge observations by cell."""
 
     config = _local_grading_config({
-        "grading_manifest": arm.audit.get("grading_manifest")
+        "grading_manifest": arm.audit.get("grading_manifest"),
+        "run_manifest": arm.audit.get("run_manifest"),
     })
     try:
         grades = strict_compare._grade_map(arm.population)
@@ -481,7 +542,7 @@ def load_local_report(path: str | Path) -> LoadedScreenArm:
             grade_root,
             run_root,
             rollouts=specification.get("rollouts"),
-            judge_base_url=config["judge_base_url"],
+            judge_base_url=",".join(config["judge_validation_urls"]),
             grading_runtime=config["grading_runtime"],
             local_judge_runtime=config["local_judge_runtime"],
             whole_files=config.get("whole_files", False),
@@ -574,7 +635,9 @@ def _normalized_grading_contract(manifest: object) -> dict[str, Any]:
     # paired separately below. Requested model/revision/options, grader code,
     # runtime attestations, checker, and all other policy remain substantive.
     value["judge_base_url"] = "<LOOPBACK-TRANSPORT>"
+    value["judge_validation_urls"] = "<LOOPBACK-VALIDATION-TRANSPORTS>"
     value["judge_transport_urls"] = "<LOOPBACK-TRANSPORTS>"
+    value["judge_contacted_urls"] = "<LOOPBACK-CONTACTED-TRANSPORTS>"
     for field in (
         "judge_response_models",
         "judge_system_fingerprints",
@@ -867,10 +930,12 @@ def validate_pair(
         )
 
     control_grading = _local_grading_config({
-        "grading_manifest": control.audit["grading_manifest"]
+        "grading_manifest": control.audit["grading_manifest"],
+        "run_manifest": control.audit["run_manifest"],
     })
     treatment_grading = _local_grading_config({
-        "grading_manifest": treatment.audit["grading_manifest"]
+        "grading_manifest": treatment.audit["grading_manifest"],
+        "run_manifest": treatment.audit["run_manifest"],
     })
     control_contract = _normalized_grading_contract(
         control.audit["grading_manifest"]
@@ -1000,13 +1065,28 @@ def validate_pair(
         "accepted_judge_runtime_pairing": judge_runtime_pairing,
         "grading_transport": {
             "policy": (
-                "authenticated-loopback-validation-and-observed-grade-urls-"
+                "authenticated-loopback-validation-recorded-routes-and-contacts-"
                 "are-transport-only"
             ),
-            "control_validation_url": control_grading["judge_base_url"],
-            "control_observed_urls": control_grading["judge_transport_urls"],
-            "treatment_validation_url": treatment_grading["judge_base_url"],
-            "treatment_observed_urls": treatment_grading["judge_transport_urls"],
+            "control_validation_urls": control_grading[
+                "judge_validation_urls"
+            ],
+            "control_recorded_route_urls": control_grading[
+                "judge_transport_urls"
+            ],
+            "control_contacted_urls": control_grading[
+                "judge_contacted_urls"
+            ],
+            "treatment_validation_urls": treatment_grading[
+                "judge_validation_urls"
+            ],
+            "treatment_recorded_route_urls": treatment_grading[
+                "judge_transport_urls"
+            ],
+            "treatment_contacted_urls": treatment_grading[
+                "judge_contacted_urls"
+            ],
+            "server_assignment": control_grading["judge_server_assignment"],
             "matched_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
         },
         "checker_interpretation": {
@@ -1044,6 +1124,8 @@ def _source_record(arm: LoadedScreenArm) -> dict[str, Any]:
             "requested_model": grading["judge_requested_model"],
             "model_revision": grading["judge_model_revision"],
             "request_policy": grading["judge_request_policy"],
+            "verdict_contract": grading["judge_verdict_contract"],
+            "rationale_policy": grading["judge_rationale_policy"],
             "request_options": grading["judge_request_options"],
             "response_models": grading["judge_response_models"],
             "system_fingerprints": grading["judge_system_fingerprints"],
@@ -1054,8 +1136,10 @@ def _source_record(arm: LoadedScreenArm) -> dict[str, Any]:
                 "missing_judge_system_fingerprint_calls"
             ],
             "endpoint_identity": grading["judge_endpoint_identity"],
-            "validation_url": grading["judge_base_url"],
-            "transport_urls": grading["judge_transport_urls"],
+            "validation_urls": grading["judge_validation_urls"],
+            "recorded_route_urls": grading["judge_transport_urls"],
+            "contacted_urls": grading["judge_contacted_urls"],
+            "server_assignment": grading["judge_server_assignment"],
             "grading_runtime_sha256": grading["grading_runtime_sha256"],
             "local_judge_runtime_sha256": grading[
                 "local_judge_runtime_sha256"

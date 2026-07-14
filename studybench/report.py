@@ -38,6 +38,9 @@ from .grade import (CURRENT_SMOKE_SOURCE_POLICY,
                     GRADERS, LOCAL_GRADER_ENDPOINT_IDENTITY, LOCAL_GRADER_MODEL,
                     LOCAL_GRADER_MODEL_REVISION,
                     LOCAL_GRADER_REQUEST_OPTIONS, LOCAL_GRADER_REQUEST_POLICY,
+                    LOCAL_GRADER_RATIONALE_POLICY,
+                    LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY,
+                    LOCAL_GRADER_VERDICT_CONTRACT,
                     MAX_JUDGE_ATTEMPTS,
                     GradeIntegrityError, file_sha256,
                     build_prompt, episode_provider_identity, grade_spec_sha256,
@@ -48,6 +51,7 @@ from .grade import (CURRENT_SMOKE_SOURCE_POLICY,
                     validate_judge_attempt_record, validate_manifest_episode,
                     validate_judge_attempt_inventory, validate_stored_grade,
                     validate_generation_source_validation)
+from .grade import _episode_judge_base_url, _resolve_judge_base_urls
 from .grade import validate_preregistered_grading_policy
 from .integrity import (canonical_json_bytes, read_artifact_bytes, sha256_json,
                         write_immutable_json)
@@ -60,6 +64,7 @@ from .provenance import (
     validate_id,
     validate_current_source,
     validate_local_judge_runtime_record,
+    validate_local_server_urls,
 )
 from .study_protocol import SEMANTIC_SELFQUIZ_METHOD, STATIC_GRAPH_METHOD
 
@@ -86,7 +91,7 @@ class ReportIntegrityError(RuntimeError):
     """The requested result population is incomplete, stale, or unverifiable."""
 
 
-REPORT_SCHEMA_VERSION = 11
+REPORT_SCHEMA_VERSION = 13
 
 PAPER = {  # Table 1, lenient: (task, variant) -> budget -> (acc %, tokens k)
     ("dspy", ""): {"direct": (3.3, 4.1), "k5": (8.6, 7.9), "k20": (9.6, 8.6),
@@ -438,6 +443,7 @@ def _inventory_failed_judge_audits(
     judge_model: str,
     grading_runtime_digest: str,
     local_judge_runtime_digest: str | None,
+    judge_base_urls: list[str],
 ) -> tuple[list[dict], list[str]]:
     """Validate and disclose judge calls that produced no grade."""
     root = grade_root / "failed-judge-audits" / task
@@ -466,6 +472,10 @@ def _inventory_failed_judge_audits(
             run_path = expected_runs.get(key)
             if run_path is None:
                 raise GradeIntegrityError("failed-judge audit is outside the manifest grid")
+            episode_bytes = read_artifact_bytes(run_path)
+            episode = parse_json(episode_bytes, label=f"episode {run_path}")
+            if not isinstance(episode, dict):
+                raise GradeIntegrityError("failed-judge source episode is not an object")
 
             artifact_bytes = read_artifact_bytes(path)
             artifact = parse_json(artifact_bytes, label=f"failed-judge audit {path}")
@@ -513,6 +523,12 @@ def _inventory_failed_judge_audits(
                     "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
                     "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
                     "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
+                    "judge_verdict_contract": LOCAL_GRADER_VERDICT_CONTRACT,
+                    "judge_rationale_policy": LOCAL_GRADER_RATIONALE_POLICY,
+                    "judge_server_assignment_policy": (
+                        LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY
+                    ),
+                    "judge_server_slot": episode.get("server_slot"),
                     "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
                     "local_judge_runtime_sha256": local_judge_runtime_digest,
                 }
@@ -521,10 +537,44 @@ def _inventory_failed_judge_audits(
                         raise GradeIntegrityError(
                             f"local failed-judge audit has invalid {field} provenance"
                         )
+                try:
+                    selected_transport = validate_local_server_urls(
+                        artifact.get("judge_base_url"), expected_count=1
+                    )[0]
+                    stored_topology = artifact.get("judge_transport_topology")
+                    canonical_topology = validate_local_server_urls(
+                        ",".join(stored_topology)
+                        if isinstance(stored_topology, list) else None
+                    )
+                except (TypeError, ValueError) as exc:
+                    raise GradeIntegrityError(
+                        "local failed-judge audit has invalid transport provenance"
+                    ) from exc
+                slot = episode.get("server_slot")
+                if (
+                    stored_topology != canonical_topology
+                    or len(stored_topology) != len(judge_base_urls)
+                    or type(slot) is not int
+                    or slot < 0
+                    or slot >= len(stored_topology)
+                    or artifact.get("judge_base_url") != selected_transport
+                    or selected_transport != stored_topology[slot]
+                ):
+                    raise GradeIntegrityError(
+                        "local failed-judge audit transport does not match its "
+                        "manifest-bound server slot"
+                    )
 
             elif "local_judge_runtime_sha256" in artifact:
                 raise GradeIntegrityError(
                     "external failed-judge audit contains local runtime provenance"
+                )
+            elif (
+                len(judge_base_urls) != 1
+                or artifact.get("judge_base_url") != judge_base_urls[0]
+            ):
+                raise GradeIntegrityError(
+                    "external failed-judge audit endpoint provenance drifted"
                 )
 
             attempts = artifact.get("judge_attempts")
@@ -565,8 +615,6 @@ def _inventory_failed_judge_audits(
                     or not isinstance(failure.get("message"), str)):
                 raise GradeIntegrityError("failed-judge failure record is invalid")
 
-            episode_bytes = read_artifact_bytes(run_path)
-            episode = parse_json(episode_bytes, label=f"episode {run_path}")
             current_bindings = {
                 "episode": artifact["episode_sha256"] == sha256_bytes(episode_bytes),
                 "grading_spec": artifact["grading_spec_sha256"] == grading_specs[qid],
@@ -588,6 +636,14 @@ def _inventory_failed_judge_audits(
                 "budget": budget,
                 "rollout": rollout,
                 "judge_requested_model": requested_model,
+                "judge_base_url": artifact.get("judge_base_url"),
+                "judge_server_assignment_policy": artifact.get(
+                    "judge_server_assignment_policy"
+                ),
+                "judge_server_slot": artifact.get("judge_server_slot"),
+                "judge_transport_topology": artifact.get(
+                    "judge_transport_topology"
+                ),
                 "judge_response_models": sorted(response_models),
                 "judge_system_fingerprints": sorted(system_fingerprints),
                 "missing_judge_system_fingerprint_calls": missing_system_fingerprints,
@@ -705,18 +761,36 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
         raise ReportIntegrityError(
             f"{task}: invalid {run_kind} run manifest: {exc}"
         ) from exc
-    try:
-        grader, judge_base_url = grader_identity_for_model(
-            judge_model, judge_base_url
-        )
-    except GradeIntegrityError as exc:
-        raise ReportIntegrityError(
-            "reporting does not recognize the requested judge endpoint"
-        ) from exc
     if diagnostic_local:
-        if grader != "local":
-            raise ReportIntegrityError("diagnostic-local report selected a non-local grader")
+        try:
+            judge_base_urls = _resolve_judge_base_urls(
+                judge_model, judge_base_url
+            )
+        except GradeIntegrityError as exc:
+            raise ReportIntegrityError(
+                "reporting does not recognize the local judge endpoints"
+            ) from exc
+        grader = "local"
+        assignment = manifest_context["spec"].get("server_assignment")
+        expected_server_count = (
+            assignment.get("server_count")
+            if isinstance(assignment, dict) else None
+        )
+        if expected_server_count != len(judge_base_urls):
+            raise ReportIntegrityError(
+                "local judge endpoint count does not match the run manifest's "
+                "paired server-slot count"
+            )
     else:
+        try:
+            grader, resolved_judge_base_url = grader_identity_for_model(
+                judge_model, judge_base_url
+            )
+        except GradeIntegrityError as exc:
+            raise ReportIntegrityError(
+                "reporting does not recognize the requested judge endpoint"
+            ) from exc
+        judge_base_urls = [resolved_judge_base_url]
         try:
             validate_preregistered_grading_policy(
                 manifest_context["preregistration"],
@@ -729,6 +803,7 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             raise ReportIntegrityError(
                 f"{task}: grading configuration differs from preregistration: {exc}"
             ) from exc
+    primary_judge_base_url = judge_base_urls[0]
     run_id = manifest_context["spec"]["run_id"]
     if run_root.name != run_id:
         raise ReportIntegrityError("run manifest ID does not match its directory")
@@ -783,7 +858,7 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             judge_model,
             whole_files,
             effort,
-            judge_base_url=judge_base_url,
+            judge_base_url=primary_judge_base_url,
             grading_runtime=grading_runtime,
             local_judge_runtime=local_runtime,
             generation_source_validation=manifest_context[
@@ -801,10 +876,18 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
         judge_model,
         grading_runtime_digest,
         local_runtime_digest,
+        judge_base_urls,
     )
     errors.extend(failed_judge_errors)
     response_models = set()
+    # ``judge_transport_urls`` records the manifest-routed destination stored
+    # on every grade, including no-answer cells that never contacted a judge.
+    # ``judge_contacted_urls`` is restricted to answered cells with one
+    # accepted provider response.  Keeping both avoids calling a planned route
+    # an observed network contact.
     judge_transport_urls = set()
+    judge_contacted_urls = set()
+    judge_server_slot_by_episode = {}
     # Only the final accepted attempt determines a stored score. Rejected
     # attempts remain visible in the grade/retry audit, but must not be allowed
     # to make two graders look revision-matched.
@@ -836,12 +919,15 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                     raise GradeIntegrityError(
                         f"episode {field}={ep.get(field)!r}; path requires {value!r}")
             validate_manifest_episode(ep, rows[qid], manifest_context)
+            episode_judge_base_url, _ = _episode_judge_base_url(
+                ep, judge_model, judge_base_urls
+            )
             validate_stored_grade(
                 grade, rows[qid], ep,
                 episode_sha256=sha256_bytes(episode_bytes),
                 grading_spec_sha256=grading_specs[qid],
                 judge_model=judge_model,
-                judge_base_url=judge_base_url,
+                judge_base_url=episode_judge_base_url,
                 corpus=corpus,
                 whole_files=whole_files,
                 source_episode=_display_path(run_path),
@@ -857,7 +943,8 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                 "judge_prompt_sha256": (
                     sha256_bytes(
                         build_prompt(
-                            corpus, rows[qid], ep["answer"], whole_files
+                            corpus, rows[qid], ep["answer"], whole_files,
+                            judge_model,
                         ).encode("utf-8")
                     )
                     if ep.get("status") == "ok"
@@ -865,8 +952,14 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                 ),
             })
             population[budget].append(grade)
+            relative = f"{budget}/r{rollout}/{qid}.json"
             if diagnostic_local:
                 judge_transport_urls.add(grade["judge_base_url"])
+                judge_server_slot_by_episode[relative] = grade[
+                    "judge_server_slot"
+                ]
+                if grade["episode_status"] == "ok":
+                    judge_contacted_urls.add(grade["judge_base_url"])
             generation_identity = {
                 **episode_provider_identity(ep),
                 "server_slot": ep["server_slot"],
@@ -878,7 +971,6 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             ]
             missing_generation_fingerprints += generation_identity[
                 "missing_system_fingerprint_calls"]
-            relative = f"{budget}/r{rollout}/{qid}.json"
             generation_provider_identity_by_episode[relative] = (
                 generation_identity
             )
@@ -914,7 +1006,7 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             grade_root,
             judge_population_bindings,
             judge_model=judge_model,
-            judge_base_url=judge_base_url,
+            judge_base_url=",".join(judge_base_urls),
             grading_runtime_sha256=grading_runtime_digest,
             local_judge_runtime_sha256=local_runtime_digest,
         )
@@ -979,7 +1071,7 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
         "judge_requested_model": judge_model,
         "judge_attempt_policy": JUDGE_ATTEMPT_POLICY,
         "max_judge_attempts": MAX_JUDGE_ATTEMPTS,
-        "judge_base_url": judge_base_url,
+        "judge_base_url": primary_judge_base_url,
         "judge_response_models": sorted(response_models),
         # Fingerprints identify mutable serving builds, not a stable model revision.
         # This summary and per-episode map contain accepted attempts only.
@@ -1010,9 +1102,19 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             "grading_tier": "diagnostic-local-proxy",
             "local_proxy": True,
             "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
+            "judge_validation_urls": judge_base_urls,
             "judge_transport_urls": sorted(judge_transport_urls),
+            "judge_contacted_urls": sorted(judge_contacted_urls),
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
             "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
+            "judge_verdict_contract": LOCAL_GRADER_VERDICT_CONTRACT,
+            "judge_rationale_policy": LOCAL_GRADER_RATIONALE_POLICY,
+            "judge_server_assignment": {
+                "policy": LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY,
+                "server_count": len(judge_base_urls),
+                "source_field": "episode.server_slot",
+                "server_slot_by_episode": judge_server_slot_by_episode,
+            },
             "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
             "local_judge_runtime_sha256": local_runtime_digest,
             "local_judge_runtime": local_runtime,
@@ -1494,6 +1596,8 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
             "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
             "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
+            "judge_verdict_contract": LOCAL_GRADER_VERDICT_CONTRACT,
+            "judge_rationale_policy": LOCAL_GRADER_RATIONALE_POLICY,
             "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
             "checker_interpretation": {
                 "language": CORPORA[task].language,
@@ -1533,14 +1637,61 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
             raise ReportIntegrityError(
                 "local report has invalid diagnostic grading provenance"
             )
+        validation_urls = config.get("judge_validation_urls")
         transport_urls = config.get("judge_transport_urls")
+        contacted_urls = config.get("judge_contacted_urls")
+        assignment = config.get("judge_server_assignment")
+        try:
+            canonical_validation_urls = validate_local_server_urls(
+                ",".join(validation_urls)
+                if isinstance(validation_urls, list) else None
+            )
+            canonical_transport_urls = sorted(
+                validate_local_server_urls(
+                    ",".join(transport_urls)
+                    if isinstance(transport_urls, list) else None
+                )
+            )
+            canonical_contacted_urls = sorted(
+                validate_local_server_urls(
+                    ",".join(contacted_urls)
+                    if isinstance(contacted_urls, list) and contacted_urls
+                    else None
+                )
+            ) if contacted_urls else []
+        except (TypeError, ValueError) as error:
+            raise ReportIntegrityError(
+                "local report has invalid loopback transport provenance"
+            ) from error
         if (
-            not isinstance(transport_urls, list)
+            validation_urls != canonical_validation_urls
+            or transport_urls != canonical_transport_urls
+            or contacted_urls != canonical_contacted_urls
             or not transport_urls
-            or transport_urls != sorted(set(transport_urls))
+            or not set(contacted_urls).issubset(transport_urls)
         ):
             raise ReportIntegrityError(
                 "local report has an invalid transport disclosure"
+            )
+        expected_slots = spec.get("server_assignment", {}).get(
+            "episode_slots"
+        )
+        runtime_server_count = config["local_judge_runtime"].get(
+            "server", {}
+        ).get("server_count")
+        expected_assignment = {
+            "policy": LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY,
+            "server_count": len(validation_urls),
+            "source_field": "episode.server_slot",
+            "server_slot_by_episode": expected_slots,
+        }
+        if (
+            assignment != expected_assignment
+            or runtime_server_count != len(validation_urls)
+            or config.get("judge_base_url") != validation_urls[0]
+        ):
+            raise ReportIntegrityError(
+                "local report has invalid manifest-bound server assignment"
             )
         if paper_comparison is not None:
             raise ReportIntegrityError(
@@ -1560,7 +1711,7 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
             grade_root,
             run_root,
             rollouts=spec["rollouts"],
-            judge_base_url=judge_base_url,
+            judge_base_url=",".join(config["judge_validation_urls"]),
             whole_files=whole_files,
             historical_exploratory_source_commit=historical_source_commit,
         )
@@ -1665,8 +1816,8 @@ def main():
     p.add_argument(
         "--judge-base-url",
         help=(
-            "explicit authenticated loopback /v1 endpoint; required only for "
-            "exploratory local-Qwen reports"
+            "the authenticated launcher's ordered comma-separated loopback "
+            "/v1 endpoints; required only for exploratory local-Qwen reports"
         ),
     )
     p.add_argument(

@@ -264,8 +264,13 @@ def strict_json_loads(data: str | bytes, *, label: str = "JSON") -> Any:
             object_pairs_hook=object_without_duplicates,
             parse_constant=reject_constant,
         )
-    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+    except UnicodeDecodeError as exc:
         raise ValueError(f"{label} is not valid UTF-8 JSON") from exc
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"{label} is not valid JSON "
+            f"(line {exc.lineno}, column {exc.colno}, char {exc.pos})"
+        ) from exc
 
 
 def sha256_bytes(value: bytes) -> str:

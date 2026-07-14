@@ -82,14 +82,19 @@ LOCAL_GRADER_ENDPOINT_IDENTITY = "authenticated-loopback-openai-v1"
 LOCAL_GRADER_REQUEST_OPTIONS = {
     "temperature": 0,
     "seed": 0,
-    "max_tokens": 8192,
+    "max_tokens": 256,
     "extra_body": {
         "chat_template_kwargs": {
             "enable_thinking": False,
         },
     },
 }
-LOCAL_GRADER_REQUEST_POLICY = "qwen-no-thinking-keyed-claims-one-attempt-v2"
+LOCAL_GRADER_REQUEST_POLICY = (
+    "qwen-no-thinking-keyed-binary-scores-one-attempt-v3"
+)
+LOCAL_GRADER_VERDICT_CONTRACT = "exact-keyed-binary-scores-no-rationale-v1"
+LOCAL_GRADER_RATIONALE_POLICY = "not-requested"
+LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY = "manifest-episode-server-slot-v1"
 CURRENT_GENERATION_SOURCE_POLICY = "current-generation-current-grader-v1"
 CURRENT_SMOKE_SOURCE_POLICY = "current-smoke-generation-current-grader-v1"
 HISTORICAL_EXPLORATORY_SOURCE_POLICY = (
@@ -104,10 +109,10 @@ GRADERS = {  # GRADER_MODEL env var -> (judge model id, base_url, api key env va
     "local": (LOCAL_GRADER_MODEL, None, "SB_VLLM_API_KEY"),
 }
 
-GRADE_SCHEMA_VERSION = 8
+GRADE_SCHEMA_VERSION = 9
 MAX_JUDGE_ATTEMPTS = 1
-FAILED_JUDGE_AUDIT_SCHEMA_VERSION = 6
-JUDGE_ATTEMPT_INTENT_SCHEMA_VERSION = 3
+FAILED_JUDGE_AUDIT_SCHEMA_VERSION = 7
+JUDGE_ATTEMPT_INTENT_SCHEMA_VERSION = 4
 JUDGE_ATTEMPT_POLICY = "single-request-no-retry-v3"
 
 
@@ -186,6 +191,40 @@ def _resolve_judge_base_url(
     return judge_base_url
 
 
+def _resolve_judge_base_urls(
+    judge_model: str, judge_base_urls: str | None,
+) -> list[str]:
+    """Resolve one external endpoint or an ordered local launcher topology."""
+
+    if judge_model == LOCAL_GRADER_MODEL:
+        try:
+            return validate_local_server_urls(judge_base_urls)
+        except (TypeError, ValueError) as exc:
+            raise GradeIntegrityError(
+                "local Qwen grading requires explicit ordered loopback "
+                "--judge-base-url endpoint(s)"
+            ) from exc
+    return [_resolve_judge_base_url(judge_model, judge_base_urls)]
+
+
+def _episode_judge_base_url(
+    episode: dict[str, Any], judge_model: str, judge_base_urls: list[str],
+) -> tuple[str, int | None]:
+    """Route local grading by the generation manifest's paired server slot."""
+
+    if judge_model != LOCAL_GRADER_MODEL:
+        if len(judge_base_urls) != 1:
+            raise GradeIntegrityError("external grading requires exactly one endpoint")
+        return judge_base_urls[0], None
+    slot = episode.get("server_slot")
+    if type(slot) is not int or slot < 0 or slot >= len(judge_base_urls):
+        raise GradeIntegrityError(
+            f"{episode.get('qid')}: episode server_slot cannot be routed across "
+            f"{len(judge_base_urls)} local judge servers"
+        )
+    return judge_base_urls[slot], slot
+
+
 def _make_grader_client(
     grader: str, api_key: str, *, judge_base_url: str | None = None,
 ) -> AsyncOpenAI:
@@ -215,7 +254,7 @@ def _judge_request_options(judge_model: str, effort: str) -> dict[str, Any]:
     return {"reasoning_effort": effort} if effort else {}
 
 
-def _validate_local_grader_environment(judge_base_url: str) -> None:
+def _validate_local_grader_environment(judge_base_urls: list[str]) -> None:
     """Bind the local client to the authenticated pinned vLLM launcher."""
 
     api_key = os.environ.get("SB_VLLM_API_KEY")
@@ -244,9 +283,10 @@ def _validate_local_grader_environment(judge_base_url: str) -> None:
         raise GradeIntegrityError(
             "local grader has no valid authenticated vLLM launcher topology"
         ) from exc
-    if judge_base_url not in launched_urls:
+    if judge_base_urls != launched_urls:
         raise GradeIntegrityError(
-            "--judge-base-url is not part of the authenticated vLLM launcher topology"
+            "--judge-base-url endpoints do not exactly match the authenticated "
+            "ordered vLLM launcher topology"
         )
 
 
@@ -1338,6 +1378,21 @@ def validate_manifest_episode(ep: dict, row: dict, manifest_context: dict) -> No
                 f"the run specification {expected_response_model!r}")
 
 
+EXTERNAL_GRADER_OUTPUT_RULES = """## Output rules
+- Return a `claims` object keyed by the rubric claim IDs.
+- Include every rubric claim ID exactly once and no other keys.
+- For each claim ID, return only its binary `score` and concise `rationale`.
+- Do not output a total question score; the harness computes it.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific."""
+
+LOCAL_GRADER_OUTPUT_RULES = """## Output rules
+- Return a `claims` object keyed by the rubric claim IDs.
+- Include every rubric claim ID exactly once and no other keys.
+- Map each claim ID directly to one integer: `0` or `1`.
+- Do not output rationales or a total question score.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently."""
+
 GRADER_PROMPT = """You are grading one model answer for a source-grounded {library_name} expert QA benchmark.
 
 ## Scoring model
@@ -1350,13 +1405,7 @@ GRADER_PROMPT = """You are grading one model answer for a source-grounded {libra
 - If an answer is polished but misses essential content, score the missing claims low.
 - Use the evidence spans and gold answer to resolve ambiguity.
 
-## Output rules
-- Return a `claims` object keyed by the rubric claim IDs.
-- Include every rubric claim ID exactly once and no other keys.
-- For each claim ID, return only its binary `score` and concise `rationale`.
-- Do not output a total question score; the harness computes it.
-- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
-- Keep rationales concise and specific.
+{output_rules}
 
 ## Inputs
 - Question ID: `{question_id}`
@@ -1379,18 +1428,21 @@ GRADER_PROMPT = """You are grading one model answer for a source-grounded {libra
 
 Return JSON that matches the schema exactly."""
 
-def judge_schema(row: dict) -> dict:
-    """Constrain one score/rationale object under every exact rubric claim ID."""
+def judge_schema(row: dict, judge_model: str | None = None) -> dict:
+    """Constrain an exact, duplicate-proof verdict for every rubric claim ID."""
     ids = rubric_ids(row)
-    claim_value = {
-        "type": "object",
-        "properties": {
-            "score": {"type": "integer", "enum": [0, 1]},
-            "rationale": {"type": "string"},
-        },
-        "required": ["score", "rationale"],
-        "additionalProperties": False,
-    }
+    if judge_model == LOCAL_GRADER_MODEL:
+        claim_value = {"type": "integer", "enum": [0, 1]}
+    else:
+        claim_value = {
+            "type": "object",
+            "properties": {
+                "score": {"type": "integer", "enum": [0, 1]},
+                "rationale": {"type": "string"},
+            },
+            "required": ["score", "rationale"],
+            "additionalProperties": False,
+        }
     return {
         "type": "json_schema",
         "json_schema": {
@@ -1417,7 +1469,8 @@ def judge_schema(row: dict) -> dict:
 log = logging.getLogger("grade")
 
 
-def build_prompt(corpus, row: dict, model_answer: str, whole_files: bool = False) -> str:
+def build_prompt(corpus, row: dict, model_answer: str, whole_files: bool = False,
+                 judge_model: str | None = None) -> str:
     if whole_files:
         # A.5-faithful: spans = the dataset's excerpts; whole files = full numbered
         # dumps of every evidence file from the pinned checkout
@@ -1441,6 +1494,11 @@ def build_prompt(corpus, row: dict, model_answer: str, whole_files: bool = False
         )
     return GRADER_PROMPT.format(
         library_name=corpus.display,
+        output_rules=(
+            LOCAL_GRADER_OUTPUT_RULES
+            if judge_model == LOCAL_GRADER_MODEL
+            else EXTERNAL_GRADER_OUTPUT_RULES
+        ),
         question_id=row["id"],
         label=row["topic"],
         question=row["question"],
@@ -1511,17 +1569,20 @@ def grade_spec_sha256(corpus, row: dict, judge_model: str,
         "sandbox_configuration": sandbox_configuration_record(corpus.language),
         "judge_model": judge_model,
         # A loopback port is an allocation transport detail, not a grading
-        # policy. The authenticated launcher and exact model/revision/options
-        # establish local identity; retaining a port here would make a safe
-        # interrupted grade impossible to resume in a later Slurm allocation.
+        # policy; the per-episode grade and audit still retain the full routed
+        # topology and manifest slot. The authenticated launch ID plus the exact
+        # model/revision/options establish substantive identity and deliberately
+        # prohibit cross-launch resume or population splicing.
         "judge_endpoint_identity": endpoint_identity,
         "judge_attempt_policy": JUDGE_ATTEMPT_POLICY,
         "max_judge_attempts": MAX_JUDGE_ATTEMPTS,
         "whole_files": whole_files,
         "judge_effort": effort,
         "generation_source_validation": generation_source_validation,
-        "prompt": build_prompt(corpus, row, "<MODEL_ANSWER>", whole_files),
-        "response_format": judge_schema(row),
+        "prompt": build_prompt(
+            corpus, row, "<MODEL_ANSWER>", whole_files, judge_model
+        ),
+        "response_format": judge_schema(row, judge_model),
     }
     if judge_model == LOCAL_GRADER_MODEL:
         local_judge_runtime = (
@@ -1535,6 +1596,11 @@ def grade_spec_sha256(corpus, row: dict, judge_model: str,
             "grading_tier": "diagnostic-local-proxy",
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
             "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
+            "judge_verdict_contract": LOCAL_GRADER_VERDICT_CONTRACT,
+            "judge_rationale_policy": LOCAL_GRADER_RATIONALE_POLICY,
+            "judge_server_assignment_policy": (
+                LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY
+            ),
             "judge_request_options": _judge_request_options(judge_model, effort),
             "local_judge_runtime": local_judge_runtime,
         })
@@ -1564,7 +1630,8 @@ def score_from_claims(row: dict, claim_scores: dict[str, int], compile_ok: bool)
     return {"lenient": lenient, "strict": strict, "cores_ok": cores_ok}
 
 
-def validate_verdict(row: dict, verdict: dict) -> tuple[list[dict], dict]:
+def validate_verdict(row: dict, verdict: dict,
+                     judge_model: str | None = None) -> tuple[list[dict], dict]:
     """Return canonical claims and scores, or reject the entire judge response."""
     if not isinstance(verdict, dict):
         raise GradeIntegrityError("judge verdict is not an object")
@@ -1581,24 +1648,32 @@ def validate_verdict(row: dict, verdict: dict) -> tuple[list[dict], dict]:
     claim_scores = {}
     for claim_id in ids:
         claim = claims[claim_id]
-        if not isinstance(claim, dict):
-            raise GradeIntegrityError(
-                f"{row['id']}/{claim_id}: judge claim is not an object")
-        if set(claim) != {"score", "rationale"}:
-            raise GradeIntegrityError(
-                f"{row['id']}/{claim_id}: judge claim has missing or unexpected fields")
-        score = claim.get("score")
-        rationale = claim.get("rationale")
+        if judge_model == LOCAL_GRADER_MODEL:
+            score = claim
+            rationale = None
+        else:
+            if not isinstance(claim, dict):
+                raise GradeIntegrityError(
+                    f"{row['id']}/{claim_id}: judge claim is not an object")
+            if set(claim) != {"score", "rationale"}:
+                raise GradeIntegrityError(
+                    f"{row['id']}/{claim_id}: judge claim has missing or unexpected fields")
+            score = claim.get("score")
+            rationale = claim.get("rationale")
         if type(score) is not int or score not in (0, 1):
             raise GradeIntegrityError(f"{row['id']}/{claim_id}: score is not integer 0/1")
-        if not isinstance(rationale, str) or not rationale.strip():
+        if judge_model != LOCAL_GRADER_MODEL and (
+            not isinstance(rationale, str) or not rationale.strip()
+        ):
             raise GradeIntegrityError(
                 f"{row['id']}/{claim_id}: rationale must be a nonblank string")
-        canonical_claims.append({
+        canonical_claim = {
             "claim_id": claim_id,
             "score": score,
-            "rationale": rationale,
-        })
+        }
+        if judge_model != LOCAL_GRADER_MODEL:
+            canonical_claim["rationale"] = rationale
+        canonical_claims.append(canonical_claim)
         claim_scores[claim_id] = score
     if type(verdict.get("needs_regrade")) is not bool:
         raise GradeIntegrityError(f"{row['id']}: needs_regrade is not boolean")
@@ -1607,7 +1682,8 @@ def validate_verdict(row: dict, verdict: dict) -> tuple[list[dict], dict]:
     return canonical_claims, claim_scores
 
 
-def validate_canonical_claims(row: dict, claims: object) -> tuple[list[dict], dict]:
+def validate_canonical_claims(row: dict, claims: object,
+                              judge_model: str | None = None) -> tuple[list[dict], dict]:
     """Validate the list-form claim representation stored in grade artifacts."""
 
     ids = rubric_ids(row)
@@ -1616,23 +1692,29 @@ def validate_canonical_claims(row: dict, claims: object) -> tuple[list[dict], di
             f"{row['id']}: stored claims do not have the rubric claim count")
     keyed = {}
     for claim in claims:
-        if not isinstance(claim, dict) or set(claim) != {
-            "claim_id", "score", "rationale",
-        }:
+        expected_fields = (
+            {"claim_id", "score"}
+            if judge_model == LOCAL_GRADER_MODEL
+            else {"claim_id", "score", "rationale"}
+        )
+        if not isinstance(claim, dict) or set(claim) != expected_fields:
             raise GradeIntegrityError(
                 f"{row['id']}: stored claim has an invalid shape")
         claim_id = claim.get("claim_id")
         if not isinstance(claim_id, str) or claim_id in keyed:
             raise GradeIntegrityError(
                 f"{row['id']}: stored claim IDs are invalid or duplicated")
-        keyed[claim_id] = {
-            "score": claim.get("score"),
-            "rationale": claim.get("rationale"),
-        }
+        if judge_model == LOCAL_GRADER_MODEL:
+            keyed[claim_id] = claim.get("score")
+        else:
+            keyed[claim_id] = {
+                "score": claim.get("score"),
+                "rationale": claim.get("rationale"),
+            }
     return validate_verdict(row, {
         "claims": keyed,
         "needs_regrade": False,
-    })
+    }, judge_model)
 
 
 def validate_episode(ep: dict, row: dict) -> None:
@@ -2134,6 +2216,27 @@ def _response_attempt(
             incomplete["content"] = _audit_observation(content)
             issues.append("judge response content is not a string")
 
+    try:
+        finish_reason = response.choices[0].finish_reason
+    except Exception as exc:
+        finish_reason = None
+        incomplete["finish_reason"] = _audit_observation(None)
+        issues.append(
+            "judge response has no finish reason "
+            f"({type(exc).__name__}: {exc})"
+        )
+        fatal = True
+    if not isinstance(finish_reason, str) or not finish_reason:
+        if "finish_reason" not in incomplete:
+            incomplete["finish_reason"] = _audit_observation(finish_reason)
+            issues.append("judge response finish reason is not a nonempty string")
+        finish_reason = None
+        fatal = True
+    elif finish_reason != "stop":
+        issues.append(
+            f"judge response finish reason is {finish_reason!r}, not 'stop'"
+        )
+
     usage = None
     usage_error = None
     try:
@@ -2150,6 +2253,7 @@ def _response_attempt(
         "attempt": attempt,
         "accepted": False,
         **normalized_identity,
+        "finish_reason": finish_reason,
         "system_fingerprint": fingerprint,
         "system_fingerprint_status": fingerprint_status,
         "system_fingerprint_observation": fingerprint_observation,
@@ -2178,6 +2282,7 @@ def _uninspectable_response_attempt(
         "response_id": None,
         "request_id": None,
         "response_model": None,
+        "finish_reason": None,
         "system_fingerprint": None,
         "system_fingerprint_status": "unavailable",
         "system_fingerprint_observation": dict(observation),
@@ -2189,7 +2294,10 @@ def _uninspectable_response_attempt(
         "invalid_content": None,
         "incomplete_response": {
             field: dict(observation)
-            for field in ("response_id", "request_id", "response_model", "content", "usage")
+            for field in (
+                "response_id", "request_id", "response_model",
+                "finish_reason", "content", "usage",
+            )
         },
         "validation_error": None,
     }
@@ -2200,6 +2308,7 @@ def validate_judge_attempt_record(
 ) -> None:
     expected_keys = {
         "attempt", "accepted", "response_id", "request_id", "response_model",
+        "finish_reason",
         "system_fingerprint", "system_fingerprint_status",
         "system_fingerprint_observation",
         "usage_status", "usage", "usage_error", "content_sha256", "content_bytes",
@@ -2214,7 +2323,10 @@ def validate_judge_attempt_record(
             raise GradeIntegrityError(f"stored judge {field} is invalid")
     incomplete = attempt["incomplete_response"]
     if incomplete is not None:
-        allowed = {"response_id", "request_id", "response_model", "content", "usage"}
+        allowed = {
+            "response_id", "request_id", "response_model", "finish_reason",
+            "content", "usage",
+        }
         if (not isinstance(incomplete, dict) or not incomplete
                 or not set(incomplete).issubset(allowed)):
             raise GradeIntegrityError("stored incomplete judge response is invalid")
@@ -2225,6 +2337,15 @@ def validate_judge_attempt_record(
         if (attempt[field] is None) != (field in incomplete_fields):
             raise GradeIntegrityError(
                 f"stored judge {field} disagrees with its incomplete-response marker")
+    finish_reason = attempt["finish_reason"]
+    if finish_reason is not None and (
+        not isinstance(finish_reason, str) or not finish_reason
+    ):
+        raise GradeIntegrityError("stored judge finish reason is invalid")
+    if (finish_reason is None) != ("finish_reason" in incomplete_fields):
+        raise GradeIntegrityError(
+            "stored judge finish reason disagrees with its incomplete-response marker"
+        )
     fingerprint_status = attempt["system_fingerprint_status"]
     if fingerprint_status == "available":
         if (not isinstance(attempt["system_fingerprint"], str)
@@ -2270,6 +2391,7 @@ def validate_judge_attempt_record(
     if accepted:
         if (error is not None or raw is not None or incomplete is not None
                 or usage_status != "complete" or not valid_content
+                or finish_reason != "stop"
                 or any(not attempt[field] for field in (
                     "response_id", "request_id", "response_model",
                 ))):
@@ -2344,7 +2466,9 @@ def _validate_judge_audit(grade: dict, corpus, row: dict, ep: dict,
                 "claim-ready grade contains an incompletely audited judge response")
 
     expected_prompt_hash = sha256_bytes(
-        build_prompt(corpus, row, ep["answer"], whole_files).encode("utf-8"))
+        build_prompt(
+            corpus, row, ep["answer"], whole_files, judge_model
+        ).encode("utf-8"))
     if grade.get("judge_prompt_sha256") != expected_prompt_hash:
         raise GradeIntegrityError("stored judge prompt hash does not match")
     accepted = attempts[-1]
@@ -2358,7 +2482,9 @@ def _validate_judge_audit(grade: dict, corpus, row: dict, ep: dict,
             "stored accepted judge content does not match its response identity")
     accepted_verdict = parse_json(
         accepted_content, label="stored accepted judge verdict")
-    accepted_claims, accepted_scores = validate_verdict(row, accepted_verdict)
+    accepted_claims, accepted_scores = validate_verdict(
+        row, accepted_verdict, judge_model
+    )
     accepted_question_score = score_from_claims(
         row, accepted_scores, compile_ok=False)["lenient"]
     if (grade.get("claims") != accepted_claims
@@ -2456,8 +2582,19 @@ def _judge_attempt_intent(
         "judge_prompt_sha256": judge_prompt_sha256,
     }
     if local_judge:
+        slot = episode.get("server_slot")
+        if type(slot) is not int or slot < 0:
+            raise GradeIntegrityError(
+                "local judge-attempt intent has an invalid episode server slot"
+            )
         intent.update({
             "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
+            "judge_verdict_contract": LOCAL_GRADER_VERDICT_CONTRACT,
+            "judge_rationale_policy": LOCAL_GRADER_RATIONALE_POLICY,
+            "judge_server_assignment_policy": (
+                LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY
+            ),
+            "judge_server_slot": slot,
             "judge_request_options": deepcopy(LOCAL_GRADER_REQUEST_OPTIONS),
         })
     return intent
@@ -2577,6 +2714,8 @@ def _failed_judge_audit(*, ep: dict, episode_sha256: str,
                         grading_runtime_sha256: str,
                         local_judge_runtime_sha256: str | None,
                         judge_model: str,
+                        judge_base_url: str,
+                        judge_base_urls: list[str] | None = None,
                         judge_prompt_sha256: str,
                         attempts: list[dict[str, Any]], failure: BaseException,
                         request_attempt_count: int | None = None,
@@ -2602,6 +2741,7 @@ def _failed_judge_audit(*, ep: dict, episode_sha256: str,
         "budget": ep["budget"],
         "rollout": ep["rollout"],
         "judge_requested_model": judge_model,
+        "judge_base_url": judge_base_url,
         "judge_attempt_policy": JUDGE_ATTEMPT_POLICY,
         "max_judge_attempts": MAX_JUDGE_ATTEMPTS,
         "judge_prompt_sha256": judge_prompt_sha256,
@@ -2620,6 +2760,41 @@ def _failed_judge_audit(*, ep: dict, episode_sha256: str,
             )
         audit["judge_attempt_intent_sha256"] = judge_attempt_intent_sha256
     if judge_model == LOCAL_GRADER_MODEL:
+        try:
+            canonical_selected_transport = validate_local_server_urls(
+                judge_base_url, expected_count=1
+            )[0]
+        except (TypeError, ValueError) as exc:
+            raise GradeIntegrityError(
+                "local failed judge audit has an invalid selected transport"
+            ) from exc
+        if canonical_selected_transport != judge_base_url:
+            raise GradeIntegrityError(
+                "local failed judge audit selected transport is not canonical"
+            )
+        slot = ep.get("server_slot")
+        if type(slot) is not int or slot < 0:
+            raise GradeIntegrityError(
+                "local failed judge audit has an invalid episode server slot"
+            )
+        if judge_base_urls is None:
+            judge_base_urls = [judge_base_url]
+        try:
+            transport_topology = validate_local_server_urls(
+                ",".join(judge_base_urls)
+            )
+        except (TypeError, ValueError) as exc:
+            raise GradeIntegrityError(
+                "local failed judge audit has an invalid transport topology"
+            ) from exc
+        if (
+            judge_base_urls != transport_topology
+            or slot >= len(transport_topology)
+            or transport_topology[slot] != judge_base_url
+        ):
+            raise GradeIntegrityError(
+                "local failed judge transport does not match its episode slot"
+            )
         audit.update({
             "claim_ready": False,
             "grading_tier": "diagnostic-local-proxy",
@@ -2627,9 +2802,24 @@ def _failed_judge_audit(*, ep: dict, episode_sha256: str,
             "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
             "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
+            "judge_verdict_contract": LOCAL_GRADER_VERDICT_CONTRACT,
+            "judge_rationale_policy": LOCAL_GRADER_RATIONALE_POLICY,
+            "judge_server_assignment_policy": (
+                LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY
+            ),
+            "judge_server_slot": slot,
+            "judge_transport_topology": transport_topology,
             "judge_request_options": deepcopy(LOCAL_GRADER_REQUEST_OPTIONS),
             "local_judge_runtime_sha256": local_judge_runtime_sha256,
         })
+    else:
+        resolved_external_url = _resolve_judge_base_url(
+            judge_model, judge_base_url
+        )
+        if judge_base_url != resolved_external_url:
+            raise GradeIntegrityError(
+                "external failed judge audit has an invalid endpoint"
+            )
     return audit
 
 
@@ -2657,6 +2847,8 @@ def existing_failed_judge_audit(
     grading_runtime_sha256: str | None = None,
     local_judge_runtime_sha256: str | None = None,
     judge_model: str | None = None,
+    judge_base_url: str | None = None,
+    judge_base_urls: list[str] | None = None,
     judge_prompt_sha256: str | None = None,
     judge_attempt_intent_sha256: str | None = None,
     require_judge_attempt_intent: bool = False,
@@ -2729,6 +2921,12 @@ def existing_failed_judge_audit(
             "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
             "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
+            "judge_verdict_contract": LOCAL_GRADER_VERDICT_CONTRACT,
+            "judge_rationale_policy": LOCAL_GRADER_RATIONALE_POLICY,
+            "judge_server_assignment_policy": (
+                LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY
+            ),
+            "judge_server_slot": episode.get("server_slot"),
             "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
             "local_judge_runtime_sha256": local_judge_runtime_sha256,
         }
@@ -2736,10 +2934,50 @@ def existing_failed_judge_audit(
             raise GradeIntegrityError(
                 "terminal local failed judge audit provenance drifted"
             )
+        if judge_base_urls is None:
+            judge_base_urls = [judge_base_url]
+        try:
+            current_topology = validate_local_server_urls(
+                ",".join(judge_base_urls)
+            )
+            selected_transport = validate_local_server_urls(
+                artifact.get("judge_base_url"), expected_count=1
+            )[0]
+            stored_topology = artifact.get("judge_transport_topology")
+            canonical_topology = validate_local_server_urls(
+                ",".join(stored_topology)
+                if isinstance(stored_topology, list) else None
+            )
+        except (TypeError, ValueError) as exc:
+            raise GradeIntegrityError(
+                "terminal local failed judge audit transport drifted"
+            ) from exc
+        slot = episode.get("server_slot")
+        if (
+            stored_topology != canonical_topology
+            or len(stored_topology) != len(current_topology)
+            or type(slot) is not int
+            or slot < 0
+            or slot >= len(stored_topology)
+            or artifact.get("judge_server_slot") != slot
+            or artifact.get("judge_base_url") != selected_transport
+            or selected_transport != stored_topology[slot]
+        ):
+            raise GradeIntegrityError(
+                "terminal local failed judge audit transport drifted"
+            )
     elif local_judge_runtime_sha256 is not None:
         raise GradeIntegrityError(
             "external judge failure cannot bind a local-judge runtime"
         )
+    elif judge_model is not None:
+        resolved_external_url = _resolve_judge_base_url(
+            judge_model, judge_base_url
+        )
+        if artifact.get("judge_base_url") != resolved_external_url:
+            raise GradeIntegrityError(
+                "terminal external failed judge audit endpoint drifted"
+            )
 
     attempts = artifact.get("judge_attempts")
     request_count = artifact.get("judge_request_attempt_count")
@@ -2797,6 +3035,7 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
                         ep: dict, whole_files: bool = False, effort: str = "",
                         *, episode_sha256: str, grading_spec_sha256: str,
                         judge_base_url: str | None = None,
+                        judge_base_urls: list[str] | None = None,
                         grading_runtime: dict[str, object] | None = None,
                         local_judge_runtime: dict[str, object] | None = None,
                         judge_attempt_intent_writer: (
@@ -2819,6 +3058,16 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
         local_judge_runtime_digest = provenance_local_judge_runtime_sha256(
             local_judge_runtime
         )
+        if judge_base_urls is None:
+            judge_base_urls = [judge_base_url]
+        try:
+            transport_topology = validate_local_server_urls(
+                ",".join(judge_base_urls)
+            )
+        except (TypeError, ValueError) as exc:
+            raise GradeIntegrityError(
+                "local grade has an invalid ordered transport topology"
+            ) from exc
     elif local_judge_runtime is not None:
         raise GradeIntegrityError(
             "local judge runtime provenance is valid only for local grading"
@@ -2843,6 +3092,23 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
         "graded_at": datetime.now(timezone.utc).isoformat(),
     }
     if judge_model == LOCAL_GRADER_MODEL:
+        slot = ep.get("server_slot")
+        if type(slot) is not int or slot < 0:
+            raise GradeIntegrityError(
+                "local grade has an invalid episode server slot"
+            )
+        runtime_server_count = local_judge_runtime.get("server", {}).get(
+            "server_count"
+        )
+        if (
+            judge_base_urls != transport_topology
+            or len(transport_topology) != runtime_server_count
+            or slot >= len(transport_topology)
+            or transport_topology[slot] != judge_base_url
+        ):
+            raise GradeIntegrityError(
+                "local grade transport does not match its runtime and episode slot"
+            )
         grade.update({
             "claim_ready": False,
             "grading_tier": "diagnostic-local-proxy",
@@ -2850,6 +3116,13 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
             "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
             "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
+            "judge_verdict_contract": LOCAL_GRADER_VERDICT_CONTRACT,
+            "judge_rationale_policy": LOCAL_GRADER_RATIONALE_POLICY,
+            "judge_server_assignment_policy": (
+                LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY
+            ),
+            "judge_server_slot": slot,
+            "judge_transport_topology": transport_topology,
             "judge_request_options": request_options,
             "local_judge_runtime_sha256": local_judge_runtime_digest,
         })
@@ -2885,7 +3158,9 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
         raise GradeIntegrityError(
             "deterministic checker returned an invalid or unbound result; "
             "judge was not contacted")
-    judge_prompt = build_prompt(corpus, row, answer, whole_files)
+    judge_prompt = build_prompt(
+        corpus, row, answer, whole_files, judge_model
+    )
     grade["judge_prompt_sha256"] = sha256_bytes(judge_prompt.encode("utf-8"))
     judge_attempt_intent_sha256 = None
     if judge_attempt_intent_writer is not None:
@@ -2905,7 +3180,7 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
             resp = await client.chat.completions.create(
                 model=judge_model,
                 messages=[{"role": "user", "content": judge_prompt}],
-                response_format=judge_schema(row),
+                response_format=judge_schema(row, judge_model),
                 **request_options,
             )
         except Exception as exc:
@@ -2916,6 +3191,11 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
                 grading_runtime_sha256=grading_runtime_digest,
                 local_judge_runtime_sha256=local_judge_runtime_digest,
                 judge_model=judge_model,
+                judge_base_url=judge_base_url,
+                judge_base_urls=(
+                    transport_topology
+                    if judge_model == LOCAL_GRADER_MODEL else None
+                ),
                 judge_prompt_sha256=grade["judge_prompt_sha256"],
                 attempts=attempts,
                 failure=exc,
@@ -2935,6 +3215,15 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
             attempt_record = _uninspectable_response_attempt(attempt + 1, response_error)
             content = None
             response_is_fatal = True
+        if (
+            response_error is None
+            and judge_model == LOCAL_GRADER_MODEL
+            and attempt_record.get("response_model") != LOCAL_GRADER_MODEL
+        ):
+            response_error = GradeIntegrityError(
+                "local judge response model does not match the pinned model"
+            )
+            response_is_fatal = True
         if response_error is not None:
             last_error = response_error
             if isinstance(content, str):
@@ -2952,6 +3241,11 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
                     grading_runtime_sha256=grading_runtime_digest,
                     local_judge_runtime_sha256=local_judge_runtime_digest,
                     judge_model=judge_model,
+                    judge_base_url=judge_base_url,
+                    judge_base_urls=(
+                        transport_topology
+                        if judge_model == LOCAL_GRADER_MODEL else None
+                    ),
                     judge_prompt_sha256=grade["judge_prompt_sha256"],
                     attempts=attempts,
                     failure=response_error,
@@ -2966,7 +3260,7 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
             continue
         try:
             verdict = parse_json(content, label="judge verdict")
-            claims, claim_scores = validate_verdict(row, verdict)
+            claims, claim_scores = validate_verdict(row, verdict, judge_model)
         except GradeIntegrityError as exc:
             last_error = exc
             attempt_record["invalid_content"] = content
@@ -2987,6 +3281,11 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
             grading_runtime_sha256=grading_runtime_digest,
             local_judge_runtime_sha256=local_judge_runtime_digest,
             judge_model=judge_model,
+            judge_base_url=judge_base_url,
+            judge_base_urls=(
+                transport_topology
+                if judge_model == LOCAL_GRADER_MODEL else None
+            ),
             judge_prompt_sha256=grade["judge_prompt_sha256"],
             attempts=attempts,
             failure=last_error,
@@ -3066,6 +3365,12 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
             "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
             "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
+            "judge_verdict_contract": LOCAL_GRADER_VERDICT_CONTRACT,
+            "judge_rationale_policy": LOCAL_GRADER_RATIONALE_POLICY,
+            "judge_server_assignment_policy": (
+                LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY
+            ),
+            "judge_server_slot": ep.get("server_slot"),
             "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
             "local_judge_runtime_sha256": expected_local_runtime_sha256,
         }
@@ -3082,6 +3387,30 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
             raise GradeIntegrityError(
                 "local proxy grade has an invalid recorded loopback transport"
             ) from exc
+        topology = grade.get("judge_transport_topology")
+        try:
+            canonical_topology = validate_local_server_urls(
+                ",".join(topology) if isinstance(topology, list) else None
+            )
+        except (TypeError, ValueError) as exc:
+            raise GradeIntegrityError(
+                "local proxy grade has an invalid transport topology"
+            ) from exc
+        server_count = local_judge_runtime.get("server", {}).get("server_count")
+        slot = ep.get("server_slot")
+        if (
+            topology != canonical_topology
+            or len(topology) != server_count
+            or type(slot) is not int
+            or slot < 0
+            or slot >= len(topology)
+            or grade.get("judge_server_slot") != slot
+            or grade.get("judge_base_url") != topology[slot]
+        ):
+            raise GradeIntegrityError(
+                "local proxy grade transport does not match its runtime and "
+                "manifest-bound server slot"
+            )
     else:
         if local_judge_runtime is not None:
             raise GradeIntegrityError(
@@ -3230,7 +3559,7 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
     if grade.get("needs_regrade") is not False:
         raise GradeIntegrityError("stored grade unexpectedly requests regrading")
     canonical_claims, claim_scores = validate_canonical_claims(
-        row, grade.get("claims")
+        row, grade.get("claims"), judge_model
     )
     if grade["claims"] != canonical_claims:
         raise GradeIntegrityError("stored claims are not in canonical rubric order")
@@ -3262,18 +3591,24 @@ def stored_grade_is_current(grade_path: Path, episode_path: Path, corpus, row: d
         )
         episode_bytes = read_artifact_bytes(episode_path)
         ep = parse_json(episode_bytes, label=f"episode {episode_path}")
+        judge_base_urls = _resolve_judge_base_urls(
+            judge_model, judge_base_url
+        )
+        episode_judge_base_url, _ = _episode_judge_base_url(
+            ep, judge_model, judge_base_urls
+        )
         grade = parse_json(read_artifact_bytes(grade_path), label=f"grade {grade_path}")
         validate_stored_grade(
             grade, row, ep,
             episode_sha256=sha256_bytes(episode_bytes),
             grading_spec_sha256=grade_spec_sha256(
                 corpus, row, judge_model, whole_files, effort,
-                judge_base_url=judge_base_url,
+                judge_base_url=episode_judge_base_url,
                 grading_runtime=grading_runtime,
                 local_judge_runtime=local_judge_runtime,
                 generation_source_validation=generation_source_validation),
             judge_model=judge_model,
-            judge_base_url=judge_base_url,
+            judge_base_url=episode_judge_base_url,
             corpus=corpus,
             whole_files=whole_files,
             source_episode=episode_path.relative_to(ROOT).as_posix(),
@@ -3363,7 +3698,7 @@ def validate_judge_attempt_inventory(
         raise GradeIntegrityError(
             "judge-attempt inventory has an invalid grading-runtime hash"
         )
-    judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
+    judge_base_urls = _resolve_judge_base_urls(judge_model, judge_base_url)
     if judge_model == LOCAL_GRADER_MODEL:
         if not _valid_sha256(local_judge_runtime_sha256):
             raise GradeIntegrityError(
@@ -3418,6 +3753,9 @@ def validate_judge_attempt_inventory(
             raise GradeIntegrityError(
                 "no-answer judge-attempt binding has a prompt hash"
             )
+        episode_judge_base_url, _ = _episode_judge_base_url(
+            episode, judge_model, judge_base_urls
+        )
 
         intent_path = _judge_attempt_intent_path(out_root, episode)
         task = episode["task"]
@@ -3446,7 +3784,7 @@ def validate_judge_attempt_inventory(
                 grading_runtime_sha256=grading_runtime_sha256,
                 local_judge_runtime_sha256=local_judge_runtime_sha256,
                 judge_model=judge_model,
-                judge_base_url=judge_base_url,
+                judge_base_url=episode_judge_base_url,
                 judge_prompt_sha256=judge_prompt_sha256,
             )
             if intent_state is None:
@@ -3464,6 +3802,10 @@ def validate_judge_attempt_inventory(
             grading_runtime_sha256=grading_runtime_sha256,
             local_judge_runtime_sha256=local_judge_runtime_sha256,
             judge_model=judge_model,
+            judge_base_url=episode_judge_base_url,
+            judge_base_urls=(
+                judge_base_urls if judge_model == LOCAL_GRADER_MODEL else None
+            ),
             judge_prompt_sha256=judge_prompt_sha256,
             judge_attempt_intent_sha256=intent_digest,
             require_judge_attempt_intent=episode["status"] == "ok",
@@ -3603,13 +3945,24 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
         raise GradeIntegrityError(
             "local judge runtime provenance is valid only for local grading"
         )
-    judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
+    judge_base_urls = _resolve_judge_base_urls(judge_model, judge_base_url)
     spec = manifest_context.get("spec")
     if not isinstance(spec, dict):
         raise GradeIntegrityError("run manifest has no grading specification")
     purpose = spec.get("purpose")
     if purpose not in {"confirmatory", "exploratory", "smoke"}:
         raise GradeIntegrityError("run purpose is invalid at grading preflight")
+    if judge_model == LOCAL_GRADER_MODEL:
+        assignment = spec.get("server_assignment")
+        expected_server_count = (
+            assignment.get("server_count")
+            if isinstance(assignment, dict) else None
+        )
+        if expected_server_count != len(judge_base_urls):
+            raise GradeIntegrityError(
+                "local judge endpoint count does not match the run manifest's "
+                "paired server-slot count"
+            )
 
     rows = {question["id"]: question for question in questions}
     run_task_root = runs_root / corpus.name
@@ -3660,9 +4013,12 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
             row = rows[expected_identity["qid"]]
             validate_episode(episode, row)
             validate_manifest_episode(episode, row, manifest_context)
+            episode_judge_base_url, judge_server_slot = _episode_judge_base_url(
+                episode, judge_model, judge_base_urls
+            )
             spec_sha256 = grade_spec_sha256(
                 corpus, row, judge_model, whole_files, effort,
-                judge_base_url=judge_base_url,
+                judge_base_url=episode_judge_base_url,
                 grading_runtime=grading_runtime,
                 local_judge_runtime=local_judge_runtime,
                 generation_source_validation=manifest_context[
@@ -3673,7 +4029,7 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
             judge_prompt_digest = (
                 sha256_bytes(
                     build_prompt(
-                        corpus, row, episode["answer"], whole_files
+                        corpus, row, episode["answer"], whole_files, judge_model
                     ).encode("utf-8")
                 )
                 if episode["status"] == "ok"
@@ -3692,7 +4048,7 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
                     grading_runtime_sha256=grading_runtime_digest,
                     local_judge_runtime_sha256=local_runtime_digest,
                     judge_model=judge_model,
-                    judge_base_url=judge_base_url,
+                    judge_base_url=episode_judge_base_url,
                     judge_prompt_sha256=judge_prompt_digest,
                 )
             intent_digest = intent_state[1] if intent_state is not None else None
@@ -3705,6 +4061,11 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
                 grading_runtime_sha256=grading_runtime_digest,
                 local_judge_runtime_sha256=local_runtime_digest,
                 judge_model=judge_model,
+                judge_base_url=episode_judge_base_url,
+                judge_base_urls=(
+                    judge_base_urls
+                    if judge_model == LOCAL_GRADER_MODEL else None
+                ),
                 judge_prompt_sha256=judge_prompt_digest,
                 judge_attempt_intent_sha256=intent_digest,
                 require_judge_attempt_intent=episode["status"] == "ok",
@@ -3742,7 +4103,7 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
                     episode_sha256=episode_digest,
                     grading_spec_sha256=spec_sha256,
                     judge_model=judge_model,
-                    judge_base_url=judge_base_url,
+                    judge_base_url=episode_judge_base_url,
                     corpus=corpus,
                     whole_files=whole_files,
                     source_episode=source_episode,
@@ -3781,6 +4142,8 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
             "row": row,
             "grading_spec_sha256": spec_sha256,
             "source_episode": source_episode,
+            "judge_base_url": episode_judge_base_url,
+            "judge_server_slot": judge_server_slot,
         })
 
     try:
@@ -3899,10 +4262,12 @@ async def _main_async_locked(args):
             raise GradeIntegrityError(
                 "historical source regrading requires an explicit fresh --grade-id"
             )
-    judge_base_url = _resolve_judge_base_url(judge_model, args.judge_base_url)
+    judge_base_urls = _resolve_judge_base_urls(
+        judge_model, args.judge_base_url
+    )
     _judge_request_options(judge_model, args.judge_effort)
     if grader == "local":
-        _validate_local_grader_environment(judge_base_url)
+        _validate_local_grader_environment(judge_base_urls)
     try:
         grading_runtime = grading_runtime_record()
         local_runtime = local_judge_runtime_record() if grader == "local" else None
@@ -3911,8 +4276,8 @@ async def _main_async_locked(args):
             f"grading runtime attestation failed before judge contact: {exc}"
         ) from exc
     log.info(
-        "grader=%s judge_model=%s judge_base_url=%s",
-        grader, judge_model, judge_base_url,
+        "grader=%s judge_model=%s judge_base_urls=%s",
+        grader, judge_model, ",".join(judge_base_urls),
     )
     runs_root, out_root = _grade_namespace(args)
 
@@ -3954,7 +4319,7 @@ async def _main_async_locked(args):
         judge_model=judge_model,
         whole_files=args.whole_files,
         effort=args.judge_effort,
-        judge_base_url=judge_base_url,
+        judge_base_url=",".join(judge_base_urls),
         grading_runtime=grading_runtime,
         local_judge_runtime=local_runtime,
     )
@@ -3970,14 +4335,16 @@ async def _main_async_locked(args):
         )
     log.info("%d episodes to grade (task=%s)", len(pending), args.task)
 
-    client = None
+    clients: dict[str, AsyncOpenAI] = {}
     if any(record["episode"]["status"] == "ok" for record in pending):
         api_key = os.environ.get(key_var)
         if not api_key:
             raise GradeIntegrityError(
                 f"{key_var} is required for {grader} grading; no judge request made")
-        client = _make_grader_client(
-            grader, api_key, judge_base_url=judge_base_url)
+        clients = {
+            url: _make_grader_client(grader, api_key, judge_base_url=url)
+            for url in judge_base_urls
+        }
 
     grading_runtime_digest = provenance_grading_runtime_sha256(grading_runtime)
     local_runtime_digest = (
@@ -4001,6 +4368,12 @@ async def _main_async_locked(args):
                 episode_bytes = record["episode_bytes"]
                 ep = record["episode"]
                 row = record["row"]
+                record_judge_base_url = record["judge_base_url"]
+                client = clients.get(record_judge_base_url)
+                if ep["status"] == "ok" and client is None:
+                    raise GradeIntegrityError(
+                        "no judge client exists for the manifest-bound server slot"
+                    )
                 with exclusive_process_lock(lock_path):
                     if read_artifact_bytes(rf) != episode_bytes:
                         raise GradeIntegrityError(
@@ -4016,7 +4389,7 @@ async def _main_async_locked(args):
                             episode_sha256=sha256_bytes(episode_bytes),
                             grading_spec_sha256=record["grading_spec_sha256"],
                             judge_model=judge_model,
-                            judge_base_url=judge_base_url,
+                            judge_base_url=record_judge_base_url,
                             corpus=corpus,
                             whole_files=args.whole_files,
                             source_episode=record["source_episode"],
@@ -4039,10 +4412,15 @@ async def _main_async_locked(args):
                         grading_runtime_sha256=grading_runtime_digest,
                         local_judge_runtime_sha256=local_runtime_digest,
                         judge_model=judge_model,
+                        judge_base_url=record_judge_base_url,
+                        judge_base_urls=(
+                            judge_base_urls if grader == "local" else None
+                        ),
                         judge_prompt_sha256=(
                             sha256_bytes(
                                 build_prompt(
-                                    corpus, row, ep["answer"], args.whole_files
+                                    corpus, row, ep["answer"], args.whole_files,
+                                    judge_model,
                                 ).encode("utf-8")
                             )
                             if ep["status"] == "ok"
@@ -4067,7 +4445,7 @@ async def _main_async_locked(args):
                                 grading_runtime_sha256=grading_runtime_digest,
                                 local_judge_runtime_sha256=local_runtime_digest,
                                 judge_model=judge_model,
-                                judge_base_url=judge_base_url,
+                                judge_base_url=record_judge_base_url,
                                 judge_prompt_sha256=prompt_sha256,
                             )
                             return digest
@@ -4077,7 +4455,10 @@ async def _main_async_locked(args):
                             args.judge_effort,
                             episode_sha256=sha256_bytes(episode_bytes),
                             grading_spec_sha256=record["grading_spec_sha256"],
-                            judge_base_url=judge_base_url,
+                            judge_base_url=record_judge_base_url,
+                            judge_base_urls=(
+                                judge_base_urls if grader == "local" else None
+                            ),
                             grading_runtime=grading_runtime,
                             local_judge_runtime=local_runtime,
                             judge_attempt_intent_writer=intent_writer,
@@ -4094,7 +4475,7 @@ async def _main_async_locked(args):
                                 grading_runtime_sha256=grading_runtime_digest,
                                 local_judge_runtime_sha256=local_runtime_digest,
                                 judge_model=judge_model,
-                                judge_base_url=judge_base_url,
+                                judge_base_url=record_judge_base_url,
                                 judge_prompt_sha256=prompt_digest,
                             )
                             if (
@@ -4116,7 +4497,7 @@ async def _main_async_locked(args):
                         episode_sha256=sha256_bytes(episode_bytes),
                         grading_spec_sha256=record["grading_spec_sha256"],
                         judge_model=judge_model,
-                        judge_base_url=judge_base_url,
+                        judge_base_url=record_judge_base_url,
                         corpus=corpus,
                         whole_files=args.whole_files,
                         source_episode=grade["source_episode"],
@@ -4167,8 +4548,7 @@ async def _main_async_locked(args):
     try:
         await asyncio.gather(*(one(record) for record in pending))
     finally:
-        if client is not None:
-            await client.close()
+        await asyncio.gather(*(client.close() for client in clients.values()))
     try:
         validate_current_source(
             manifest_context["generation_source_validation"]["grader_source"]
@@ -4199,8 +4579,8 @@ def main():
     p.add_argument(
         "--judge-base-url",
         help=(
-            "explicit OpenAI-compatible endpoint; required for the local grader and "
-            "restricted to one authenticated loopback /v1 URL"
+            "explicit OpenAI-compatible endpoint; local grading accepts the "
+            "authenticated launcher's ordered comma-separated loopback /v1 URLs"
         ),
     )
     p.add_argument("--concurrency", type=int, default=8)

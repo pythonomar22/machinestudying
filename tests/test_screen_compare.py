@@ -22,8 +22,10 @@ LOADER_CHECKER_CONFIGURATION = {
 }
 TEST_GRADING_RUNTIME = {"schema_version": 1, "identity": "test-grading-runtime"}
 TEST_LOCAL_JUDGE_RUNTIME = {
-    "schema_version": 1,
+    "schema_version": 2,
     "identity": "test-local-judge-runtime",
+    "server_launch_id": "3" * 64,
+    "server": {"server_count": 1},
 }
 
 
@@ -99,7 +101,11 @@ def local_arm(
         },
     })
     strict.audit["run_manifest"]["spec_sha256"] = sha256_json(spec)
-    url = f"http://localhost:{port}/v1"
+    urls = [
+        f"http://localhost:{port}/v1",
+        f"http://localhost:{port + 1}/v1",
+    ]
+    url = urls[0]
     previous = strict.audit["grading_manifest"]["config"]
     checker = {
         "language": "python",
@@ -149,13 +155,31 @@ def local_arm(
         "grading_tier": "diagnostic-local-proxy",
         "local_proxy": True,
         "judge_endpoint_identity": grade.LOCAL_GRADER_ENDPOINT_IDENTITY,
-        "judge_transport_urls": [url],
+        "judge_validation_urls": urls,
+        "judge_transport_urls": urls,
+        "judge_contacted_urls": urls,
+        "judge_server_assignment": {
+            "policy": grade.LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY,
+            "server_count": 2,
+            "source_field": "episode.server_slot",
+            "server_slot_by_episode": spec["server_assignment"][
+                "episode_slots"
+            ],
+        },
         "judge_model_revision": grade.LOCAL_GRADER_MODEL_REVISION,
         "judge_request_policy": grade.LOCAL_GRADER_REQUEST_POLICY,
+        "judge_verdict_contract": grade.LOCAL_GRADER_VERDICT_CONTRACT,
+        "judge_rationale_policy": grade.LOCAL_GRADER_RATIONALE_POLICY,
         "judge_request_options": grade.LOCAL_GRADER_REQUEST_OPTIONS,
         "generation_source_validation": source_validation(spec["source"]),
-        "local_judge_runtime_sha256": sha256_json(TEST_LOCAL_JUDGE_RUNTIME),
-        "local_judge_runtime": TEST_LOCAL_JUDGE_RUNTIME,
+        "local_judge_runtime_sha256": sha256_json({
+            **TEST_LOCAL_JUDGE_RUNTIME,
+            "server": {"server_count": 2},
+        }),
+        "local_judge_runtime": {
+            **TEST_LOCAL_JUDGE_RUNTIME,
+            "server": {"server_count": 2},
+        },
         "checker_interpretation": {
             "language": "python",
             "sandbox_configuration_sha256": checker_sha256,
@@ -197,12 +221,12 @@ class LocalPairTests(unittest.TestCase):
             intervention_description=DESCRIPTION,
         )
         self.assertEqual(
-            intervention["grading_transport"]["control_validation_url"],
-            "http://localhost:8123/v1",
+            intervention["grading_transport"]["control_validation_urls"],
+            ["http://localhost:8123/v1", "http://localhost:8124/v1"],
         )
         self.assertEqual(
-            intervention["grading_transport"]["treatment_validation_url"],
-            "http://localhost:9123/v1",
+            intervention["grading_transport"]["treatment_validation_urls"],
+            ["http://localhost:9123/v1", "http://localhost:9124/v1"],
         )
         self.assertEqual(
             intervention["seed_pairing"]["episode_seeds_sha256"],
@@ -245,10 +269,14 @@ class LocalPairTests(unittest.TestCase):
                         intervention_description=DESCRIPTION,
                     )
 
-    def test_fresh_report_port_need_not_match_observed_grade_ports(self) -> None:
+    def test_fresh_report_port_need_not_match_recorded_grade_ports(self) -> None:
         control = deepcopy(self.control)
         config = control.audit["grading_manifest"]["config"]
         config["judge_base_url"] = "http://localhost:8223/v1"
+        config["judge_validation_urls"] = [
+            "http://localhost:8223/v1",
+            "http://localhost:8224/v1",
+        ]
         control.audit["grading_manifest"]["sha256"] = sha256_json(config)
         intervention = screen_compare.validate_pair(
             control,
@@ -257,19 +285,21 @@ class LocalPairTests(unittest.TestCase):
         )
         transport = intervention["grading_transport"]
         self.assertEqual(
-            transport["control_validation_url"],
-            "http://localhost:8223/v1",
+            transport["control_validation_urls"],
+            ["http://localhost:8223/v1", "http://localhost:8224/v1"],
         )
         self.assertEqual(
-            transport["control_observed_urls"],
-            ["http://localhost:8123/v1"],
+            transport["control_recorded_route_urls"],
+            ["http://localhost:8123/v1", "http://localhost:8124/v1"],
         )
 
     def test_remote_grading_transport_is_fatal(self) -> None:
         drifted = deepcopy(self.treatment)
         config = drifted.audit["grading_manifest"]["config"]
         config["judge_base_url"] = "https://grader.invalid/v1"
+        config["judge_validation_urls"] = ["https://grader.invalid/v1"]
         config["judge_transport_urls"] = ["https://grader.invalid/v1"]
+        config["judge_contacted_urls"] = ["https://grader.invalid/v1"]
         drifted.audit["grading_manifest"]["sha256"] = sha256_json(config)
         with self.assertRaisesRegex(
             screen_compare.ScreenComparisonIntegrityError,
@@ -298,8 +328,10 @@ class LocalPairTests(unittest.TestCase):
         drifted = deepcopy(self.treatment)
         config = drifted.audit["grading_manifest"]["config"]
         config["local_judge_runtime"] = {
-            "schema_version": 1,
+            "schema_version": 2,
             "identity": "different-local-judge-runtime",
+            "server_launch_id": "4" * 64,
+            "server": {"server_count": 2},
         }
         config["local_judge_runtime_sha256"] = sha256_json(
             config["local_judge_runtime"]
@@ -885,9 +917,21 @@ class LocalReportLoaderTests(unittest.TestCase):
             "grading_tier": "diagnostic-local-proxy",
             "local_proxy": True,
             "judge_endpoint_identity": grade.LOCAL_GRADER_ENDPOINT_IDENTITY,
+            "judge_validation_urls": ["http://localhost:8223/v1"],
             "judge_transport_urls": ["http://localhost:8123/v1"],
+            "judge_contacted_urls": ["http://localhost:8123/v1"],
+            "judge_server_assignment": {
+                "policy": grade.LOCAL_GRADER_SERVER_ASSIGNMENT_POLICY,
+                "server_count": 1,
+                "source_field": "episode.server_slot",
+                "server_slot_by_episode": spec["server_assignment"][
+                    "episode_slots"
+                ],
+            },
             "judge_model_revision": grade.LOCAL_GRADER_MODEL_REVISION,
             "judge_request_policy": grade.LOCAL_GRADER_REQUEST_POLICY,
+            "judge_verdict_contract": grade.LOCAL_GRADER_VERDICT_CONTRACT,
+            "judge_rationale_policy": grade.LOCAL_GRADER_RATIONALE_POLICY,
             "judge_request_options": grade.LOCAL_GRADER_REQUEST_OPTIONS,
             "generation_source_validation": source_validation(spec["source"]),
             "local_judge_runtime_sha256": sha256_json(

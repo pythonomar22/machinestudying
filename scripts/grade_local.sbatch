@@ -2,7 +2,7 @@
 #SBATCH --job-name=sb-grade-local
 #SBATCH --partition=matx
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=2
+#SBATCH --gpus-per-node=6
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/slurm/%x-%j.out
 #SBATCH --error=logs/slurm/%x-%j.out
@@ -22,6 +22,7 @@ CI_REPLICATES=${SB_CI_REPLICATES:-1000}
 CI_SEED=${SB_CI_SEED:-0}
 DEBUG=${SB_DEBUG:-0}
 LOCAL_SMOKE=${SB_LOCAL_SMOKE:-0}
+EXPECTED_SERVERS=${SB_EXPECTED_LOCAL_SERVERS:-3}
 
 validate_csv_members SB_TASK "$TASK" dspy,openclaw,smalldspy
 require_single_csv_value SB_TASK "$TASK"
@@ -32,6 +33,7 @@ validate_nonnegative_int SB_CI_REPLICATES "$CI_REPLICATES"
 validate_seed SB_CI_SEED "$CI_SEED"
 validate_bool SB_DEBUG "$DEBUG"
 validate_bool SB_LOCAL_SMOKE "$LOCAL_SMOKE"
+validate_positive_int SB_EXPECTED_LOCAL_SERVERS "$EXPECTED_SERVERS"
 case "$EVIDENCE_MODE" in
     whole_files)
         EVIDENCE_FLAG=--whole-files
@@ -44,8 +46,10 @@ case "$EVIDENCE_MODE" in
         ;;
 esac
 
-# Exactly one TP=2 server makes the endpoint identity unambiguous on both H100
-# and L40S allocations. The authenticated key is generated inside the launcher.
+# Homogeneous TP=2 replicas are ordered by canonical loopback port. The run
+# manifest's immutable episode slots select among them; the authenticated key
+# is generated inside the launcher. Override both Slurm's GPU count and
+# SB_EXPECTED_LOCAL_SERVERS together for a manifest with a different count.
 export SB_TP=2
 export GRADER_MODEL=local
 # Local mode never needs an external judge credential. Keep .env values from
@@ -58,17 +62,17 @@ verify_env_file
 sync_main_environment
 source scripts/serve_and_wait.sh
 
-[ "$SB_NGPU" -eq 2 ] && [ "$SB_NSERVE" -eq 1 ] \
+[ "$SB_NGPU" -eq $((2 * EXPECTED_SERVERS)) ] \
+    && [ "$SB_NSERVE" -eq "$EXPECTED_SERVERS" ] \
     && [ "$SB_TP_EFFECTIVE" -eq 2 ] \
-    || fail_arg "local grading requires exactly one TP=2 server on two GPUs"
-require_single_csv_value BASE_URLS "$BASE_URLS"
-JUDGE_BASE_URL=$BASE_URLS
+    || fail_arg "local grading requires the declared number of homogeneous TP=2 servers"
+JUDGE_BASE_URLS=$BASE_URLS
 
 grade_args=(
     --task "$TASK"
     --run-id "$RUN_ID"
     --grade-id "$GRADE_ID"
-    --judge-base-url "$JUDGE_BASE_URL"
+    --judge-base-url "$JUDGE_BASE_URLS"
     "$EVIDENCE_FLAG"
     --concurrency "$CONCURRENCY"
 )
@@ -86,7 +90,7 @@ fi
     --run-id "$RUN_ID" \
     --grader local \
     --grade-id "$GRADE_ID" \
-    --judge-base-url "$JUDGE_BASE_URL" \
+    --judge-base-url "$JUDGE_BASE_URLS" \
     "$EVIDENCE_FLAG" \
     --ci "$CI_REPLICATES" \
     --ci-seed "$CI_SEED"

@@ -144,8 +144,10 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn('"proxy_policy": "cleared"', serve)
         self.assertIn("--host 127.0.0.1", serve)
         self.assertIn("--enable-request-id-headers", serve)
+        self.assertIn("--structured-outputs-config", serve)
         self.assertIn(
-            "--structured-outputs-config '{\"enable_in_reasoning\":false}'",
+            "'{\"backend\":\"xgrammar\",\"disable_any_whitespace\":true,"
+            "\"enable_in_reasoning\":false}'",
             serve,
         )
         self.assertNotIn(
@@ -219,7 +221,7 @@ class ScriptContractTests(unittest.TestCase):
             self.assertIn("#SBATCH --gpus-per-node=6", text)
             self.assertNotIn("#SBATCH --partition=a3", text)
         self.assertIn("#SBATCH --partition=matx", grade_local)
-        self.assertIn("#SBATCH --gpus-per-node=2", grade_local)
+        self.assertIn("#SBATCH --gpus-per-node=6", grade_local)
         self.assertNotIn("#SBATCH --partition=a3", grade_local)
         launch_loop = react[react.index("for task in ${TASKS//,/ }") :]
         study_launch, evaluation_launch = launch_loop.split("    else\n", 1)
@@ -270,11 +272,15 @@ class ScriptContractTests(unittest.TestCase):
         self.assertNotIn("api.sakana.ai", runner)
         self.assertIn("sync_main_environment", runner)
         self.assertIn("source scripts/serve_and_wait.sh", runner)
-        self.assertIn('[ "$SB_NGPU" -eq 2 ]', runner)
-        self.assertIn('[ "$SB_NSERVE" -eq 1 ]', runner)
+        self.assertIn("SB_EXPECTED_LOCAL_SERVERS", runner)
+        self.assertIn('[ "$SB_NGPU" -eq $((2 * EXPECTED_SERVERS)) ]', runner)
+        self.assertIn('[ "$SB_NSERVE" -eq "$EXPECTED_SERVERS" ]', runner)
         self.assertIn('[ "$SB_TP_EFFECTIVE" -eq 2 ]', runner)
-        self.assertIn('require_single_csv_value BASE_URLS "$BASE_URLS"', runner)
-        self.assertIn("JUDGE_BASE_URL=$BASE_URLS", runner)
+        self.assertNotIn('require_single_csv_value BASE_URLS "$BASE_URLS"', runner)
+        self.assertIn("JUDGE_BASE_URLS=$BASE_URLS", runner)
+        self.assertEqual(
+            runner.count('--judge-base-url "$JUDGE_BASE_URLS"'), 2
+        )
         self.assertIn("SB_EVIDENCE_MODE", runner)
         self.assertIn("SB_GRADE_CONCURRENCY", runner)
         self.assertIn("SB_CI_REPLICATES", runner)
@@ -284,7 +290,7 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn("intentionally unreportable", runner)
         self.assertIn("-m studybench.grade", runner)
         self.assertIn("-m studybench.report", runner)
-        self.assertEqual(runner.count('--judge-base-url "$JUDGE_BASE_URL"'), 2)
+        self.assertEqual(runner.count('--judge-base-url "$JUDGE_BASE_URLS"'), 2)
         self.assertIn("--grader local", runner)
 
     def test_shell_ids_match_python_provenance_constraints(self) -> None:
