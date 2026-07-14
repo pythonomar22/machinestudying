@@ -54,6 +54,7 @@ from studybench.provenance import (
     write_screen_attempt_intent,
 )
 from studybench.preregistration import RUN_FAILURE_POLICY, SCREEN_FAILURE_POLICY
+from studybench.study_protocol import DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION
 
 
 def claim_ready_environment(*, include_dspy: bool = True) -> dict[str, object]:
@@ -1698,6 +1699,9 @@ class ProvenanceTests(unittest.TestCase):
                     "model": "model",
                     "model_revision": "revision",
                     "harness": "dspy.ReAct",
+                    "dspy_request_audit_schema": (
+                        DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION
+                    ),
                     "status": "error",
                     "error": "provider failure",
                     "started": "2026-01-01T00:00:00+00:00",
@@ -1779,6 +1783,9 @@ class ProvenanceTests(unittest.TestCase):
                     "model": "model",
                     "model_revision": "revision",
                     "harness": "dspy.ReAct",
+                    "dspy_request_audit_schema": (
+                        DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION
+                    ),
                     "status": "error",
                     "error": "failure",
                     "started": "2026-01-01T00:00:00+00:00",
@@ -1995,6 +2002,7 @@ class ProvenanceTests(unittest.TestCase):
             return json.loads(retained.read_text(encoding="utf-8"))
 
         dspy_failure = exercise("dspy.ReAct", {
+            "dspy_request_audit_schema": DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION,
             "known_prompt_tokens": 2,
             "known_completion_tokens": 1,
             "known_total_tokens": 3,

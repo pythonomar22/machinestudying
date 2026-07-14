@@ -64,12 +64,16 @@ from .provenance import (
     validate_local_server_urls,
 )
 from .study_protocol import (
+    DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION,
     DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
+    DSPY_REQUEST_AUDIT_SCHEMA_VERSIONS,
     HUMAN_AUDITED_NOTE_MANIFEST_TYPE,
     SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
     STATIC_GRAPH_NOTE_MANIFEST_TYPE,
     StudyProtocolError,
     validate_construction_protocol,
+    validate_dspy_final_binding,
+    validate_dspy_provider_call,
     validate_forced50_config,
     validate_forced50_episode,
     validate_study_note_archive,
@@ -1916,7 +1920,7 @@ def validate_episode(ep: dict, row: dict) -> None:
     forced_partial_parse_non_answer = (
         ep["status"] == "no_answer"
         and ep.get("dspy_request_audit_schema")
-        == DSPY_REQUEST_AUDIT_SCHEMA_VERSION
+        in DSPY_REQUEST_AUDIT_SCHEMA_VERSIONS
         and isinstance(ep.get("non_answer_audit"), dict)
         and ep["non_answer_audit"].get("kind") == "adapter_parse_failure"
         and ep["non_answer_audit"].get("stage") == "react"
@@ -1971,42 +1975,65 @@ def validate_episode(ep: dict, row: dict) -> None:
     non_answer_audit = ep.get("non_answer_audit")
     if dspy_audit_schema is not None:
         if (type(dspy_audit_schema) is not int
-                or dspy_audit_schema != DSPY_REQUEST_AUDIT_SCHEMA_VERSION) \
-                or "usage_ledger" not in ep:
+                or dspy_audit_schema not in DSPY_REQUEST_AUDIT_SCHEMA_VERSIONS
+                or "usage_ledger" not in ep):
             raise GradeIntegrityError(
                 f"{ep['qid']}: invalid DSPy request-audit schema")
+        try:
+            for index, record in enumerate(ep["usage_ledger"]):
+                validate_dspy_provider_call(
+                    record,
+                    index,
+                    schema_version=dspy_audit_schema,
+                )
+        except StudyProtocolError as error:
+            raise GradeIntegrityError(
+                f"{ep['qid']}: invalid DSPy provider retention: {error}"
+            ) from error
+        if dspy_audit_schema == DSPY_REQUEST_AUDIT_SCHEMA_VERSION:
+            try:
+                validate_dspy_final_binding(ep)
+            except StudyProtocolError as error:
+                raise GradeIntegrityError(
+                    f"{ep['qid']}: invalid DSPy final extraction binding: {error}"
+                ) from error
+        elif "answer_audit" in ep:
+            raise GradeIntegrityError(
+                f"{ep['qid']}: historical DSPy episode declares a current answer audit"
+            )
         if ep["status"] == "ok":
             if non_answer_audit is not None:
                 raise GradeIntegrityError(
                     f"{ep['qid']}: ok episode has a non-answer audit")
         else:
-            expected_keys = {
-                "schema_version", "kind", "stage", "adapter",
-                "provider_call", "outputs_sha256",
-            }
-            if (not isinstance(non_answer_audit, dict)
-                    or set(non_answer_audit) != expected_keys
-                    or type(non_answer_audit.get("schema_version")) is not int
-                    or non_answer_audit.get("schema_version")
-                    != DSPY_REQUEST_AUDIT_SCHEMA_VERSION
-                    or non_answer_audit.get("kind") not in {
-                        "adapter_parse_failure", "parsed_empty_answer"
-                    }
-                    or non_answer_audit.get("stage") not in {
-                        "direct", "react", "extract"
-                    }
-                    or not isinstance(non_answer_audit.get("adapter"), str)
-                    or not non_answer_audit["adapter"]):
-                raise GradeIntegrityError(
-                    f"{ep['qid']}: invalid DSPy non-answer audit")
-            provider_call = non_answer_audit.get("provider_call")
-            if (type(provider_call) is not int
-                    or not ep["usage_ledger"]
-                    or provider_call != len(ep["usage_ledger"]) - 1
-                    or non_answer_audit.get("outputs_sha256")
-                    != ep["usage_ledger"][provider_call]["outputs_sha256"]):
-                raise GradeIntegrityError(
-                    f"{ep['qid']}: DSPy non-answer audit is not bound to its final response")
+            if dspy_audit_schema == DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION:
+                expected_keys = {
+                    "schema_version", "kind", "stage", "adapter",
+                    "provider_call", "outputs_sha256",
+                }
+                if (not isinstance(non_answer_audit, dict)
+                        or set(non_answer_audit) != expected_keys
+                        or type(non_answer_audit.get("schema_version")) is not int
+                        or non_answer_audit.get("schema_version")
+                        != DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION
+                        or non_answer_audit.get("kind") not in {
+                            "adapter_parse_failure", "parsed_empty_answer"
+                        }
+                        or non_answer_audit.get("stage") not in {
+                            "direct", "react", "extract"
+                        }
+                        or not isinstance(non_answer_audit.get("adapter"), str)
+                        or not non_answer_audit["adapter"]):
+                    raise GradeIntegrityError(
+                        f"{ep['qid']}: invalid DSPy non-answer audit")
+                provider_call = non_answer_audit.get("provider_call")
+                if (type(provider_call) is not int
+                        or not ep["usage_ledger"]
+                        or provider_call != len(ep["usage_ledger"]) - 1
+                        or non_answer_audit.get("outputs_sha256")
+                        != ep["usage_ledger"][provider_call]["outputs_sha256"]):
+                    raise GradeIntegrityError(
+                        f"{ep['qid']}: DSPy non-answer audit is not bound to its final response")
             stage = non_answer_audit["stage"]
             kind = non_answer_audit["kind"]
             if ((ep["budget"] == "direct" and stage != "direct")
@@ -2034,9 +2061,9 @@ def validate_episode(ep: dict, row: dict) -> None:
         elif "forced_budget_complete" in ep:
             raise GradeIntegrityError(
                 f"{ep['qid']}: non-forced episode declares forced-budget completion")
-    elif non_answer_audit is not None:
+    elif non_answer_audit is not None or "answer_audit" in ep:
         raise GradeIntegrityError(
-            f"{ep['qid']}: non-answer audit has no declared DSPy schema")
+            f"{ep['qid']}: extraction audit has no declared DSPy schema")
     episode_provider_identity(ep)
 
 
@@ -2049,6 +2076,11 @@ def episode_provider_identity(ep: dict) -> dict[str, Any]:
     models = set()
     fingerprints = set()
     missing_fingerprints = 0
+    dspy_audit_schema = ep.get("dspy_request_audit_schema") if not native else None
+    if not native and dspy_audit_schema not in DSPY_REQUEST_AUDIT_SCHEMA_VERSIONS:
+        raise GradeIntegrityError(
+            f"{ep.get('qid')}: DSPy provider identity has no supported audit schema"
+        )
     for index, record in enumerate(records):
         model = record.get("response_model") if isinstance(record, dict) else None
         if not isinstance(model, str) or not model:
@@ -2068,10 +2100,16 @@ def episode_provider_identity(ep: dict) -> dict[str, Any]:
         else:
             fingerprints.add(fingerprint)
         if not native:
-            for hash_field in ("request_messages_sha256", "outputs_sha256"):
-                if not _valid_sha256(record.get(hash_field)):
-                    raise GradeIntegrityError(
-                        f"{ep.get('qid')}: DSPy call {index} has invalid {hash_field}")
+            try:
+                validate_dspy_provider_call(
+                    record,
+                    index,
+                    schema_version=dspy_audit_schema,
+                )
+            except StudyProtocolError as error:
+                raise GradeIntegrityError(
+                    f"{ep.get('qid')}: DSPy call {index} is invalid: {error}"
+                ) from error
             provider_usage = record.get("provider_usage")
             if not isinstance(provider_usage, dict):
                 raise GradeIntegrityError(

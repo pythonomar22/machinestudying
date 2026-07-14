@@ -14,6 +14,7 @@ the immutable namespace chosen with --run-id and are bound to its manifest.
 """
 
 import argparse
+from collections.abc import Mapping
 import copy
 import json
 import logging
@@ -37,6 +38,7 @@ from .integrity import (
     sha256_json,
     sha256_text,
     stable_seed,
+    strict_json_loads,
     utc_now,
     write_immutable_json,
     write_immutable_text,
@@ -71,6 +73,8 @@ from .study_protocol import (
     REACT_SAMPLING,
     forced50_study_question,
     forced50_study_task,
+    validate_dspy_final_binding,
+    validate_dspy_provider_call,
 )
 from .tools import (
     DSPY_READ_MAX_LINES,
@@ -92,6 +96,72 @@ def study_task(corpus) -> str:
 SAMPLING = REACT_SAMPLING  # paper §B; passed through litellm to vLLM
 
 log = logging.getLogger("react")
+
+
+def _json_native(value: object, *, label: str) -> object:
+    """Detach one SDK/DSPy value into the exact canonical JSON-native value."""
+
+    if hasattr(value, "model_dump"):
+        try:
+            value = value.model_dump(
+                mode="json", by_alias=True, exclude_none=False
+            )
+        except (TypeError, ValueError) as error:
+            raise ValueError(f"{label} cannot be serialized by its SDK model") from error
+    if isinstance(value, Mapping):
+        if any(not isinstance(key, str) for key in value):
+            raise ValueError(f"{label} contains a non-string JSON object key")
+        value = {
+            key: _json_native(item, label=f"{label}.{key}")
+            for key, item in value.items()
+        }
+    elif isinstance(value, (list, tuple)):
+        value = [
+            _json_native(item, label=f"{label}[{index}]")
+            for index, item in enumerate(value)
+        ]
+    elif value is not None and type(value) not in {bool, int, float, str}:
+        raise ValueError(f"{label} contains non-JSON value {type(value).__name__}")
+    try:
+        payload = canonical_json_bytes(value)
+        return strict_json_loads(payload, label=label)
+    except (TypeError, ValueError) as error:
+        raise ValueError(f"{label} is not finite canonical JSON") from error
+
+
+def _canonical_record(value: object, *, label: str) -> tuple[object, int, str]:
+    native = _json_native(value, label=label)
+    payload = canonical_json_bytes(native)
+    return native, len(payload), sha256_json(native)
+
+
+def _processed_provider_response(response: object) -> dict[str, object]:
+    """Retain only audited generation fields from DSPy's processed SDK response."""
+
+    native = _json_native(response, label="DSPy processed provider response")
+    if not isinstance(native, dict) or not isinstance(native.get("choices"), list):
+        raise ValueError("DSPy processed provider response has no choices")
+    choices = []
+    for index, choice in enumerate(native["choices"]):
+        if not isinstance(choice, dict) or not isinstance(choice.get("message"), dict):
+            raise ValueError(f"DSPy processed response choice {index} is malformed")
+        message = choice["message"]
+        choices.append({
+            "index": choice.get("index"),
+            "finish_reason": choice.get("finish_reason"),
+            "message": {
+                "content": message.get("content"),
+                "reasoning_content": message.get("reasoning_content"),
+                "tool_calls": message.get("tool_calls"),
+            },
+        })
+    return {
+        "id": native.get("id"),
+        "model": native.get("model"),
+        "system_fingerprint": native.get("system_fingerprint"),
+        "choices": choices,
+        "usage": native.get("usage"),
+    }
 
 class AttemptCountingLM(dspy.LM):
     """Count every DSPy-to-provider attempt, including attempts with no response.
@@ -121,11 +191,55 @@ class ParseOnlyFallbackChatAdapter(dspy.ChatAdapter):
     fallback only after a completed response fails typed adapter parsing.
     """
 
+    def __init__(self):
+        super().__init__()
+        self.call_audits: list[dict[str, object]] = []
+
+    def _record_parse(
+        self,
+        *,
+        lm,
+        history_before: int,
+        adapter: str,
+        fallback_used: bool,
+        parsed_outputs: object | None = None,
+        parse_error: AdapterParseError | None = None,
+    ) -> None:
+        history_after = len(lm.history)
+        if history_after <= history_before:
+            raise RuntimeError("adapter parse audit has no provider response")
+        provider_calls = list(range(history_before, history_after))
+        record: dict[str, object] = {
+            "status": "parse_failure" if parse_error is not None else "parsed",
+            "adapter": adapter,
+            "fallback_used": fallback_used,
+            "provider_calls": provider_calls,
+            "provider_call": provider_calls[-1],
+            "choice": 0,
+        }
+        if parse_error is None:
+            parsed, _, _ = _canonical_record(
+                parsed_outputs, label="DSPy adapter parsed outputs"
+            )
+            record["parsed_outputs"] = parsed
+        else:
+            if not isinstance(parse_error.lm_response, str):
+                raise RuntimeError("adapter parse failure has no textual LM response")
+            parsed_result, _, _ = _canonical_record(
+                parse_error.parsed_result,
+                label="DSPy adapter partial parse result",
+            )
+            record.update({
+                "lm_response": parse_error.lm_response,
+                "parsed_result": parsed_result,
+            })
+        self.call_audits.append(record)
+
     def __call__(self, lm, lm_kwargs, signature, demos, inputs):
         attempts_before = getattr(lm, "provider_attempt_count", None)
         history_before = len(lm.history)
         try:
-            return Adapter.__call__(
+            result = Adapter.__call__(
                 self, lm, lm_kwargs, signature, demos, inputs
             )
         except AdapterParseError:
@@ -136,7 +250,47 @@ class ParseOnlyFallbackChatAdapter(dspy.ChatAdapter):
                 raise RuntimeError(
                     "Chat-to-JSON fallback lacks one complete provider response"
                 )
-            return JSONAdapter()(lm, lm_kwargs, signature, demos, inputs)
+            try:
+                result = JSONAdapter()(lm, lm_kwargs, signature, demos, inputs)
+            except AdapterParseError as error:
+                self._record_parse(
+                    lm=lm,
+                    history_before=history_before,
+                    adapter=error.adapter_name,
+                    fallback_used=True,
+                    parse_error=error,
+                )
+                raise
+            attempts_after = getattr(lm, "provider_attempt_count", None)
+            if (
+                type(attempts_before) is not int
+                or attempts_after - attempts_before
+                != len(lm.history) - history_before
+            ):
+                raise RuntimeError("JSON fallback provider response audit is incomplete")
+            self._record_parse(
+                lm=lm,
+                history_before=history_before,
+                adapter="JSONAdapter",
+                fallback_used=True,
+                parsed_outputs=result,
+            )
+            return result
+        attempts_after = getattr(lm, "provider_attempt_count", None)
+        if (
+            type(attempts_before) is not int
+            or attempts_after != attempts_before + 1
+            or len(lm.history) != history_before + 1
+        ):
+            raise RuntimeError("Chat adapter provider response audit is incomplete")
+        self._record_parse(
+            lm=lm,
+            history_before=history_before,
+            adapter="ChatAdapter",
+            fallback_used=False,
+            parsed_outputs=result,
+        )
+        return result
 
 
 def _artifact_inventory(root: Path, relatives: tuple[str, ...]) -> dict[str, dict[str, object]]:
@@ -399,13 +553,12 @@ def _response_field(response: object, field: str) -> object:
 
 
 def _dspy_usage_record(history: object, index: int) -> dict:
-    """Build one exact provider ledger record without inventing token counts."""
+    """Build one detached, byte-linked provider record from pinned DSPy history."""
 
     if not isinstance(history, dict):
         raise ValueError("DSPy history entry is not an object")
     usage = history.get("usage")
-    if hasattr(usage, "model_dump"):
-        usage = usage.model_dump(mode="json")
+    usage = _json_native(usage, label="DSPy provider usage")
     if not isinstance(usage, dict):
         raise ValueError("DSPy history entry has no provider usage")
     values = [usage.get(field) for field in (
@@ -418,19 +571,141 @@ def _dspy_usage_record(history: object, index: int) -> dict:
     if messages is None or outputs is None:
         raise ValueError("DSPy request or output ledger is unavailable")
     response = history.get("response")
-    return {
+    processed_response, processed_response_bytes, processed_response_sha256 = (
+        _canonical_record(
+            _processed_provider_response(response),
+            label="DSPy processed provider response",
+        )
+    )
+    outputs, outputs_bytes, outputs_sha256 = _canonical_record(
+        outputs, label="DSPy normalized outputs"
+    )
+    if not isinstance(processed_response, dict):
+        raise ValueError("DSPy processed provider response is not an object")
+    choices = processed_response.get("choices")
+    if not isinstance(choices, list):
+        raise ValueError("DSPy provider response has no choices")
+    finish_reasons = [
+        choice.get("finish_reason") if isinstance(choice, dict) else None
+        for choice in choices
+    ]
+    record = {
         "call": index,
         "response_model": history.get("response_model")
         or _response_field(response, "model"),
         "response_id": _response_field(response, "id"),
         "system_fingerprint": _response_field(response, "system_fingerprint"),
         "request_messages_sha256": sha256_json(messages),
-        "outputs_sha256": sha256_json(outputs),
+        "processed_response": processed_response,
+        "processed_response_canonical_bytes": processed_response_bytes,
+        "processed_response_sha256": processed_response_sha256,
+        "outputs": outputs,
+        "outputs_canonical_bytes": outputs_bytes,
+        "outputs_sha256": outputs_sha256,
+        "finish_reasons": finish_reasons,
         "provider_usage": usage,
         "prompt_tokens": values[0],
         "completion_tokens": values[1],
         "total_tokens": values[2],
     }
+    try:
+        validate_dspy_provider_call(
+            record,
+            index,
+            schema_version=DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
+        )
+    except Exception as error:
+        raise ValueError(f"DSPy provider retention is invalid: {error}") from error
+    return record
+
+
+def _dspy_final_binding(
+    parse_audit: object,
+    ledger: list[dict],
+    *,
+    stage: object,
+    status: str,
+    answer: str,
+) -> dict:
+    """Bind DSPy's final parsed value or parse failure to retained call bytes."""
+
+    if (
+        not isinstance(parse_audit, dict)
+        or not ledger
+        or stage not in {"direct", "react", "extract"}
+        or status not in {"ok", "no_answer"}
+        or not isinstance(answer, str)
+    ):
+        raise ValueError("DSPy final extraction provenance is unavailable")
+    provider_calls = parse_audit.get("provider_calls")
+    provider_call = parse_audit.get("provider_call")
+    choice = parse_audit.get("choice")
+    if (
+        not isinstance(provider_calls, list)
+        or type(provider_call) is not int
+        or provider_call != len(ledger) - 1
+        or provider_calls[-1:] != [provider_call]
+        or choice != 0
+    ):
+        raise ValueError("DSPy final extraction does not select the final provider call")
+    record = ledger[provider_call]
+    outputs = record.get("outputs")
+    if not isinstance(outputs, list) or not outputs:
+        raise ValueError("DSPy final provider call has no retained outputs")
+    selected = outputs[choice]
+    selected_bytes = canonical_json_bytes(selected)
+    binding = {
+        "schema_version": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
+        "kind": "adapter_parse_failure",
+        "stage": stage,
+        "adapter": parse_audit.get("adapter"),
+        "fallback_used": parse_audit.get("fallback_used"),
+        "provider_calls": provider_calls,
+        "provider_call": provider_call,
+        "choice": choice,
+        "outputs_sha256": record.get("outputs_sha256"),
+        "selected_output_canonical_bytes": len(selected_bytes),
+        "selected_output_sha256": sha256_json(selected),
+    }
+    if parse_audit.get("status") == "parsed":
+        parsed_outputs = parse_audit.get("parsed_outputs")
+        if not isinstance(parsed_outputs, list):
+            raise ValueError("DSPy final extraction has no parsed outputs")
+        parsed_bytes = canonical_json_bytes(parsed_outputs)
+        binding.update({
+            "kind": "parsed_answer" if status == "ok" else "parsed_empty_answer",
+            "parsed_outputs": parsed_outputs,
+            "parsed_outputs_canonical_bytes": len(parsed_bytes),
+            "parsed_outputs_sha256": sha256_json(parsed_outputs),
+            "answer_sha256": sha256_text(answer),
+        })
+    elif parse_audit.get("status") == "parse_failure":
+        lm_response = parse_audit.get("lm_response")
+        parsed_result = parse_audit.get("parsed_result")
+        if not isinstance(lm_response, str):
+            raise ValueError("DSPy final parse failure has no exact LM response")
+        parsed_result_bytes = canonical_json_bytes(parsed_result)
+        replay_mode = (
+            "sdk-repr-unreplayable-tool-call-only"
+            if (
+                isinstance(selected, Mapping)
+                and not selected.get("text")
+                and selected.get("tool_calls")
+            )
+            else "exact"
+        )
+        binding.update({
+            "adapter_lm_response": lm_response,
+            "adapter_lm_response_replay": replay_mode,
+            "adapter_lm_response_bytes": len(lm_response.encode("utf-8")),
+            "adapter_lm_response_sha256": sha256_text(lm_response),
+            "parsed_result": parsed_result,
+            "parsed_result_canonical_bytes": len(parsed_result_bytes),
+            "parsed_result_sha256": sha256_json(parsed_result),
+        })
+    else:
+        raise ValueError("DSPy final adapter outcome is unknown")
+    return binding
 
 
 def _episode_server_url(
@@ -466,10 +741,10 @@ def run_episode(corpus, tools_fns, q: dict, budget: str, rollout: int,
         "dspy_request_audit_schema": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
     }
     trajectory = {}
-    parse_failure = None
     parse_stage = None
     module = None
-    with dspy.context(lm=lm, adapter=ParseOnlyFallbackChatAdapter()):
+    adapter = ParseOnlyFallbackChatAdapter()
+    with dspy.context(lm=lm, adapter=adapter):
         try:
             if budget == "direct":
                 pred = dspy.Predict("question -> answer")(question=q["question"])
@@ -484,8 +759,7 @@ def run_episode(corpus, tools_fns, q: dict, budget: str, rollout: int,
             ep["answer"] = pred.answer or ""
             if not ep["answer"].strip():
                 ep["status"] = "no_answer"
-        except AdapterParseError as error:
-            parse_failure = error
+        except AdapterParseError:
             if module is not None:
                 trajectory = copy.deepcopy(module.last_trajectory)
                 parse_stage = module.last_stage
@@ -550,27 +824,34 @@ def run_episode(corpus, tools_fns, q: dict, budget: str, rollout: int,
             "provider attempt audit is incomplete: "
             f"attempts={lm.provider_attempt_count}, responses={len(lm.history)}"
         )
-    if ep["status"] == "no_answer":
-        if not ep["usage_ledger"]:
-            ep["invalid_final_status"] = "no_answer"
+    if ep["status"] in {"ok", "no_answer"}:
+        if not ep["usage_ledger"] or not adapter.call_audits:
+            ep["invalid_final_status"] = ep["status"]
             ep["status"] = "error"
-            ep["error"] = "model non-answer has no complete provider response"
+            ep["error"] = "model outcome has no complete provider/extraction binding"
         else:
-            last_call = ep["usage_ledger"][-1]
-            ep["non_answer_audit"] = {
-                "schema_version": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
-                "kind": (
-                    "adapter_parse_failure" if parse_failure is not None
-                    else "parsed_empty_answer"
-                ),
-                "stage": parse_stage,
-                "adapter": (
-                    parse_failure.adapter_name if parse_failure is not None
-                    else "ParseOnlyFallbackChatAdapter"
-                ),
-                "provider_call": len(ep["usage_ledger"]) - 1,
-                "outputs_sha256": last_call["outputs_sha256"],
-            }
+            try:
+                binding = _dspy_final_binding(
+                    adapter.call_audits[-1],
+                    ep["usage_ledger"],
+                    stage=parse_stage,
+                    status=ep["status"],
+                    answer=ep["answer"],
+                )
+                binding_name = (
+                    "answer_audit" if ep["status"] == "ok" else "non_answer_audit"
+                )
+                ep[binding_name] = binding
+                validate_dspy_final_binding(ep)
+            except Exception as error:
+                ep.pop("answer_audit", None)
+                ep.pop("non_answer_audit", None)
+                ep["invalid_final_status"] = ep["status"]
+                ep["status"] = "error"
+                ep["error"] = (
+                    "DSPy final extraction binding failed: "
+                    f"{str(error)[:420]}"
+                )
     ep["gen_tokens"] = ep["completion_tokens"]
     ep["finished"] = utc_now()
     expected_identity = {

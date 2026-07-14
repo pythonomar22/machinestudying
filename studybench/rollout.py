@@ -35,7 +35,11 @@ from .provenance import (
     write_screen_attempt_intent,
     write_episode_result,
 )
-from .study_protocol import DSPY_REQUEST_AUDIT_SCHEMA_VERSION
+from .study_protocol import (
+    DSPY_REQUEST_AUDIT_SCHEMA_VERSIONS,
+    StudyProtocolError,
+    validate_dspy_provider_call,
+)
 from .tools import TOOL_SCHEMAS, RepoTools
 
 MODEL = "Qwen/Qwen3.5-9B"
@@ -157,7 +161,7 @@ def _validate_final_episode(
             forced
             and episode.get("status") == "no_answer"
             and episode.get("dspy_request_audit_schema")
-            == DSPY_REQUEST_AUDIT_SCHEMA_VERSION
+            in DSPY_REQUEST_AUDIT_SCHEMA_VERSIONS
             and isinstance(episode.get("non_answer_audit"), dict)
             and episode["non_answer_audit"].get("kind")
             == "adapter_parse_failure"
@@ -219,16 +223,15 @@ def _validate_final_episode(
                 if not required.issubset(attempt) or attempt["attempt"] > 4:
                     raise ValueError(f"native request attempt {index} is incomplete")
         else:
-            required_call = {
-                "call", "response_model", "response_id", "system_fingerprint",
-                "request_messages_sha256", "outputs_sha256", "provider_usage",
-                "prompt_tokens", "completion_tokens", "total_tokens",
-            }
-            null_hash = sha256_json(None)
+            audit_schema = episode.get("dspy_request_audit_schema")
             for index, record in enumerate(records):
-                if (not required_call.issubset(record)
-                        or record["request_messages_sha256"] == null_hash
-                        or record["outputs_sha256"] == null_hash):
+                try:
+                    validate_dspy_provider_call(
+                        record,
+                        index,
+                        schema_version=audit_schema,
+                    )
+                except StudyProtocolError as error:
                     raise ValueError(f"DSPy usage call {index} is incomplete")
     except GradeIntegrityError as error:
         raise ValueError(f"episode failed canonical validation: {error}") from error

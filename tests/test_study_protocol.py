@@ -12,6 +12,9 @@ from studybench.integrity import (
 from studybench.provenance import _load_note
 from studybench.report import validated_note_provenance
 from studybench.study_protocol import (
+    _DspyAdapterParseFailure,
+    _dspy_output_field_contract,
+    _replay_dspy_json_parse,
     DSPY_ADAPTER_NAME,
     DSPY_ADAPTER_POLICY,
     DSPY_SEMANTIC_CHAPTER_SYLLABUS,
@@ -231,8 +234,31 @@ def forced_config() -> dict:
     }
 
 
-def forced_episode(config: dict, note: str = "study note\n") -> dict:
-    return {
+def forced_episode(config: dict, note: str = "study note") -> dict:
+    usage = {
+        "prompt_tokens": 90,
+        "completion_tokens": 10,
+        "total_tokens": 100,
+    }
+    output = f"[[ ## reasoning ## ]]\nstudied\n\n[[ ## answer ## ]]\n{note}"
+    processed_response = {
+        "id": "response-1",
+        "model": config["expected_response_model"],
+        "system_fingerprint": "fingerprint",
+        "choices": [{
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {
+                "content": output,
+                "reasoning_content": None,
+                "tool_calls": None,
+            },
+        }],
+        "usage": usage,
+    }
+    outputs = [output]
+    parsed_outputs = [{"reasoning": "studied", "answer": note}]
+    episode = {
         "task": config["task"],
         "qid": "cheatsheet",
         "budget": "s50",
@@ -240,6 +266,7 @@ def forced_episode(config: dict, note: str = "study note\n") -> dict:
         "model": config["model"],
         "model_revision": config["model_revision"],
         "harness": "dspy.ReAct",
+        "dspy_request_audit_schema": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
         "seed": config["episode_seed"],
         "study_intent_sha256": sha256_json(config),
         "question_sha256": config["study_question_sha256"],
@@ -250,6 +277,7 @@ def forced_episode(config: dict, note: str = "study note\n") -> dict:
         "n_react_iters": 50,
         "n_tool_iters": 50,
         "finish_catches": 0,
+        "forced_budget_complete": True,
         "turns": [
             {
                 "reasoning": f"step {index}",
@@ -269,20 +297,52 @@ def forced_episode(config: dict, note: str = "study note\n") -> dict:
             "response_model": config["expected_response_model"],
             "system_fingerprint": "fingerprint",
             "request_messages_sha256": "1" * 64,
-            "outputs_sha256": "2" * 64,
-            "provider_usage": {
-                "prompt_tokens": 90,
-                "completion_tokens": 10,
-                "total_tokens": 100,
-            },
+            "outputs_sha256": sha256_json(outputs),
+            "processed_response": processed_response,
+            "processed_response_canonical_bytes": len(
+                canonical_json_bytes(processed_response)
+            ),
+            "processed_response_sha256": sha256_json(processed_response),
+            "outputs": outputs,
+            "outputs_canonical_bytes": len(canonical_json_bytes(outputs)),
+            "finish_reasons": ["stop"],
+            "provider_usage": usage,
             "prompt_tokens": 90,
             "completion_tokens": 10,
             "total_tokens": 100,
         }],
     }
+    episode["answer_audit"] = {
+        "schema_version": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
+        "kind": "parsed_answer",
+        "stage": "extract",
+        "adapter": "ChatAdapter",
+        "fallback_used": False,
+        "provider_calls": [0],
+        "provider_call": 0,
+        "choice": 0,
+        "outputs_sha256": sha256_json(outputs),
+        "selected_output_canonical_bytes": len(canonical_json_bytes(output)),
+        "selected_output_sha256": sha256_json(output),
+        "parsed_outputs": parsed_outputs,
+        "parsed_outputs_canonical_bytes": len(canonical_json_bytes(parsed_outputs)),
+        "parsed_outputs_sha256": sha256_json(parsed_outputs),
+        "answer_sha256": sha256_text(note),
+    }
+    return episode
 
 
 class StudyProtocolTests(unittest.TestCase):
+    def test_main_json_replay_preserves_recursive_object_error_input(self) -> None:
+        completion = 'prefix [1] {"other":"value"} suffix'
+        with self.assertRaises(_DspyAdapterParseFailure) as caught:
+            _replay_dspy_json_parse(
+                completion,
+                _dspy_output_field_contract("direct"),
+            )
+        self.assertEqual(caught.exception.lm_response, '{"other":"value"}')
+        self.assertEqual(caught.exception.parsed_result, {})
+
     def test_manifest_only_semantic_archive_cannot_assert_readiness(self) -> None:
         task = semantic_task()
         note, dependencies = note_for_task(task)
@@ -451,7 +511,7 @@ class StudyProtocolTests(unittest.TestCase):
 
     def test_forced_episode_preflight_rejects_turn_and_token_drift(self) -> None:
         config = forced_config()
-        note = "study note\n"
+        note = "study note"
         episode = forced_episode(config, note)
         validate_forced50_episode(
             canonical_json_bytes(episode),

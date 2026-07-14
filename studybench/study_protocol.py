@@ -6,11 +6,15 @@ can independently derive the same prompt, sampling, seed, and tool contract.
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Callable, Mapping
 import json
 from pathlib import PurePosixPath
 import re
 from typing import Any
+
+import json_repair
+import regex
 
 from .integrity import (
     canonical_json_bytes,
@@ -50,11 +54,17 @@ STATIC_GRAPH_TASK_MANIFEST_TYPE = "deterministic-static-graph-study-task"
 STATIC_GRAPH_NOTE_MANIFEST_TYPE = "deterministic-static-graph-note"
 HUMAN_AUDITED_NOTE_MANIFEST_TYPE = "human-audited-note"
 
-FORCED50_CONFIG_SCHEMA_VERSION = 4
+FORCED50_CONFIG_SCHEMA_VERSION = 5
+FORCED50_LEGACY_CONFIG_SCHEMA_VERSION = 4
 FORCED50_ITERATIONS = 50
 DSPY_ADAPTER_NAME = "studybench.react.ParseOnlyFallbackChatAdapter"
 DSPY_ADAPTER_POLICY = "parse-only-chat-to-json-fallback-v1"
-DSPY_REQUEST_AUDIT_SCHEMA_VERSION = 2
+DSPY_REQUEST_AUDIT_SCHEMA_VERSION = 3
+DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION = 2
+DSPY_REQUEST_AUDIT_SCHEMA_VERSIONS = frozenset({
+    DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION,
+    DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
+})
 FORCED50_CONFIG_KEYS = frozenset({
     "schema_version",
     "study_id",
@@ -353,6 +363,633 @@ def _valid_sha256(value: object) -> bool:
         and len(value) == _SHA256_LENGTH
         and all(character in "0123456789abcdef" for character in value)
     )
+
+
+_DSPY_V2_PROVIDER_CALL_KEYS = frozenset({
+    "call",
+    "response_model",
+    "response_id",
+    "system_fingerprint",
+    "request_messages_sha256",
+    "outputs_sha256",
+    "provider_usage",
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+})
+_DSPY_V3_PROVIDER_CALL_KEYS = frozenset({
+    *_DSPY_V2_PROVIDER_CALL_KEYS,
+    "processed_response",
+    "processed_response_canonical_bytes",
+    "processed_response_sha256",
+    "outputs",
+    "outputs_canonical_bytes",
+    "finish_reasons",
+})
+_DSPY_V3_BINDING_COMMON_KEYS = frozenset({
+    "schema_version",
+    "kind",
+    "stage",
+    "adapter",
+    "fallback_used",
+    "provider_calls",
+    "provider_call",
+    "choice",
+    "outputs_sha256",
+    "selected_output_canonical_bytes",
+    "selected_output_sha256",
+})
+_DSPY_V3_PARSED_BINDING_KEYS = frozenset({
+    *_DSPY_V3_BINDING_COMMON_KEYS,
+    "parsed_outputs",
+    "parsed_outputs_canonical_bytes",
+    "parsed_outputs_sha256",
+    "answer_sha256",
+})
+_DSPY_V3_PARSE_FAILURE_BINDING_KEYS = frozenset({
+    *_DSPY_V3_BINDING_COMMON_KEYS,
+    "adapter_lm_response",
+    "adapter_lm_response_replay",
+    "adapter_lm_response_bytes",
+    "adapter_lm_response_sha256",
+    "parsed_result",
+    "parsed_result_canonical_bytes",
+    "parsed_result_sha256",
+})
+
+_DSPY_FIELD_HEADER_PATTERN = re.compile(r"\[\[ ## (\w+) ## \]\]")
+_DSPY_JSON_OBJECT_PATTERN = r"\{(?:[^{}]|(?R))*\}"
+_DSPY_REACT_TOOL_NAMES = ("grep", "glob", "read_file", "finish")
+
+
+class _DspyAdapterParseFailure(ValueError):
+    """The independently replayed pinned adapter raised AdapterParseError."""
+
+    def __init__(
+        self,
+        lm_response: str,
+        parsed_result: object = None,
+        *,
+        lm_response_replayable: bool = True,
+    ):
+        super().__init__("pinned DSPy adapter parse failure")
+        self.lm_response = lm_response
+        self.parsed_result = parsed_result
+        self.lm_response_replayable = lm_response_replayable
+
+
+def _dspy_output_field_contract(stage: str) -> tuple[tuple[str, str], ...]:
+    """Return the only output signatures used by the frozen local harness."""
+
+    if stage == "direct":
+        return (("answer", "str"),)
+    if stage == "extract":
+        return (("reasoning", "str"), ("answer", "str"))
+    if stage == "react":
+        return (
+            ("next_thought", "str"),
+            ("next_tool_name", "tool_name"),
+            ("next_tool_args", "dict"),
+        )
+    raise StudyProtocolError("unknown DSPy adapter parse stage")
+
+
+def _parse_dspy_value(value: object, field_type: str) -> object:
+    """Replay pinned ``parse_value`` for this harness's three field types."""
+
+    if field_type == "str":
+        return str(value)
+    if field_type == "tool_name":
+        if value in _DSPY_REACT_TOOL_NAMES:
+            return value
+        if isinstance(value, str):
+            candidate = value.strip()
+            if candidate.startswith(("Literal[", "str[")) and candidate.endswith("]"):
+                candidate = candidate[candidate.find("[") + 1 : -1]
+            if (
+                len(candidate) > 1
+                and candidate[0] == candidate[-1]
+                and candidate[0] in "\"'"
+            ):
+                candidate = candidate[1:-1]
+            if candidate in _DSPY_REACT_TOOL_NAMES:
+                return candidate
+        raise ValueError("invalid pinned DSPy ReAct tool name")
+    if field_type != "dict":
+        raise StudyProtocolError("unknown pinned DSPy output field type")
+    candidate = value
+    if isinstance(value, str):
+        candidate = json_repair.loads(value)
+        if candidate == "" and value != "":
+            try:
+                candidate = ast.literal_eval(value)
+            except (ValueError, SyntaxError):
+                candidate = value
+    if not isinstance(candidate, dict) or any(
+        not isinstance(key, str) for key in candidate
+    ):
+        raise ValueError("invalid pinned DSPy ReAct tool arguments")
+    return candidate
+
+
+def _replay_dspy_chat_parse(
+    completion: str,
+    field_contract: tuple[tuple[str, str], ...],
+) -> dict[str, object]:
+    """Replay pinned ``ChatAdapter.parse`` for one harness signature."""
+
+    sections: list[tuple[str | None, list[str]]] = [(None, [])]
+    for line in completion.splitlines():
+        match = _DSPY_FIELD_HEADER_PATTERN.match(line.strip())
+        if match:
+            header = match.group(1)
+            remaining = line[match.end() :].strip()
+            sections.append((header, [remaining] if remaining else []))
+        else:
+            sections[-1][1].append(line)
+    normalized_sections = [
+        (key, "\n".join(lines).strip()) for key, lines in sections
+    ]
+    expected = dict(field_contract)
+    fields: dict[str, object] = {}
+    for key, value in normalized_sections:
+        if key not in fields and key in expected:
+            try:
+                fields[key] = _parse_dspy_value(value, expected[key])
+            except Exception as error:
+                raise _DspyAdapterParseFailure(completion) from error
+    if fields.keys() != expected.keys():
+        raise _DspyAdapterParseFailure(completion, fields)
+    return fields
+
+
+def _replay_dspy_json_parse(
+    completion: str,
+    field_contract: tuple[tuple[str, str], ...],
+) -> dict[str, object]:
+    """Replay pinned ``JSONAdapter.parse``, including repaired-object extraction."""
+
+    fields = json_repair.loads(completion)
+    if not isinstance(fields, dict):
+        match = regex.search(_DSPY_JSON_OBJECT_PATTERN, completion, regex.DOTALL)
+        if match:
+            completion = match.group(0)
+            fields = json_repair.loads(completion)
+    if not isinstance(fields, dict):
+        raise _DspyAdapterParseFailure(completion)
+    expected = dict(field_contract)
+    parsed = {key: value for key, value in fields.items() if key in expected}
+    for key, value in parsed.items():
+        parsed[key] = _parse_dspy_value(value, expected[key])
+    if parsed.keys() != expected.keys():
+        raise _DspyAdapterParseFailure(completion, parsed)
+    return parsed
+
+
+def _replay_dspy_adapter(
+    adapter: str,
+    selected_output: object,
+    field_contract: tuple[tuple[str, str], ...],
+) -> dict[str, object]:
+    """Replay pinned ``Adapter._call_postprocess`` and its selected parser."""
+
+    output = selected_output
+    text = output.get("text") if isinstance(output, Mapping) else output
+    if text:
+        if not isinstance(text, str):
+            raise StudyProtocolError("DSPy adapter selected non-text content")
+        if adapter == "ChatAdapter":
+            return _replay_dspy_chat_parse(text, field_contract)
+        if adapter == "JSONAdapter":
+            return _replay_dspy_json_parse(text, field_contract)
+        raise StudyProtocolError("unknown DSPy adapter in extraction binding")
+    if isinstance(output, Mapping) and output.get("tool_calls"):
+        # None of the three frozen signatures exposes a ToolCalls output.  The
+        # pinned adapter therefore provably rejects this branch before typed
+        # parsing.  Its recorded AdapterParseError text remains an exact runtime
+        # diagnostic, but LiteLLM SDK-object repr is not reconstructible from
+        # retained JSON and is not treated as independent lineage evidence.
+        raise _DspyAdapterParseFailure(
+            "", lm_response_replayable=False
+        )
+    raise _DspyAdapterParseFailure(str(output))
+
+
+def _dspy_completion_outputs(processed_response: Mapping[str, Any]) -> list[Any]:
+    """Reconstruct pinned DSPy's normalized chat outputs from one response.
+
+    The research harness uses ``model_type='chat'`` without log probabilities or
+    citation-bearing providers.  Recomputing this small pinned transformation
+    makes the retained normalized outputs independently checkable against the
+    exact JSON-native LiteLLM response snapshot.
+    """
+
+    choices = processed_response.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise StudyProtocolError("DSPy provider response has no choices")
+    outputs: list[Any] = []
+    for index, choice in enumerate(choices):
+        if (
+            not isinstance(choice, Mapping)
+            or type(choice.get("index")) is not int
+            or choice.get("index") != index
+        ):
+            raise StudyProtocolError(
+                f"DSPy provider response choice {index} has an invalid index"
+            )
+        message = choice.get("message")
+        if not isinstance(message, Mapping) or "content" not in message:
+            raise StudyProtocolError(
+                f"DSPy provider response choice {index} has no chat message"
+            )
+        content = message.get("content")
+        if content is not None and not isinstance(content, str):
+            raise StudyProtocolError(
+                f"DSPy provider response choice {index} has invalid content"
+            )
+        output: dict[str, Any] = {"text": content}
+        reasoning = message.get("reasoning_content")
+        if reasoning is not None and not isinstance(reasoning, str):
+            raise StudyProtocolError(
+                f"DSPy provider response choice {index} has invalid reasoning"
+            )
+        if reasoning:
+            output["reasoning_content"] = reasoning
+        tool_calls = message.get("tool_calls")
+        if tool_calls is not None and not isinstance(tool_calls, list):
+            raise StudyProtocolError(
+                f"DSPy provider response choice {index} has invalid tool calls"
+            )
+        if tool_calls:
+            output["tool_calls"] = tool_calls
+        outputs.append(output)
+    if all(set(output) == {"text"} for output in outputs):
+        return [output["text"] for output in outputs]
+    return outputs
+
+
+def validate_dspy_provider_call(
+    record: Mapping[str, Any],
+    index: int,
+    *,
+    schema_version: int,
+) -> None:
+    """Validate one historical or current DSPy provider-call record exactly."""
+
+    if type(index) is not int or index < 0:
+        raise StudyProtocolError("DSPy provider-call expectations are invalid")
+    if schema_version not in DSPY_REQUEST_AUDIT_SCHEMA_VERSIONS:
+        raise StudyProtocolError("unknown DSPy request-audit schema")
+    expected_keys = (
+        _DSPY_V3_PROVIDER_CALL_KEYS
+        if schema_version == DSPY_REQUEST_AUDIT_SCHEMA_VERSION
+        else _DSPY_V2_PROVIDER_CALL_KEYS
+    )
+    if not isinstance(record, Mapping) or set(record) != expected_keys:
+        raise StudyProtocolError(f"DSPy provider call {index} has an invalid shape")
+    values = [
+        record.get(field)
+        for field in ("prompt_tokens", "completion_tokens", "total_tokens")
+    ]
+    usage = record.get("provider_usage")
+    if (
+        record.get("call") != index
+        or type(record.get("call")) is not int
+        or not isinstance(record.get("response_model"), str)
+        or not record["response_model"]
+        or not isinstance(record.get("response_id"), str)
+        or not record["response_id"]
+        or (
+            record.get("system_fingerprint") is not None
+            and (
+                not isinstance(record["system_fingerprint"], str)
+                or not record["system_fingerprint"]
+            )
+        )
+        or not _valid_sha256(record.get("request_messages_sha256"))
+        or not _valid_sha256(record.get("outputs_sha256"))
+        or record.get("request_messages_sha256") == sha256_json(None)
+        or record.get("outputs_sha256") == sha256_json(None)
+        or not isinstance(usage, Mapping)
+        or any(type(value) is not int or value < 0 for value in values)
+        or values[2] != values[0] + values[1]
+        or any(
+            usage.get(field) != value
+            for field, value in zip(
+                ("prompt_tokens", "completion_tokens", "total_tokens"),
+                values,
+                strict=True,
+            )
+        )
+    ):
+        raise StudyProtocolError(f"DSPy provider call {index} is incomplete")
+    if schema_version == DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION:
+        return
+
+    response = record.get("processed_response")
+    outputs = record.get("outputs")
+    finish_reasons = record.get("finish_reasons")
+    if (
+        not isinstance(response, Mapping)
+        or set(response)
+        != {"id", "model", "system_fingerprint", "choices", "usage"}
+        or not isinstance(outputs, list)
+    ):
+        raise StudyProtocolError(
+            f"DSPy provider call {index} has no retained response or outputs"
+        )
+    try:
+        response_bytes = canonical_json_bytes(response)
+        output_bytes = canonical_json_bytes(outputs)
+    except (TypeError, ValueError) as error:
+        raise StudyProtocolError(
+            f"DSPy provider call {index} retention is not canonical JSON-native"
+        ) from error
+    if (
+        type(record.get("processed_response_canonical_bytes")) is not int
+        or record["processed_response_canonical_bytes"] != len(response_bytes)
+        or record.get("processed_response_sha256") != sha256_bytes(response_bytes)
+        or type(record.get("outputs_canonical_bytes")) is not int
+        or record["outputs_canonical_bytes"] != len(output_bytes)
+        or record.get("outputs_sha256") != sha256_bytes(output_bytes)
+        or response.get("id") != record["response_id"]
+        or response.get("model") != record["response_model"]
+        or response.get("system_fingerprint") != record["system_fingerprint"]
+        or not _same_json(response.get("usage"), usage)
+    ):
+        raise StudyProtocolError(
+            f"DSPy provider call {index} retention linkage is inconsistent"
+        )
+    choices = response.get("choices")
+    if (
+        not isinstance(choices, list)
+        or len(choices) != 1
+        or len(choices) != len(outputs)
+        or not isinstance(finish_reasons, list)
+        or len(finish_reasons) != len(choices)
+    ):
+        raise StudyProtocolError(
+            f"DSPy provider call {index} choice retention is incomplete"
+        )
+    observed_finish_reasons = []
+    for choice_index, choice in enumerate(choices):
+        if (
+            not isinstance(choice, Mapping)
+            or set(choice) != {"index", "finish_reason", "message"}
+            or not isinstance(choice.get("message"), Mapping)
+            or set(choice["message"])
+            != {"content", "reasoning_content", "tool_calls"}
+        ):
+            raise StudyProtocolError(
+                f"DSPy provider call {index} choice {choice_index} has an invalid shape"
+            )
+        finish_reason = (
+            choice.get("finish_reason")
+        )
+        if not isinstance(finish_reason, str) or not finish_reason:
+            raise StudyProtocolError(
+                f"DSPy provider call {index} choice {choice_index} has no finish reason"
+            )
+        observed_finish_reasons.append(finish_reason)
+    if finish_reasons != observed_finish_reasons:
+        raise StudyProtocolError(
+            f"DSPy provider call {index} finish reasons are inconsistent"
+        )
+    if not _same_json(outputs, _dspy_completion_outputs(response)):
+        raise StudyProtocolError(
+            f"DSPy provider call {index} outputs differ from its provider response"
+        )
+
+
+def _selected_dspy_output(record: Mapping[str, Any], choice: int) -> Any:
+    outputs = record.get("outputs")
+    if (
+        not isinstance(outputs, list)
+        or type(choice) is not int
+        or choice < 0
+        or choice >= len(outputs)
+    ):
+        raise StudyProtocolError("DSPy extraction binding selects no retained output")
+    return outputs[choice]
+
+
+def validate_dspy_final_binding(episode: Mapping[str, Any]) -> None:
+    """Bind the final answer/non-answer to its exact final provider response.
+
+    Every ledger response is retained, validated, and usage-accounted by the
+    provider-call validator.  This narrower binding replays only the terminal
+    adapter invocation; it does not partition earlier non-direct calls into a
+    complete sequence of adapter invocation groups.
+    """
+
+    if (
+        not isinstance(episode, Mapping)
+        or episode.get("dspy_request_audit_schema")
+        != DSPY_REQUEST_AUDIT_SCHEMA_VERSION
+    ):
+        raise StudyProtocolError("current DSPy final binding has no current schema")
+    status = episode.get("status")
+    binding_name = "answer_audit" if status == "ok" else "non_answer_audit"
+    opposite_binding_name = (
+        "non_answer_audit" if status == "ok" else "answer_audit"
+    )
+    binding = episode.get(binding_name)
+    ledger = episode.get("usage_ledger")
+    if (
+        status not in {"ok", "no_answer"}
+        or opposite_binding_name in episode
+        or not isinstance(binding, Mapping)
+    ):
+        raise StudyProtocolError("current DSPy episode has no final extraction binding")
+    kind = binding.get("kind")
+    expected_keys = (
+        _DSPY_V3_PARSED_BINDING_KEYS
+        if kind in {"parsed_answer", "parsed_empty_answer"}
+        else _DSPY_V3_PARSE_FAILURE_BINDING_KEYS
+        if kind == "adapter_parse_failure"
+        else frozenset()
+    )
+    provider_calls = binding.get("provider_calls")
+    provider_call = binding.get("provider_call")
+    choice = binding.get("choice")
+    if (
+        set(binding) != expected_keys
+        or type(binding.get("schema_version")) is not int
+        or binding.get("schema_version") != DSPY_REQUEST_AUDIT_SCHEMA_VERSION
+        or not isinstance(ledger, list)
+        or not ledger
+        or type(provider_call) is not int
+        or provider_call != len(ledger) - 1
+        or not isinstance(provider_calls, list)
+        or not provider_calls
+        or any(type(call) is not int for call in provider_calls)
+        or provider_calls != list(range(provider_calls[0], provider_call + 1))
+        or provider_calls[0] < 0
+        or (binding.get("stage") == "direct" and provider_calls[0] != 0)
+        or type(choice) is not int
+        or choice != 0
+        or binding.get("stage") not in {"direct", "react", "extract"}
+        or type(binding.get("fallback_used")) is not bool
+        or not isinstance(binding.get("adapter"), str)
+        or not binding["adapter"]
+    ):
+        raise StudyProtocolError("current DSPy extraction binding is malformed")
+    fallback_used = binding["fallback_used"]
+    # Direct/extract may add one failed structured-output JSON call before the
+    # JSON-mode retry. ReAct's open-ended args mapping selects JSON mode
+    # immediately, so its fallback group is exactly Chat + one JSON response.
+    if (
+        fallback_used != (len(provider_calls) > 1)
+        or (
+            fallback_used
+            and binding["stage"] == "react"
+            and len(provider_calls) != 2
+        )
+        or (
+            fallback_used
+            and binding["stage"] != "react"
+            and len(provider_calls) not in {2, 3}
+        )
+        or (fallback_used and binding["adapter"] != "JSONAdapter")
+        or (not fallback_used and binding["adapter"] != "ChatAdapter")
+        or (
+            kind == "adapter_parse_failure"
+            and (not fallback_used or binding["adapter"] != "JSONAdapter")
+        )
+    ):
+        raise StudyProtocolError("current DSPy adapter fallback binding is inconsistent")
+    budget = episode.get("budget")
+    stage = binding["stage"]
+    if (
+        (budget == "direct" and stage != "direct")
+        or (budget != "direct" and stage == "direct")
+        or (kind in {"parsed_answer", "parsed_empty_answer"} and stage == "react")
+    ):
+        raise StudyProtocolError("current DSPy extraction stage violates its budget")
+    record = ledger[provider_call]
+    selected = _selected_dspy_output(record, choice)
+    selected_bytes = canonical_json_bytes(selected)
+    if (
+        binding.get("outputs_sha256") != record.get("outputs_sha256")
+        or type(binding.get("selected_output_canonical_bytes")) is not int
+        or binding["selected_output_canonical_bytes"] != len(selected_bytes)
+        or binding.get("selected_output_sha256") != sha256_bytes(selected_bytes)
+    ):
+        raise StudyProtocolError("current DSPy binding differs from its selected output")
+    answer = episode.get("answer")
+    if not isinstance(answer, str):
+        raise StudyProtocolError("current DSPy bound answer is not text")
+    response = record.get("processed_response")
+    if not isinstance(response, Mapping):
+        raise StudyProtocolError("current DSPy binding has no provider response")
+    replay_outputs = _dspy_completion_outputs(response)
+    replay_selected = replay_outputs[choice]
+    field_contract = _dspy_output_field_contract(stage)
+    if fallback_used:
+        for offset, prior_call in enumerate(provider_calls[:-1]):
+            prior_record = ledger[prior_call]
+            prior_response = (
+                prior_record.get("processed_response")
+                if isinstance(prior_record, Mapping)
+                else None
+            )
+            if not isinstance(prior_response, Mapping):
+                raise StudyProtocolError(
+                    "current DSPy fallback has no prior provider response"
+                )
+            prior_outputs = _dspy_completion_outputs(prior_response)
+            if choice >= len(prior_outputs):
+                raise StudyProtocolError(
+                    "current DSPy fallback prior call has no selected output"
+                )
+            prior_adapter = "ChatAdapter" if offset == 0 else "JSONAdapter"
+            try:
+                _replay_dspy_adapter(
+                    prior_adapter, prior_outputs[choice], field_contract
+                )
+            except _DspyAdapterParseFailure:
+                continue
+            except StudyProtocolError:
+                raise
+            except Exception:
+                if prior_adapter == "JSONAdapter":
+                    # JSONAdapter retries structured-output calls after any
+                    # parser/type exception, not only AdapterParseError.
+                    continue
+                raise StudyProtocolError(
+                    "current DSPy primary Chat fallback is not replayable"
+                )
+            raise StudyProtocolError(
+                "current DSPy fallback bypasses an earlier parsed provider output"
+            )
+    replayed: dict[str, object] | None = None
+    replay_failure: _DspyAdapterParseFailure | None = None
+    try:
+        replayed = _replay_dspy_adapter(
+            binding["adapter"], replay_selected, field_contract
+        )
+    except _DspyAdapterParseFailure as error:
+        replay_failure = error
+    except Exception as error:
+        raise StudyProtocolError(
+            "current DSPy adapter outcome cannot be independently replayed"
+        ) from error
+    if kind in {"parsed_answer", "parsed_empty_answer"}:
+        parsed_outputs = binding.get("parsed_outputs")
+        if not isinstance(parsed_outputs, list):
+            raise StudyProtocolError("current DSPy binding has no parsed outputs")
+        parsed_bytes = canonical_json_bytes(parsed_outputs)
+        if (
+            type(binding.get("parsed_outputs_canonical_bytes")) is not int
+            or binding["parsed_outputs_canonical_bytes"] != len(parsed_bytes)
+            or binding.get("parsed_outputs_sha256") != sha256_bytes(parsed_bytes)
+            or len(parsed_outputs) != len(record.get("outputs", []))
+            or not parsed_outputs
+            or replay_failure is not None
+            or replayed is None
+            or not _same_json(parsed_outputs, [replayed])
+            or not isinstance(parsed_outputs[choice], Mapping)
+            or parsed_outputs[choice].get("answer") != answer
+            or binding.get("answer_sha256") != sha256_text(answer)
+            or (kind == "parsed_answer" and (status != "ok" or not answer.strip()))
+            or (
+                kind == "parsed_empty_answer"
+                and (status != "no_answer" or answer.strip())
+            )
+        ):
+            raise StudyProtocolError("current DSPy parsed-answer binding is inconsistent")
+    else:
+        if status != "no_answer" or answer.strip():
+            raise StudyProtocolError("current DSPy parse failure is not a non-answer")
+        adapter_lm_response = binding.get("adapter_lm_response")
+        if not isinstance(adapter_lm_response, str):
+            raise StudyProtocolError("current DSPy parse failure has no LM response")
+        parsed_result = binding.get("parsed_result")
+        parsed_result_bytes = canonical_json_bytes(parsed_result)
+        replay_mode = (
+            "exact"
+            if replay_failure is not None and replay_failure.lm_response_replayable
+            else "sdk-repr-unreplayable-tool-call-only"
+        )
+        if (
+            type(binding.get("adapter_lm_response_bytes")) is not int
+            or binding["adapter_lm_response_bytes"]
+            != len(adapter_lm_response.encode("utf-8"))
+            or binding.get("adapter_lm_response_sha256")
+            != sha256_text(adapter_lm_response)
+            or type(binding.get("parsed_result_canonical_bytes")) is not int
+            or binding["parsed_result_canonical_bytes"] != len(parsed_result_bytes)
+            or binding.get("parsed_result_sha256")
+            != sha256_bytes(parsed_result_bytes)
+            or replay_failure is None
+            or binding.get("adapter_lm_response_replay") != replay_mode
+            or (
+                replay_mode == "exact"
+                and adapter_lm_response != replay_failure.lm_response
+            )
+            or not _same_json(parsed_result, replay_failure.parsed_result)
+        ):
+            raise StudyProtocolError("current DSPy parse-failure binding is inconsistent")
 
 
 def _canonical_task_manifest(
@@ -1907,7 +2544,20 @@ def validate_forced50_config(
     if (
         set(value) != FORCED50_CONFIG_KEYS
         or type(value.get("schema_version")) is not int
-        or value["schema_version"] != FORCED50_CONFIG_SCHEMA_VERSION
+        or (
+            value.get("schema_version"),
+            value.get("dspy_request_audit_schema"),
+        )
+        not in {
+            (
+                FORCED50_LEGACY_CONFIG_SCHEMA_VERSION,
+                DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION,
+            ),
+            (
+                FORCED50_CONFIG_SCHEMA_VERSION,
+                DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
+            ),
+        }
         or not isinstance(value.get("study_id"), str)
         or not value["study_id"]
         or not isinstance(value.get("task"), str)
@@ -1921,8 +2571,6 @@ def validate_forced50_config(
         or not value["expected_response_model"]
         or value.get("adapter") != DSPY_ADAPTER_NAME
         or value.get("adapter_fallback_policy") != DSPY_ADAPTER_POLICY
-        or value.get("dspy_request_audit_schema")
-        != DSPY_REQUEST_AUDIT_SCHEMA_VERSION
         or type(value.get("master_seed")) is not int
         or type(value.get("episode_seed")) is not int
         or value.get("forced_iterations") != FORCED50_ITERATIONS
@@ -2036,9 +2684,11 @@ def validate_forced50_provider_identity(
     if not isinstance(episode, Mapping):
         raise StudyProtocolError("forced-50 episode is not a JSON object")
     ledger = episode.get("usage_ledger")
+    audit_schema = episode.get("dspy_request_audit_schema")
     if (
         not isinstance(expected_response_model, str)
         or not expected_response_model
+        or audit_schema not in DSPY_REQUEST_AUDIT_SCHEMA_VERSIONS
         or not isinstance(ledger, list)
         or not ledger
         or type(episode.get("n_lm_calls")) is not int
@@ -2050,21 +2700,19 @@ def validate_forced50_provider_identity(
     missing_fingerprints = 0
     totals = {field: 0 for field in ("prompt_tokens", "completion_tokens", "total_tokens")}
     for index, record in enumerate(ledger):
-        if (
-            not isinstance(record, dict)
-            or type(record.get("call")) is not int
-            or record.get("call") != index
-            or record.get("response_model") != expected_response_model
-            or not isinstance(record.get("response_id"), str)
-            or not record["response_id"]
-            or not _valid_sha256(record.get("request_messages_sha256"))
-            or not _valid_sha256(record.get("outputs_sha256"))
-            or record.get("request_messages_sha256") == sha256_json(None)
-            or record.get("outputs_sha256") == sha256_json(None)
-            or not isinstance(record.get("provider_usage"), dict)
-        ):
+        try:
+            validate_dspy_provider_call(
+                record,
+                index,
+                schema_version=audit_schema,
+            )
+        except StudyProtocolError as error:
             raise StudyProtocolError(
                 f"forced-50 provider call {index} has invalid identity or usage"
+            ) from error
+        if record.get("response_model") != expected_response_model:
+            raise StudyProtocolError(
+                f"forced-50 provider call {index} has an unexpected response model"
             )
         if record["response_id"] in response_ids:
             raise StudyProtocolError("forced-50 provider response IDs are not unique")
@@ -2100,6 +2748,8 @@ def validate_forced50_provider_identity(
         raise StudyProtocolError(
             "forced-50 episode totals do not match its provider usage ledger"
         )
+    if audit_schema == DSPY_REQUEST_AUDIT_SCHEMA_VERSION:
+        validate_dspy_final_binding(episode)
     return {
         "response_models": [expected_response_model],
         "system_fingerprints": sorted(fingerprints),
@@ -2194,6 +2844,8 @@ def validate_forced50_episode(
         or parsed.get("budget") != "s50"
         or parsed.get("rollout") != 0
         or parsed.get("harness") != "dspy.ReAct"
+        or parsed.get("dspy_request_audit_schema")
+        != value.get("dspy_request_audit_schema")
         or parsed.get("status") != "ok"
         or not isinstance(parsed.get("started"), str)
         or not parsed["started"]

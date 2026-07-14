@@ -56,11 +56,14 @@ from .preregistration import (
     revalidate_run_preregistration,
 )
 from .study_protocol import (
+    DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
+    DSPY_REQUEST_AUDIT_SCHEMA_VERSIONS,
     HUMAN_AUDITED_NOTE_MANIFEST_TYPE,
     SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
     STATIC_GRAPH_NOTE_MANIFEST_TYPE,
     StudyProtocolError,
     validate_construction_protocol,
+    validate_dspy_provider_call,
     validate_forced50_config,
     validate_forced50_episode,
     validate_study_note_archive,
@@ -3504,21 +3507,35 @@ def _screen_failure_usage_audit(
         if not isinstance(ledger, list) or type(calls) is not int or calls < len(ledger):
             raise ValueError("DSPy failed usage ledger length is invalid")
         ledger_prompt = ledger_completion = ledger_total = 0
-        required = {
+        audit_schema = episode.get("dspy_request_audit_schema")
+        if audit_schema not in DSPY_REQUEST_AUDIT_SCHEMA_VERSIONS:
+            raise ValueError("DSPy failed episode has no supported request-audit schema")
+        historical_required = {
             "call", "response_model", "response_id", "system_fingerprint",
             "request_messages_sha256", "outputs_sha256", "provider_usage",
             "prompt_tokens", "completion_tokens", "total_tokens",
         }
         for index, record in enumerate(ledger):
-            if (
-                not isinstance(record, dict)
-                or set(record) != required
-                or record.get("call") != index
-                or type(record.get("call")) is not int
-                or not isinstance(record.get("request_messages_sha256"), str)
-                or not _SHA256.fullmatch(record["request_messages_sha256"])
-                or not isinstance(record.get("outputs_sha256"), str)
-                or not _SHA256.fullmatch(record["outputs_sha256"])
+            if audit_schema == DSPY_REQUEST_AUDIT_SCHEMA_VERSION:
+                try:
+                    validate_dspy_provider_call(
+                        record,
+                        index,
+                        schema_version=audit_schema,
+                    )
+                except StudyProtocolError as error:
+                    raise ValueError(
+                        "DSPy failed usage call record is invalid"
+                    ) from error
+            elif (
+                    not isinstance(record, dict)
+                    or set(record) != historical_required
+                    or record.get("call") != index
+                    or type(record.get("call")) is not int
+                    or not isinstance(record.get("request_messages_sha256"), str)
+                    or not _SHA256.fullmatch(record["request_messages_sha256"])
+                    or not isinstance(record.get("outputs_sha256"), str)
+                    or not _SHA256.fullmatch(record["outputs_sha256"])
             ):
                 raise ValueError("DSPy failed usage call record is invalid")
             values = [record.get(field) for field in (

@@ -27,8 +27,8 @@ from studybench.study_protocol import (
     DSPY_ADAPTER_NAME,
     DSPY_ADAPTER_POLICY,
     DSPY_REPOSITORY_TOOL_CONTRACT,
-    DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
-    FORCED50_CONFIG_SCHEMA_VERSION,
+    DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION,
+    FORCED50_LEGACY_CONFIG_SCHEMA_VERSION,
     FORCED50_ITERATIONS,
     REACT_SAMPLING,
     SEMANTIC_SELFQUIZ_METHOD,
@@ -4426,7 +4426,7 @@ class StrictReportTests(unittest.TestCase):
                 master_seed, "cheatsheet", "study-a", "fake"
             )
             config = {
-                "schema_version": FORCED50_CONFIG_SCHEMA_VERSION,
+                "schema_version": FORCED50_LEGACY_CONFIG_SCHEMA_VERSION,
                 "study_id": "study-a",
                 "task": "fake",
                 "method": "forced-50-cheatsheet",
@@ -4436,7 +4436,7 @@ class StrictReportTests(unittest.TestCase):
                 "sampling": REACT_SAMPLING,
                 "adapter": DSPY_ADAPTER_NAME,
                 "adapter_fallback_policy": DSPY_ADAPTER_POLICY,
-                "dspy_request_audit_schema": DSPY_REQUEST_AUDIT_SCHEMA_VERSION,
+                "dspy_request_audit_schema": DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION,
                 "master_seed": master_seed,
                 "episode_seed": episode_seed,
                 "study_prompt_sha256": grade.sha256_bytes(
@@ -4469,6 +4469,9 @@ class StrictReportTests(unittest.TestCase):
                 "model": "model",
                 "model_revision": "revision-a",
                 "harness": "dspy.ReAct",
+                "dspy_request_audit_schema": (
+                    DSPY_REQUEST_AUDIT_LEGACY_SCHEMA_VERSION
+                ),
                 "seed": episode_seed,
                 "study_intent_sha256": sha256_json(config),
                 "question_sha256": question_sha256,
@@ -4479,6 +4482,7 @@ class StrictReportTests(unittest.TestCase):
                 "n_react_iters": 50,
                 "n_tool_iters": 50,
                 "finish_catches": 0,
+                "forced_budget_complete": True,
                 "turns": [{
                     "reasoning": f"step {index}",
                     "tool_calls": [{"name": "grep", "arguments": "{}"}],
