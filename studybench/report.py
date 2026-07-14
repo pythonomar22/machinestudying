@@ -86,7 +86,7 @@ class ReportIntegrityError(RuntimeError):
     """The requested result population is incomplete, stale, or unverifiable."""
 
 
-REPORT_SCHEMA_VERSION = 10
+REPORT_SCHEMA_VERSION = 11
 
 PAPER = {  # Table 1, lenient: (task, variant) -> budget -> (acc %, tokens k)
     ("dspy", ""): {"direct": (3.3, 4.1), "k5": (8.6, 7.9), "k20": (9.6, 8.6),
@@ -501,6 +501,10 @@ def _inventory_failed_judge_audits(
             requested_model = artifact.get("judge_requested_model")
             if not isinstance(requested_model, str) or not requested_model:
                 raise GradeIntegrityError("failed-judge audit has no requested model")
+            if (artifact.get("judge_attempt_policy") != JUDGE_ATTEMPT_POLICY
+                    or artifact.get("max_judge_attempts") != MAX_JUDGE_ATTEMPTS):
+                raise GradeIntegrityError(
+                    "failed-judge audit has invalid judge-attempt policy")
             if requested_model == LOCAL_GRADER_MODEL:
                 expected_local_identity = {
                     "claim_ready": False,
@@ -973,6 +977,8 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
     grading_config = {
         "grade_schema_version": GRADE_SCHEMA_VERSION,
         "judge_requested_model": judge_model,
+        "judge_attempt_policy": JUDGE_ATTEMPT_POLICY,
+        "max_judge_attempts": MAX_JUDGE_ATTEMPTS,
         "judge_base_url": judge_base_url,
         "judge_response_models": sorted(response_models),
         # Fingerprints identify mutable serving builds, not a stable model revision.

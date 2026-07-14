@@ -109,6 +109,10 @@ def local_arm(
         "error": None if checker_ready else "test checker is not configured",
     }
     checker_sha256 = grade.stable_sha256(checker)
+    judge_intents = [{
+        "expected_episode": f"{run_id}/direct/r0/q1.json",
+        "outcome": "final",
+    }]
     for grades in strict.population.values():
         for stored in grades:
             stored["compile_check"]["configuration_sha256"] = checker_sha256
@@ -116,6 +120,8 @@ def local_arm(
     config = {
         "grade_schema_version": grade.GRADE_SCHEMA_VERSION,
         "judge_requested_model": grade.LOCAL_GRADER_MODEL,
+        "judge_attempt_policy": grade.JUDGE_ATTEMPT_POLICY,
+        "max_judge_attempts": grade.MAX_JUDGE_ATTEMPTS,
         "judge_base_url": url,
         "judge_response_models": [grade.LOCAL_GRADER_MODEL],
         "judge_system_fingerprint_scope": "accepted_final_attempts_only",
@@ -133,6 +139,12 @@ def local_arm(
         "grading_spec_sha256_by_question": previous[
             "grading_spec_sha256_by_question"
         ],
+        "judge_attempt_intents": {
+            "policy": grade.JUDGE_ATTEMPT_POLICY,
+            "count": len(judge_intents),
+            "sha256": sha256_json(judge_intents),
+            "artifacts": judge_intents,
+        },
         "claim_ready": False,
         "grading_tier": "diagnostic-local-proxy",
         "local_proxy": True,
@@ -196,6 +208,42 @@ class LocalPairTests(unittest.TestCase):
             intervention["seed_pairing"]["episode_seeds_sha256"],
             sha256_json(self.control.spec["seed_policy"]["episode_seeds"]),
         )
+
+    def test_arm_specific_judge_intent_outcomes_are_normalized(self) -> None:
+        treatment = deepcopy(self.treatment)
+        config = treatment.audit["grading_manifest"]["config"]
+        config["judge_attempt_intents"] = {
+            "policy": grade.JUDGE_ATTEMPT_POLICY,
+            "count": 0,
+            "sha256": sha256_json([]),
+            "artifacts": [],
+        }
+        treatment.audit["grading_manifest"]["sha256"] = sha256_json(config)
+        screen_compare.validate_pair(
+            self.control,
+            treatment,
+            intervention_description=DESCRIPTION,
+        )
+
+    def test_malformed_judge_intent_ledger_is_fatal(self) -> None:
+        for field, value in (
+            ("policy", "different-policy"),
+            ("sha256", "0" * 64),
+        ):
+            with self.subTest(field=field):
+                drifted = deepcopy(self.treatment)
+                config = drifted.audit["grading_manifest"]["config"]
+                config["judge_attempt_intents"][field] = value
+                drifted.audit["grading_manifest"]["sha256"] = sha256_json(config)
+                with self.assertRaisesRegex(
+                    screen_compare.ScreenComparisonIntegrityError,
+                    "judge-attempt intent ledger is invalid",
+                ):
+                    screen_compare.validate_pair(
+                        self.control,
+                        drifted,
+                        intervention_description=DESCRIPTION,
+                    )
 
     def test_fresh_report_port_need_not_match_observed_grade_ports(self) -> None:
         control = deepcopy(self.control)
@@ -808,8 +856,16 @@ class LocalReportLoaderTests(unittest.TestCase):
             "extra": {"server_transport": {"server_count": 1}},
         }
         config = {
+            "judge_attempt_intents": {
+                "policy": grade.JUDGE_ATTEMPT_POLICY,
+                "count": 0,
+                "sha256": sha256_json([]),
+                "artifacts": [],
+            },
             "grade_schema_version": grade.GRADE_SCHEMA_VERSION,
             "judge_requested_model": grade.LOCAL_GRADER_MODEL,
+            "judge_attempt_policy": grade.JUDGE_ATTEMPT_POLICY,
+            "max_judge_attempts": grade.MAX_JUDGE_ATTEMPTS,
             # The population was graded on 8123 and revalidated/report-written
             # in a fresh allocation on 8223.
             "judge_base_url": "http://localhost:8223/v1",

@@ -89,7 +89,7 @@ LOCAL_GRADER_REQUEST_OPTIONS = {
         },
     },
 }
-LOCAL_GRADER_REQUEST_POLICY = "qwen-no-thinking-strict-json-v1"
+LOCAL_GRADER_REQUEST_POLICY = "qwen-no-thinking-keyed-claims-one-attempt-v2"
 CURRENT_GENERATION_SOURCE_POLICY = "current-generation-current-grader-v1"
 CURRENT_SMOKE_SOURCE_POLICY = "current-smoke-generation-current-grader-v1"
 HISTORICAL_EXPLORATORY_SOURCE_POLICY = (
@@ -104,11 +104,11 @@ GRADERS = {  # GRADER_MODEL env var -> (judge model id, base_url, api key env va
     "local": (LOCAL_GRADER_MODEL, None, "SB_VLLM_API_KEY"),
 }
 
-GRADE_SCHEMA_VERSION = 7
-MAX_JUDGE_ATTEMPTS = 2
-FAILED_JUDGE_AUDIT_SCHEMA_VERSION = 5
-JUDGE_ATTEMPT_INTENT_SCHEMA_VERSION = 2
-JUDGE_ATTEMPT_POLICY = "one-session-judge-attempt-intent-v2"
+GRADE_SCHEMA_VERSION = 8
+MAX_JUDGE_ATTEMPTS = 1
+FAILED_JUDGE_AUDIT_SCHEMA_VERSION = 6
+JUDGE_ATTEMPT_INTENT_SCHEMA_VERSION = 3
+JUDGE_ATTEMPT_POLICY = "single-request-no-retry-v3"
 
 
 class GradeIntegrityError(ValueError):
@@ -1351,7 +1351,9 @@ GRADER_PROMPT = """You are grading one model answer for a source-grounded {libra
 - Use the evidence spans and gold answer to resolve ambiguity.
 
 ## Output rules
-- Score every rubric claim exactly once.
+- Return a `claims` object keyed by the rubric claim IDs.
+- Include every rubric claim ID exactly once and no other keys.
+- For each claim ID, return only its binary `score` and concise `rationale`.
 - Do not output a total question score; the harness computes it.
 - Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
 - Keep rationales concise and specific.
@@ -1378,8 +1380,17 @@ GRADER_PROMPT = """You are grading one model answer for a source-grounded {libra
 Return JSON that matches the schema exactly."""
 
 def judge_schema(row: dict) -> dict:
-    """Constrain claim ids/scores/count; runtime validation enforces uniqueness."""
+    """Constrain one score/rationale object under every exact rubric claim ID."""
     ids = rubric_ids(row)
+    claim_value = {
+        "type": "object",
+        "properties": {
+            "score": {"type": "integer", "enum": [0, 1]},
+            "rationale": {"type": "string"},
+        },
+        "required": ["score", "rationale"],
+        "additionalProperties": False,
+    }
     return {
         "type": "json_schema",
         "json_schema": {
@@ -1389,19 +1400,11 @@ def judge_schema(row: dict) -> dict:
                 "type": "object",
                 "properties": {
                     "claims": {
-                        "type": "array",
-                        "minItems": len(ids),
-                        "maxItems": len(ids),
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "claim_id": {"type": "string", "enum": ids},
-                                "score": {"type": "integer", "enum": [0, 1]},
-                                "rationale": {"type": "string"},
-                            },
-                            "required": ["claim_id", "score", "rationale"],
-                            "additionalProperties": False,
-                        },
+                        "type": "object",
+                        "properties": {claim_id: deepcopy(claim_value)
+                                       for claim_id in ids},
+                        "required": ids,
+                        "additionalProperties": False,
                     },
                     "needs_regrade": {"type": "boolean"},
                 },
@@ -1512,6 +1515,8 @@ def grade_spec_sha256(corpus, row: dict, judge_model: str,
         # establish local identity; retaining a port here would make a safe
         # interrupted grade impossible to resume in a later Slurm allocation.
         "judge_endpoint_identity": endpoint_identity,
+        "judge_attempt_policy": JUDGE_ATTEMPT_POLICY,
+        "max_judge_attempts": MAX_JUDGE_ATTEMPTS,
         "whole_files": whole_files,
         "judge_effort": effort,
         "generation_source_validation": generation_source_validation,
@@ -1567,46 +1572,67 @@ def validate_verdict(row: dict, verdict: dict) -> tuple[list[dict], dict]:
         raise GradeIntegrityError("judge verdict has missing or unexpected fields")
     claims = verdict.get("claims")
     ids = rubric_ids(row)
-    if not isinstance(claims, list) or len(claims) != len(ids):
-        got = len(claims) if isinstance(claims, list) else "non-list"
+    if not isinstance(claims, dict) or set(claims) != set(ids):
+        got = sorted(claims) if isinstance(claims, dict) else "non-object"
         raise GradeIntegrityError(
-            f"{row['id']}: judge returned {got} claims; expected {len(ids)}")
+            f"{row['id']}: judge claim keys mismatch (got={got}, expected={ids})")
 
-    actual_ids = []
-    by_id = {}
-    for claim in claims:
+    canonical_claims = []
+    claim_scores = {}
+    for claim_id in ids:
+        claim = claims[claim_id]
         if not isinstance(claim, dict):
-            raise GradeIntegrityError(f"{row['id']}: judge claim is not an object")
-        if set(claim) != {"claim_id", "score", "rationale"}:
             raise GradeIntegrityError(
-                f"{row['id']}: judge claim has missing or unexpected fields")
-        claim_id = claim.get("claim_id")
+                f"{row['id']}/{claim_id}: judge claim is not an object")
+        if set(claim) != {"score", "rationale"}:
+            raise GradeIntegrityError(
+                f"{row['id']}/{claim_id}: judge claim has missing or unexpected fields")
         score = claim.get("score")
         rationale = claim.get("rationale")
-        if not isinstance(claim_id, str):
-            raise GradeIntegrityError(f"{row['id']}: judge claim id is invalid")
         if type(score) is not int or score not in (0, 1):
             raise GradeIntegrityError(f"{row['id']}/{claim_id}: score is not integer 0/1")
-        if not isinstance(rationale, str):
-            raise GradeIntegrityError(f"{row['id']}/{claim_id}: rationale is not a string")
-        actual_ids.append(claim_id)
-        by_id[claim_id] = {"claim_id": claim_id, "score": score,
-                           "rationale": rationale}
-
-    if len(actual_ids) != len(set(actual_ids)):
-        raise GradeIntegrityError(f"{row['id']}: judge returned duplicate claim ids")
-    if set(actual_ids) != set(ids):
-        missing = sorted(set(ids) - set(actual_ids))
-        extra = sorted(set(actual_ids) - set(ids))
-        raise GradeIntegrityError(
-            f"{row['id']}: judge claim ids mismatch (missing={missing}, extra={extra})")
-
-    claim_scores = {claim_id: by_id[claim_id]["score"] for claim_id in ids}
+        if not isinstance(rationale, str) or not rationale.strip():
+            raise GradeIntegrityError(
+                f"{row['id']}/{claim_id}: rationale must be a nonblank string")
+        canonical_claims.append({
+            "claim_id": claim_id,
+            "score": score,
+            "rationale": rationale,
+        })
+        claim_scores[claim_id] = score
     if type(verdict.get("needs_regrade")) is not bool:
         raise GradeIntegrityError(f"{row['id']}: needs_regrade is not boolean")
     if verdict["needs_regrade"]:
         raise GradeIntegrityError(f"{row['id']}: judge requested regrade")
-    return [by_id[claim_id] for claim_id in ids], claim_scores
+    return canonical_claims, claim_scores
+
+
+def validate_canonical_claims(row: dict, claims: object) -> tuple[list[dict], dict]:
+    """Validate the list-form claim representation stored in grade artifacts."""
+
+    ids = rubric_ids(row)
+    if not isinstance(claims, list) or len(claims) != len(ids):
+        raise GradeIntegrityError(
+            f"{row['id']}: stored claims do not have the rubric claim count")
+    keyed = {}
+    for claim in claims:
+        if not isinstance(claim, dict) or set(claim) != {
+            "claim_id", "score", "rationale",
+        }:
+            raise GradeIntegrityError(
+                f"{row['id']}: stored claim has an invalid shape")
+        claim_id = claim.get("claim_id")
+        if not isinstance(claim_id, str) or claim_id in keyed:
+            raise GradeIntegrityError(
+                f"{row['id']}: stored claim IDs are invalid or duplicated")
+        keyed[claim_id] = {
+            "score": claim.get("score"),
+            "rationale": claim.get("rationale"),
+        }
+    return validate_verdict(row, {
+        "claims": keyed,
+        "needs_regrade": False,
+    })
 
 
 def validate_episode(ep: dict, row: dict) -> None:
@@ -2420,6 +2446,8 @@ def _judge_attempt_intent(
         "budget": episode["budget"],
         "rollout": episode["rollout"],
         "judge_requested_model": judge_model,
+        "judge_attempt_policy": JUDGE_ATTEMPT_POLICY,
+        "max_judge_attempts": MAX_JUDGE_ATTEMPTS,
         "judge_endpoint_identity": (
             LOCAL_GRADER_ENDPOINT_IDENTITY
             if judge_model == LOCAL_GRADER_MODEL
@@ -2574,6 +2602,8 @@ def _failed_judge_audit(*, ep: dict, episode_sha256: str,
         "budget": ep["budget"],
         "rollout": ep["rollout"],
         "judge_requested_model": judge_model,
+        "judge_attempt_policy": JUDGE_ATTEMPT_POLICY,
+        "max_judge_attempts": MAX_JUDGE_ATTEMPTS,
         "judge_prompt_sha256": judge_prompt_sha256,
         "judge_request_attempt_count": request_attempt_count,
         "judge_attempt_count": len(attempts),
@@ -2682,6 +2712,10 @@ def existing_failed_judge_audit(
         raise GradeIntegrityError("terminal failed judge audit runtime drifted")
     if judge_model is not None and artifact.get("judge_requested_model") != judge_model:
         raise GradeIntegrityError("terminal failed judge audit model drifted")
+    if (artifact.get("judge_attempt_policy") != JUDGE_ATTEMPT_POLICY
+            or artifact.get("max_judge_attempts") != MAX_JUDGE_ATTEMPTS):
+        raise GradeIntegrityError(
+            "terminal failed judge audit attempt policy drifted")
     if (
         judge_prompt_sha256 is not None
         and artifact.get("judge_prompt_sha256") != judge_prompt_sha256
@@ -2802,6 +2836,8 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
         "judge_model": judge_model,
         "judge_requested_model": judge_model,
         "judge_base_url": judge_base_url,
+        "judge_attempt_policy": JUDGE_ATTEMPT_POLICY,
+        "max_judge_attempts": MAX_JUDGE_ATTEMPTS,
         "episode_status": ep["status"],
         "gen_tokens": ep["gen_tokens"],
         "graded_at": datetime.now(timezone.utc).isoformat(),
@@ -3009,6 +3045,9 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
         )
     if grade.get("judge_model") != judge_model:
         raise GradeIntegrityError("grade judge model does not match the requested judge")
+    if (grade.get("judge_attempt_policy") != JUDGE_ATTEMPT_POLICY
+            or grade.get("max_judge_attempts") != MAX_JUDGE_ATTEMPTS):
+        raise GradeIntegrityError("grade judge-attempt policy does not match")
     judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
     expected_local_runtime_sha256 = None
     if judge_model == LOCAL_GRADER_MODEL:
@@ -3188,11 +3227,11 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
             "local grader response model does not match the pinned Qwen model"
         )
 
-    verdict = {
-        "claims": grade.get("claims"),
-        "needs_regrade": grade.get("needs_regrade"),
-    }
-    canonical_claims, claim_scores = validate_verdict(row, verdict)
+    if grade.get("needs_regrade") is not False:
+        raise GradeIntegrityError("stored grade unexpectedly requests regrading")
+    canonical_claims, claim_scores = validate_canonical_claims(
+        row, grade.get("claims")
+    )
     if grade["claims"] != canonical_claims:
         raise GradeIntegrityError("stored claims are not in canonical rubric order")
     scores = score_from_claims(row, claim_scores, compile_check["compile_ok"])

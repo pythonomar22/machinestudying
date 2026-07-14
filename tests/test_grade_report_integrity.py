@@ -192,15 +192,20 @@ def fake_source_validation(
     }
 
 
-def verdict(*, duplicate: bool = False) -> dict:
-    second_id = "core" if duplicate else "detail"
+def verdict() -> dict:
     return {
-        "claims": [
-            {"claim_id": "core", "score": 1, "rationale": "present"},
-            {"claim_id": second_id, "score": 0, "rationale": "missing"},
-        ],
+        "claims": {
+            "core": {"score": 1, "rationale": "present"},
+            "detail": {"score": 0, "rationale": "missing"},
+        },
         "needs_regrade": False,
     }
+
+
+def invalid_verdict() -> dict:
+    value = verdict()
+    del value["claims"]["detail"]
+    return value
 
 
 def checker_result(compile_ok: object = True, detail: str = "ok") -> dict:
@@ -537,6 +542,8 @@ class GradeVerdictTests(unittest.TestCase):
         self.assertEqual(
             result["judge_request_policy"], grade.LOCAL_GRADER_REQUEST_POLICY
         )
+        self.assertEqual(result["judge_attempt_policy"], grade.JUDGE_ATTEMPT_POLICY)
+        self.assertEqual(result["max_judge_attempts"], 1)
         self.assertNotIn("judge_question_score", result)
         self.assertFalse(result["claim_ready"])
         self.assertTrue(result["local_proxy"])
@@ -559,6 +566,10 @@ class GradeVerdictTests(unittest.TestCase):
         schema = grade.judge_schema(question())["json_schema"]["schema"]
         self.assertEqual(schema["required"], ["claims", "needs_regrade"])
         self.assertEqual(set(schema["properties"]), {"claims", "needs_regrade"})
+        claims = schema["properties"]["claims"]
+        self.assertEqual(set(claims["properties"]), {"core", "detail"})
+        self.assertEqual(claims["required"], ["core", "detail"])
+        self.assertFalse(claims["additionalProperties"])
         prompt = grade.build_prompt(
             SimpleNamespace(display="Fake"), question(), "candidate answer"
         )
@@ -898,21 +909,30 @@ class GradeVerdictTests(unittest.TestCase):
 
     def test_exact_unique_rubric_ids_are_required(self) -> None:
         row = question()
-        with self.assertRaises(grade.GradeIntegrityError):
-            grade.validate_verdict(row, verdict(duplicate=True))
         missing = verdict()
-        missing["claims"] = missing["claims"][:1]
+        del missing["claims"]["detail"]
         with self.assertRaises(grade.GradeIntegrityError):
             grade.validate_verdict(row, missing)
         extra = verdict()
-        extra["claims"].append(
-            {"claim_id": "extra", "score": 1, "rationale": "not in rubric"})
+        extra["claims"]["extra"] = {"score": 1, "rationale": "not in rubric"}
         with self.assertRaises(grade.GradeIntegrityError):
             grade.validate_verdict(row, extra)
         extra_field = verdict()
         extra_field["unrecognized"] = True
         with self.assertRaises(grade.GradeIntegrityError):
             grade.validate_verdict(row, extra_field)
+        nested_extra = verdict()
+        nested_extra["claims"]["core"]["unexpected"] = True
+        with self.assertRaises(grade.GradeIntegrityError):
+            grade.validate_verdict(row, nested_extra)
+        boolean_score = verdict()
+        boolean_score["claims"]["core"]["score"] = True
+        with self.assertRaises(grade.GradeIntegrityError):
+            grade.validate_verdict(row, boolean_score)
+        blank_rationale = verdict()
+        blank_rationale["claims"]["core"]["rationale"] = "  \n"
+        with self.assertRaises(grade.GradeIntegrityError):
+            grade.validate_verdict(row, blank_rationale)
 
     def test_question_score_is_derived_and_claims_are_canonicalized(self) -> None:
         row = question()
@@ -921,10 +941,23 @@ class GradeVerdictTests(unittest.TestCase):
         with self.assertRaises(grade.GradeIntegrityError):
             grade.validate_verdict(row, wrong)
         out_of_order = verdict()
-        out_of_order["claims"].reverse()
+        out_of_order["claims"] = {
+            "detail": out_of_order["claims"]["detail"],
+            "core": out_of_order["claims"]["core"],
+        }
         claims, scores = grade.validate_verdict(row, out_of_order)
         self.assertEqual([claim["claim_id"] for claim in claims], ["core", "detail"])
         self.assertEqual(scores, {"core": 1, "detail": 0})
+
+    def test_raw_duplicate_claim_object_keys_are_rejected(self) -> None:
+        duplicate = (
+            '{"claims":{"core":{"score":1,"rationale":"first"},'
+            '"core":{"score":0,"rationale":"second"},'
+            '"detail":{"score":0,"rationale":"missing"}},'
+            '"needs_regrade":false}'
+        )
+        with self.assertRaisesRegex(grade.GradeIntegrityError, "duplicate key"):
+            grade.parse_json(duplicate, label="judge verdict")
 
     def test_missing_score_cannot_silently_become_zero(self) -> None:
         with self.assertRaises(grade.GradeIntegrityError):
@@ -1052,32 +1085,26 @@ class GradeVerdictTests(unittest.TestCase):
                 ):
                     grade._validate_human_audit_integer_fields(*invalid)
 
-    def test_invalid_attempt_is_audited_before_valid_retry(self) -> None:
-        client = FakeClient([verdict(duplicate=True), verdict()])
+    def test_invalid_attempt_fails_closed_without_deterministic_retry(self) -> None:
+        client = FakeClient([invalid_verdict(), verdict()])
         corpus = SimpleNamespace(name="fake", display="Fake", language="python")
         with patch("studybench.grade.sandbox.check", return_value=checker_result()):
-            result = asyncio.run(grade.grade_episode(
-                client, "judge", corpus, question(), native_episode(),
-                judge_base_url=TEST_JUDGE_BASE_URL,
-                episode_sha256="a" * 64, grading_spec_sha256="b" * 64,
-            ))
-        self.assertEqual(client.completions.calls, 2)
-        self.assertEqual(result["question_score"], 60)
-        self.assertEqual(result["judge_accepted_attempt"], 2)
-        self.assertFalse(result["judge_attempts"][0]["accepted"])
+            with self.assertRaises(grade.JudgeAttemptsFailed) as caught:
+                asyncio.run(grade.grade_episode(
+                    client, "judge", corpus, question(), native_episode(),
+                    judge_base_url=TEST_JUDGE_BASE_URL,
+                    episode_sha256="a" * 64, grading_spec_sha256="b" * 64,
+                ))
+        self.assertEqual(client.completions.calls, 1)
+        self.assertEqual(caught.exception.audit["judge_attempt_count"], 1)
+        attempt = caught.exception.audit["judge_attempts"][0]
+        self.assertFalse(attempt["accepted"])
         self.assertEqual(
-            result["judge_attempts"][0]["validation_error"]["type"],
+            attempt["validation_error"]["type"],
             "GradeIntegrityError",
         )
-        self.assertIsInstance(result["judge_attempts"][0]["invalid_content"], str)
-        accepted_content = result["judge_accepted_content"]
-        self.assertEqual(
-            grade.sha256_bytes(accepted_content.encode("utf-8")),
-            result["judge_attempts"][-1]["content_sha256"],
-        )
-        self.assertEqual(json.loads(accepted_content), verdict())
-        self.assertEqual(result["judge_response_model"], "judge-revision")
-        self.assertEqual(result["judge_usage_total"]["total_tokens"], 360)
+        self.assertIsInstance(attempt["invalid_content"], str)
+        self.assertEqual(caught.exception.audit["judge_usage_total"]["total_tokens"], 120)
 
     def test_no_answer_grade_has_no_accepted_judge_content(self) -> None:
         corpus = SimpleNamespace(name="fake", display="Fake", language="python")
@@ -1356,10 +1383,10 @@ class GradeVerdictTests(unittest.TestCase):
                 audit_path,
             )
 
-    def test_second_invalid_attempt_is_fatal(self) -> None:
+    def test_single_invalid_attempt_is_fatal(self) -> None:
         unexpected_total = verdict()
         unexpected_total["question_score"] = 100
-        client = FakeClient([verdict(duplicate=True), unexpected_total])
+        client = FakeClient([unexpected_total])
         corpus = SimpleNamespace(name="fake", display="Fake", language="python")
         with patch("studybench.grade.sandbox.check", return_value=checker_result()):
             with self.assertRaises(grade.JudgeAttemptsFailed) as caught:
@@ -1368,9 +1395,9 @@ class GradeVerdictTests(unittest.TestCase):
                     judge_base_url=TEST_JUDGE_BASE_URL,
                     episode_sha256="a" * 64, grading_spec_sha256="b" * 64,
                 ))
-        self.assertEqual(client.completions.calls, 2)
-        self.assertEqual(caught.exception.audit["judge_attempt_count"], 2)
-        self.assertEqual(caught.exception.audit["judge_usage_total"]["total_tokens"], 360)
+        self.assertEqual(client.completions.calls, 1)
+        self.assertEqual(caught.exception.audit["judge_attempt_count"], 1)
+        self.assertEqual(caught.exception.audit["judge_usage_total"]["total_tokens"], 120)
         with tempfile.TemporaryDirectory() as directory:
             path = grade.write_failed_judge_audit(
                 Path(directory), "runs/run-a/fake/direct/r0/q1.json",
@@ -1410,27 +1437,6 @@ class GradeVerdictTests(unittest.TestCase):
         )
         self.assertIsNone(audit["judge_usage_total"])
         self.assertEqual(audit["judge_usage_known_total"]["total_tokens"], 0)
-
-    def test_request_failure_after_a_response_keeps_only_a_known_lower_bound(self) -> None:
-        corpus = SimpleNamespace(name="fake", display="Fake", language="python")
-        client = FakeClient([verdict(duplicate=True), RuntimeError("provider unavailable")])
-        with patch("studybench.grade.sandbox.check", return_value=checker_result()):
-            with self.assertRaises(grade.JudgeAttemptsFailed) as caught:
-                asyncio.run(grade.grade_episode(
-                    client, "judge", corpus, question(), native_episode(),
-                    judge_base_url=TEST_JUDGE_BASE_URL,
-                    episode_sha256="a" * 64, grading_spec_sha256="b" * 64,
-                ))
-        audit = caught.exception.audit
-        self.assertEqual(client.completions.calls, 2)
-        self.assertEqual(audit["judge_request_attempt_count"], 2)
-        self.assertEqual(audit["judge_attempt_count"], 1)
-        self.assertEqual(
-            audit["judge_usage_status"],
-            "unavailable-for-request-without-response",
-        )
-        self.assertIsNone(audit["judge_usage_total"])
-        self.assertEqual(audit["judge_usage_known_total"]["total_tokens"], 120)
 
     def test_incomplete_response_usage_is_audited_without_retry_or_zero(self) -> None:
         corpus = SimpleNamespace(name="fake", display="Fake", language="python")
@@ -2524,7 +2530,7 @@ class StrictReportTests(unittest.TestCase):
 
         def mutate_verdict_and_identity(stored: dict) -> None:
             payload = json.loads(stored["judge_accepted_content"])
-            payload["claims"][0]["rationale"] = "tampered rationale"
+            payload["claims"]["core"]["rationale"] = "tampered rationale"
             content = json.dumps(payload, sort_keys=True)
             stored["judge_accepted_content"] = content
             accepted = stored["judge_attempts"][-1]
@@ -2683,7 +2689,7 @@ class StrictReportTests(unittest.TestCase):
             self.assertEqual(accepted["k20/r0/q1.json"], "other-fingerprint")
             self.assertEqual(accepted["k20f/r0/q1.json"], "judge-fingerprint")
 
-    def test_rejected_judge_fingerprint_is_not_an_accepted_runtime(self) -> None:
+    def test_multi_attempt_grade_is_rejected_under_one_attempt_policy(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = EvaluationFixture(Path(directory))
             grade_path = fixture.grade_root / "fake/k5/r0/q1.json"
@@ -2717,17 +2723,8 @@ class StrictReportTests(unittest.TestCase):
             }
             grade_path.write_bytes(canonical_json_bytes(stored))
 
-            _, audit = self._load(fixture)
-            grading = audit["grading_manifest"]["config"]
-            self.assertEqual(
-                grading["judge_system_fingerprints"], ["judge-fingerprint"]
-            )
-            self.assertEqual(
-                grading["accepted_judge_system_fingerprint_by_episode"][
-                    "k5/r0/q1.json"
-                ],
-                "judge-fingerprint",
-            )
+            with self.assertRaises(report.ReportIntegrityError):
+                self._load(fixture)
 
     def test_failed_attempts_are_disclosed_but_excluded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2763,7 +2760,7 @@ class StrictReportTests(unittest.TestCase):
                 fixture.judge_model,
                 generation_source_validation=fixture.source_validation,
             )
-            client = FakeClient([verdict(duplicate=True), verdict(duplicate=True)])
+            client = FakeClient([invalid_verdict()])
             with patch(
                 "studybench.grade.sandbox.check", return_value=checker_result()
             ):

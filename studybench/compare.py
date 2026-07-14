@@ -40,7 +40,7 @@ from .provenance import (
 from . import report
 
 
-COMPARISON_SCHEMA_VERSION = 5
+COMPARISON_SCHEMA_VERSION = 6
 INTERVENTION_KIND = "study-note"
 _CLAIM_READY_JUDGE_REVISION_STATUSES = {
     "matched_complete_accepted_fingerprints_by_paired_cell",

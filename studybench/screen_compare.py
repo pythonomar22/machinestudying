@@ -23,11 +23,13 @@ from .grade import (
     GRADE_SCHEMA_VERSION,
     GradeIntegrityError,
     HISTORICAL_EXPLORATORY_SOURCE_POLICY,
+    JUDGE_ATTEMPT_POLICY,
     LOCAL_GRADER_ENDPOINT_IDENTITY,
     LOCAL_GRADER_MODEL,
     LOCAL_GRADER_MODEL_REVISION,
     LOCAL_GRADER_REQUEST_OPTIONS,
     LOCAL_GRADER_REQUEST_POLICY,
+    MAX_JUDGE_ATTEMPTS,
     file_sha256,
     parse_json,
     stable_sha256,
@@ -48,7 +50,7 @@ from .provenance import (
 )
 
 
-SCREEN_COMPARISON_SCHEMA_VERSION = 2
+SCREEN_COMPARISON_SCHEMA_VERSION = 3
 INTERVENTION_KIND = "study-note"
 DIAGNOSTIC_BANNER = (
     "DIAGNOSTIC LOCAL-QWEN SCREEN ONLY — NOT CLAIM-READY; "
@@ -193,6 +195,8 @@ def _local_grading_config(artifact: dict[str, Any]) -> dict[str, Any]:
         "grading_tier": "diagnostic-local-proxy",
         "local_proxy": True,
         "judge_requested_model": LOCAL_GRADER_MODEL,
+        "judge_attempt_policy": JUDGE_ATTEMPT_POLICY,
+        "max_judge_attempts": MAX_JUDGE_ATTEMPTS,
         "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
         "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
         "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
@@ -578,6 +582,28 @@ def _normalized_grading_contract(manifest: object) -> dict[str, Any]:
         "missing_judge_system_fingerprint_calls",
     ):
         value[field] = "<ACCEPTED-JUDGE-OUTCOMES>"
+    intent_ledger = value.get("judge_attempt_intents")
+    if (
+        not isinstance(intent_ledger, dict)
+        or set(intent_ledger) != {"policy", "count", "sha256", "artifacts"}
+        or intent_ledger.get("policy") != JUDGE_ATTEMPT_POLICY
+        or type(intent_ledger.get("count")) is not int
+        or intent_ledger["count"] < 0
+        or not isinstance(intent_ledger.get("artifacts"), list)
+        or intent_ledger["count"] != len(intent_ledger["artifacts"])
+        or intent_ledger.get("sha256") != sha256_json(intent_ledger["artifacts"])
+    ):
+        raise ScreenComparisonIntegrityError(
+            "judge-attempt intent ledger is invalid")
+    # The policy is substantive. Ledger paths, hashes, terminal outcomes, and
+    # count are arm outcomes (including treatment-only no-answer cells) that
+    # have already been fully revalidated while loading each report.
+    value["judge_attempt_intents"] = {
+        "policy": JUDGE_ATTEMPT_POLICY,
+        "count": "<JUDGE-INTENT-OUTCOMES>",
+        "sha256": "<JUDGE-INTENT-OUTCOMES>",
+        "artifacts": "<JUDGE-INTENT-OUTCOMES>",
+    }
     return value
 
 

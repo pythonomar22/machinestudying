@@ -346,8 +346,9 @@ also substantively questionable, so neither the labels nor 32 are salvaged.
 The partial namespace is terminal, cannot produce a report, and is never mixed
 with the corrected pass.
 
-The corrected judge contract has grade schema 7, judge-attempt-intent schema 2,
-and failed-judge-audit schema 5. It removes model-generated `question_score`
+The first corrected (`i`) judge contract has grade schema 7,
+judge-attempt-intent schema 2, and failed-judge-audit schema 5. It removes
+model-generated `question_score`
 from the prompt and response schema, retains only atomic binary labels and
 concise rationales, and records the harness-computed weighted total as
 `question_score`. For the pinned Qwen template,
@@ -356,6 +357,40 @@ block before generation, so strict JSON is generated in final content rather
 than hidden reasoning. The exact request policy and options are hashed into
 every grade specification and repeated in every grade, intent, failure audit,
 report, and comparison contract.
+
+The `i` baseline completed all 60 cells with no failed-judge audit and produced
+the immutable diagnostic report
+`reports/smalldspy-local-base-20260714h/qwen-local-base-20260714i/smalldspy/report-c1ead5f076ef15e02c11868f4632fb500408267f5bf5d4033c25600f2f6561b5.json`.
+Its lenient WAUC was 27.105522198059212, but it is not a final arm result because
+the matched treatment did not form a complete population. The `i` treatment
+wrote 59 grades and one terminal failed-judge audit. At
+`k20/r2/dspy_7329144ef1e9`, the array-shaped response schema required six
+allowed claim IDs but did not enforce their uniqueness. Qwen returned IDs
+`c1,c2,c2,c2,c2,c2`; the validator correctly rejected the verdict. The second
+nominal retry repeated the exact temperature-zero request and returned the
+exact same 1,743-byte content (SHA-256
+`dd3f1c5918c570c3955c6532e2985ee3cabf592ed4eb940c1f23349072f146fe`).
+Each duplicate response used 6,984 prompt and 511 completion tokens, so the
+second request added 7,495 tokens without new information. No grade was written
+for that cell, no treatment report exists, and the `i` arms are never compared.
+
+The fresh `j` contract changes the verdict to an object whose properties are
+the exact rubric claim IDs. Every ID is required, additional properties are
+forbidden, and each value contains only a binary score and nonblank rationale.
+The strict parser still rejects duplicate JSON object keys, and the harness
+canonicalizes the keyed verdict back to rubric order before computing scores.
+This makes duplicate or missing claim IDs structurally impossible under the
+pinned constrained decoder. The policy also permits exactly one judge request
+per answered cell and fails closed instead of repeating an identical
+temperature-zero request. The contract has grade schema 8,
+judge-attempt-intent schema 3, failed-judge-audit schema 6, report schema 11,
+and local screen-comparison schema 3. The attempt policy and maximum request
+count are explicitly bound into the grading specification, grades, pre-contact
+intents, failure audits, reports, and paired-screen contract. Before any `j`
+benchmark request, the exact real six-claim schema compiled successfully under
+the pinned xgrammar runtime; this was an offline grammar check and produced no
+benchmark judgment. Because this repair follows inspection of `i`, `j` remains
+adaptive, exploratory, and non-claim-ready even if complete.
 
 Because correcting grader code necessarily changes `HEAD`, the immutable `h`
 answers cannot pass the ordinary same-source gate. Rerunning answers after
@@ -469,7 +504,7 @@ SmallDSPy cheatsheet versus no note`:
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=20 --cpu-bind=none --gres=gpu:l40s:2 \
   env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=35700 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-i \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-j \
   bash --noprofile --norc
 
 # Inside that step, after setup and authenticated readiness:
@@ -579,22 +614,22 @@ PY
 for arm in base cheatsheet; do
   "$PY" -m studybench.grade --task smalldspy \
     --run-id "smalldspy-local-$arm-20260714h" \
-    --grade-id "qwen-local-$arm-20260714i" \
+    --grade-id "qwen-local-$arm-20260714j" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence --concurrency 8 \
     --historical-exploratory-source-commit "$GEN_COMMIT"
   "$PY" -m studybench.report --tasks smalldspy \
     --run-id "smalldspy-local-$arm-20260714h" --grader local \
-    --grade-id "qwen-local-$arm-20260714i" \
+    --grade-id "qwen-local-$arm-20260714j" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
     --historical-exploratory-source-commit "$GEN_COMMIT" \
     --ci 10000 --ci-seed 45001
 done
 
 mapfile -t BASE_REPORTS < <(find \
-  reports/smalldspy-local-base-20260714h/qwen-local-base-20260714i/smalldspy \
+  reports/smalldspy-local-base-20260714h/qwen-local-base-20260714j/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 mapfile -t CHEAT_REPORTS < <(find \
-  reports/smalldspy-local-cheatsheet-20260714h/qwen-local-cheatsheet-20260714i/smalldspy \
+  reports/smalldspy-local-cheatsheet-20260714h/qwen-local-cheatsheet-20260714j/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 test "${#BASE_REPORTS[@]}" -eq 1 -a "${#CHEAT_REPORTS[@]}" -eq 1
 "$PY" -m studybench.screen_compare \
@@ -612,11 +647,13 @@ two requested primary numbers.
 
 ## Results
 
-Pending corrected `i` grading. The immutable `h` generation populations are
+Pending corrected `j` grading. The immutable `h` generation populations are
 the only answer populations eligible for this screen. The `d` generation grids
 and failed judge smoke are invalidated diagnostics; `e` failed its
 pre-benchmark structured-output gate; and `f` failed its fully audited
-output-bearing gate. The old partial `h` grading is also terminal diagnostic
-evidence, not a result. No valid full-grid grade, WAUC, or arm comparison has
-yet been observed. Only the uniform fresh-schema `i` grades over all 120 frozen
-cells may populate this section.
+output-bearing gate. The old partial `h` grading and the incomplete matched `i`
+grading are also terminal diagnostic evidence, not arm results. The standalone
+`i` baseline report is retained and disclosed above, but its WAUC is not paired
+with a treatment estimate. No valid full-grid arm comparison has yet been
+observed. Only uniform fresh-schema `j` grades over all 120 frozen cells may
+populate this section.
