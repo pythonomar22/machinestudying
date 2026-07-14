@@ -41,9 +41,14 @@ from studybench.provenance import (
     validate_environment_snapshot,
     validate_resumable_episode,
     validate_local_server_urls,
+    validate_persisted_screen_attempt_tree,
+    validate_screen_attempt_tree,
+    validate_screen_failure_state,
     write_environment_snapshot,
     write_episode_result,
+    write_screen_attempt_intent,
 )
+from studybench.preregistration import RUN_FAILURE_POLICY, SCREEN_FAILURE_POLICY
 
 
 def claim_ready_environment(*, include_dspy: bool = True) -> dict[str, object]:
@@ -945,6 +950,7 @@ class ProvenanceTests(unittest.TestCase):
             }
             manifest = root / "source.manifest.json"
             write_immutable_json(manifest, {
+                "manifest_schema": 1,
                 "manifest_type": "forced-50-cheatsheet",
                 "note_sha256": sha256_text("exact\n"),
                 "note_path": "source.md",
@@ -978,7 +984,7 @@ class ProvenanceTests(unittest.TestCase):
                     expected_task="dspy", expected_corpus_commit="abc",
                 )
 
-    def test_automated_ready_note_is_valid_only_for_exploratory_use(self) -> None:
+    def test_untyped_automated_note_is_invalid_even_for_exploratory_use(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             study_root = root / "studies" / "study-r1" / "dspy"
@@ -1020,21 +1026,16 @@ class ProvenanceTests(unittest.TestCase):
                 "construction_artifacts_sha256": sha256_json(inventory),
             })
 
-            text, record = _load_note(
-                root / "exploratory-run",
-                note,
-                manifest,
-                require_manifest=True,
-                require_claim_ready=False,
-                expected_task="dspy",
-                expected_corpus_commit="abc",
-            )
-            self.assertEqual(text, note_text)
-            bundled = record["provenance_bundle"]["construction_artifacts"]
-            self.assertEqual(set(bundled["artifacts"]), set(inventory))
-            self.assertEqual(
-                bundled["inventory_sha256"], sha256_json(inventory)
-            )
+            with self.assertRaisesRegex(ValueError, "recognized protocol"):
+                _load_note(
+                    root / "exploratory-run",
+                    note,
+                    manifest,
+                    require_manifest=True,
+                    require_claim_ready=False,
+                    expected_task="dspy",
+                    expected_corpus_commit="abc",
+                )
 
             with self.assertRaisesRegex(ValueError, "not claim-ready"):
                 _load_note(
@@ -1233,6 +1234,7 @@ class ProvenanceTests(unittest.TestCase):
                 spec = context.manifest["spec"]
                 self.assertEqual(spec["purpose"], "exploratory")
                 self.assertIs(spec["claim_ready"], False)
+                self.assertEqual(spec["failure_policy"], SCREEN_FAILURE_POLICY)
                 self.assertEqual(
                     spec["preregistration"],
                     {"schema_version": 1, "status": "not_provided", "reason": "exploratory"},
@@ -1337,6 +1339,31 @@ class ProvenanceTests(unittest.TestCase):
                             "harness": "dspy.ReAct",
                         }
                     )
+
+                smoke_note = root / "treatment-smoke-note.md"
+                smoke_note.write_text("validated treatment note\n", encoding="utf-8")
+                smoke_manifest = root / "treatment-smoke-note.json"
+                smoke_manifest.write_text("{}\n", encoding="utf-8")
+                with patch(
+                    "studybench.provenance._load_note",
+                    side_effect=RuntimeError("note validation sentinel"),
+                ) as load_note, self.assertRaisesRegex(
+                    RuntimeError, "note validation sentinel"
+                ):
+                    prepare_run(**{
+                        **kwargs,
+                        "run_id": "treatment-smoke-r1",
+                        "budgets": ["direct"],
+                        "rollouts": 1,
+                        "note_path": smoke_note,
+                        "note_manifest_path": smoke_manifest,
+                        "note_prefix_template": "Study note:\n{note}\n",
+                        "smoke": True,
+                        "exploratory": False,
+                    })
+                self.assertIs(
+                    load_note.call_args.kwargs["require_manifest"], True
+                )
 
     def test_confirmatory_manifest_snapshots_and_revalidates_preregistration(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1469,6 +1496,413 @@ class ProvenanceTests(unittest.TestCase):
             )
             self.assertEqual(final, expected)
             self.assertTrue(expected.is_file())
+
+    def test_screen_attempt_intent_is_precontact_and_failure_is_one_shot(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = {
+                "spec": {
+                    "purpose": "exploratory",
+                    "failure_policy": SCREEN_FAILURE_POLICY,
+                    "environment": {},
+                    "note": None,
+                }
+            }
+            context = RunContext(root, manifest, "m" * 64, "", "")
+            expected = root / "k20f" / "r0" / "q1.json"
+            identity = {
+                "manifest_sha256": "m" * 64,
+                "question_sha256": "q" * 64,
+                "prompt_sha256": "p" * 64,
+                "note_sha256": None,
+                "seed": 7,
+                "task": "dspy",
+                "qid": "q1",
+                "budget": "k20f",
+                "rollout": 0,
+                "environment_snapshot": {"snapshot": "environment/fake.json"},
+            }
+            contract = {
+                "expected_model": "model",
+                "expected_model_revision": "revision",
+                "expected_harness": "dspy.ReAct",
+                "expected_response_model": "served-model",
+            }
+            with (
+                patch(
+                    "studybench.provenance.validate_environment_snapshot",
+                    return_value={},
+                ),
+                patch(
+                    "studybench.provenance.environment_contract_is_valid",
+                    return_value=True,
+                ),
+            ):
+                state = validate_screen_failure_state(
+                    context, expected, identity, contract
+                )
+                self.assertIsNone(state["intent"])
+                self.assertEqual(state["failed_attempts"], [])
+                with self.assertRaisesRegex(ValueError, "pre-contact"):
+                    write_episode_result(
+                        context,
+                        expected,
+                        {**identity, "status": "error"},
+                        screen_identity=identity,
+                        producer_contract=contract,
+                    )
+
+                intent = write_screen_attempt_intent(
+                    context, expected, identity, contract
+                )
+                self.assertTrue(intent.is_file())
+                orphan = validate_screen_failure_state(
+                    context, expected, identity, contract
+                )
+                self.assertEqual(orphan["intent"], intent)
+                self.assertEqual(orphan["failed_attempts"], [])
+
+                failure = {
+                    **identity,
+                    "model": "model",
+                    "model_revision": "revision",
+                    "harness": "dspy.ReAct",
+                    "status": "error",
+                    "error": "provider failure",
+                    "started": "2026-01-01T00:00:00+00:00",
+                    "finished": "2026-01-01T00:01:00+00:00",
+                    "answer": "",
+                    "turns": [],
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "gen_tokens": 0,
+                    "n_tool_iters": 0,
+                    "n_react_iters": 0,
+                    "finish_catches": 0,
+                    "n_lm_calls": 0,
+                    "usage_ledger": [],
+                }
+                retained = write_episode_result(
+                    context,
+                    expected,
+                    failure,
+                    screen_identity=identity,
+                    producer_contract=contract,
+                )
+                self.assertEqual(retained.name, "attempt-1.json")
+                completed = validate_screen_failure_state(
+                    context, expected, identity, contract
+                )
+                self.assertEqual(completed["failed_attempts"], [retained])
+                with self.assertRaisesRegex(ValueError, "terminal failed"):
+                    write_episode_result(
+                        context,
+                        expected,
+                        failure,
+                        screen_identity=identity,
+                        producer_contract=contract,
+                    )
+
+    def test_screen_attempt_tree_is_closed_and_rejects_final_failure_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = RunContext(root, {"spec": {
+                "purpose": "smoke",
+                "failure_policy": SCREEN_FAILURE_POLICY,
+                "environment": {},
+                "note": None,
+            }}, "m" * 64, "", "")
+            expected = root / "direct" / "r0" / "q1.json"
+            identity = {
+                "manifest_sha256": "m" * 64,
+                "question_sha256": "q" * 64,
+                "prompt_sha256": "p" * 64,
+                "note_sha256": None,
+                "seed": 1,
+                "task": "dspy",
+                "qid": "q1",
+                "budget": "direct",
+                "rollout": 0,
+                "environment_snapshot": {"snapshot": "environment/fake.json"},
+            }
+            contract = {
+                "expected_model": "model",
+                "expected_model_revision": "revision",
+                "expected_harness": "dspy.ReAct",
+                "expected_response_model": "served-model",
+            }
+            with (
+                patch(
+                    "studybench.provenance.validate_environment_snapshot",
+                    return_value={},
+                ),
+                patch(
+                    "studybench.provenance.environment_contract_is_valid",
+                    return_value=True,
+                ),
+            ):
+                write_screen_attempt_intent(context, expected, identity, contract)
+                failure = {
+                    **identity,
+                    "model": "model",
+                    "model_revision": "revision",
+                    "harness": "dspy.ReAct",
+                    "status": "error",
+                    "error": "failure",
+                    "started": "2026-01-01T00:00:00+00:00",
+                    "finished": "2026-01-01T00:01:00+00:00",
+                    "answer": "",
+                    "turns": [],
+                    "prompt_tokens": 0,
+                    "completion_tokens": 0,
+                    "total_tokens": 0,
+                    "gen_tokens": 0,
+                    "n_tool_iters": 0,
+                    "n_react_iters": 0,
+                    "finish_catches": 0,
+                    "n_lm_calls": 0,
+                    "usage_ledger": [],
+                }
+                write_episode_result(
+                    context,
+                    expected,
+                    failure,
+                    screen_identity=identity,
+                    producer_contract=contract,
+                )
+                write_immutable_json(expected, {**identity, "status": "ok"})
+                with self.assertRaisesRegex(ValueError, "both a final"):
+                    validate_screen_attempt_tree(
+                        context, [(expected, identity)], contract
+                    )
+
+            unknown = root / "attempt-intents" / "unknown.json"
+            write_immutable_json(unknown, {})
+            with self.assertRaisesRegex(ValueError, "unknown file"):
+                validate_screen_attempt_tree(
+                    context, [(expected, identity)], contract
+                )
+
+    def test_confirmatory_attempts_keep_preregistered_retry_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            context = RunContext(root, {"spec": {
+                "purpose": "confirmatory",
+                "failure_policy": RUN_FAILURE_POLICY,
+                "note": None,
+            }}, "m" * 64, "", "")
+            expected = root / "k5" / "r0" / "q1.json"
+            first = write_episode_result(context, expected, {"status": "error"})
+            second = write_episode_result(context, expected, {"status": "error"})
+            self.assertEqual(first.name, "attempt-1.json")
+            self.assertEqual(second.name, "attempt-2.json")
+
+    def test_persisted_screen_ledger_reconstructs_exact_final_binding(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            relative = "direct/r0/q1.json"
+            manifest = {
+                "manifest_schema": 1,
+                "spec": {
+                    "purpose": "exploratory",
+                    "failure_policy": SCREEN_FAILURE_POLICY,
+                    "environment": {},
+                    "environment_contract": {},
+                    "expected_episodes": [relative],
+                    "questions": [{
+                        "id": "q1",
+                        "sha256": "q" * 64,
+                        "question_text_sha256": "t" * 64,
+                    }],
+                    "seed_policy": {"episode_seeds": {relative: 3}},
+                    "prompt_policy": {
+                        "presented_prompt_sha256": {"q1": "p" * 64}
+                    },
+                    "note": None,
+                    "task": "dspy",
+                    "model": "model",
+                    "model_revision": "revision",
+                    "harness": "dspy.ReAct",
+                    "extra": {"expected_response_model": "served-model"},
+                },
+            }
+            write_immutable_json(root / "manifest.json", manifest)
+            context = RunContext(
+                root, manifest, sha256_file(root / "manifest.json"), "", ""
+            )
+            identity = {
+                "manifest_sha256": context.manifest_sha256,
+                "question_sha256": "q" * 64,
+                "prompt_sha256": "p" * 64,
+                "note_sha256": None,
+                "seed": 3,
+                "task": "dspy",
+                "qid": "q1",
+                "budget": "direct",
+                "rollout": 0,
+                "environment_snapshot": {"snapshot": "environment/fake.json"},
+            }
+            contract = {
+                "expected_model": "model",
+                "expected_model_revision": "revision",
+                "expected_harness": "dspy.ReAct",
+                "expected_response_model": "served-model",
+            }
+            expected = root / relative
+            with (
+                patch(
+                    "studybench.provenance.validate_environment_snapshot",
+                    return_value={},
+                ),
+                patch(
+                    "studybench.provenance.environment_contract_is_valid",
+                    return_value=True,
+                ),
+            ):
+                write_screen_attempt_intent(context, expected, identity, contract)
+                write_episode_result(
+                    context,
+                    expected,
+                    {
+                        **identity,
+                        "model": "model",
+                        "model_revision": "revision",
+                        "harness": "dspy.ReAct",
+                        "status": "ok",
+                    },
+                    validate_final=lambda value: None,
+                    screen_identity=identity,
+                    producer_contract=contract,
+                )
+                records = validate_persisted_screen_attempt_tree(
+                    root, manifest
+                )
+                (root / records[0]["path"]).unlink()
+                with self.assertRaisesRegex(
+                    ValueError, "no attempt intent"
+                ):
+                    validate_persisted_screen_attempt_tree(root, manifest)
+            self.assertEqual(len(records), 1)
+            self.assertEqual(records[0]["expected_episode"], relative)
+            self.assertEqual(records[0]["outcome"], "final")
+
+    def test_screen_failure_usage_preserves_legitimate_partial_ledgers(self) -> None:
+        def exercise(harness: str, failure_fields: dict) -> dict:
+            temporary = tempfile.TemporaryDirectory()
+            self.addCleanup(temporary.cleanup)
+            root = Path(temporary.name)
+            context = RunContext(root, {"spec": {
+                "purpose": "exploratory",
+                "failure_policy": SCREEN_FAILURE_POLICY,
+                "environment": {},
+                "note": None,
+            }}, "m" * 64, "", "")
+            expected = root / "k5" / "r0" / "q1.json"
+            identity = {
+                "manifest_sha256": "m" * 64,
+                "question_sha256": "q" * 64,
+                "prompt_sha256": "p" * 64,
+                "note_sha256": None,
+                "seed": 9,
+                "task": "dspy",
+                "qid": "q1",
+                "budget": "k5",
+                "rollout": 0,
+                "environment_snapshot": {"snapshot": "environment/fake.json"},
+            }
+            contract = {
+                "expected_model": "model",
+                "expected_model_revision": "revision",
+                "expected_harness": harness,
+                "expected_response_model": "served-model",
+            }
+            failure = {
+                **identity,
+                "model": "model",
+                "model_revision": "revision",
+                "harness": harness,
+                "status": "error",
+                "error": "provider failure",
+                "started": "2026-01-01T00:00:00+00:00",
+                "finished": "2026-01-01T00:01:00+00:00",
+                "answer": "",
+                "turns": [],
+                "prompt_tokens": failure_fields.pop("known_prompt_tokens", 0),
+                "completion_tokens": failure_fields.pop(
+                    "known_completion_tokens", 0
+                ),
+                "total_tokens": failure_fields.pop("known_total_tokens", 0),
+                "gen_tokens": failure_fields.pop("known_gen_tokens", 0),
+                "n_tool_iters": 0,
+                **failure_fields,
+            }
+            with (
+                patch(
+                    "studybench.provenance.validate_environment_snapshot",
+                    return_value={},
+                ),
+                patch(
+                    "studybench.provenance.environment_contract_is_valid",
+                    return_value=True,
+                ),
+            ):
+                write_screen_attempt_intent(context, expected, identity, contract)
+                retained = write_episode_result(
+                    context,
+                    expected,
+                    failure,
+                    screen_identity=identity,
+                    producer_contract=contract,
+                )
+            return json.loads(retained.read_text(encoding="utf-8"))
+
+        dspy_failure = exercise("dspy.ReAct", {
+            "known_prompt_tokens": 2,
+            "known_completion_tokens": 1,
+            "known_total_tokens": 3,
+            "known_gen_tokens": 1,
+            "n_react_iters": 0,
+            "finish_catches": 0,
+            "n_lm_calls": 2,
+            "usage_ledger": [{
+                "call": 0,
+                "response_model": "served-model",
+                "response_id": "response-1",
+                "system_fingerprint": None,
+                "request_messages_sha256": "a" * 64,
+                "outputs_sha256": "b" * 64,
+                "provider_usage": {
+                    "prompt_tokens": 2,
+                    "completion_tokens": 1,
+                    "total_tokens": 3,
+                },
+                "prompt_tokens": 2,
+                "completion_tokens": 1,
+                "total_tokens": 3,
+            }],
+        })
+        self.assertEqual(
+            dspy_failure["failure_usage"]["unknown_provider_attempts"], 1
+        )
+        self.assertEqual(
+            dspy_failure["failure_usage"]["status"], "partial-known-prefix"
+        )
+
+        native_failure = exercise("native-react", {
+            "request_attempts": [{
+                "logical_call": 0,
+                "attempt": 1,
+                "status": "transport_error",
+                "request_sha256": "c" * 64,
+                "error_type": "TimeoutError",
+                "error": "timeout",
+                "usage": "unknown",
+            }],
+        })
+        self.assertEqual(
+            native_failure["failure_usage"]["unknown_provider_attempts"], 1
+        )
 
 
 if __name__ == "__main__":

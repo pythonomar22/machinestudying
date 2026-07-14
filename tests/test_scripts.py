@@ -182,6 +182,7 @@ class ScriptContractTests(unittest.TestCase):
         rollout = self.read("rollout.sbatch")
         retry = self.read("retry-errors.sbatch")
         selfquiz = self.read("selfquiz.sbatch")
+        graph_study = self.read("graph_study.sbatch")
         grade_local = self.read("grade_local.sbatch")
         for text in (react, rollout, retry):
             self.assertIn("SB_SEED_GROUP", text)
@@ -193,7 +194,7 @@ class ScriptContractTests(unittest.TestCase):
             self.assertIn("--preregistration-role", text)
             self.assertIn("SB_EXPLORATORY", text)
             self.assertIn("--exploratory", text)
-        for text in (react, rollout, retry, selfquiz):
+        for text in (react, rollout, retry, selfquiz, graph_study):
             self.assertIn("#SBATCH --partition=matx", text)
             self.assertIn("#SBATCH --gpus-per-node=6", text)
             self.assertNotIn("#SBATCH --partition=a3", text)
@@ -208,12 +209,27 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn("--exploratory", evaluation_launch)
         self.assertIn("--study-id", selfquiz)
         self.assertIn("--seed", selfquiz)
+        self.assertIn("--study-id", graph_study)
+        self.assertIn("--seed", graph_study)
+        self.assertNotIn("SB_FOCUS_CHAPTER", react)
+        self.assertNotIn("--focus-chapter", react)
+        self.assertIn("-m studybench.selfquiz", selfquiz)
+        self.assertNotIn("-m studybench.graph_study", selfquiz)
+        self.assertIn("-m studybench.graph_study", graph_study)
+        self.assertIn("--chapters", selfquiz)
+        self.assertIn("--questions", selfquiz)
+        self.assertIn("SB_ATTEMPT_ACCESS", selfquiz)
+        self.assertIn("--attempt-access", selfquiz)
         self.assertIn("SB_AUDIT_PROTOCOL", selfquiz)
         self.assertIn("--audit-protocol", selfquiz)
-        self.assertIn("may only be registered in round 1", selfquiz)
         self.assertIn('[ ! -L "$AUDIT_PROTOCOL" ]', selfquiz)
         self.assertNotIn("--promote-human-audit", selfquiz)
         self.assertIn("sync_dspy_environment", selfquiz)
+        self.assertIn("sync_dspy_environment", graph_study)
+        self.assertNotIn("studybench.react", selfquiz)
+        self.assertNotIn("studybench.grade", selfquiz)
+        self.assertNotIn("studybench.react", graph_study)
+        self.assertNotIn("studybench.grade", graph_study)
         self.assertNotIn("tree_sitter", selfquiz)
         for removed in ("SB_COMPACT", "SB_USAGE", "SB_STUDIED", "SB_SELECT"):
             self.assertNotIn(removed, selfquiz)
@@ -290,7 +306,6 @@ class ScriptContractTests(unittest.TestCase):
         )
         self.assertNotEqual(duplicate.returncode, 0)
         self.assertIn("duplicate", duplicate.stderr)
-
 
 if __name__ == "__main__":
     unittest.main()

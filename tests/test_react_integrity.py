@@ -1,24 +1,71 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 import tempfile
 import unittest
 
 from studybench.integrity import sha256_json, sha256_text, write_immutable_json
 from studybench.react import (
+    READ_MAX_LINES,
     _artifact_inventory,
     _dspy_usage_record,
+    _stored_completed_study_config,
     _validate_completed_study,
+    make_tools,
+    runtime_dspy_tool_contract,
 )
+from studybench.study_protocol import DSPY_REPOSITORY_TOOL_CONTRACT
+from studybench.tools import READ_MAX_LINES as NATIVE_READ_MAX_LINES
 
 
 class ReactStudyIntegrityTests(unittest.TestCase):
+    def test_dspy_tool_contract_matches_runtime_and_not_native_schema(self) -> None:
+        rt = SimpleNamespace(read_max_lines=READ_MAX_LINES, dispatch=lambda *args: "")
+        observed = runtime_dspy_tool_contract(make_tools(rt))
+        self.assertEqual(observed, DSPY_REPOSITORY_TOOL_CONTRACT)
+        self.assertEqual(READ_MAX_LINES, 200)
+        self.assertEqual(NATIVE_READ_MAX_LINES, 500)
+
     def test_dspy_usage_is_never_invented_from_missing_or_malformed_data(self) -> None:
         for usage in (None, {}, {"prompt_tokens": 1, "completion_tokens": 2}):
             with self.subTest(usage=usage), self.assertRaisesRegex(
                 ValueError, "usage"
             ):
                 _dspy_usage_record({"usage": usage}, 0)
+
+    def test_completed_study_accepts_only_compatible_launch_nuisance_drift(self) -> None:
+        baseline = {
+            "model_revision": "revision",
+            "slurm_job_id": "1",
+            "server_launch_id": "a" * 64,
+            "vllm_api_key_sha256": "b" * 64,
+            "cuda_visible_devices": "0,1",
+            "runner_allocation": {"hostname": "first"},
+        }
+        retry = {
+            **baseline,
+            "slurm_job_id": "2",
+            "server_launch_id": "c" * 64,
+            "vllm_api_key_sha256": "d" * 64,
+            "cuda_visible_devices": "6,7",
+            "runner_allocation": {"hostname": "second"},
+        }
+        stored = {"study_id": "study-r1", "environment": baseline, "seed": 7}
+        current = {"study_id": "study-r1", "environment": retry, "seed": 7}
+        with tempfile.TemporaryDirectory() as directory:
+            intent = Path(directory) / "intent.json"
+            write_immutable_json(intent, stored)
+            self.assertEqual(
+                _stored_completed_study_config(intent, current), stored
+            )
+            with self.assertRaisesRegex(SystemExit, "protocol or source"):
+                _stored_completed_study_config(intent, {**current, "seed": 8})
+            substantive = {**retry, "model_revision": "other"}
+            with self.assertRaisesRegex(SystemExit, "substantive drift"):
+                _stored_completed_study_config(
+                    intent, {**current, "environment": substantive}
+                )
 
     def make_study(self, root: Path) -> tuple[dict[str, object], Path]:
         config: dict[str, object] = {
@@ -32,6 +79,7 @@ class ReactStudyIntegrityTests(unittest.TestCase):
             "expected_response_model": "served-model",
             "episode_seed": 17,
             "forced_iterations": 50,
+            "repository_tool_scope": "full-pinned-corpus",
         }
         intent = root / "intent.json"
         write_immutable_json(intent, config)

@@ -1,11 +1,21 @@
-"""SELF-QUIZZING study procedure (experiments/005 v1.2): the agent studies a
-codebase by quizzing itself; independently screened, source-cited candidate
-corrections enter its note and remain non-claim-ready until blinded human audit.
+"""Semantic selfquiz construction protocol for the pinned DSPy corpus.
 
-Per round r (chapters advance through a fixed size-ordered syllabus, wrapping):
+The declared ATTEMPT scaffold is either ``closed-book`` (one tool-free
+``dspy.Predict`` call) or ``react-corpus`` (one bounded ``dspy.ReAct`` call over
+the complete pinned repository). Independently screened, source-cited candidate
+corrections enter the note and remain non-claim-ready until audit.
+
+This is derived from experiments/005 v1.2, but its bounded repository-tool
+ATTEMPT intervention and schema are intentionally a new estimand rather than a
+historical rerun.
+
+Exactly four rounds run in order. Four chapter slots per round advance through
+the fixed 15-chapter, size-ordered DSPy syllabus; round 4 covers the final three
+unseen chapters and wraps once. Per round r:
   QUIZ     one ReAct episode per chapter writes M questions (anchored, deduped;
            1 of M held out to the accumulating dev exam)
-  ATTEMPT  closed book (dspy.Predict): note_{r-1} + question -> committed answer
+  ATTEMPT  note_{r-1} + question -> one committed answer, under the arm's exact
+           Predict-or-ReAct access contract
   VERIFY   Phase A derives the answer blind (never sees the attempt or note),
            retaining exact source-line citations;
            Phase B diffs attempt vs an independently agreed reference
@@ -19,8 +29,11 @@ study-selfquiz/studies/{study_id}/{task}/r{r}/, and the
 note is the markdown rendering of the admitted entries plus a code-generated
 repo map. Every provider-reported prompt, generated, and total token count is
 recorded by phase and stays off the eval token axis.
-Corpus-agnostic by construction: inputs are the repository and its read tools.
-This protocol does not expose a generated-code execution tool.
+This version is deliberately DSPy-only and binds the complete pinned corpus,
+source, runtime, server topology, and method contract. It does not expose a
+generated-code execution tool. Construction
+does not invoke the external StudyBench evaluator or grader. Historical results
+from a different ATTEMPT or judge protocol are context, not a causal control.
 """
 
 import argparse
@@ -72,20 +85,46 @@ from .provenance import (
     validate_local_server_urls,
     write_environment_snapshot,
 )
-from .react import MODEL_ID, MODEL_REVISION, READ_MAX_LINES, SAMPLING, make_tools
+from .react import (
+    MODEL_ID,
+    MODEL_REVISION,
+    READ_MAX_LINES,
+    SAMPLING,
+    make_tools,
+    runtime_dspy_tool_contract,
+)
+from .study_protocol import (
+    DSPY_SEMANTIC_CHAPTER_SYLLABUS,
+    SEMANTIC_ATTEMPT_ACCESS_MODES,
+    SEMANTIC_FINAL_ROUND,
+    SEMANTIC_SELFQUIZ_METHOD,
+    SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
+    SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE,
+    StudyProtocolError,
+    derive_protocol_summary,
+    semantic_attempt_protocol,
+    validate_construction_protocol,
+    validate_study_note_archive,
+)
 from .tools import RepoTools
 
 K_CHAPTERS = 4
 M_QUESTIONS = 5      # per chapter; 1 of these is held out to the dev exam
 RETEST_FRAC = 0.2
 QUIZ_MAX_ITERS = 15
+ATTEMPT_MAX_ITERS = 5
 DERIVE_MAX_ITERS = 15
 DEDUP_JACCARD = 0.5
 FRESHNESS_NEAR_JACCARD = 0.8
 MAX_FRESHNESS_NEAR_RATE = 0.1
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 4
 TRAIN_ENSEMBLE = 2
 DEV_ENSEMBLE = 2
+ATTEMPT_TOOL_NAMES = ("grep", "glob", "read_file")
+ATTEMPT_FINISH_NAME = "finish"
+ATTEMPT_FINISH_ARGS: dict[str, object] = {}
+ATTEMPT_FINISH_OBSERVATION = "Completed."
+DEFAULT_ATTEMPT_ACCESS = "react-corpus"
 
 log = logging.getLogger("selfquiz")
 
@@ -119,6 +158,17 @@ class QuizSig(dspy.Signature):
     chapter: str = dspy.InputField(desc="the module (directory) to study")
     num_questions: int = dspy.InputField()
     questions: list[QuizQ] = dspy.OutputField()
+
+
+class AttemptSig(dspy.Signature):
+    """Answer the question about the code repository precisely. The study note
+    is fallible memory and orientation, not authoritative evidence. If
+    read-only repository tools are available, use them to resolve uncertainty
+    and follow the repository when it conflicts with the note."""
+
+    note: str = dspy.InputField(desc="the current study note, possibly empty")
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField(desc="the committed, precise answer")
 
 
 class DeriveSig(dspy.Signature):
@@ -200,6 +250,12 @@ def _chapter_of(f: str) -> str:
     return "/".join(parts[:2]) if len(parts) > 2 else parts[0]
 
 
+def _anchors_cover_chapter(anchors: list[str], chapter: str) -> bool:
+    """Require assigned-chapter evidence while permitting cross-file context."""
+
+    return any(_chapter_of(anchor) == chapter for anchor in anchors)
+
+
 def repo_map(rt: RepoTools, chaps: list[str]) -> str:
     """Model-free orientation section: chapters with their largest files."""
     lines = ["## Repo map"]
@@ -214,6 +270,59 @@ def repo_map(rt: RepoTools, chaps: list[str]) -> str:
 
 def _record_id(prefix: str, *parts: object) -> str:
     return f"{prefix}-{sha256_json(parts)[:20]}"
+
+
+def _attempt_access(args) -> str:
+    value = getattr(args, "attempt_access", DEFAULT_ATTEMPT_ACCESS)
+    if value not in SEMANTIC_ATTEMPT_ACCESS_MODES:
+        raise SystemExit(
+            "attempt access must be closed-book or react-corpus"
+        )
+    return value
+
+
+def _quiz_seed_namespace(
+    study_id: str, task: str, round_number: int, chapter: str
+) -> str:
+    return _record_id(
+        "quiz-seed", study_id, task, round_number, chapter
+    )
+
+
+def _curriculum_id(
+    study_id: str,
+    task: str,
+    round_number: int,
+    chapter: str,
+    ordinal: int,
+    question: str,
+) -> str:
+    return _record_id(
+        "curriculum", study_id, task, round_number, chapter, ordinal, question
+    )
+
+
+def _item_seed_namespace(item: dict) -> str:
+    curriculum_id = item.get("curriculum_id")
+    if not _safe_artifact_id(curriculum_id):
+        raise ValueError("study item has no canonical curriculum identity")
+    return _record_id(
+        "item-seed", curriculum_id, item.get("round"), item.get("kind")
+    )
+
+
+def _reference_content_id(task: str, item: dict) -> str:
+    curriculum_id = item.get("curriculum_id")
+    if not _safe_artifact_id(curriculum_id):
+        raise ValueError("dev item has no canonical curriculum identity")
+    return _record_id("dev-reference-content", task, curriculum_id)
+
+
+def _dev_exam_seed_namespace(item: dict, exam_round: int) -> str:
+    curriculum_id = item.get("curriculum_id")
+    if not _safe_artifact_id(curriculum_id):
+        raise ValueError("dev item has no canonical curriculum identity")
+    return _record_id("dev-exam-seed", curriculum_id, exam_round)
 
 
 def _safe_artifact_id(value: object) -> bool:
@@ -314,6 +423,12 @@ def _question_tokens(question: str) -> tuple[str, ...]:
     return tuple(re.findall(r"[a-z0-9_]+", question.casefold()))
 
 
+def _freshness_source_sort_key(path: str) -> tuple[str, ...]:
+    """Match ``Path`` ordering using one normalized relative-path contract."""
+
+    return PurePosixPath(path).parts
+
+
 def freshness_audit(records: list[dict], *, task: str, study_dir: Path,
                     root: Path = ROOT, snapshot_dir: Path | None = None) -> dict:
     """Compare this round's new questions with every other stored curriculum.
@@ -352,7 +467,12 @@ def freshness_audit(records: list[dict], *, task: str, study_dir: Path,
             "error": "current quiz records do not identify exactly one round",
         })
     comparison, sources, errors = [], [], list(discovery_errors)
-    for path in sorted(paths):
+    for path in sorted(
+        paths,
+        key=lambda candidate: _freshness_source_sort_key(
+            candidate.relative_to(root).as_posix()
+        ),
+    ):
         try:
             relative_from_root = PurePosixPath(path.relative_to(root).as_posix())
             if _has_symlink_component(root, relative_from_root):
@@ -471,6 +591,162 @@ def freshness_sources_complete(rdir: Path, freshness: dict) -> bool:
         == freshness.get("comparison_questions")
 
 
+def freshness_audit_recomputed(
+    rdir: Path,
+    records: list[dict],
+    freshness: dict,
+    *,
+    study_id: str,
+    task: str,
+    round_number: int,
+) -> bool:
+    """Recompute every freshness decision from its immutable source snapshots.
+
+    Earlier rounds in the same study are an independently derivable mandatory
+    subset of the comparison population. External historical curricula remain
+    named and snapshotted explicitly; their discovery completeness is a stated
+    limitation because those generated trees are not part of the source commit.
+    """
+
+    expected_keys = {
+        "schema_version", "method", "near_jaccard_threshold",
+        "max_near_overlap_rate", "current_questions", "comparison_questions",
+        "comparison_sources", "comparison_bundle_sha256", "errors",
+        "exact_overlaps", "near_overlaps_including_exact", "near_overlap_rate",
+        "matches", "audit_complete", "fresh",
+    }
+    sources = freshness.get("comparison_sources")
+    errors = freshness.get("errors")
+    if (
+        set(freshness) != expected_keys
+        or not isinstance(sources, list)
+        or not isinstance(errors, list)
+        or any(
+            not isinstance(error, dict)
+            or set(error) != {"path", "error"}
+            or not isinstance(error.get("path"), str)
+            or not isinstance(error.get("error"), str)
+            for error in errors
+        )
+        or not freshness_sources_complete(rdir, freshness)
+    ):
+        return False
+    comparison: list[tuple[str, str]] = []
+    source_by_path: dict[str, dict] = {}
+    for source in sources:
+        source_path = (
+            _canonical_file(source.get("path"))
+            if isinstance(source, dict)
+            else None
+        )
+        if (
+            not isinstance(source, dict)
+            or set(source) != {"path", "sha256", "questions", "snapshot"}
+            or source_path is None
+            or source_path in source_by_path
+        ):
+            return False
+        snapshot = _canonical_file(source.get("snapshot"))
+        if snapshot is None or not snapshot.startswith("freshness-sources/"):
+            return False
+        try:
+            values = _read_jsonl(rdir.joinpath(*PurePosixPath(snapshot).parts))
+        except (OSError, UnicodeError, ValueError):
+            return False
+        if source.get("questions") != len(values):
+            return False
+        for value in values:
+            question = value.get("question") if isinstance(value, dict) else None
+            if not isinstance(question, str) or not question.strip():
+                return False
+            comparison.append((source_path, question))
+        source_by_path[source_path] = source
+
+    if list(source_by_path) != sorted(
+        source_by_path, key=_freshness_source_sort_key
+    ):
+        return False
+
+    for prior_round in range(1, round_number):
+        source_path = (
+            f"study-selfquiz/studies/{study_id}/{task}/r{prior_round}/questions.jsonl"
+        )
+        source = source_by_path.get(source_path)
+        try:
+            prior_bytes = read_artifact_bytes(
+                rdir.parent / f"r{prior_round}" / "questions.jsonl"
+            )
+        except (OSError, ValueError):
+            return False
+        if (
+            source is None
+            or source.get("sha256") != sha256_bytes(prior_bytes)
+            or source.get("questions") != len(prior_bytes.splitlines())
+            or read_artifact_bytes(
+                rdir.joinpath(*PurePosixPath(source["snapshot"]).parts)
+            ) != prior_bytes
+        ):
+            return False
+
+    current = [record for record in records if record.get("kind") == "quiz"]
+    current_rounds = {
+        record.get("round")
+        for record in current
+        if type(record.get("round")) is int
+    }
+    round_identity_complete = current_rounds == {round_number}
+    matches = []
+    for record in current:
+        tokens = _question_tokens(record["question"])
+        token_set = set(tokens)
+        normalized = " ".join(tokens)
+        best = None
+        for path, prior_question in comparison:
+            prior_tokens = _question_tokens(prior_question)
+            prior_set = set(prior_tokens)
+            union = token_set | prior_set
+            score = len(token_set & prior_set) / len(union) if union else 1.0
+            exact = normalized == " ".join(prior_tokens)
+            candidate = (exact, score, path, prior_question)
+            if best is None or candidate[:2] > best[:2]:
+                best = candidate
+        if best is not None and (best[0] or best[1] >= FRESHNESS_NEAR_JACCARD):
+            matches.append({
+                "item_id": record["item_id"],
+                "question": record["question"],
+                "exact": best[0],
+                "jaccard": best[1],
+                "prior_path": best[2],
+                "prior_question": best[3],
+            })
+    exact_count = sum(match["exact"] for match in matches)
+    near_rate = len(matches) / len(current) if current else None
+    complete = bool(current) and round_identity_complete and not errors
+    expected = {
+        "schema_version": SCHEMA_VERSION,
+        "method": "normalized exact plus token-set Jaccard",
+        "near_jaccard_threshold": FRESHNESS_NEAR_JACCARD,
+        "max_near_overlap_rate": MAX_FRESHNESS_NEAR_RATE,
+        "current_questions": len(current),
+        "comparison_questions": len(comparison),
+        "comparison_sources": sources,
+        "comparison_bundle_sha256": sha256_json(sources),
+        "errors": errors,
+        "exact_overlaps": exact_count,
+        "near_overlaps_including_exact": len(matches),
+        "near_overlap_rate": near_rate,
+        "matches": matches,
+        "audit_complete": complete,
+        "fresh": bool(
+            complete
+            and exact_count == 0
+            and near_rate is not None
+            and near_rate <= MAX_FRESHNESS_NEAR_RATE
+        ),
+    }
+    return canonical_json_bytes(freshness) == canonical_json_bytes(expected)
+
+
 def _positive_json_integer(value: object) -> bool:
     """Return true only for a positive JSON integer (never for a boolean)."""
 
@@ -484,7 +760,7 @@ def _is_original_quiz(item: object, *, split: str) -> bool:
         return False
     required = (
         "schema_version", "item_id", "origin_item_id", "origin_round",
-        "round", "kind", "split",
+        "round", "kind", "split", "curriculum_id", "attempt_access",
     )
     if any(key not in item for key in required):
         return False
@@ -495,6 +771,8 @@ def _is_original_quiz(item: object, *, split: str) -> bool:
         and bool(item["item_id"])
         and isinstance(item["origin_item_id"], str)
         and bool(item["origin_item_id"])
+        and _safe_artifact_id(item["curriculum_id"])
+        and item["attempt_access"] in SEMANTIC_ATTEMPT_ACCESS_MODES
         and _positive_json_integer(item["round"])
         and _positive_json_integer(item["origin_round"])
         and item["kind"] == "quiz"
@@ -564,6 +842,8 @@ def make_retest_item(origin: dict, *, task: str, study_id: str, round_number: in
         "kind": "retest",
         "split": "train",
         "retest_of": origin["item_id"],
+        "curriculum_id": origin["curriculum_id"],
+        "attempt_access": origin["attempt_access"],
         **{key: origin[key] for key in
            ("question", "qtype", "anchors", "chapter", "writer_sketch")},
     }
@@ -593,6 +873,155 @@ def _trajectory_hash_valid(record: object) -> bool:
     )
 
 
+def _attempt_protocol(
+    attempt_access: str = DEFAULT_ATTEMPT_ACCESS,
+) -> dict[str, object]:
+    """The exact, immutable ATTEMPT intervention for one access arm."""
+
+    return semantic_attempt_protocol(attempt_access)
+
+
+def _attempt_protocol_is_exact(
+    value: object,
+    *,
+    attempt_access: str = DEFAULT_ATTEMPT_ACCESS,
+    paired_seed: int | None = None,
+) -> bool:
+    expected = _attempt_protocol(attempt_access)
+    if paired_seed is not None:
+        expected.update(paired_seed=paired_seed, only_manipulated_field="note")
+    try:
+        return canonical_json_bytes(value) == canonical_json_bytes(expected)
+    except (TypeError, ValueError):
+        return False
+
+
+def _validate_react_trajectory(
+    trajectory: dict,
+    *,
+    label: str,
+    max_iters: int,
+    require_nonempty: bool,
+) -> None:
+    """Validate DSPy's indexed ReAct trace, including its built-in finish tool.
+
+    DSPy adds ``finish`` internally after receiving the three repository tools.
+    It is therefore part of the realized policy even though it is not a corpus
+    operation. Successful ReAct phases must retain at least one turn; an empty
+    trace is permitted only for an explicit error artifact. Every recorded turn
+    must be complete, contiguous, and within the frozen iteration cap.
+    """
+
+    fields = ("thought", "tool_name", "tool_args", "observation")
+    indexed_fields: dict[int, set[str]] = {}
+    for key in trajectory:
+        match = re.fullmatch(
+            r"(thought|tool_name|tool_args|observation)_(\d+)", key
+        )
+        if match is None:
+            raise SystemExit(f"{label} has an out-of-contract trajectory field")
+        field, raw_index = match.groups()
+        indexed_fields.setdefault(int(raw_index), set()).add(field)
+
+    if not indexed_fields:
+        if require_nonempty:
+            raise SystemExit(f"{label} has an empty successful trajectory")
+        return
+    indexes = sorted(indexed_fields)
+    if (
+        indexes != list(range(len(indexes)))
+        or len(indexes) > max_iters
+        or any(indexed_fields[index] != set(fields) for index in indexes)
+    ):
+        raise SystemExit(f"{label} has an incomplete or noncontiguous trajectory")
+
+    final_index = indexes[-1]
+    for index in indexes:
+        thought = trajectory[f"thought_{index}"]
+        name = trajectory[f"tool_name_{index}"]
+        args = trajectory[f"tool_args_{index}"]
+        observation = trajectory[f"observation_{index}"]
+        if (
+            not isinstance(thought, str)
+            or not isinstance(name, str)
+            or not isinstance(args, dict)
+            or not isinstance(observation, str)
+        ):
+            raise SystemExit(f"{label} has an invalid trajectory value")
+        if name == ATTEMPT_FINISH_NAME:
+            if (
+                args != ATTEMPT_FINISH_ARGS
+                or observation != ATTEMPT_FINISH_OBSERVATION
+                or index != final_index
+            ):
+                raise SystemExit(f"{label} has an invalid finish trajectory")
+        elif name not in ATTEMPT_TOOL_NAMES:
+            raise SystemExit(f"{label} has an out-of-contract repository tool")
+
+
+def _react_trajectory_valid(
+    trajectory: object,
+    *,
+    max_iters: int,
+    require_nonempty: bool,
+) -> bool:
+    """Return whether a serialized repository ReAct trace is complete."""
+
+    if not isinstance(trajectory, dict):
+        return False
+    try:
+        _validate_react_trajectory(
+            trajectory,
+            label="ReAct trajectory",
+            max_iters=max_iters,
+            require_nonempty=require_nonempty,
+        )
+    except SystemExit:
+        return False
+    return True
+
+
+def _validate_attempt_record(
+    record: object,
+    *,
+    seed: int,
+    label: str,
+    attempt_access: str = DEFAULT_ATTEMPT_ACCESS,
+) -> dict:
+    """Validate an ATTEMPT result independently of its containing artifact."""
+
+    expected_keys = {
+        "status", "answer", "error", "seed", "trajectory", "trajectory_sha256",
+    }
+    if (not isinstance(record, dict) or set(record) != expected_keys
+            or record.get("status") not in {"ok", "error"}
+            or not isinstance(record.get("answer"), str)
+            or not _json_identity_equal(record.get("seed"), seed)
+            or not _trajectory_hash_valid(record)):
+        raise SystemExit(f"{label} has drifted attempt trajectory or seed")
+    trajectory = record["trajectory"]
+    if attempt_access == "closed-book":
+        if trajectory:
+            raise SystemExit(f"{label} has a trajectory in the tool-free arm")
+    elif attempt_access == "react-corpus":
+        _validate_react_trajectory(
+            trajectory,
+            label=label,
+            max_iters=ATTEMPT_MAX_ITERS,
+            require_nonempty=record["status"] == "ok",
+        )
+    else:
+        raise SystemExit(f"{label} has an unknown attempt-access contract")
+    error = record.get("error")
+    if record["status"] == "ok":
+        if error is not None or not record["answer"].strip():
+            raise SystemExit(f"{label} has an invalid successful attempt")
+    elif (not isinstance(error, str) or not error
+          or record["answer"].strip()):
+        raise SystemExit(f"{label} has an invalid failed attempt")
+    return record
+
+
 # ---------------------------------------------------------------- LM plumbing
 
 def fresh_lm(base_url: str, seed: int) -> dspy.LM:
@@ -603,11 +1032,13 @@ def fresh_lm(base_url: str, seed: int) -> dspy.LM:
                    cache=False, num_retries=0, **{**SAMPLING, "seed": seed})
 
 
-def _server_url(urls: list[str], master_seed: int, owner_id: str) -> str:
-    """Choose a server deterministically so partial resumption cannot reassign work."""
+def _server_url(urls: list[str], master_seed: int, stochastic_namespace: str) -> str:
+    """Choose a server deterministically so resumption cannot reassign work."""
     if not urls:
         raise ValueError("at least one model server is required")
-    return urls[stable_seed(master_seed, owner_id, "server") % len(urls)]
+    return urls[
+        stable_seed(master_seed, stochastic_namespace, "server") % len(urls)
+    ]
 
 
 def _response_value(response: object, field: str) -> object:
@@ -798,10 +1229,12 @@ def _is_construction_call(call: dict) -> bool:
 # ---------------------------------------------------------------- pipeline
 
 def run_quiz(chapter: str, tools_fns, url: str, n: int, *, seed: int,
-             owner_id: str) -> dict:
+             owner_id: str, attempt_access: str, seed_namespace: str) -> dict:
     """Run one quiz episode and retain its complete auditable output."""
     lm = fresh_lm(url, seed)
     episode = {"owner_id": owner_id, "chapter": chapter, "seed": seed,
+               "attempt_access": attempt_access,
+               "seed_namespace": seed_namespace,
                "status": "ok", "questions": [], "trajectory": {}}
     try:
         with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
@@ -818,20 +1251,59 @@ def run_quiz(chapter: str, tools_fns, url: str, n: int, *, seed: int,
     return episode
 
 
-def _attempt(question: str, note: str, url: str, *, seed: int,
-             owner_id: str, phase: str) -> tuple[str, list[dict], str | None]:
+def _attempt(
+    question: str,
+    note: str,
+    tools_fns,
+    url: str,
+    *,
+    seed: int,
+    owner_id: str,
+    phase: str,
+    attempt_access: str = DEFAULT_ATTEMPT_ACCESS,
+) -> tuple[dict, list[dict]]:
+    if attempt_access not in SEMANTIC_ATTEMPT_ACCESS_MODES:
+        raise ValueError("ATTEMPT access must be closed-book or react-corpus")
+    tools = list(tools_fns) if attempt_access == "react-corpus" else []
+    if attempt_access == "react-corpus":
+        tool_names = tuple(getattr(tool, "__name__", None) for tool in tools)
+        if tool_names != ATTEMPT_TOOL_NAMES:
+            raise ValueError(
+                f"ATTEMPT requires the complete repository tool set "
+                f"{ATTEMPT_TOOL_NAMES!r}; got {tool_names!r}"
+            )
+        runtime_dspy_tool_contract(tools)
     lm = fresh_lm(url, seed)
-    answer = ""
-    error = None
+    attempt = {
+        "status": "ok",
+        "answer": "",
+        "error": None,
+        "seed": seed,
+        "trajectory": {},
+    }
     try:
         with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
-            answer = dspy.Predict("note, question -> answer")(
-                note=note or "(no study note provided)", question=question).answer or ""
+            if attempt_access == "react-corpus":
+                pred = dspy.ReAct(
+                    AttemptSig,
+                    tools=tools,
+                    max_iters=ATTEMPT_MAX_ITERS,
+                )(note=note, question=question)
+            else:
+                pred = dspy.Predict(AttemptSig)(note=note, question=question)
+        attempt["answer"] = pred.answer or ""
+        if attempt_access == "react-corpus":
+            attempt["trajectory"] = serialize_trajectory(pred.trajectory)
     except Exception as exc:
-        error = f"{type(exc).__name__}: {str(exc)[:300]}"
-    if error is None and not answer.strip():
-        error = "empty model answer"
-    return answer, usage_records(lm, phase=phase, owner_id=owner_id, seed=seed), error
+        attempt.update(
+            status="error",
+            answer="",
+            error=f"{type(exc).__name__}: {str(exc)[:300]}",
+        )
+    if attempt["status"] == "ok" and not attempt["answer"].strip():
+        attempt.update(status="error", answer="", error="empty model answer")
+    attempt["trajectory_sha256"] = sha256_json(attempt["trajectory"])
+    return attempt, usage_records(lm, phase=phase, owner_id=owner_id, seed=seed)
 
 
 def _adjudicate(question: str, reference: dict, attempt: str, url: str, *,
@@ -853,10 +1325,14 @@ def _adjudicate(question: str, reference: dict, attempt: str, url: str, *,
 
 
 def _derive(item: dict, tools_fns, url: str, *, seed: int,
-            owner_id: str, index: int) -> tuple[dict, list[dict]]:
+            owner_id: str, index: int,
+            seed_namespace: str | None = None) -> tuple[dict, list[dict]]:
+    seed_namespace = seed_namespace or owner_id
     lm = fresh_lm(url, seed)
     result = {
-        "derivation_id": _record_id("derivation", owner_id, index, seed),
+        "derivation_id": _record_id(
+            "derivation", seed_namespace, index, seed
+        ),
         "seed": seed,
         "status": "ok",
         "answer": "",
@@ -917,12 +1393,15 @@ def _derive(item: dict, tools_fns, url: str, *, seed: int,
 
 def _derive_consensus(item: dict, tools_fns, url: str, *,
                       master_seed: int, owner_id: str,
+                      seed_namespace: str,
                       ensemble: int) -> tuple[list[dict], list[dict], list[dict], list[dict]]:
     derivations, calls = [], []
     for index in range(ensemble):
-        seed = stable_seed(master_seed, owner_id, "derive", index)
+        seed = stable_seed(master_seed, seed_namespace, "derive", index)
         derivation, new_calls = _derive(item, tools_fns, url, seed=seed,
-                                        owner_id=owner_id, index=index)
+                                        owner_id=owner_id,
+                                        seed_namespace=seed_namespace,
+                                        index=index)
         derivations.append(derivation)
         calls += new_calls
     valid = [derivation for derivation in derivations if derivation["status"] == "ok"]
@@ -934,7 +1413,9 @@ def _derive_consensus(item: dict, tools_fns, url: str, *,
     checks = []
     for left, right, label in ((valid[0], valid[1], "a-to-b"),
                                (valid[1], valid[0], "b-to-a")):
-        seed = stable_seed(master_seed, owner_id, "reference-consensus", label)
+        seed = stable_seed(
+            master_seed, seed_namespace, "reference-consensus", label
+        )
         check, new_calls = _adjudicate(
             item["question"], left, right["answer"], url, seed=seed,
             owner_id=owner_id, phase=f"reference-consensus-{label}")
@@ -972,9 +1453,10 @@ def _judge_attempt(item: dict, attempt: str, references: list[dict], url: str, *
 
 
 def _distill(item: dict, attempt: str, references: list[dict], url: str, *,
-             master_seed: int, owner_id: str) -> tuple[dict | None, dict | None, list[dict]]:
+             master_seed: int, owner_id: str,
+             seed_namespace: str) -> tuple[dict | None, dict | None, list[dict]]:
     reference = sorted(references, key=lambda ref: ref["derivation_id"])[0]
-    seed = stable_seed(master_seed, owner_id, "distill")
+    seed = stable_seed(master_seed, seed_namespace, "distill")
     lm = fresh_lm(url, seed)
     raw: dict = {}
     error = None
@@ -1005,7 +1487,9 @@ def _distill(item: dict, attempt: str, references: list[dict], url: str, *,
 
     support_checks = []
     for index, candidate in enumerate(references):
-        support_seed = stable_seed(master_seed, owner_id, "correction-support", index)
+        support_seed = stable_seed(
+            master_seed, seed_namespace, "correction-support", index
+        )
         check, new_calls = _adjudicate(
             item["question"], candidate, raw.get("correction", ""), url,
             seed=support_seed, owner_id=owner_id, phase=f"correction-support-{index}")
@@ -1036,7 +1520,8 @@ def _distill(item: dict, attempt: str, references: list[dict], url: str, *,
 
 def _schema_error(item: dict) -> str | None:
     required = ("schema_version", "item_id", "origin_item_id", "origin_round",
-                "round", "kind", "split", "question", "qtype", "anchors", "chapter")
+                "round", "kind", "split", "question", "qtype", "anchors", "chapter",
+                "curriculum_id", "attempt_access")
     missing = [key for key in required if key not in item]
     if missing:
         return f"missing required fields: {', '.join(missing)}"
@@ -1046,6 +1531,8 @@ def _schema_error(item: dict) -> str | None:
     if (not isinstance(item["item_id"], str) or not item["item_id"]
             or not isinstance(item["origin_item_id"], str)
             or not item["origin_item_id"]
+            or not _safe_artifact_id(item["curriculum_id"])
+            or item.get("attempt_access") not in SEMANTIC_ATTEMPT_ACCESS_MODES
             or not _positive_json_integer(item["origin_round"])
             or not _positive_json_integer(item["round"])):
         return "item IDs and round lineage must be nonempty strings/positive integers"
@@ -1066,7 +1553,8 @@ def _question_record_error(item: dict, rt: RepoTools) -> str | None:
         error = _schema_error(item)
     else:
         required = ("schema_version", "item_id", "origin_item_id", "origin_round",
-                    "round", "kind", "split", "question", "qtype", "anchors", "chapter")
+                    "round", "kind", "split", "question", "qtype", "anchors", "chapter",
+                    "curriculum_id", "attempt_access")
         missing = [key for key in required if key not in item]
         error = f"missing required fields: {', '.join(missing)}" if missing else None
         if not error and not _is_original_quiz(item, split="dev"):
@@ -1083,6 +1571,8 @@ def _question_record_error(item: dict, rt: RepoTools) -> str | None:
     anchors = validate_anchors(rt, item.get("anchors"))
     if anchors is None or anchors != item["anchors"]:
         return "question anchors are not canonical exact corpus files"
+    if not _anchors_cover_chapter(anchors, item["chapter"]):
+        return "question has no anchor in its assigned chapter"
     return None
 
 
@@ -1090,6 +1580,7 @@ def _validate_question_provenance(args, records: list[dict], episodes: list[dict
                                   rt: RepoTools, *,
                                   expected_chapters: list[str],
                                   expected_question_count: int) -> None:
+    attempt_access = _attempt_access(args)
     if (not isinstance(expected_chapters, list) or not expected_chapters
             or any(not isinstance(chapter, str) or not chapter
                    for chapter in expected_chapters)
@@ -1101,6 +1592,7 @@ def _validate_question_provenance(args, records: list[dict], episodes: list[dict
                    or not isinstance(record.get("chapter"), str)
                    or not isinstance(record.get("question"), str)
                    or not record["question"].strip()
+                   or record.get("attempt_access") != attempt_access
                    or record.get("qtype")
                    not in {"usage", "behavior", "location", "pitfall"}
                    or not isinstance(record.get("writer_sketch", ""), str)
@@ -1134,11 +1626,15 @@ def _validate_question_provenance(args, records: list[dict], episodes: list[dict
         owner_id = _record_id(
             "quiz", args.study_id, args.task, args.round, chapter)
         episode = episodes_by_id[owner_id]
-        expected_seed = stable_seed(
-            args.seed, args.study_id, args.task, args.round, "quiz", chapter)
+        seed_namespace = _quiz_seed_namespace(
+            args.study_id, args.task, args.round, chapter
+        )
+        expected_seed = stable_seed(args.seed, seed_namespace, "quiz")
         raw_questions = episode.get("questions")
         if (episode.get("owner_id") != owner_id
                 or episode.get("chapter") != chapter
+                or episode.get("attempt_access") != attempt_access
+                or episode.get("seed_namespace") != seed_namespace
                 or not _json_identity_equal(episode.get("seed"), expected_seed)
                 or episode.get("status") != "ok"
                 or not isinstance(episode.get("trajectory"), dict)
@@ -1147,6 +1643,12 @@ def _validate_question_provenance(args, records: list[dict], episodes: list[dict
                 or not isinstance(raw_questions, list)
                 or len(raw_questions) != expected_question_count):
             raise SystemExit(f"quiz episode identity drifted: {owner_id}")
+        _validate_react_trajectory(
+            episode["trajectory"],
+            label=f"quiz episode {owner_id}",
+            max_iters=QUIZ_MAX_ITERS,
+            require_nonempty=True,
+        )
         episode_phases = _artifact_call_phases(
             episode, owner_id=owner_id, label=f"quiz episode {owner_id}")
         _consume_call_phase(
@@ -1168,14 +1670,25 @@ def _validate_question_provenance(args, records: list[dict], episodes: list[dict
             raise SystemExit(
                 "each quiz chapter must retain exactly one dev item and all other train items"
             )
+        expected_dev_ordinal = stable_seed(
+            args.seed, args.study_id, args.task, args.round,
+            "dev-split", chapter,
+        ) % expected_question_count
         for record in chapter_records:
             ordinal = record["quiz_ordinal"]
             expected_item_id = _record_id(
                 "question", args.study_id, args.task, args.round, chapter,
                 ordinal, record["question"])
+            expected_curriculum_id = _curriculum_id(
+                args.study_id, args.task, args.round, chapter,
+                ordinal, record["question"],
+            )
             if (not _json_identity_equal(record.get("round"), args.round)
                     or record.get("quiz_episode_id") != owner_id
-                    or record.get("item_id") != expected_item_id):
+                    or record.get("item_id") != expected_item_id
+                    or record.get("curriculum_id") != expected_curriculum_id
+                    or (record.get("split") == "dev")
+                    != (ordinal == expected_dev_ordinal)):
                 raise SystemExit(f"quiz question identity drifted: {record.get('item_id')}")
             raw = raw_questions[ordinal]
             if (not isinstance(raw, dict)
@@ -1185,6 +1698,10 @@ def _validate_question_provenance(args, records: list[dict], episodes: list[dict
                     or validate_anchors(rt, raw.get("anchors")) != record["anchors"]):
                 raise SystemExit(
                     f"quiz question drifted from its raw episode: {record['item_id']}"
+                )
+            if not _anchors_cover_chapter(record["anchors"], chapter):
+                raise SystemExit(
+                    f"quiz question has no assigned-chapter anchor: {record['item_id']}"
                 )
     for record in records:
         if record.get("kind") == "retest":
@@ -1196,7 +1713,8 @@ def _validate_question_provenance(args, records: list[dict], episodes: list[dict
 
 
 def run_item(item: dict, note: str, tools_fns, url: str,
-             ensemble: int, rt: RepoTools, *, master_seed: int) -> dict:
+             ensemble: int, rt: RepoTools, *, master_seed: int,
+             attempt_access: str = DEFAULT_ATTEMPT_ACCESS) -> dict:
     """ATTEMPT -> blind consensus VERIFY -> supported DISTILL.
 
     Schema and lineage are fail-closed. In particular, dev and retest items can
@@ -1209,21 +1727,30 @@ def run_item(item: dict, note: str, tools_fns, url: str,
         rec.update(status="schema_error", error=error, usage=usage_totals([]))
         return rec
     owner_id = item["item_id"]
-    attempt_seed = stable_seed(master_seed, owner_id, "attempt")
-    attempt, calls, error = _attempt(item["question"], note, url, seed=attempt_seed,
-                                     owner_id=owner_id, phase="attempt")
+    seed_namespace = _item_seed_namespace(item)
+    attempt_seed = stable_seed(master_seed, seed_namespace, "attempt")
+    attempt, calls = _attempt(
+        item["question"], note, tools_fns, url,
+        seed=attempt_seed, owner_id=owner_id, phase="attempt",
+        attempt_access=attempt_access,
+    )
     rec["calls"] += calls
     rec["attempt"] = attempt
     rec["attempt_seed"] = attempt_seed
+    rec["attempt_protocol"] = _attempt_protocol(attempt_access)
     rec["input_note_sha256"] = sha256_text(note)
-    if error:
-        rec.update(status="attempt_error", error=error, usage=usage_totals(rec["calls"]))
+    if attempt["status"] == "error":
+        rec.update(
+            status="attempt_error",
+            error=attempt["error"],
+            usage=usage_totals(rec["calls"]),
+        )
         return rec
 
     internal = dict(item, _rt=rt)
     derivations, references, consensus, calls = _derive_consensus(
         internal, tools_fns, url, master_seed=master_seed,
-        owner_id=owner_id, ensemble=ensemble)
+        owner_id=owner_id, seed_namespace=seed_namespace, ensemble=ensemble)
     rec["calls"] += calls
     rec["derivations"] = derivations
     rec["reference_consensus"] = consensus
@@ -1235,14 +1762,17 @@ def run_item(item: dict, note: str, tools_fns, url: str,
         return rec
 
     verdict, delta, checks, calls = _judge_attempt(
-        internal, attempt, references, url, master_seed=master_seed,
-        owner_id=owner_id, phase="attempt-adjudication")
+        internal, attempt["answer"], references, url, master_seed=master_seed,
+        owner_id=owner_id, phase="attempt-adjudication",
+        seed_namespace=seed_namespace)
     rec["calls"] += calls
     rec.update(verdict=verdict, delta=delta, adjudications=checks)
     internal["_verdict"] = verdict
     if verdict in ("wrong", "partial") and is_distillable_item(item):
         entry, bounced, calls = _distill(
-            internal, attempt, references, url, master_seed=master_seed, owner_id=owner_id)
+            internal, attempt["answer"], references, url,
+            master_seed=master_seed, owner_id=owner_id,
+            seed_namespace=seed_namespace)
         rec["calls"] += calls
         rec["entry"] = entry
         if bounced:
@@ -1257,14 +1787,19 @@ def build_dev_reference(item: dict, tools_fns, url: str, *, master_seed: int,
                         task: str) -> dict:
     """Derive one blind reference artifact, independent of every dev attempt."""
     reference_id = _record_id("dev-reference", study_id, task, item["item_id"])
+    reference_content_id = _reference_content_id(task, item)
     internal = dict(item, _rt=rt)
     derivations, references, checks, calls = _derive_consensus(
         internal, tools_fns, url, master_seed=master_seed,
-        owner_id=reference_id, ensemble=DEV_ENSEMBLE)
+        owner_id=reference_id, seed_namespace=reference_content_id,
+        ensemble=DEV_ENSEMBLE)
     return {
         "schema_version": SCHEMA_VERSION,
         "reference_id": reference_id,
+        "reference_content_id": reference_content_id,
         "origin_item_id": item["item_id"],
+        "origin_curriculum_id": item["curriculum_id"],
+        "attempt_access": item["attempt_access"],
         "origin_round": item["origin_round"],
         "created_round": created_round,
         "question": item["question"],
@@ -1281,8 +1816,9 @@ def build_dev_reference(item: dict, tools_fns, url: str, *, master_seed: int,
     }
 
 
-def run_dev_item(item: dict, note: str, reference: dict, url: str, *,
-                 master_seed: int, exam_round: int) -> dict:
+def run_dev_item(item: dict, note: str, reference: dict, tools_fns, url: str, *,
+                 master_seed: int, exam_round: int,
+                 attempt_access: str = DEFAULT_ATTEMPT_ACCESS) -> dict:
     """Evaluate one cumulative dev item in paired note/bare arms.
 
     The two attempts use the identical DSPy signature and sampling seed, and
@@ -1304,6 +1840,7 @@ def run_dev_item(item: dict, note: str, reference: dict, url: str, *,
         "exam_round": exam_round,
         "input_note_sha256": sha256_text(note),
         "reference_id": reference.get("reference_id"),
+        "reference_content_id": reference.get("reference_content_id"),
         "reference_sha256": sha256_json(reference),
         "entry": None,
         "calls": [],
@@ -1315,20 +1852,27 @@ def run_dev_item(item: dict, note: str, reference: dict, url: str, *,
                    usage=usage_totals([]))
         return rec
     attempts = {}
-    paired_seed = stable_seed(master_seed, reference["reference_id"], "paired-attempt")
+    reference_content_id = reference.get("reference_content_id")
+    if not _safe_artifact_id(reference_content_id):
+        raise ValueError("invalid dev reference content identity")
+    paired_seed = stable_seed(
+        master_seed, reference_content_id, "paired-attempt"
+    )
     for arm, arm_note in (("with_note", note), ("bare", "")):
-        answer, calls, error = _attempt(item["question"], arm_note, url, seed=paired_seed,
-                                        owner_id=owner_id, phase=f"dev-attempt-{arm}",
-                                        )
+        attempt, calls = _attempt(
+            item["question"], arm_note, tools_fns, url,
+            seed=paired_seed, owner_id=owner_id, phase=f"dev-attempt-{arm}",
+            attempt_access=attempt_access,
+        )
         rec["calls"] += calls
-        attempts[arm] = {"answer": answer, "error": error, "seed": paired_seed}
+        attempts[arm] = attempt
     rec["attempts"] = attempts
     rec["attempt_protocol"] = {
-        "signature": "note, question -> answer",
+        **_attempt_protocol(attempt_access),
         "paired_seed": paired_seed,
         "only_manipulated_field": "note",
     }
-    if any(attempt["error"] for attempt in attempts.values()):
+    if any(attempt["status"] == "error" for attempt in attempts.values()):
         rec.update(status="attempt_error", usage=usage_totals(rec["calls"]))
         return rec
 
@@ -1338,7 +1882,7 @@ def run_dev_item(item: dict, note: str, reference: dict, url: str, *,
         verdict, delta, checks, calls = _judge_attempt(
             item, attempt["answer"], references, url, master_seed=master_seed,
             owner_id=owner_id, phase=f"dev-adjudication-{arm}",
-            seed_namespace=reference["reference_id"],
+            seed_namespace=reference_content_id,
             seed_phase="dev-paired-adjudication")
         rec["calls"] += calls
         rec["verdicts"][arm] = verdict
@@ -1346,11 +1890,12 @@ def run_dev_item(item: dict, note: str, reference: dict, url: str, *,
         rec["adjudications"][arm] = checks
     rec["adjudication_protocol"] = {
         "signature": "AdjudicateSig",
-        "seed_namespace": reference["reference_id"],
+        "seed_namespace": reference_content_id,
         "seed_phase": "dev-paired-adjudication",
         "paired_seeds": [
             stable_seed(
-                master_seed, reference["reference_id"], "dev-paired-adjudication", index)
+                master_seed, reference_content_id,
+                "dev-paired-adjudication", index)
             for index in range(len(references))
         ],
         "only_manipulated_field": "attempt",
@@ -1483,10 +2028,28 @@ def _snapshot_audit_protocol(path: Path | None, sdir: Path) -> dict | None:
 
 
 def _write_task_manifest(
-    args, corpus, sdir: Path, urls: list[str]
+    args,
+    corpus,
+    sdir: Path,
+    urls: list[str],
+    *,
+    snapshot_launch: bool = True,
+    validate_only: bool = False,
 ) -> tuple[dict, dict[str, object]]:
     """Create/validate the stable study contract and snapshot this launch."""
 
+    if (
+        args.task != "dspy"
+        or type(args.round) is not int
+        or not 1 <= args.round <= SEMANTIC_FINAL_ROUND
+        or args.chapters != K_CHAPTERS
+        or args.questions != M_QUESTIONS
+        or args.concurrency < 1
+    ):
+        raise SystemExit(
+            "semantic-selfquiz-v2 requires DSPy rounds 1-4 with 4 chapters "
+            "and 5 questions per chapter"
+        )
     try:
         corpus_info = corpus_record(corpus)
         source = source_record()
@@ -1519,6 +2082,10 @@ def _write_task_manifest(
                 "study environment has substantive drift; choose a new --study-id"
             )
     else:
+        if validate_only:
+            raise SystemExit(
+                "finalized study is missing its immutable task manifest"
+            )
         baseline_environment = environment
 
     try:
@@ -1565,10 +2132,27 @@ def _write_task_manifest(
                     or not snapshot.is_file()
                     or sha256_file(snapshot) != audit_protocol.get("sha256")):
                 raise SystemExit("pre-registered audit-protocol snapshot is missing or changed")
+    elif validate_only:
+        text, protocol = validate_audit_protocol(audit_protocol_path)
+        digest = sha256_text(text)
+        relative = Path("audit-protocols") / f"{digest}.json"
+        snapshot = sdir / relative
+        if not snapshot.is_file() or sha256_file(snapshot) != digest:
+            raise SystemExit(
+                "pre-registered audit-protocol snapshot is missing or changed"
+            )
+        audit_protocol = {
+            "sha256": digest,
+            "path": str(relative),
+            "protocol_id": protocol["protocol_id"],
+            "protocol": protocol,
+        }
     else:
         audit_protocol = _snapshot_audit_protocol(audit_protocol_path, sdir)
     manifest = {
         "schema_version": SCHEMA_VERSION,
+        "manifest_type": SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE,
+        "method": SEMANTIC_SELFQUIZ_METHOD,
         "study_id": args.study_id,
         "task": args.task,
         "master_seed": args.seed,
@@ -1589,16 +2173,23 @@ def _write_task_manifest(
             "scope": "loopback",
             "protocol": "openai-compatible-http",
             "server_count": len(urls),
-            "assignment": "stable_seed(master_seed, owner_id, server) modulo server_count",
+            "assignment": (
+                "stable_seed(master_seed, stochastic_namespace, server) "
+                "modulo server_count"
+            ),
         },
         "provenance_readiness": provenance_readiness,
         "automated_provenance_ready": all(provenance_readiness.values()),
         "human_audit_protocol": audit_protocol,
         "config": {
-            "chapters_per_round": args.chapters,
-            "questions_per_chapter": 3 if args.smoke else args.questions,
+            "chapter_syllabus": list(DSPY_SEMANTIC_CHAPTER_SYLLABUS),
+            "chapters_per_round": 1 if args.smoke else K_CHAPTERS,
+            "final_round": SEMANTIC_FINAL_ROUND,
+            "questions_per_chapter": 3 if args.smoke else M_QUESTIONS,
+            "attempt_access": _attempt_access(args),
             "smoke": args.smoke,
             "quiz_max_iters": QUIZ_MAX_ITERS,
+            "attempt_protocol": _attempt_protocol(_attempt_access(args)),
             "derive_max_iters": DERIVE_MAX_ITERS,
             "train_ensemble": TRAIN_ENSEMBLE,
             "dev_ensemble": DEV_ENSEMBLE,
@@ -1617,6 +2208,8 @@ def _write_task_manifest(
         manifest = existing_manifest
     else:
         write_immutable_json(task_manifest_path, manifest)
+    if not snapshot_launch:
+        return manifest, {}
     try:
         launch_environment = write_environment_snapshot(
             sdir,
@@ -1743,12 +2336,16 @@ def _artifact_call_phases(record: dict, *, owner_id: str, label: str) \
 
 def _consume_call_phase(phases: dict[str, list[dict]], *, owner_id: str,
                         phase: str, seed: int, label: str,
-                        required: bool) -> None:
+                        required: bool, exact_count: int | None = None) -> None:
     """Consume one LM invocation and verify its deterministic call identities."""
 
     calls = phases.pop(phase, [])
     if required and not calls:
         raise SystemExit(f"{label} is missing calls for phase {phase}")
+    if exact_count is not None and len(calls) != exact_count:
+        raise SystemExit(
+            f"{label} requires exactly {exact_count} call(s) for phase {phase}"
+        )
     for index, call in enumerate(calls):
         if (not _json_identity_equal(call.get("seed"), seed)
                 or call.get("call_id")
@@ -1815,6 +2412,7 @@ def _validate_derivations(
     record: dict,
     *,
     owner_id: str,
+    seed_namespace: str,
     master_seed: int,
     ensemble: int,
     rt: RepoTools,
@@ -1825,8 +2423,10 @@ def _validate_derivations(
     if not isinstance(derivations, list) or len(derivations) != ensemble:
         raise SystemExit(f"{label} does not contain the exact derivation ensemble")
     for index, derivation in enumerate(derivations):
-        seed = stable_seed(master_seed, owner_id, "derive", index)
-        derivation_id = _record_id("derivation", owner_id, index, seed)
+        seed = stable_seed(master_seed, seed_namespace, "derive", index)
+        derivation_id = _record_id(
+            "derivation", seed_namespace, index, seed
+        )
         if (not isinstance(derivation, dict)
                 or derivation.get("derivation_id") != derivation_id
                 or not _json_identity_equal(derivation.get("seed"), seed)
@@ -1843,6 +2443,12 @@ def _validate_derivations(
                 or any(validate_evidence(rt, evidence) != evidence
                        for evidence in derivation.get("evidence", []))):
             raise SystemExit(f"{label} has a drifted derivation at index {index}")
+        _validate_react_trajectory(
+            derivation["trajectory"],
+            label=f"{label} derivation {index}",
+            max_iters=DERIVE_MAX_ITERS,
+            require_nonempty=derivation["status"] != "error",
+        )
         expected_evidence, expected_rejected = [], []
         for raw in derivation["raw_evidence"]:
             evidence = validate_evidence(rt, raw)
@@ -1905,6 +2511,7 @@ def _validate_reference_consensus(
     derivations: list[dict],
     *,
     owner_id: str,
+    seed_namespace: str,
     master_seed: int,
     phases: dict[str, list[dict]],
     label: str,
@@ -1923,7 +2530,10 @@ def _validate_reference_consensus(
                  (valid[1], valid[0], "b-to-a"))
         validated = []
         for check, (left, right, direction) in zip(checks, pairs):
-            seed = stable_seed(master_seed, owner_id, "reference-consensus", direction)
+            seed = stable_seed(
+                master_seed, seed_namespace,
+                "reference-consensus", direction,
+            )
             validated.append(_validate_adjudication_check(
                 check,
                 reference_id=left["derivation_id"],
@@ -1985,12 +2595,13 @@ def _validate_distillation(
     references: list[dict],
     *,
     master_seed: int,
+    seed_namespace: str,
     rt: RepoTools,
     phases: dict[str, list[dict]],
     label: str,
 ) -> None:
     owner_id = expected["item_id"]
-    distill_seed = stable_seed(master_seed, owner_id, "distill")
+    distill_seed = stable_seed(master_seed, seed_namespace, "distill")
     entry = record.get("entry")
     bounced = record.get("entry_bounced")
     if (entry is None) == (bounced is None):
@@ -2028,7 +2639,9 @@ def _validate_distillation(
         if not isinstance(support_checks, list) or len(support_checks) != len(references):
             raise SystemExit(f"{label} has incomplete correction-support checks")
         for index, (check, reference) in enumerate(zip(support_checks, references)):
-            seed = stable_seed(master_seed, owner_id, "correction-support", index)
+            seed = stable_seed(
+                master_seed, seed_namespace, "correction-support", index
+            )
             _validate_adjudication_check(
                 check,
                 reference_id=reference["derivation_id"],
@@ -2068,10 +2681,12 @@ def _validate_distillation(
 
 
 def _validate_completed_item(expected: dict, record: dict, note_sha256: str, *,
-                             master_seed: int, rt: RepoTools) -> None:
+                             master_seed: int, rt: RepoTools,
+                             attempt_access: str = DEFAULT_ATTEMPT_ACCESS) -> None:
     identity = ("schema_version", "item_id", "origin_item_id", "origin_round",
                 "round", "kind", "split", "question", "qtype", "anchors", "chapter",
-                "writer_sketch", "quiz_episode_id", "quiz_ordinal", "retest_of")
+                "writer_sketch", "quiz_episode_id", "quiz_ordinal", "retest_of",
+                "curriculum_id", "attempt_access")
     if any(
         not _json_identity_equal(record.get(key), expected.get(key))
         for key in identity
@@ -2079,18 +2694,35 @@ def _validate_completed_item(expected: dict, record: dict, note_sha256: str, *,
         raise SystemExit(f"completed item drifted from question record: {expected['item_id']}")
     if record.get("input_note_sha256") != note_sha256:
         raise SystemExit(f"completed item used a different note: {expected['item_id']}")
+    if expected.get("attempt_access") != attempt_access:
+        raise SystemExit(
+            f"completed item belongs to a different attempt-access arm: "
+            f"{expected['item_id']}"
+        )
     if expected["kind"] == "retest" and record.get("entry") is not None:
         raise SystemExit(f"retest illegally produced a note entry: {expected['item_id']}")
     label = f"completed item {expected['item_id']}"
     owner_id = expected["item_id"]
     phases = _artifact_call_phases(record, owner_id=owner_id, label=label)
-    attempt_seed = stable_seed(master_seed, owner_id, "attempt")
-    if (not isinstance(record.get("attempt"), str)
-            or not _json_identity_equal(record.get("attempt_seed"), attempt_seed)):
-        raise SystemExit(f"{label} has drifted attempt lineage")
+    try:
+        seed_namespace = _item_seed_namespace(expected)
+    except ValueError as error:
+        raise SystemExit(f"{label} has invalid curriculum identity: {error}") from error
+    attempt_seed = stable_seed(master_seed, seed_namespace, "attempt")
+    if (not _json_identity_equal(record.get("attempt_seed"), attempt_seed)
+            or not _attempt_protocol_is_exact(
+                record.get("attempt_protocol"),
+                attempt_access=attempt_access,
+            )):
+        raise SystemExit(f"{label} has drifted attempt protocol or seed")
+    attempt = _validate_attempt_record(
+        record.get("attempt"), seed=attempt_seed, label=label,
+        attempt_access=attempt_access)
     status = record.get("status")
     if status == "attempt_error":
         if (not isinstance(record.get("error"), str) or not record["error"]
+                or record["error"] != attempt["error"]
+                or attempt["status"] != "error"
                 or record.get("entry") is not None
                 or any(key in record for key in
                        ("derivations", "reference_consensus", "reference_ids",
@@ -2103,16 +2735,19 @@ def _validate_completed_item(expected: dict, record: dict, note_sha256: str, *,
         return
     if status != "ok":
         raise SystemExit(f"{label} has an invalid terminal status")
-    if not record["attempt"].strip() or "error" in record:
+    if attempt["status"] != "ok" or "error" in record:
         raise SystemExit(f"{label} has an invalid successful attempt")
     _consume_call_phase(
         phases, owner_id=owner_id, phase="attempt", seed=attempt_seed,
-        label=label, required=True)
+        label=label, required=True,
+        exact_count=1 if attempt_access == "closed-book" else None)
     derivations = _validate_derivations(
         record, owner_id=owner_id, master_seed=master_seed,
+        seed_namespace=seed_namespace,
         ensemble=TRAIN_ENSEMBLE, rt=rt, phases=phases, label=label)
     references = _validate_reference_consensus(
         record, derivations, owner_id=owner_id, master_seed=master_seed,
+        seed_namespace=seed_namespace,
         phases=phases, label=label)
     if not references:
         if (record.get("verdict") != "unresolved"
@@ -2127,12 +2762,14 @@ def _validate_completed_item(expected: dict, record: dict, note_sha256: str, *,
     verdict, delta = _validate_attempt_adjudications(
         record.get("adjudications"), references,
         owner_id=owner_id, master_seed=master_seed,
-        phase="attempt-adjudication", phases=phases, label=label)
+        phase="attempt-adjudication", phases=phases, label=label,
+        seed_namespace=seed_namespace)
     if record.get("verdict") != verdict or record.get("delta") != delta:
         raise SystemExit(f"{label} reports a verdict inconsistent with its adjudications")
     if verdict in {"wrong", "partial"} and is_distillable_item(expected):
         _validate_distillation(
             expected, record, references, master_seed=master_seed,
+            seed_namespace=seed_namespace,
             rt=rt, phases=phases, label=label)
     elif record.get("entry") is not None or "entry_bounced" in record:
         raise SystemExit(f"{label} contains an ineligible distillation")
@@ -2142,10 +2779,17 @@ def _validate_completed_item(expected: dict, record: dict, note_sha256: str, *,
 def _validate_dev_reference(item: dict, record: dict, *, study_id: str, task: str,
                             master_seed: int, rt: RepoTools) -> None:
     expected_id = _record_id("dev-reference", study_id, task, item["item_id"])
+    try:
+        expected_content_id = _reference_content_id(task, item)
+    except ValueError as error:
+        raise SystemExit(f"dev reference has invalid curriculum identity: {error}") from error
     if any((
         not _json_identity_equal(record.get("schema_version"), SCHEMA_VERSION),
         record.get("reference_id") != expected_id,
+        record.get("reference_content_id") != expected_content_id,
         record.get("origin_item_id") != item["item_id"],
+        record.get("origin_curriculum_id") != item.get("curriculum_id"),
+        record.get("attempt_access") != item.get("attempt_access"),
         not _json_identity_equal(record.get("origin_round"), item["origin_round"]),
         not _json_identity_equal(record.get("created_round"), item["origin_round"]),
         record.get("question") != item["question"],
@@ -2162,9 +2806,11 @@ def _validate_dev_reference(item: dict, record: dict, *, study_id: str, task: st
     phases = _artifact_call_phases(record, owner_id=expected_id, label=label)
     derivations = _validate_derivations(
         record, owner_id=expected_id, master_seed=master_seed,
+        seed_namespace=expected_content_id,
         ensemble=DEV_ENSEMBLE, rt=rt, phases=phases, label=label)
     references = _validate_reference_consensus(
         record, derivations, owner_id=expected_id, master_seed=master_seed,
+        seed_namespace=expected_content_id,
         phases=phases, label=label, stored_references=stored_references)
     _finish_call_graph(phases, label=label)
     status = record.get("status")
@@ -2174,19 +2820,25 @@ def _validate_dev_reference(item: dict, record: dict, *, study_id: str, task: st
 
 
 def _validate_dev_exam(item: dict, record: dict, reference: dict, *,
-                       note_sha256: str, master_seed: int, exam_round: int) -> None:
+                       note_sha256: str, master_seed: int, exam_round: int,
+                       attempt_access: str = DEFAULT_ATTEMPT_ACCESS) -> None:
     if (not isinstance(reference, dict)
             or not isinstance(reference.get("reference_id"), str)
             or not isinstance(reference.get("references"), list)):
         raise SystemExit("dev exam has a malformed reference artifact")
     exam_id = _record_id("dev-exam", item["item_id"], exam_round)
-    paired_seed = stable_seed(master_seed, reference["reference_id"], "paired-attempt")
+    reference_content_id = reference.get("reference_content_id")
+    if not _safe_artifact_id(reference_content_id):
+        raise SystemExit("dev exam has a malformed reference content identity")
+    paired_seed = stable_seed(
+        master_seed, reference_content_id, "paired-attempt"
+    )
     attempts = record.get("attempts", {})
     references = reference.get("references", [])
     adjudication_seed_phase = "dev-paired-adjudication"
     paired_adjudication_seeds = [
         stable_seed(
-            master_seed, reference["reference_id"], adjudication_seed_phase, index)
+            master_seed, reference_content_id, adjudication_seed_phase, index)
         for index in range(len(references))
     ]
     if any((
@@ -2200,6 +2852,7 @@ def _validate_dev_exam(item: dict, record: dict, reference: dict, *,
         record.get("split") != "dev",
         record.get("input_note_sha256") != note_sha256,
         record.get("reference_id") != reference["reference_id"],
+        record.get("reference_content_id") != reference_content_id,
         record.get("reference_sha256") != sha256_json(reference),
         record.get("entry") is not None,
         record.get("question") != item["question"],
@@ -2211,6 +2864,8 @@ def _validate_dev_exam(item: dict, record: dict, reference: dict, *,
         not _json_identity_equal(
             record.get("quiz_ordinal"), item.get("quiz_ordinal")),
         record.get("retest_of") != item.get("retest_of"),
+        record.get("curriculum_id") != item.get("curriculum_id"),
+        record.get("attempt_access") != attempt_access,
     )):
         raise SystemExit(f"dev exam record has invalid lineage: {exam_id}")
     label = f"dev exam {exam_id}"
@@ -2234,31 +2889,31 @@ def _validate_dev_exam(item: dict, record: dict, reference: dict, *,
         if not isinstance(attempts, dict) or set(attempts) != {"with_note", "bare"}:
             raise SystemExit(f"dev exam record lacks paired attempts: {exam_id}")
         protocol = record.get("attempt_protocol")
-        if (not isinstance(protocol, dict)
-                or set(protocol) != {
-                    "signature", "paired_seed", "only_manipulated_field"}
-                or protocol.get("signature") != "note, question -> answer"
-                or not _json_identity_equal(protocol.get("paired_seed"), paired_seed)
-                or protocol.get("only_manipulated_field") != "note"):
+        if not _attempt_protocol_is_exact(
+            protocol,
+            attempt_access=attempt_access,
+            paired_seed=paired_seed,
+        ):
             raise SystemExit(f"dev exam arms used different protocols: {exam_id}")
         for arm in ("with_note", "bare"):
-            attempt = attempts[arm]
-            if (not isinstance(attempt, dict)
-                    or not isinstance(attempt.get("answer"), str)
-                    or not _json_identity_equal(attempt.get("seed"), paired_seed)
-                    or (attempt.get("error") is not None
-                        and (not isinstance(attempt.get("error"), str)
-                             or not attempt["error"]))):
-                raise SystemExit(f"dev exam arm has drifted attempt lineage: {exam_id}")
+            attempt = _validate_attempt_record(
+                attempts[arm], seed=paired_seed,
+                label=f"dev exam arm {arm} {exam_id}",
+                attempt_access=attempt_access,
+            )
             _consume_call_phase(
                 phases,
                 owner_id=exam_id,
                 phase=f"dev-attempt-{arm}",
                 seed=paired_seed,
                 label=label,
-                required=attempt["error"] is None,
+                required=attempt["status"] == "ok",
+                exact_count=(
+                    1 if attempt_access == "closed-book"
+                    and attempt["status"] == "ok" else None
+                ),
             )
-        has_attempt_error = any(attempt["error"] is not None
+        has_attempt_error = any(attempt["status"] == "error"
                                 for attempt in attempts.values())
         if (status == "attempt_error") != has_attempt_error:
             raise SystemExit(f"dev exam attempt status is inconsistent: {exam_id}")
@@ -2280,7 +2935,7 @@ def _validate_dev_exam(item: dict, record: dict, reference: dict, *,
                         "signature", "seed_namespace", "seed_phase", "paired_seeds",
                         "only_manipulated_field", "audit_phases"}
                     or protocol.get("signature") != "AdjudicateSig"
-                    or protocol.get("seed_namespace") != reference["reference_id"]
+                    or protocol.get("seed_namespace") != reference_content_id
                     or protocol.get("seed_phase") != adjudication_seed_phase
                     or not isinstance(protocol.get("paired_seeds"), list)
                     or len(protocol["paired_seeds"]) != len(paired_adjudication_seeds)
@@ -2304,7 +2959,7 @@ def _validate_dev_exam(item: dict, record: dict, reference: dict, *,
                     phase=f"dev-adjudication-{arm}",
                     phases=phases,
                     label=label,
-                    seed_namespace=reference["reference_id"],
+                    seed_namespace=reference_content_id,
                     seed_phase=adjudication_seed_phase,
                 )
                 expected_verdicts[arm] = verdict
@@ -2321,6 +2976,7 @@ def _validate_dev_exam(item: dict, record: dict, reference: dict, *,
 
 def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: str,
                        rt: RepoTools,
+                       allow_nonready_final_smoke: bool = False,
                        ) -> tuple[list[list[dict]], list[dict], list[dict], list[dict]]:
     question_sets, items, calls, manifests = [], [], [], []
     previous_note_sha256 = sha256_text("")
@@ -2331,14 +2987,21 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
         protocol_questions = task_config["questions_per_chapter"]
         protocol_smoke = task_config["smoke"]
         protocol_chapters = task_config["chapters_per_round"]
+        protocol_attempt_access = task_config["attempt_access"]
+        protocol_attempt = task_config["attempt_protocol"]
     except (OSError, UnicodeError, ValueError, KeyError, TypeError) as error:
         raise SystemExit(f"cannot validate prior-round task protocol: {error}") from error
     syllabus = chapters(rt)
-    if (type(master_seed) is not int
+    if (not _json_identity_equal(task_manifest.get("schema_version"), SCHEMA_VERSION)
+            or type(master_seed) is not int
             or type(protocol_questions) is not int or protocol_questions < 2
             or type(protocol_smoke) is not bool
             or type(protocol_chapters) is not int or protocol_chapters < 1
-            or not syllabus):
+            or protocol_attempt_access not in SEMANTIC_ATTEMPT_ACCESS_MODES
+            or not _attempt_protocol_is_exact(
+                protocol_attempt, attempt_access=protocol_attempt_access
+            )
+            or tuple(syllabus) != DSPY_SEMANTIC_CHAPTER_SYLLABUS):
         raise SystemExit("cannot validate prior-round task protocol: invalid config")
     chapters_per_round = min(protocol_chapters, len(syllabus))
     for prior_round in range(1, round_number):
@@ -2402,9 +3065,11 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
             seed=master_seed,
             smoke=protocol_smoke,
             questions=protocol_questions,
+            attempt_access=protocol_attempt_access,
         )
         question_errors = [
-            (item.get("item_id"), _question_record_error(item, rt)) for item in questions
+            (item.get("item_id"), _question_record_error(item, rt))
+            for item in questions
         ]
         if any(error for _, error in question_errors):
             raise SystemExit(
@@ -2418,6 +3083,45 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
             expected_chapters=expected_quiz_chapters,
             expected_question_count=protocol_questions,
         )
+        prior_by_id = {
+            item.get("item_id"): item
+            for item in items
+            if isinstance(item, dict) and isinstance(item.get("item_id"), str)
+        }
+        if len(prior_by_id) != len(items):
+            raise SystemExit("prior cumulative training item IDs are not unique")
+        candidates = sorted(
+            (item for item in items if eligible_retest(item)),
+            key=lambda item: item["item_id"],
+        )
+        originals = [item for item in questions if item.get("kind") == "quiz"]
+        expected_retests: list[dict] = []
+        if prior_round > 1 and candidates:
+            n_retest = max(1, int(len(originals) * RETEST_FRAC))
+            rng = random.Random(stable_seed(
+                master_seed, study_id, task, prior_round, "retest-sample"
+            ))
+            selected = rng.sample(candidates, min(n_retest, len(candidates)))
+            expected_retests = [
+                make_retest_item(
+                    item,
+                    task=task,
+                    study_id=study_id,
+                    round_number=prior_round,
+                )
+                for item in selected
+            ]
+        observed_retests = [
+            item for item in questions if item.get("kind") == "retest"
+        ]
+        if canonical_json_bytes(sorted(
+            observed_retests, key=lambda item: item.get("item_id", "")
+        )) != canonical_json_bytes(sorted(
+            expected_retests, key=lambda item: item.get("item_id", "")
+        )):
+            raise SystemExit(
+                f"prior round {prior_round} retest sample or lineage drifted"
+            )
         expected_train = {item["item_id"]: item for item in questions
                           if item.get("split") == "train"}
         observed_train = {record.get("item_id"): record for record in round_items}
@@ -2433,6 +3137,7 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
                 previous_note_sha256,
                 master_seed=master_seed,
                 rt=rt,
+                attempt_access=protocol_attempt_access,
             )
 
         all_dev_references = []
@@ -2442,6 +3147,11 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
                 sdir, task_manifest, reference, label="prior dev reference"
             )
             all_dev_references.append(reference)
+        cumulative_dev_references = [
+            reference for reference in all_dev_references
+            if type(reference.get("created_round")) is int
+            and reference["created_round"] <= prior_round
+        ]
         dev_references = [
             reference for reference in all_dev_references
             if _json_identity_equal(reference.get("created_round"), prior_round)
@@ -2482,6 +3192,101 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
         freshness = load_json_artifact(required["freshness"])
         _validate_construction_artifacts(sdir, manifest)
         prior_readiness = manifest.get("automated_readiness")
+        nonready_final_smoke = (
+            allow_nonready_final_smoke
+            and protocol_smoke
+            and prior_round == round_number - 1
+        )
+        readiness_valid = (
+            isinstance(prior_readiness, dict)
+            and bool(prior_readiness)
+            and all(type(value) is bool for value in prior_readiness.values())
+            and (
+                prior_readiness.get("non_smoke") is False
+                if nonready_final_smoke
+                else all(value is True for value in prior_readiness.values())
+            )
+        )
+        expected_automated = not nonready_final_smoke
+        freshness_valid = freshness_audit_recomputed(
+            rdir,
+            questions,
+            freshness,
+            study_id=study_id,
+            task=task,
+            round_number=prior_round,
+        )
+        train_originals = [
+            record for record in round_items if is_distillable_item(record)
+        ]
+        retests = [record for record in round_items if record.get("kind") == "retest"]
+        verdict_counts: dict[str, int] = defaultdict(int)
+        for record in round_items:
+            verdict_counts[record.get("verdict", record["status"])] += 1
+        all_entries = collect_note_entries(items)
+        response_models = sorted({
+            call.get("response_model")
+            for call in calls
+            if isinstance(call.get("response_model"), str)
+            and call.get("response_model")
+        })
+        expected_summary = {
+            "schema_version": SCHEMA_VERSION,
+            "study_id": study_id,
+            "round": prior_round,
+            "task": task,
+            "chapters": planned_chapters,
+            "attempt_access": protocol_attempt_access,
+            "train_items": len(train_originals),
+            "retest_items": len(retests),
+            "cumulative_dev_items": len(dev_records),
+            "verdicts": dict(verdict_counts),
+            "train": _error_rate([
+                record.get("verdict", "unresolved") for record in train_originals
+            ]),
+            "retest": _error_rate([
+                record.get("verdict", "unresolved") for record in retests
+            ]),
+            "dev_with_note": _error_rate([
+                record.get("verdicts", {}).get("with_note", "unresolved")
+                for record in dev_records
+            ]),
+            "dev_bare": _error_rate([
+                record.get("verdicts", {}).get("bare", "unresolved")
+                for record in dev_records
+            ]),
+            "entries_admitted": sum(
+                record.get("entry") is not None for record in train_originals
+            ),
+            "entries_bounced": sum(
+                "entry_bounced" in record for record in train_originals
+            ),
+            "note_entries_total": len(all_entries),
+            "note_sha256": manifest.get("note_sha256"),
+            "claim_ready": False,
+            "publication_claim_ready": False,
+            "confirmatory_claim_ready": False,
+            "automated_claim_ready": manifest.get("automated_claim_ready"),
+            "automated_readiness": prior_readiness,
+            "human_audit": {"required": True, "status": "not_performed"},
+            "freshness": freshness,
+            "response_models": response_models,
+            "environment_contract": task_manifest["environment_contract"],
+            "launch_environments": _launch_environment_inventory(
+                sdir, prior_round, task_manifest
+            ),
+            "round_usage": usage_totals(round_calls),
+            "cumulative_usage": usage_totals(calls),
+            "round_usage_by_phase": usage_by_phase(round_calls),
+            "cumulative_usage_by_phase": usage_by_phase(calls),
+            "round_usage_audit": round_audit,
+            "cumulative_usage_audit": audit,
+        }
+        round_manifest_keys = {
+            "schema_version", "study_id", "task", "round", "chapters",
+            "attempt_access", "master_seed", "input_note_sha256",
+            "task_manifest_sha256", "initial_environment_snapshot",
+        }
         if (manifest.get("study_id") != study_id or manifest.get("task") != task
                 or not _json_identity_equal(manifest.get("round"), prior_round)
                 or manifest.get("input_note_sha256") != previous_note_sha256
@@ -2495,21 +3300,25 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
                 or summary.get("cumulative_usage_by_phase") != usage_by_phase(calls)
                 or summary.get("round_usage_audit") != round_audit
                 or summary.get("cumulative_usage_audit") != audit
-                or not isinstance(prior_readiness, dict) or not prior_readiness
-                or not all(value is True for value in prior_readiness.values())
-                or manifest.get("automated_claim_ready") is not True
+                or not readiness_valid
+                or manifest.get("automated_claim_ready") is not expected_automated
                 or summary.get("automated_readiness") != prior_readiness
                 or summary.get("automated_claim_ready")
                 != manifest.get("automated_claim_ready")
                 or summary.get("note_sha256") != manifest.get("note_sha256")
+                or summary.get("attempt_access") != protocol_attempt_access
                 or summary.get("freshness") != freshness
-                or freshness.get("audit_complete") is not True
-                or freshness.get("fresh") is not True
-                or not freshness_sources_complete(rdir, freshness)
+                or canonical_json_bytes(summary)
+                != canonical_json_bytes(expected_summary)
+                or not freshness_valid
+                or not isinstance(round_manifest, dict)
+                or set(round_manifest) != round_manifest_keys
+                or round_manifest.get("schema_version") != SCHEMA_VERSION
                 or round_manifest.get("study_id") != study_id
                 or round_manifest.get("task") != task
                 or round_manifest.get("round") != prior_round
                 or round_manifest.get("chapters") != planned_chapters
+                or round_manifest.get("attempt_access") != protocol_attempt_access
                 or round_manifest.get("master_seed") != master_seed
                 or round_manifest.get("input_note_sha256") != previous_note_sha256
                 or round_manifest.get("task_manifest_sha256")
@@ -2526,10 +3335,10 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
         cumulative_dev = collect_dev_questions(question_sets)
         references_by_origin = {
             reference.get("origin_item_id"): reference
-            for reference in all_dev_references
+            for reference in cumulative_dev_references
         }
         exams_by_origin = {record.get("origin_item_id"): record for record in dev_records}
-        if (len(references_by_origin) != len(all_dev_references)
+        if (len(references_by_origin) != len(cumulative_dev_references)
                 or len(exams_by_origin) != len(dev_records)
                 or set(exams_by_origin) != {item["item_id"] for item in cumulative_dev}):
             raise SystemExit(f"prior round {prior_round} dev aggregate is incomplete")
@@ -2552,6 +3361,7 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
                 note_sha256=manifest["note_sha256"],
                 master_seed=master_seed,
                 exam_round=prior_round,
+                attempt_access=protocol_attempt_access,
             )
         previous_note_sha256 = manifest["note_sha256"]
         manifests.append(manifest)
@@ -2579,6 +3389,159 @@ def _load_input_note(sdir: Path, round_number: int, entries: list[dict]) -> str:
     return note_text
 
 
+def validate_bundled_semantic_archive(
+    note_manifest: dict[str, Any],
+    construction_dependencies: dict[str, bytes],
+    note_bytes: bytes,
+) -> None:
+    """Re-attest a bundled semantic study with the constructor's exact checks.
+
+    The shared protocol layer proves path/hash closure first.  This method-level
+    pass materializes only those already-validated bytes in a private temporary
+    tree, reopens the pinned corpus, and reuses the same question, trajectory,
+    evidence, usage, environment, train/dev-lineage, and note-rendering checks
+    used when advancing between construction rounds.
+    """
+
+    import tempfile
+
+    try:
+        task_bytes = construction_dependencies["manifest.json"]
+        task_manifest = strict_json_loads(
+            task_bytes, label="bundled semantic task manifest"
+        )
+        if not isinstance(task_manifest, dict):
+            raise ValueError("bundled semantic task manifest is not an object")
+        task = task_manifest["task"]
+        round_number = note_manifest["round"]
+        smoke = task_manifest["config"]["smoke"]
+        if (
+            task not in CORPORA
+            or type(round_number) is not int
+            or round_number < 1
+            or type(smoke) is not bool
+        ):
+            raise ValueError("bundled semantic task identity is invalid")
+        audit_binding = task_manifest.get("human_audit_protocol")
+        if audit_binding is not None:
+            if (
+                not isinstance(audit_binding, dict)
+                or set(audit_binding) != {
+                    "sha256", "path", "protocol_id", "protocol"
+                }
+            ):
+                raise ValueError("bundled human-audit protocol binding is invalid")
+            relative = _canonical_file(audit_binding.get("path"))
+            if (
+                relative is None
+                or PurePosixPath(relative).parent
+                != PurePosixPath("audit-protocols")
+            ):
+                raise ValueError("bundled human-audit protocol path is invalid")
+            protocol_bytes = construction_dependencies.get(relative)
+            if not isinstance(protocol_bytes, bytes):
+                raise ValueError("bundled human-audit protocol is missing")
+            digest = sha256_bytes(protocol_bytes)
+            if (
+                audit_binding.get("sha256") != digest
+                or PurePosixPath(relative).name != f"{digest}.json"
+            ):
+                raise ValueError("bundled human-audit protocol identity drifted")
+            protocol = strict_json_loads(
+                protocol_bytes, label="bundled human-audit protocol"
+            )
+            protocol_id = validate_human_audit_protocol(protocol)
+            if (
+                audit_binding.get("protocol") != protocol
+                or audit_binding.get("protocol_id") != protocol_id
+            ):
+                raise ValueError("bundled human-audit protocol metadata drifted")
+
+        with tempfile.TemporaryDirectory(prefix="studybench-semantic-audit-") as raw:
+            sdir = Path(raw) / "study"
+            for relative, data in construction_dependencies.items():
+                path = sdir.joinpath(*PurePosixPath(relative).parts)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(data)
+            current_manifest_path = (
+                sdir / "notes" / f"note-r{round_number}.manifest.json"
+            )
+            current_manifest_path.parent.mkdir(parents=True, exist_ok=True)
+            current_manifest_path.write_bytes(canonical_json_bytes(note_manifest))
+
+            rt = RepoTools(CORPORA[task], read_max_lines=READ_MAX_LINES)
+            syllabus = chapters(rt)
+            if tuple(syllabus) != DSPY_SEMANTIC_CHAPTER_SYLLABUS:
+                raise ValueError("pinned semantic chapter syllabus drifted")
+            _, _, _, manifests = _load_prior_rounds(
+                sdir,
+                round_number + 1,
+                study_id=note_manifest["study_id"],
+                task=task,
+                rt=rt,
+                allow_nonready_final_smoke=smoke,
+            )
+            if (
+                len(manifests) != round_number
+                or canonical_json_bytes(manifests[-1])
+                != canonical_json_bytes(note_manifest)
+            ):
+                raise ValueError("bundled semantic final manifest drifted")
+
+            cumulative_items: list[dict[str, Any]] = []
+            previous_note_sha256 = sha256_text("")
+            for index, manifest in enumerate(manifests, 1):
+                cumulative_items.extend(_read_jsonl(sdir / f"r{index}" / "items.jsonl"))
+                entries = collect_note_entries(cumulative_items)
+                expected_note = render_note(
+                    rt, syllabus, entries, CORPORA[task].display
+                )
+                expected_bytes = expected_note.encode("utf-8")
+                alias = sdir / "notes" / f"note-r{index}.md"
+                content = (
+                    sdir
+                    / "notes"
+                    / "by-sha256"
+                    / f"{manifest['note_sha256']}.md"
+                )
+                if (
+                    manifest.get("entries") != entries
+                    or manifest.get("entry_ids")
+                    != [entry["entry_id"] for entry in entries]
+                    or manifest.get("input_note_sha256") != previous_note_sha256
+                    or read_artifact_bytes(alias) != expected_bytes
+                    or read_artifact_bytes(content) != expected_bytes
+                ):
+                    raise ValueError(
+                        f"bundled semantic note r{index} was not exactly reconstructed"
+                    )
+                sub_dependencies = {
+                    path: construction_dependencies[path]
+                    for path in manifest["construction_artifacts"]
+                }
+                validate_study_note_archive(
+                    manifest,
+                    sub_dependencies,
+                    expected_bytes,
+                    allow_smoke=smoke,
+                    deep_semantics=False,
+                )
+                previous_note_sha256 = manifest["note_sha256"]
+
+            if expected_bytes != note_bytes:
+                raise ValueError("bundled semantic final note bytes drifted")
+    except StudyProtocolError:
+        raise
+    except SystemExit as error:
+        raise StudyProtocolError(
+            f"semantic constructor re-attestation failed: {error}"
+        ) from error
+    except (KeyError, OSError, TypeError, UnicodeError, ValueError) as error:
+        raise StudyProtocolError(
+            f"semantic constructor re-attestation failed: {error}"
+        ) from error
+
+
 def _prepare_questions(args, rt: RepoTools, tools_fns, urls: list[str], rdir: Path,
                        todo: list[str], prior_questions: list[list[dict]],
                        prior_items: list[dict], *, task_manifest: dict,
@@ -2588,6 +3551,7 @@ def _prepare_questions(args, rt: RepoTools, tools_fns, urls: list[str], rdir: Pa
     quiz_dir = rdir / "quiz-episodes"
     count = 3 if args.smoke else args.questions
     chapters_to_run = todo[:1] if args.smoke else todo
+    attempt_access = _attempt_access(args)
     if qfile.is_symlink() or quiz_dir.is_symlink():
         raise SystemExit("question artifacts must not traverse symlinks")
     expected_episode_ids = {
@@ -2602,7 +3566,10 @@ def _prepare_questions(args, rt: RepoTools, tools_fns, urls: list[str], rdir: Pa
         episodes = [load_json_artifact(path) for path in episode_paths]
         if not episodes:
             raise SystemExit("questions exist without immutable quiz episodes")
-        errors = [(item.get("item_id"), _question_record_error(item, rt)) for item in records]
+        errors = [
+            (item.get("item_id"), _question_record_error(item, rt))
+            for item in records
+        ]
         errors = [(item_id, error) for item_id, error in errors if error]
         if errors:
             raise SystemExit(f"invalid immutable question records: {errors}")
@@ -2634,13 +3601,20 @@ def _prepare_questions(args, rt: RepoTools, tools_fns, urls: list[str], rdir: Pa
             )
             episodes_by_owner[owner_id] = episode
         else:
-            seed = stable_seed(args.seed, args.study_id, args.task, args.round, "quiz", chapter)
-            specs.append((chapter, owner_id, path, seed))
+            seed_namespace = _quiz_seed_namespace(
+                args.study_id, args.task, args.round, chapter
+            )
+            seed = stable_seed(args.seed, seed_namespace, "quiz")
+            specs.append((chapter, owner_id, path, seed_namespace, seed))
 
     def one(spec):
-        chapter, owner_id, path, seed = spec
-        episode = run_quiz(chapter, tools_fns, _server_url(urls, args.seed, owner_id), count,
-                           seed=seed, owner_id=owner_id)
+        chapter, owner_id, path, seed_namespace, seed = spec
+        episode = run_quiz(
+                           chapter, tools_fns,
+                           _server_url(urls, args.seed, seed_namespace), count,
+                           seed=seed, owner_id=owner_id,
+                           attempt_access=attempt_access,
+                           seed_namespace=seed_namespace)
         episode = _bind_launch_environment(episode, launch_environment)
         _validate_artifact_environment(
             rdir.parent, task_manifest, episode, label="quiz episode"
@@ -2648,7 +3622,9 @@ def _prepare_questions(args, rt: RepoTools, tools_fns, urls: list[str], rdir: Pa
         write_immutable_json(path, episode)
         return owner_id, episode
 
-    with ThreadPoolExecutor(max_workers=max(1, len(specs))) as pool:
+    with ThreadPoolExecutor(
+        max_workers=min(args.concurrency, max(1, len(specs)))
+    ) as pool:
         for owner_id, episode in pool.map(one, specs):
             episodes_by_owner[owner_id] = episode
 
@@ -2683,6 +3659,8 @@ def _prepare_questions(args, rt: RepoTools, tools_fns, urls: list[str], rdir: Pa
                 reasons.append("empty question")
             if anchors is None:
                 reasons.append("one or more anchors are not exact corpus files")
+            elif not _anchors_cover_chapter(anchors, chapter):
+                reasons.append("no anchor belongs to the assigned chapter")
             if not reasons and dedup(question, seen):
                 reasons.append("near-duplicate question")
             if reasons:
@@ -2692,6 +3670,9 @@ def _prepare_questions(args, rt: RepoTools, tools_fns, urls: list[str], rdir: Pa
             seen.append(question)
             item_id = _record_id("question", args.study_id, args.task, args.round,
                                  chapter, ordinal, question)
+            curriculum_id = _curriculum_id(
+                args.study_id, args.task, args.round, chapter, ordinal, question
+            )
             accepted.append({
                 "schema_version": SCHEMA_VERSION,
                 "item_id": item_id,
@@ -2707,6 +3688,8 @@ def _prepare_questions(args, rt: RepoTools, tools_fns, urls: list[str], rdir: Pa
                 "writer_sketch": raw.get("writer_sketch", ""),
                 "quiz_episode_id": owner_id,
                 "quiz_ordinal": ordinal,
+                "curriculum_id": curriculum_id,
+                "attempt_access": attempt_access,
             })
         if len(accepted) != count:
             protocol_errors.append(
@@ -2737,7 +3720,10 @@ def _prepare_questions(args, rt: RepoTools, tools_fns, urls: list[str], rdir: Pa
         records += [make_retest_item(item, task=args.task, study_id=args.study_id,
                                      round_number=args.round) for item in selected]
     records.sort(key=lambda item: item["item_id"])
-    errors = [(item["item_id"], _question_record_error(item, rt)) for item in records]
+    errors = [
+        (item["item_id"], _question_record_error(item, rt))
+        for item in records
+    ]
     if any(error for _, error in errors):
         raise SystemExit(f"generated invalid question records: {errors}")
     episodes = [episodes_by_owner[key] for key in sorted(episodes_by_owner)]
@@ -2877,7 +3863,36 @@ def _validate_construction_artifacts(sdir: Path, manifest: dict) -> Path:
             or not resolved_note.is_relative_to(study_root)
             or not resolved_note.is_file() or sha256_file(resolved_note) != note_digest):
         raise SystemExit(f"construction note is missing or changed: {note_path}")
+    try:
+        validate_construction_protocol(
+            manifest,
+            {"manifest.json": read_artifact_bytes(sdir / "manifest.json")},
+        )
+    except (OSError, ValueError, StudyProtocolError) as error:
+        raise SystemExit(
+            f"construction note does not bind its study protocol: {error}"
+        ) from error
     return note_path
+
+
+def _validate_closed_construction_archive(
+    sdir: Path, construction: dict, note_path: Path
+) -> None:
+    """Run the shared closed-world validator on one finalized constructor tree."""
+
+    dependency_bytes = _construction_artifact_bytes(sdir, construction)
+    try:
+        validate_study_note_archive(
+            construction,
+            dependency_bytes,
+            read_artifact_bytes(note_path),
+            allow_smoke=True,
+            deep_semantics=False,
+        )
+    except (OSError, ValueError, StudyProtocolError) as error:
+        raise SystemExit(
+            f"construction note archive is incomplete or invalid: {error}"
+        ) from error
 
 
 def _write_note(args, sdir: Path, note_text: str, entries: list[dict], *,
@@ -2889,8 +3904,17 @@ def _write_note(args, sdir: Path, note_text: str, entries: list[dict], *,
     notes_dir = sdir / "notes"
     note_sha256, relative = _write_note_bytes(args, sdir, note_text)
     artifacts = _construction_artifacts(sdir, args.round)
+    try:
+        protocol_summary = derive_protocol_summary(
+            read_artifact_bytes(sdir / "manifest.json")
+        )
+    except (OSError, ValueError, StudyProtocolError) as error:
+        raise SystemExit(f"cannot bind note to study task manifest: {error}") from error
     manifest = {
         "schema_version": SCHEMA_VERSION,
+        "manifest_type": SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
+        "method": SEMANTIC_SELFQUIZ_METHOD,
+        "protocol_summary": protocol_summary,
         "study_id": args.study_id,
         "task": args.task,
         "round": args.round,
@@ -3256,43 +4280,60 @@ def _completed_round_is_exact(args) -> bool:
         return False
     try:
         construction = load_json_artifact(construction_path)
-        task_manifest = load_json_artifact(sdir / "manifest.json")
     except (OSError, UnicodeError, ValueError) as error:
         raise SystemExit(f"finalized study round is unreadable: {error}") from error
-    expected_config = {
-        "chapters_per_round": args.chapters,
-        "questions_per_chapter": 3 if args.smoke else args.questions,
-        "smoke": args.smoke,
-        "concurrency": args.concurrency,
-    }
-    config = task_manifest.get("config")
     try:
         urls = validate_local_server_urls(args.base_urls)
     except ValueError as error:
         raise SystemExit(str(error)) from error
+    corpus = CORPORA[args.task]
+    task_manifest, _ = _write_task_manifest(
+        args,
+        corpus,
+        sdir,
+        urls,
+        snapshot_launch=False,
+        validate_only=True,
+    )
     if (construction.get("study_id") != args.study_id
             or construction.get("task") != args.task
-            or construction.get("round") != args.round
-            or task_manifest.get("study_id") != args.study_id
-            or task_manifest.get("task") != args.task
-            or task_manifest.get("master_seed") != args.seed
-            or not isinstance(config, dict)
-            or any(config.get(key) != value for key, value in expected_config.items())
-            or task_manifest.get("server_transport", {}).get("server_count") != len(urls)):
+            or construction.get("round") != args.round):
         raise SystemExit("completed study round does not match the requested protocol")
-    if args.audit_protocol is not None:
-        try:
-            protocol_sha256 = sha256_bytes(read_artifact_bytes(args.audit_protocol))
-        except (OSError, UnicodeError, ValueError) as error:
-            raise SystemExit(f"cannot read requested audit protocol: {error}") from error
-        if task_manifest.get("human_audit_protocol", {}).get("sha256") != protocol_sha256:
-            raise SystemExit("completed study round used a different audit protocol")
-    _validate_construction_artifacts(sdir, construction)
+    note_path = _validate_construction_artifacts(sdir, construction)
     if isinstance(task_manifest.get("environment"), dict):
         _validate_round_environment_provenance(
             sdir, args.round, task_manifest
         )
+    _require_automated_round_ready(args, construction)
+    _validate_closed_construction_archive(sdir, construction, note_path)
     return True
+
+
+def _require_automated_round_ready(args, construction: object) -> None:
+    """Make a finalized non-smoke gate failure a terminal method outcome."""
+
+    if args.smoke:
+        return
+    readiness = (
+        construction.get("automated_readiness")
+        if isinstance(construction, dict)
+        else None
+    )
+    if (
+        not isinstance(readiness, dict)
+        or not readiness
+        or any(type(value) is not bool or value is not True
+               for value in readiness.values())
+        or construction.get("automated_claim_ready") is not True
+    ):
+        failed = sorted(
+            key for key, value in readiness.items() if value is not True
+        ) if isinstance(readiness, dict) else ["invalid-readiness-record"]
+        raise SystemExit(
+            "semantic selfquiz round failed its automated gates; immutable "
+            "artifacts were retained but this frozen construction has no "
+            "treatment result (failed: " + ", ".join(failed) + ")"
+        )
 
 
 def run_round(args):
@@ -3321,6 +4362,9 @@ def _run_round_locked(args):
     # Build and byte-validate the complete pinned corpus snapshot before any
     # immutable task manifest can be created.
     rt = RepoTools(corpus, read_max_lines=READ_MAX_LINES)
+    chaps = chapters(rt)
+    if tuple(chaps) != DSPY_SEMANTIC_CHAPTER_SYLLABUS:
+        raise SystemExit("the pinned DSPy semantic chapter syllabus has drifted")
     manifest, launch_environment = _write_task_manifest(args, corpus, sdir, urls)
     if not args.smoke:
         try:
@@ -3334,10 +4378,9 @@ def _run_round_locked(args):
             ) from error
     tools_fns = make_tools(rt)
 
-    chaps = chapters(rt)
     if not chaps:
         raise SystemExit(f"{args.task} has no study chapters")
-    k = min(args.chapters, len(chaps))
+    k = min(1 if args.smoke else K_CHAPTERS, len(chaps))
     start = (args.round - 1) * k
     todo = [chaps[(start + index) % len(chaps)] for index in range(k)]
     prior_questions, prior_items, prior_calls, prior_manifests = _load_prior_rounds(
@@ -3350,6 +4393,7 @@ def _run_round_locked(args):
         "task": args.task,
         "round": args.round,
         "chapters": todo,
+        "attempt_access": _attempt_access(args),
         "master_seed": args.seed,
         "input_note_sha256": sha256_text(input_note),
         "task_manifest_sha256": sha256_json(manifest),
@@ -3438,6 +4482,7 @@ def _run_round_locked(args):
                 sha256_text(input_note),
                 master_seed=args.seed,
                 rt=rt,
+                attempt_access=_attempt_access(args),
             )
             records_by_id[item["item_id"]] = record
         else:
@@ -3447,9 +4492,11 @@ def _run_round_locked(args):
 
     def one_train(spec):
         item, path = spec
+        stochastic_namespace = _item_seed_namespace(item)
         record = run_item(item, input_note, tools_fns,
-                          _server_url(urls, args.seed, item["item_id"]),
-                          TRAIN_ENSEMBLE, rt, master_seed=args.seed)
+                          _server_url(urls, args.seed, stochastic_namespace),
+                          TRAIN_ENSEMBLE, rt, master_seed=args.seed,
+                          attempt_access=_attempt_access(args))
         record = _bind_launch_environment(record, launch_environment)
         _validate_artifact_environment(
             sdir, manifest, record, label="training item"
@@ -3472,6 +4519,7 @@ def _run_round_locked(args):
             sha256_text(input_note),
             master_seed=args.seed,
             rt=rt,
+            attempt_access=_attempt_access(args),
         )
     write_immutable_text(rdir / "items.jsonl", _jsonl(records))
 
@@ -3514,8 +4562,11 @@ def _run_round_locked(args):
     def one_reference(spec):
         item, path = spec
         reference_id = _record_id("dev-reference", args.study_id, args.task, item["item_id"])
+        reference_content_id = _reference_content_id(args.task, item)
         reference = build_dev_reference(
-            item, tools_fns, _server_url(urls, args.seed, reference_id), master_seed=args.seed,
+            item, tools_fns,
+            _server_url(urls, args.seed, reference_content_id),
+            master_seed=args.seed,
             created_round=args.round, rt=rt, study_id=args.study_id, task=args.task)
         reference = _bind_launch_environment(reference, launch_environment)
         _validate_artifact_environment(
@@ -3557,7 +4608,8 @@ def _run_round_locked(args):
             )
             _validate_dev_exam(
                 item, record, reference, note_sha256=sha256_text(note_text),
-                master_seed=args.seed, exam_round=args.round)
+                master_seed=args.seed, exam_round=args.round,
+                attempt_access=_attempt_access(args))
             dev_by_origin[item["item_id"]] = record
         else:
             pending_dev.append((item, reference, path))
@@ -3566,15 +4618,21 @@ def _run_round_locked(args):
         item, reference, path = spec
         exam_id = _record_id("dev-exam", item["item_id"], args.round)
         record = run_dev_item(
-            item, note_text, reference, _server_url(urls, args.seed, exam_id),
-            master_seed=args.seed, exam_round=args.round)
+            item, note_text, reference, tools_fns,
+            _server_url(
+                urls, args.seed,
+                _dev_exam_seed_namespace(item, args.round),
+            ),
+            master_seed=args.seed, exam_round=args.round,
+            attempt_access=_attempt_access(args))
         record = _bind_launch_environment(record, launch_environment)
         _validate_artifact_environment(
             sdir, manifest, record, label="dev exam"
         )
         _validate_dev_exam(
             item, record, reference, note_sha256=sha256_text(note_text),
-            master_seed=args.seed, exam_round=args.round)
+            master_seed=args.seed, exam_round=args.round,
+            attempt_access=_attempt_access(args))
         write_immutable_json(path, record)
         return item["item_id"], record
 
@@ -3619,6 +4677,11 @@ def _run_round_locked(args):
     ]
     evidence_safe = bool(successful_derivations) and all(
         _trajectory_hash_valid(derivation)
+        and _react_trajectory_valid(
+            derivation.get("trajectory"),
+            max_iters=DERIVE_MAX_ITERS,
+            require_nonempty=True,
+        )
         and derivation.get("evidence_class") == "quote-only"
         and derivation.get("reference_support", {}).get("status") == "ok"
         and derivation.get("reference_support", {}).get("supported") is True
@@ -3662,7 +4725,13 @@ def _run_round_locked(args):
         "question_freshness": (freshness["fresh"] is True
                                and freshness_snapshots_complete),
         "quiz_episodes_complete": bool(quiz_episodes)
-        and all(episode.get("status") == "ok" and _trajectory_hash_valid(episode)
+        and all(episode.get("status") == "ok"
+                and _trajectory_hash_valid(episode)
+                and _react_trajectory_valid(
+                    episode.get("trajectory"),
+                    max_iters=QUIZ_MAX_ITERS,
+                    require_nonempty=True,
+                )
                 for episode in quiz_episodes),
         "training_complete": bool(train_originals)
         and all(record.get("status") == "ok"
@@ -3692,6 +4761,7 @@ def _run_round_locked(args):
         "round": args.round,
         "task": args.task,
         "chapters": todo,
+        "attempt_access": _attempt_access(args),
         "train_items": len(train_originals),
         "retest_items": len(retests),
         "cumulative_dev_items": len(dev_records),
@@ -3727,7 +4797,7 @@ def _run_round_locked(args):
     # This is deliberately the final authoritative write. A crash anywhere
     # earlier leaves no manifest that evaluation could mistake for a complete,
     # claim-ready round.
-    _write_note(
+    construction = _write_note(
         args, sdir, note_text, all_entries,
         input_note_sha256=sha256_text(input_note),
         round_calls=round_calls,
@@ -3738,12 +4808,15 @@ def _run_round_locked(args):
         automated_claim_ready=automated_claim_ready,
         automated_readiness=automated_readiness,
     )
+    _require_automated_round_ready(args, construction)
+    note_path = _validate_construction_artifacts(sdir, construction)
+    _validate_closed_construction_archive(sdir, construction, note_path)
     log.info("ROUND %d SUMMARY %s", args.round, json.dumps(summary, sort_keys=True))
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--task", required=True, choices=list(CORPORA))
+    p.add_argument("--task", required=True, choices=["dspy"])
     p.add_argument("--round", type=int, required=True)
     p.add_argument("--study-id", required=True,
                    help="immutable namespace for one study replication")
@@ -3751,6 +4824,13 @@ def main():
                    help="master seed; every model phase derives and records its own seed")
     p.add_argument("--chapters", type=int, default=K_CHAPTERS)
     p.add_argument("--questions", type=int, default=M_QUESTIONS)
+    p.add_argument(
+        "--attempt-access",
+        choices=SEMANTIC_ATTEMPT_ACCESS_MODES,
+        default=DEFAULT_ATTEMPT_ACCESS,
+        help=("closed-book uses one tool-free Predict call; react-corpus uses "
+              "bounded ReAct over the complete pinned repository"),
+    )
     p.add_argument("--base-urls", default="http://localhost:8100/v1")
     p.add_argument("--concurrency", type=int, default=16)
     p.add_argument(
@@ -3767,8 +4847,13 @@ def main():
 
     # Validate before using the study ID in any filesystem path.
     _study_dir(args)
-    if args.round < 1 or args.chapters < 1 or args.questions < 2 or args.concurrency < 1:
-        p.error("round/chapters/concurrency must be positive and questions must be at least 2")
+    _attempt_access(args)
+    if not 1 <= args.round <= SEMANTIC_FINAL_ROUND:
+        p.error("semantic-selfquiz-v2 requires a round from 1 through 4")
+    if args.chapters != K_CHAPTERS or args.questions != M_QUESTIONS:
+        p.error("semantic-selfquiz-v2 requires --chapters 4 and --questions 5")
+    if args.concurrency < 1:
+        p.error("concurrency must be positive")
     if args.audit_protocol is not None and args.round != 1:
         p.error("--audit-protocol may only be pre-registered in round 1")
     if args.promote_human_audit is not None:

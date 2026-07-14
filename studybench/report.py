@@ -23,6 +23,7 @@ table's tokens being rounded to 0.1k.
 """
 
 import argparse
+from copy import deepcopy
 import json
 import random
 import sys
@@ -35,13 +36,13 @@ from .grade import (FAILED_JUDGE_AUDIT_SCHEMA_VERSION, GRADE_SCHEMA_VERSION,
                     LOCAL_GRADER_MODEL_REVISION,
                     LOCAL_GRADER_REQUEST_OPTIONS, MAX_JUDGE_ATTEMPTS,
                     GradeIntegrityError, file_sha256,
-                    episode_provider_identity, grade_spec_sha256,
+                    build_prompt, episode_provider_identity, grade_spec_sha256,
                     grader_identity_for_model, judge_usage_summary,
                     load_claim_manifest, parse_json, sha256_bytes,
                     sandbox_configuration_record,
                     sandbox_configuration_sha256,
                     validate_judge_attempt_record, validate_manifest_episode,
-                    validate_stored_grade)
+                    validate_judge_attempt_inventory, validate_stored_grade)
 from .grade import validate_preregistered_grading_policy
 from .integrity import (canonical_json_bytes, read_artifact_bytes, sha256_json,
                         write_immutable_json)
@@ -54,6 +55,7 @@ from .provenance import (
     validate_id,
     validate_local_judge_runtime_record,
 )
+from .study_protocol import SEMANTIC_SELFQUIZ_METHOD, STATIC_GRAPH_METHOD
 
 BUDGET_ORDER = ["direct", "k5", "k20", "k20f"]
 
@@ -78,7 +80,7 @@ class ReportIntegrityError(RuntimeError):
     """The requested result population is incomplete, stale, or unverifiable."""
 
 
-REPORT_SCHEMA_VERSION = 6
+REPORT_SCHEMA_VERSION = 9
 
 PAPER = {  # Table 1, lenient: (task, variant) -> budget -> (acc %, tokens k)
     ("dspy", ""): {"direct": (3.3, 4.1), "k5": (8.6, 7.9), "k20": (9.6, 8.6),
@@ -144,7 +146,142 @@ def paper_comparability_errors(audit: dict, *, variant: str,
             errors.append("paper cheatsheet comparison requires a study note")
         if audit.get("note_provenance", {}).get("method") != "forced-50-cheatsheet":
             errors.append("study note is not the paper's forced-50 cheatsheet method")
+        if audit.get("note_provenance", {}).get("focus_chapter") is not None:
+            errors.append(
+                "paper cheatsheet comparison requires an unfocused full-corpus study note"
+            )
     return errors
+
+
+def validated_note_provenance(manifest_context: dict) -> dict:
+    """Build report identity only from protocol data re-derived by grading."""
+
+    note_manifest = manifest_context.get("note_manifest")
+    protocol = manifest_context.get("note_protocol_summary")
+    if protocol is None:
+        protocol = manifest_context.get("forced50_protocol")
+    if note_manifest is not None and not isinstance(protocol, dict):
+        raise ReportIntegrityError(
+            "study note has no validated content-bound protocol summary"
+        )
+    if protocol is not None and (
+        not isinstance(protocol.get("method"), str)
+        or not protocol["method"]
+        or not isinstance(protocol.get("question_mode"), str)
+        or not protocol["question_mode"]
+    ):
+        raise ReportIntegrityError("validated study protocol summary is malformed")
+    if protocol is not None:
+        method = protocol["method"]
+        expected_keys = (
+            {
+                "schema_version",
+                "method",
+                "question_mode",
+                "focus",
+                "protocol_config_sha256",
+            }
+            if method == "forced-50-cheatsheet"
+            else {
+                "schema_version",
+                "task_manifest_sha256",
+                "method",
+                "question_mode",
+                "focus",
+                "attempt_access",
+                "attempt_protocol_sha256",
+                "resolver_contract_sha256",
+                "question_bank_sha256",
+                "question_bank_artifact_sha256",
+            }
+            if method in {
+                SEMANTIC_SELFQUIZ_METHOD,
+                STATIC_GRAPH_METHOD,
+            }
+            else None
+        )
+        if (
+            expected_keys is None
+            or set(protocol) != expected_keys
+            or type(protocol.get("schema_version")) is not int
+            or protocol["schema_version"] != 1
+            or protocol.get("focus") is not None
+            or (
+                method == "forced-50-cheatsheet"
+                and (
+                    protocol.get("question_mode") != "forced-50-cheatsheet"
+                    or not _valid_sha256(protocol.get("protocol_config_sha256"))
+                )
+            )
+            or (
+                method == SEMANTIC_SELFQUIZ_METHOD
+                and (
+                    protocol.get("question_mode") != "semantic"
+                    or protocol.get("attempt_access")
+                    not in {"closed-book", "react-corpus"}
+                    or not _valid_sha256(protocol.get("task_manifest_sha256"))
+                    or not _valid_sha256(protocol.get("attempt_protocol_sha256"))
+                    or any(
+                        protocol.get(field) is not None
+                        for field in (
+                            "resolver_contract_sha256",
+                            "question_bank_sha256",
+                            "question_bank_artifact_sha256",
+                        )
+                    )
+                )
+            )
+            or (
+                method == STATIC_GRAPH_METHOD
+                and (
+                    protocol.get("question_mode") != "static-call-neighborhood"
+                    or protocol.get("attempt_access") != "react-corpus"
+                    or any(
+                        not _valid_sha256(protocol.get(field))
+                        for field in (
+                            "task_manifest_sha256",
+                            "attempt_protocol_sha256",
+                            "resolver_contract_sha256",
+                            "question_bank_sha256",
+                            "question_bank_artifact_sha256",
+                        )
+                    )
+                )
+            )
+        ):
+            raise ReportIntegrityError(
+                "validated study protocol summary has an unknown schema"
+            )
+    return {
+        "construction_manifest_sha256": manifest_context.get(
+            "note_construction_manifest_sha256"
+        ),
+        "study_id": (
+            note_manifest.get("study_id")
+            if isinstance(note_manifest, dict)
+            else None
+        ),
+        "method": protocol.get("method") if protocol is not None else None,
+        "question_mode": (
+            protocol.get("question_mode") if protocol is not None else None
+        ),
+        "focus_chapter": protocol.get("focus") if protocol is not None else None,
+        "attempt_access": (
+            protocol.get("attempt_access") if protocol is not None else None
+        ),
+        "task_manifest_sha256": (
+            protocol.get("task_manifest_sha256") if protocol is not None else None
+        ),
+        "protocol_config_sha256": (
+            protocol.get("protocol_config_sha256") if protocol is not None else None
+        ),
+        "manifest_type": (
+            note_manifest.get("manifest_type")
+            if isinstance(note_manifest, dict)
+            else None
+        ),
+        "protocol_summary": dict(protocol) if protocol is not None else None,
+    }
 
 
 def expertise(points: list[tuple[float, float]]) -> float:
@@ -658,6 +795,7 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
     missing_generation_fingerprints = 0
     generation_provider_identity_by_episode = {}
     environment_snapshot_by_episode = {}
+    judge_population_bindings = []
     for key, run_path in expected_runs.items():
         budget, rollout, qid = key
         grade_path = expected_grades[key]
@@ -687,7 +825,23 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                 source_episode=_display_path(run_path),
                 grading_runtime=grading_runtime,
                 local_judge_runtime=local_runtime,
+                require_judge_attempt_intent=ep.get("status") == "ok",
             )
+            judge_population_bindings.append({
+                "source_episode": _display_path(run_path),
+                "episode": ep,
+                "episode_sha256": sha256_bytes(episode_bytes),
+                "grading_spec_sha256": grading_specs[qid],
+                "judge_prompt_sha256": (
+                    sha256_bytes(
+                        build_prompt(
+                            corpus, rows[qid], ep["answer"], whole_files
+                        ).encode("utf-8")
+                    )
+                    if ep.get("status") == "ok"
+                    else None
+                ),
+            })
             population[budget].append(grade)
             if diagnostic_local:
                 judge_transport_urls.add(grade["judge_base_url"])
@@ -730,6 +884,19 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                 GradeIntegrityError) as exc:
             errors.append(f"invalid {_display_path(grade_path)}: {exc}")
 
+    try:
+        judge_attempt_intents = validate_judge_attempt_inventory(
+            grade_root,
+            judge_population_bindings,
+            judge_model=judge_model,
+            judge_base_url=judge_base_url,
+            grading_runtime_sha256=grading_runtime_digest,
+            local_judge_runtime_sha256=local_runtime_digest,
+        )
+    except GradeIntegrityError as exc:
+        judge_attempt_intents = []
+        errors.append(f"invalid judge-attempt intent ledger: {exc}")
+
     if len(response_models) > 1:
         errors.append(
             "provider resolved the requested judge alias to multiple models: "
@@ -757,6 +924,27 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             f"{task}: refusing to aggregate {len(errors)} integrity failure(s):\n"
             f"{preview}{remainder}\n"
             "Use --legacy-partial only for conspicuously labeled diagnostics.")
+    generation_attempt_intents = manifest_context.get(
+        "generation_attempt_intents", []
+    )
+    if not isinstance(generation_attempt_intents, list):
+        raise ReportIntegrityError(
+            "run manifest validation returned an invalid generation intent ledger"
+        )
+    if manifest_context["spec"].get("purpose") in {"smoke", "exploratory"}:
+        if len(generation_attempt_intents) != len(
+            manifest_context["expected_episodes"]
+        ):
+            raise ReportIntegrityError(
+                "screen generation intent ledger is incomplete"
+            )
+        generation_intent_policy = "screen-one-shot-attempt-intent-v1"
+    else:
+        if generation_attempt_intents:
+            raise ReportIntegrityError(
+                "confirmatory generation unexpectedly has screen attempt intents"
+            )
+        generation_intent_policy = "preregistered-retry-no-intent-ledger"
     population_records.sort(
         key=lambda record: (
             BUDGET_ORDER.index(record["budget"]), record["rollout"], record["qid"])
@@ -779,6 +967,12 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
         "grading_runtime_sha256": grading_runtime_digest,
         "grading_runtime": grading_runtime,
         "grading_spec_sha256_by_question": grading_specs,
+        "judge_attempt_intents": {
+            "policy": "one-session-judge-attempt-intent-v1",
+            "count": len(judge_attempt_intents),
+            "sha256": sha256_json(judge_attempt_intents),
+            "artifacts": judge_attempt_intents,
+        },
     }
     if diagnostic_local:
         grading_config.update({
@@ -804,16 +998,10 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                     "all-metrics"
                     if sandbox_configuration_record(corpus.language).get("ready")
                     is True
-                    else "lenient-only-checker-unavailable"
+                    else "lenient-and-core-conjunctive-checker-unavailable"
                 ),
             },
         })
-    note_manifest = manifest_context.get("note_manifest")
-    note_config = (
-        note_manifest.get("config")
-        if isinstance(note_manifest, dict) and isinstance(note_manifest.get("config"), dict)
-        else {}
-    )
     audit = {
         "run_manifest": {
             "path": _display_path(run_root / task / "manifest.json"),
@@ -841,17 +1029,14 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             "environment_snapshot_sha256_by_episode": (
                 environment_snapshot_by_episode
             ),
+            "attempt_intents": {
+                "policy": generation_intent_policy,
+                "count": len(generation_attempt_intents),
+                "sha256": sha256_json(generation_attempt_intents),
+                "artifacts": generation_attempt_intents,
+            },
         },
-        "note_provenance": {
-            "construction_manifest_sha256": manifest_context.get(
-                "note_construction_manifest_sha256"),
-            "study_id": note_manifest.get("study_id")
-            if isinstance(note_manifest, dict) else None,
-            "method": note_manifest.get("method", note_config.get("method"))
-            if isinstance(note_manifest, dict) else None,
-            "manifest_type": note_manifest.get("manifest_type")
-            if isinstance(note_manifest, dict) else None,
-        },
+        "note_provenance": validated_note_provenance(manifest_context),
         "failed_attempts": {
             "count": len(failed_attempts),
             "sha256": sha256_json(failed_attempts),
@@ -970,6 +1155,41 @@ def aggregate_population(population: dict[str, list[dict]]) -> dict:
                   for budget in BUDGET_ORDER]
         out[f"expertise_{kind}"] = expertise(points)
     return out
+
+
+def reportable_aggregate(value: dict, *, checker_ready: bool) -> dict:
+    """Project a recomputed aggregate onto metrics that are interpretable.
+
+    Local exploratory grading preserves checker-unavailable zero sentinels in
+    its low-level grade artifacts so those artifacts remain mechanically
+    revalidatable.  Those sentinels are not observed strict/compile results and
+    must therefore become explicit nulls in a user-facing report.
+    """
+
+    if type(checker_ready) is not bool:
+        raise ReportIntegrityError("checker readiness must be a boolean")
+    result = deepcopy(value)
+    if not checker_ready:
+        result["expertise_strict"] = None
+        for budget in BUDGET_ORDER:
+            result["budgets"][budget].update(
+                strict=None,
+                compile_rate=None,
+            )
+    return result
+
+
+def reportable_bootstrap(value: dict | None, *, checker_ready: bool) -> dict | None:
+    """Return current bootstrap output after validating checker metadata.
+
+    The bootstrap contains only lenient and core-conjunctive metrics. Neither
+    depends on the compile checker, so checker unavailability suppresses no
+    bootstrap field.
+    """
+
+    if type(checker_ready) is not bool:
+        raise ReportIntegrityError("checker readiness must be a boolean")
+    return deepcopy(value)
 
 
 def aggregate(task: str, grades_dir: str = "grades", runs_dir: str = "runs",
@@ -1182,6 +1402,7 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
             f"report grading runtime is stale or invalid: {error}"
         ) from error
     diagnostic_local = judge_model == LOCAL_GRADER_MODEL
+    checker_ready = True
     if diagnostic_local:
         checker_configuration = sandbox_configuration_record(
             CORPORA[task].language
@@ -1203,7 +1424,7 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
                 "score_interpretation": (
                     "all-metrics"
                     if checker_ready
-                    else "lenient-only-checker-unavailable"
+                    else "lenient-and-core-conjunctive-checker-unavailable"
                 ),
             },
         }
@@ -1328,11 +1549,15 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
         "grading_manifest": audit["grading_manifest"],
         "population": audit["population"],
         "population_sha256": audit["population_sha256"],
-        "aggregate": aggregate_result,
+        "aggregate": reportable_aggregate(
+            aggregate_result, checker_ready=checker_ready
+        ),
         "bootstrap": {
             "replicates": bootstrap_replicates,
             "seed": bootstrap_seed,
-            "results": bootstrap_result,
+            "results": reportable_bootstrap(
+                bootstrap_result, checker_ready=checker_ready
+            ),
         },
         "paper_comparison": paper_comparison,
         "report_source": {
@@ -1519,8 +1744,8 @@ def main():
             )
         if diagnostic_local and not checker_ready:
             header = (
-                f"{'budget':8} {'n':>4} {'lenient':>8} {'tok(k)':>7} "
-                f"{'no-ans':>6} {'regrade':>8} {'bad':>4}"
+                f"{'budget':8} {'n':>4} {'lenient':>8} {'len-cc':>7} "
+                f"{'tok(k)':>7} {'no-ans':>6} {'regrade':>8} {'bad':>4}"
             )
         else:
             header = (
@@ -1535,8 +1760,9 @@ def main():
             if diagnostic_local and not checker_ready:
                 line = (
                     f"{budget:8} {b['n']:>4} {b['lenient']:>8.1f} "
-                    f"{b['tokens'] / 1000:>7.1f} {b['no_answer']:>6} "
-                    f"{b['needs_regrade']:>8} {b['bad_episodes']:>4}"
+                    f"{b['len_cc']:>7.1f} {b['tokens'] / 1000:>7.1f} "
+                    f"{b['no_answer']:>6} {b['needs_regrade']:>8} "
+                    f"{b['bad_episodes']:>4}"
                 )
             else:
                 line = (
@@ -1576,9 +1802,8 @@ def main():
             if paper is not None:
                 line += f" (paper reference: {paper['expertise']:.2f})"
             print(line)
-            if not (diagnostic_local and not checker_ready):
-                m, lo, hi = b["wauc_cc"]
-                print(f"  WAUC len-cc  {m:5.2f} [{lo:5.2f}, {hi:5.2f}]")
+            m, lo, hi = b["wauc_cc"]
+            print(f"  WAUC len-cc  {m:5.2f} [{lo:5.2f}, {hi:5.2f}]")
         if not args.legacy_partial:
             report_path = write_report_artifact(
                 task=task,

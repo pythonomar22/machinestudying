@@ -227,7 +227,10 @@ def _population_roots(artifact: dict[str, Any]) -> tuple[Path, Path]:
 
 
 def _validate_source_bootstrap(
-    artifact: dict[str, Any], population: dict[str, list[dict[str, Any]]]
+    artifact: dict[str, Any],
+    population: dict[str, list[dict[str, Any]]],
+    *,
+    checker_ready: bool = True,
 ) -> None:
     bootstrap = artifact.get("bootstrap")
     if not isinstance(bootstrap, dict) or set(bootstrap) != {
@@ -244,6 +247,9 @@ def _validate_source_bootstrap(
         expected = None
     else:
         expected = report.bootstrap_population(population, replicates, seed)
+    expected = report.reportable_bootstrap(
+        expected, checker_ready=checker_ready
+    )
     if bootstrap["results"] != expected:
         raise ComparisonIntegrityError("source report bootstrap no longer recomputes")
 

@@ -297,7 +297,9 @@ def _validate_checker_binding(
         "sandbox_configuration_sha256": stable_sha256(configuration),
         "ready": ready,
         "score_interpretation": (
-            "all-metrics" if ready else "lenient-only-checker-unavailable"
+            "all-metrics"
+            if ready
+            else "lenient-and-core-conjunctive-checker-unavailable"
         ),
     }
     if (
@@ -451,14 +453,6 @@ def load_local_report(path: str | Path) -> LoadedScreenArm:
             raise ScreenComparisonIntegrityError(
                 f"source report {key} no longer matches the local population"
             )
-    aggregate = report.aggregate_population(population)
-    if artifact.get("aggregate") != aggregate:
-        raise ScreenComparisonIntegrityError("source report aggregate no longer recomputes")
-    try:
-        strict_compare._validate_source_bootstrap(artifact, population)
-    except strict_compare.ComparisonIntegrityError as exc:
-        raise ScreenComparisonIntegrityError(str(exc)) from exc
-
     try:
         checker_configuration = sandbox.configuration_record(
             report.CORPORA[task].language
@@ -467,6 +461,23 @@ def load_local_report(path: str | Path) -> LoadedScreenArm:
         raise ScreenComparisonIntegrityError(
             "cannot reattest the deterministic checker configuration"
         ) from exc
+    checker_ready = checker_configuration.get("ready") is True
+    aggregate = report.aggregate_population(population)
+    expected_report_aggregate = report.reportable_aggregate(
+        aggregate, checker_ready=checker_ready
+    )
+    if artifact.get("aggregate") != expected_report_aggregate:
+        raise ScreenComparisonIntegrityError(
+            "source report aggregate no longer recomputes"
+        )
+    try:
+        strict_compare._validate_source_bootstrap(
+            artifact,
+            population,
+            checker_ready=checker_ready,
+        )
+    except strict_compare.ComparisonIntegrityError as exc:
+        raise ScreenComparisonIntegrityError(str(exc)) from exc
     arm = LoadedScreenArm(
         report_path=source,
         report_sha256=digest,
@@ -927,7 +938,7 @@ def validate_pair(
             "score_policy": (
                 "lenient_primary_with_strict_secondary"
                 if checker_ready
-                else "lenient_only_strict_and_compile_unavailable"
+                else "lenient_and_core_conjunctive_strict_and_compile_unavailable"
             ),
             "strict_and_compile_metrics": (
                 "reported_as_secondary"
@@ -1027,7 +1038,7 @@ def _pairing_records(
 def _project_point_estimates(
     full: dict[str, Any], *, checker_ready: bool
 ) -> dict[str, Any]:
-    score_metrics = ["lenient"] + (["len_cc", "strict"] if checker_ready else [])
+    score_metrics = ["lenient", "len_cc"] + (["strict"] if checker_ready else [])
     operational_metrics = ["tokens", "no_answer_rate"]
     return {
         "budgets": {
@@ -1061,7 +1072,7 @@ def _project_point_estimates(
 def _project_bootstrap(
     full: dict[str, Any], *, checker_ready: bool
 ) -> dict[str, Any]:
-    score_metrics = ["lenient"] + (["len_cc", "strict"] if checker_ready else [])
+    score_metrics = ["lenient", "len_cc"] + (["strict"] if checker_ready else [])
     operational_metrics = ["tokens", "no_answer_rate"]
     return {
         "budgets": {

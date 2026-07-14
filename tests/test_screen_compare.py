@@ -100,7 +100,7 @@ def local_arm(
             "score_interpretation": (
                 "all-metrics"
                 if checker_ready
-                else "lenient-only-checker-unavailable"
+                else "lenient-and-core-conjunctive-checker-unavailable"
             ),
         },
     }
@@ -338,18 +338,19 @@ class LocalPairTests(unittest.TestCase):
         self.assertTrue(artifact["diagnostic_only"])
         self.assertEqual(
             artifact["intervention"]["checker_interpretation"]["score_policy"],
-            "lenient_only_strict_and_compile_unavailable",
+            "lenient_and_core_conjunctive_strict_and_compile_unavailable",
         )
         for budget in report.BUDGET_ORDER:
             point = artifact["point_estimates"]["budgets"][budget]
             interval = artifact["bootstrap"]["results"]["budgets"][budget]
             self.assertNotIn("strict", point)
-            self.assertNotIn("len_cc", point)
+            self.assertIn("len_cc", point)
             self.assertNotIn("compile_rate", point)
             self.assertNotIn("strict", interval)
-            self.assertNotIn("len_cc", interval)
+            self.assertIn("len_cc", interval)
             self.assertNotIn("compile_rate", interval)
             self.assertEqual(point["lenient"]["treatment_minus_control"], 10)
+            self.assertEqual(point["len_cc"]["treatment_minus_control"], 10)
             self.assertEqual(interval["lenient"]["lower_95"], 10)
             self.assertEqual(interval["lenient"]["upper_95"], 10)
         self.assertNotIn(
@@ -549,7 +550,13 @@ class LocalPairTests(unittest.TestCase):
 
 
 class LocalReportLoaderTests(unittest.TestCase):
-    def _fixture(self, root: Path) -> tuple[Path, dict[str, list[dict]], dict]:
+    def _fixture(
+        self,
+        root: Path,
+        *,
+        checker_configuration: dict = LOADER_CHECKER_CONFIGURATION,
+        bootstrap_replicates: int = 0,
+    ) -> tuple[Path, dict[str, list[dict]], dict]:
         run_id = "run-a"
         task = "fake"
         run_root = root / "runs" / run_id
@@ -580,7 +587,7 @@ class LocalReportLoaderTests(unittest.TestCase):
                 "compile_check": {
                     "compile_ok": False,
                     "configuration_sha256": grade.stable_sha256(
-                        LOADER_CHECKER_CONFIGURATION
+                        checker_configuration
                     ),
                 },
                 "gen_tokens": 4_000 + index,
@@ -665,10 +672,14 @@ class LocalReportLoaderTests(unittest.TestCase):
             "checker_interpretation": {
                 "language": "python",
                 "sandbox_configuration_sha256": grade.stable_sha256(
-                    LOADER_CHECKER_CONFIGURATION
+                    checker_configuration
                 ),
-                "ready": False,
-                "score_interpretation": "lenient-only-checker-unavailable",
+                "ready": checker_configuration["ready"],
+                "score_interpretation": (
+                    "all-metrics"
+                    if checker_configuration["ready"]
+                    else "lenient-and-core-conjunctive-checker-unavailable"
+                ),
             },
         }
         audit = {
@@ -725,8 +736,22 @@ class LocalReportLoaderTests(unittest.TestCase):
             "run_id": run_id,
             "budget_order": report.BUDGET_ORDER,
             **audit,
-            "aggregate": report.aggregate_population(population),
-            "bootstrap": {"replicates": 0, "seed": 0, "results": None},
+            "aggregate": report.reportable_aggregate(
+                report.aggregate_population(population),
+                checker_ready=checker_configuration["ready"],
+            ),
+            "bootstrap": {
+                "replicates": bootstrap_replicates,
+                "seed": 0,
+                "results": report.reportable_bootstrap(
+                    report.bootstrap_population(
+                        population, bootstrap_replicates, seed=0
+                    )
+                    if bootstrap_replicates
+                    else None,
+                    checker_ready=checker_configuration["ready"],
+                ),
+            },
             "paper_comparison": None,
             "report_source": {
                 "studybench/report.py": grade.file_sha256(
@@ -775,6 +800,82 @@ class LocalReportLoaderTests(unittest.TestCase):
                 local_judge_runtime=TEST_LOCAL_JUDGE_RUNTIME,
                 whole_files=False,
             )
+
+    def test_loader_rejects_unavailable_checker_zero_sentinels(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, population, audit = self._fixture(
+                root, bootstrap_replicates=3
+            )
+            artifact = json.loads(path.read_bytes())
+            self.assertIsNone(
+                artifact["aggregate"]["budgets"]["direct"]["strict"]
+            )
+            self.assertIsNotNone(artifact["bootstrap"]["results"]["wauc_cc"])
+            artifact["aggregate"]["budgets"]["direct"]["strict"] = 0
+            data = canonical_json_bytes(artifact)
+            forged = root / f"report-{sha256_bytes(data)}.json"
+            forged.write_bytes(data)
+            corpus = SimpleNamespace(language="python")
+            with (
+                patch.object(report, "ROOT", root),
+                patch.object(report, "CORPORA", {"fake": corpus}),
+                patch.object(
+                    report,
+                    "revalidate_recorded_local_diagnostic_evaluation",
+                    return_value=(population, audit),
+                ),
+                patch.object(
+                    screen_compare.sandbox,
+                    "configuration_record",
+                    return_value=LOADER_CHECKER_CONFIGURATION,
+                ),
+                self.assertRaisesRegex(
+                    screen_compare.ScreenComparisonIntegrityError,
+                    "aggregate no longer recomputes",
+                ),
+            ):
+                screen_compare.load_local_report(forged)
+
+    def test_loader_rejects_checker_ready_nulls(self) -> None:
+        ready_checker = {
+            "language": "python",
+            "ready": True,
+            "check_level": "contained-execution",
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, population, audit = self._fixture(
+                root, checker_configuration=ready_checker
+            )
+            artifact = json.loads(path.read_bytes())
+            self.assertEqual(
+                artifact["aggregate"]["budgets"]["direct"]["strict"], 0
+            )
+            artifact["aggregate"]["budgets"]["direct"]["strict"] = None
+            data = canonical_json_bytes(artifact)
+            forged = root / f"report-{sha256_bytes(data)}.json"
+            forged.write_bytes(data)
+            corpus = SimpleNamespace(language="python")
+            with (
+                patch.object(report, "ROOT", root),
+                patch.object(report, "CORPORA", {"fake": corpus}),
+                patch.object(
+                    report,
+                    "revalidate_recorded_local_diagnostic_evaluation",
+                    return_value=(population, audit),
+                ),
+                patch.object(
+                    screen_compare.sandbox,
+                    "configuration_record",
+                    return_value=ready_checker,
+                ),
+                self.assertRaisesRegex(
+                    screen_compare.ScreenComparisonIntegrityError,
+                    "aggregate no longer recomputes",
+                ),
+            ):
+                screen_compare.load_local_report(forged)
 
     def test_loader_rejects_claim_ready_or_non_content_addressed_report(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

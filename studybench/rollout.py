@@ -30,6 +30,9 @@ from .provenance import (
     validate_id,
     validate_local_server_urls,
     validate_resumable_episode,
+    validate_screen_attempt_tree,
+    validate_screen_failure_state,
+    write_screen_attempt_intent,
     write_episode_result,
 )
 from .tools import TOOL_SCHEMAS, RepoTools
@@ -409,6 +412,10 @@ async def run_episode(client: AsyncOpenAI, corpus, tools: RepoTools, q: dict,
         if nudges > MAX_NUDGES:
             if early and content:
                 ep["answer"], ep["status"] = msg.content, "forced_short"
+                ep["error"] = (
+                    f"forced trajectory stopped after {iters} of {max_iters} "
+                    "required tool iterations"
+                )
             elif content:
                 # A serialized tool call is not an answer. Preserve it for audit,
                 # but score the genuine model no-answer outcome as zero.
@@ -498,6 +505,145 @@ async def request_with_retry(
             delay *= 2
 
 
+async def _run_evaluation_locked(
+    args,
+    corpus,
+    tools,
+    clients: list[AsyncOpenAI],
+    questions: list[dict],
+    budgets: list[str],
+    context,
+    episode_contract: dict[str, str],
+    think_history: bool,
+) -> None:
+    """Preflight and run one evaluation while holding its run-level lock."""
+
+    # Repository tools remain available, preserving open-book evaluation.
+    prompted = [
+        (q, {**q, "question": context.prompt_prefix + q["question"]})
+        for q in questions
+    ]
+    cases = []
+    pending = []
+    for budget in budgets:
+        for rollout in range(args.rollouts):
+            for raw_q, q in prompted:
+                out = context.root / budget / f"r{rollout}" / f"{q['id']}.json"
+                seed = episode_seed(
+                    args.seed, args.seed_group, corpus.name, q["id"], budget, rollout
+                )
+                identity = episode_identity(
+                    context, q=raw_q, prompt=q["question"], budget=budget,
+                    rollout=rollout, seed=seed,
+                )
+                cases.append((raw_q, q, budget, rollout, out, seed, identity))
+                existing = _validated_resumable_episode(
+                    out, identity, context=context, **episode_contract
+                )
+                if existing:
+                    if existing.get("status") in ("ok", "no_answer"):
+                        continue
+                    raise ValueError(
+                        f"non-final artifact occupies expected episode path: {out}"
+                    )
+                pending.append((raw_q, q, budget, rollout, out, seed, identity))
+    screen_states = validate_screen_attempt_tree(
+        context,
+        [(case[4], case[6]) for case in cases],
+        episode_contract,
+    )
+    for _, _, _, _, out, _, _ in cases:
+        state = screen_states.get(out.relative_to(context.root).as_posix())
+        if state is None:
+            continue
+        if out.exists() and state["intent"] is None:
+            raise ValueError(f"screen final episode has no attempt intent: {out}")
+        if not out.exists() and state["intent"] is not None:
+            raise ValueError(
+                "screen cell has a terminal or ambiguous prior attempt; retry is "
+                f"prohibited: {state['intent']}"
+            )
+    log.info("%d episodes pending (task=%s)", len(pending), args.task)
+
+    sem = asyncio.Semaphore(args.concurrency)
+    done = 0
+
+    async def one(i, raw_q, q, budget, rollout, out, seed, identity):
+        nonlocal done
+        async with sem:
+            try:
+                lock = (
+                    context.root / "locks" / out.relative_to(context.root)
+                ).with_suffix(".lock")
+                with exclusive_process_lock(lock):
+                    if _validated_resumable_episode(
+                        out, identity, context=context, **episode_contract
+                    ) is not None:
+                        return
+                    state = validate_screen_failure_state(
+                        context, out, identity, episode_contract
+                    )
+                    if state["intent"] is not None or state["failed_attempts"]:
+                        raise ValueError(
+                            "terminal attempt appeared after preflight; screen retry "
+                            f"is prohibited: {state['intent']}"
+                        )
+                    write_screen_attempt_intent(
+                        context, out, identity, episode_contract
+                    )
+                    ep = await run_episode(
+                        clients[i % len(clients)], corpus, tools, q,
+                        budget, rollout, think_history, seed=seed, identity=identity,
+                    )
+                    _reject_invalid_final_episode(ep, identity, **episode_contract)
+                    artifact = write_episode_result(
+                        context,
+                        out,
+                        ep,
+                        validate_final=lambda value: _validate_final_episode(
+                            value, identity, **episode_contract
+                        ),
+                        screen_identity=identity,
+                        producer_contract=episode_contract,
+                    )
+            except Exception:
+                log.exception(
+                    "episode %s/%s/r%d failed outside run_episode",
+                    budget, q["id"], rollout,
+                )
+                return
+            done += 1
+            log.info(
+                "[%d/%d] %s/%s/r%d %s: status=%s iters=%d gen_tokens=%d",
+                done, len(pending), budget, q["id"], rollout, ep["finished"],
+                ep["status"], ep["n_tool_iters"], ep["gen_tokens"],
+            )
+            if artifact != out:
+                log.warning("retained failed attempt at %s", artifact)
+            if args.debug:
+                log.debug(
+                    "answer for %s/%s/r%d:\n%s",
+                    budget, q["id"], rollout, ep["answer"][:2000],
+                )
+
+    await asyncio.gather(*(one(index, *case) for index, case in enumerate(pending)))
+
+    statuses: dict[str, int] = {}
+    for _, _, _, _, out, _, identity in cases:
+        existing = _validated_resumable_episode(
+            out, identity, context=context, **episode_contract
+        )
+        status = existing.get("status", "missing") if existing else "missing"
+        statuses[status] = statuses.get(status, 0) + 1
+    log.info("all done: %s", statuses)
+    if statuses.keys() - {"ok", "no_answer"}:
+        log.error(
+            "some screen episodes are terminally incomplete; this namespace "
+            "cannot be retried"
+        )
+        raise SystemExit(1)
+
+
 async def main_async(args):
     corpus = CORPORA[args.task]
     tools = RepoTools(corpus)
@@ -570,92 +716,17 @@ async def main_async(args):
             "concurrency": args.concurrency,
         },
     )
-    # Repository tools remain available, preserving open-book evaluation.
-    prompted = [
-        (q, {**q, "question": context.prompt_prefix + q["question"]})
-        for q in questions
-    ]
-
-    cases = []
-    pending = []
-    for budget in budgets:
-        for rollout in range(args.rollouts):
-            for raw_q, q in prompted:
-                out = context.root / budget / f"r{rollout}" / f"{q['id']}.json"
-                seed = episode_seed(
-                    args.seed, args.seed_group, corpus.name, q["id"], budget, rollout
-                )
-                identity = episode_identity(
-                    context, q=raw_q, prompt=q["question"], budget=budget,
-                    rollout=rollout, seed=seed,
-                )
-                cases.append((raw_q, q, budget, rollout, out, seed, identity))
-                # "ok" and "no_answer" are genuine model outcomes; only infra
-                # failures ("error", "forced_short") are retried on resume.
-                existing = _validated_resumable_episode(
-                    out, identity, context=context, **episode_contract
-                )
-                if existing:
-                    if existing.get("status") in ("ok", "no_answer"):
-                        continue
-                    raise ValueError(f"non-final artifact occupies expected episode path: {out}")
-                pending.append((raw_q, q, budget, rollout, out, seed, identity))
-    log.info("%d episodes pending (task=%s)", len(pending), args.task)
-
-    sem = asyncio.Semaphore(args.concurrency)
-    done = 0
-
-    async def one(i, raw_q, q, budget, rollout, out, seed, identity):
-        nonlocal done
-        async with sem:
-            try:
-                lock = context.root / "locks" / out.relative_to(context.root).with_suffix(".lock")
-                with exclusive_process_lock(lock):
-                    if _validated_resumable_episode(
-                        out, identity, context=context, **episode_contract
-                    ) is not None:
-                        return
-                    ep = await run_episode(clients[i % len(clients)], corpus, tools, q,
-                                           budget, rollout, think_history, seed=seed,
-                                           identity=identity)
-                    _reject_invalid_final_episode(
-                        ep, identity, **episode_contract
-                    )
-                    artifact = write_episode_result(
-                        context,
-                        out,
-                        ep,
-                        validate_final=lambda value: _validate_final_episode(
-                            value, identity, **episode_contract
-                        ),
-                    )
-            except Exception:
-                log.exception("episode %s/%s/r%d failed outside run_episode",
-                              budget, q["id"], rollout)
-                return
-            done += 1
-            log.info("[%d/%d] %s/%s/r%d %s: status=%s iters=%d gen_tokens=%d",
-                     done, len(pending), budget, q["id"], rollout, ep["finished"],
-                     ep["status"], ep["n_tool_iters"], ep["gen_tokens"])
-            if artifact != out:
-                log.warning("retained failed attempt at %s", artifact)
-            if args.debug:
-                log.debug("answer for %s/%s/r%d:\n%s", budget, q["id"], rollout,
-                          ep["answer"][:2000])
-
-    await asyncio.gather(*(one(i, *p) for i, p in enumerate(pending)))
-
-    statuses: dict[str, int] = {}
-    for _, _, _, _, out, _, identity in cases:
-        existing = _validated_resumable_episode(
-            out, identity, context=context, **episode_contract
-        )
-        s = existing.get("status", "missing") if existing else "missing"
-        statuses[s] = statuses.get(s, 0) + 1
-    log.info("all done: %s", statuses)
-    if statuses.keys() - {"ok", "no_answer"}:
-        log.error("some episodes failed; rerun to retry them")
-        raise SystemExit(1)
+    lock = context.root / "locks" / "generation.lock"
+    try:
+        with exclusive_process_lock(lock):
+            await _run_evaluation_locked(
+                args, corpus, tools, clients, questions, budgets, context,
+                episode_contract, think_history,
+            )
+    except RuntimeError as error:
+        raise SystemExit(f"evaluation run is already active: {error}") from error
+    finally:
+        await asyncio.gather(*(client.close() for client in clients))
 
 
 def main():

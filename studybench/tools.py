@@ -29,6 +29,7 @@ GREP_MAX_LINE_CHARS = 240
 GREP_TIME_BUDGET = 10.0  # seconds; guards against catastrophic regex backtracking
 GLOB_MAX_PATHS = 200
 READ_MAX_LINES = 500
+DSPY_READ_MAX_LINES = 200
 OBS_MAX_CHARS = 25_000
 MAX_PATTERN_CHARS = 1_000
 MAX_LINE_NUMBER = 10_000_000
@@ -110,6 +111,59 @@ TOOL_SCHEMAS = [
         },
     },
 ]
+
+
+def dspy_tool_contract(read_max_lines: int = DSPY_READ_MAX_LINES) -> dict:
+    """Return the exact JSON-safe metadata exposed by ``dspy.Tool``.
+
+    The native OpenAI-compatible runner uses :data:`TOOL_SCHEMAS` and a
+    500-line read cap.  The paper-faithful DSPy runner instead exposes Python
+    callables with a 200-line cap.  Keeping these contracts separate prevents
+    a manifest from hashing the native schema while executing the DSPy tools.
+    """
+
+    if type(read_max_lines) is not int or read_max_lines < 1:
+        raise ValueError("read_max_lines must be a positive integer")
+    return {
+        "schema_version": 1,
+        "adapter": "dspy.Tool",
+        "tools": [
+            {
+                "name": "grep",
+                "desc": (
+                    "Search the repository code for a regular expression "
+                    "(case-sensitive).\n        Returns matching lines as "
+                    "path:line_number:line. `path` optionally\n        restricts the "
+                    "search to a file or directory."
+                ),
+                "args": {
+                    "pattern": {"type": "string"},
+                    "path": {"type": "string", "default": ""},
+                },
+                "has_kwargs": False,
+            },
+            {
+                "name": "glob",
+                "desc": "List repository files matching a glob pattern, e.g. 'dspy/**/*.py'.",
+                "args": {"pattern": {"type": "string"}},
+                "has_kwargs": False,
+            },
+            {
+                "name": "read_file",
+                "desc": (
+                    "Read a file from the repository by line range (1-indexed; "
+                    f"at most\n        {read_max_lines} lines per call). end_line=0 reads "
+                    "from start_line to the cap."
+                ),
+                "args": {
+                    "path": {"type": "string"},
+                    "start_line": {"type": "integer", "default": 1},
+                    "end_line": {"type": "integer", "default": 0},
+                },
+                "has_kwargs": False,
+            },
+        ],
+    }
 
 
 def _glob_to_regex(pat: str) -> str:

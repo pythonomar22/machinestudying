@@ -8,20 +8,42 @@ from types import SimpleNamespace
 
 import pydantic
 
-from studybench.integrity import sha256_file, sha256_json, sha256_text, stable_seed
+from studybench.integrity import (
+    canonical_json_bytes,
+    sha256_file,
+    sha256_json,
+    sha256_text,
+    stable_seed,
+)
 from studybench.human_audit import HUMAN_AUDIT_DECISION_RULE_ID
 from studybench.provenance import (
     _load_note,
     environment_contract_record,
     write_environment_snapshot,
 )
+from studybench.react import READ_MAX_LINES, make_tools
+from studybench.dataset import CORPORA
+from studybench.study_protocol import (
+    DSPY_SEMANTIC_CHAPTER_SYLLABUS,
+    REACT_SAMPLING,
+    StudyProtocolError,
+)
 from studybench.selfquiz import (
+    ATTEMPT_MAX_ITERS,
     SCHEMA_VERSION,
+    AttemptSig,
+    _attempt,
+    _attempt_protocol,
+    _curriculum_id,
     _error_rate,
     _bind_launch_environment,
+    chapters,
     _derive,
     _launch_environment_inventory,
+    _item_seed_namespace,
     _record_id,
+    _quiz_seed_namespace,
+    _reference_content_id,
     _run_round_locked,
     _schema_error,
     _validate_completed_item,
@@ -30,7 +52,9 @@ from studybench.selfquiz import (
     _study_round_lock,
     _load_input_note,
     _prepare_questions,
+    _question_record_error,
     _trajectory_hash_valid,
+    _validate_attempt_record,
     _validate_artifact_environment,
     _validate_dev_exam,
     _validate_dev_reference,
@@ -42,6 +66,7 @@ from studybench.selfquiz import (
     dedup,
     eligible_retest,
     freshness_audit,
+    freshness_audit_recomputed,
     freshness_sources_complete,
     is_distillable_item,
     make_retest_item,
@@ -57,9 +82,11 @@ from studybench.selfquiz import (
     validate_anchor,
     validate_anchors,
     validate_audit_protocol,
+    validate_bundled_semantic_archive,
     validate_evidence,
     Evidence,
 )
+from studybench.tools import RepoTools
 
 
 class FakeRepoTools:
@@ -67,11 +94,107 @@ class FakeRepoTools:
         self.text = {
             "pkg/a.py": "first = True\nvalue = 1\nreturn value\n",
             "pkg/b.py": "pass\n",
+            "chapter-a/source.py": "value_a = 1\n",
+            "chapter-b/source.py": "value_b = 2\n",
         }
         self.files = list(self.text)
 
 
+def repository_tools():
+    rt = SimpleNamespace(
+        read_max_lines=READ_MAX_LINES,
+        dispatch=lambda *args: "",
+    )
+    return make_tools(rt)
+
+
+def attempt_fixture(seed: int, *, answer: str = "answer", error: str | None = None):
+    trajectory = ({
+        "thought_0": "inspect the source",
+        "tool_name_0": "read_file",
+        "tool_args_0": {"path": "pkg/a.py"},
+        "observation_0": "source",
+    } if error is None else {})
+    return {
+        "status": "ok" if error is None else "error",
+        "answer": answer if error is None else "",
+        "error": error,
+        "seed": seed,
+        "trajectory": trajectory,
+        "trajectory_sha256": sha256_json(trajectory),
+    }
+
+
+def semantic_task_manifest(
+    args,
+    *,
+    corpus_commit: str = "commit",
+    human_audit_protocol: dict | None = None,
+) -> dict:
+    attempt_access = getattr(args, "attempt_access", "react-corpus")
+    smoke = getattr(args, "smoke", False)
+    return {
+        "schema_version": SCHEMA_VERSION,
+        "manifest_type": "semantic-selfquiz-study-task",
+        "method": "semantic-selfquiz-v2",
+        "study_id": args.study_id,
+        "task": args.task,
+        "master_seed": getattr(args, "seed", 7),
+        "model": "model",
+        "model_revision": "revision",
+        "sampling": REACT_SAMPLING,
+        "corpus_commit": corpus_commit,
+        "corpus": {"commit": corpus_commit},
+        "source": {"tree_sha256": "source"},
+        "environment": {"runtime": "test", "server_count": "1"},
+        "environment_contract": {"schema_version": 1},
+        "server_transport": {
+            "scope": "loopback",
+            "protocol": "openai-compatible-http",
+            "server_count": 1,
+            "assignment": (
+                "stable_seed(master_seed, stochastic_namespace, server) "
+                "modulo server_count"
+            ),
+        },
+        "provenance_readiness": {
+            "corpus_pinned_clean": True,
+            "source_pinned_clean": True,
+            "environment_complete": True,
+            "model_revision_pinned": True,
+            "server_count_matches_environment": True,
+        },
+        "automated_provenance_ready": True,
+        "human_audit_protocol": human_audit_protocol,
+        "config": {
+            "chapter_syllabus": list(DSPY_SEMANTIC_CHAPTER_SYLLABUS),
+            "chapters_per_round": 1 if smoke else 4,
+            "final_round": 4,
+            "questions_per_chapter": 3 if smoke else getattr(args, "questions", 5),
+            "attempt_access": attempt_access,
+            "smoke": smoke,
+            "quiz_max_iters": 15,
+            "attempt_protocol": _attempt_protocol(attempt_access),
+            "derive_max_iters": 15,
+            "train_ensemble": 2,
+            "dev_ensemble": 2,
+            "retest_fraction": 0.2,
+            "freshness_near_jaccard": 0.8,
+            "max_freshness_near_rate": 0.1,
+            "concurrency": getattr(args, "concurrency", 8),
+            "provider_retries": 0,
+        },
+    }
+
+
+def write_semantic_task_manifest(path: Path, args, **kwargs) -> dict:
+    manifest = semantic_task_manifest(args, **kwargs)
+    path.write_bytes(canonical_json_bytes(manifest))
+    return manifest
+
+
 def quiz_item(item_id="q1", *, split="train", round_number=1):
+    curriculum_id = f"curriculum-{item_id}"
     return {
         "schema_version": SCHEMA_VERSION,
         "item_id": item_id,
@@ -85,6 +208,8 @@ def quiz_item(item_id="q1", *, split="train", round_number=1):
         "anchors": ["pkg/a.py"],
         "chapter": "pkg",
         "writer_sketch": "sketch",
+        "curriculum_id": curriculum_id,
+        "attempt_access": "react-corpus",
         "status": "ok",
         "verdict": "correct",
         "entry": None,
@@ -108,21 +233,30 @@ def model_calls(owner_id: str, phase: str, seed: int) -> list[dict]:
 def dev_reference_fixture(item: dict, *, study_id: str = "study-a",
                           task: str = "dspy", master_seed: int = 7) -> dict:
     owner_id = _record_id("dev-reference", study_id, task, item["item_id"])
+    reference_content_id = _reference_content_id(task, item)
     evidence = {"file": "pkg/a.py", "line": 3, "quote": "return value"}
     derivations, calls = [], []
     for index in range(2):
-        seed = stable_seed(master_seed, owner_id, "derive", index)
+        seed = stable_seed(master_seed, reference_content_id, "derive", index)
         support_seed = stable_seed(seed, "reference-support")
+        trajectory = {
+            "thought_0": "the evidence is sufficient",
+            "tool_name_0": "finish",
+            "tool_args_0": {},
+            "observation_0": "Completed.",
+        }
         derivations.append({
-            "derivation_id": _record_id("derivation", owner_id, index, seed),
+            "derivation_id": _record_id(
+                "derivation", reference_content_id, index, seed
+            ),
             "seed": seed,
             "status": "ok",
             "answer": f"answer {index}",
             "raw_evidence": [evidence],
             "evidence": [evidence],
             "rejected_evidence": [],
-            "trajectory": {},
-            "trajectory_sha256": sha256_json({}),
+            "trajectory": trajectory,
+            "trajectory_sha256": sha256_json(trajectory),
             "reference_support": {
                 "status": "ok", "seed": support_seed,
                 "supported": True, "rationale": "supported",
@@ -135,7 +269,9 @@ def dev_reference_fixture(item: dict, *, study_id: str = "study-a",
     for left, right, direction in (
             (derivations[0], derivations[1], "a-to-b"),
             (derivations[1], derivations[0], "b-to-a")):
-        seed = stable_seed(master_seed, owner_id, "reference-consensus", direction)
+        seed = stable_seed(
+            master_seed, reference_content_id, "reference-consensus", direction
+        )
         checks.append({
             "status": "ok", "seed": seed, "verdict": "correct", "delta": "",
             "reference_id": left["derivation_id"],
@@ -145,7 +281,10 @@ def dev_reference_fixture(item: dict, *, study_id: str = "study-a",
     return {
         "schema_version": SCHEMA_VERSION,
         "reference_id": owner_id,
+        "reference_content_id": reference_content_id,
         "origin_item_id": item["item_id"],
+        "origin_curriculum_id": item["curriculum_id"],
+        "attempt_access": item["attempt_access"],
         "origin_round": item["origin_round"],
         "created_round": item["origin_round"],
         "question": item["question"],
@@ -165,31 +304,46 @@ def dev_reference_fixture(item: dict, *, study_id: str = "study-a",
 def question_provenance_fixture(chapters: list[str], *, count: int = 3):
     args = SimpleNamespace(
         study_id="study-a", task="dspy", round=1, seed=7,
-        smoke=False, questions=count,
+        smoke=False, questions=count, concurrency=4,
+        attempt_access="react-corpus",
     )
     records, episodes = [], []
     for chapter in chapters:
         owner_id = _record_id("quiz", args.study_id, args.task, args.round, chapter)
-        seed = stable_seed(
-            args.seed, args.study_id, args.task, args.round, "quiz", chapter)
+        seed_namespace = _quiz_seed_namespace(
+            args.study_id, args.task, args.round, chapter
+        )
+        seed = stable_seed(args.seed, seed_namespace, "quiz")
         raw_questions = [{
             "question": f"question {chapter} {ordinal}",
             "qtype": "behavior",
-            "anchors": ["pkg/a.py"],
+            "anchors": [f"{chapter}/source.py"],
             "writer_sketch": f"sketch {ordinal}",
         } for ordinal in range(count)]
         calls = model_calls(owner_id, "quiz", seed)
+        trajectory = {
+            "thought_0": "the chapter has been inspected",
+            "tool_name_0": "finish",
+            "tool_args_0": {},
+            "observation_0": "Completed.",
+        }
         episodes.append({
             "owner_id": owner_id,
             "chapter": chapter,
             "seed": seed,
+            "seed_namespace": seed_namespace,
+            "attempt_access": args.attempt_access,
             "status": "ok",
             "questions": raw_questions,
-            "trajectory": {},
-            "trajectory_sha256": sha256_json({}),
+            "trajectory": trajectory,
+            "trajectory_sha256": sha256_json(trajectory),
             "calls": calls,
             "usage": usage_totals(calls),
         })
+        dev_index = stable_seed(
+            args.seed, args.study_id, args.task, args.round,
+            "dev-split", chapter,
+        ) % count
         for ordinal, raw in enumerate(raw_questions):
             item_id = _record_id(
                 "question", args.study_id, args.task, args.round,
@@ -201,11 +355,16 @@ def question_provenance_fixture(chapters: list[str], *, count: int = 3):
                 "origin_round": args.round,
                 "round": args.round,
                 "kind": "quiz",
-                "split": "dev" if ordinal == 0 else "train",
+                "split": "dev" if ordinal == dev_index else "train",
                 **raw,
                 "chapter": chapter,
                 "quiz_episode_id": owner_id,
                 "quiz_ordinal": ordinal,
+                "curriculum_id": _curriculum_id(
+                    args.study_id, args.task, args.round,
+                    chapter, ordinal, raw["question"],
+                ),
+                "attempt_access": args.attempt_access,
             })
     return args, records, episodes
 
@@ -227,16 +386,15 @@ def human_audit_fixture(args, *, protocol_extensions=None):
     protocol_relative = Path("audit-protocols") / f"{protocol_hash}.json"
     (sdir / protocol_relative).parent.mkdir(parents=True)
     (sdir / protocol_relative).write_text(protocol_text, encoding="utf-8")
-    (sdir / "manifest.json").write_text(json.dumps({
-        "study_id": args.study_id,
-        "task": args.task,
-        "master_seed": args.seed,
-        "human_audit_protocol": {
+    write_semantic_task_manifest(
+        sdir / "manifest.json",
+        args,
+        human_audit_protocol={
             "sha256": protocol_hash,
             "path": str(protocol_relative),
             "protocol_id": "blind-audit-01",
         },
-    }), encoding="utf-8")
+    )
     record_ids = []
     for round_number in range(1, args.round + 1):
         (sdir / f"r{round_number}").mkdir()
@@ -288,6 +446,22 @@ class CitationIntegrityTests(unittest.TestCase):
         self.assertEqual(validate_anchors(self.rt, ["pkg/a.py", "pkg/a.py"]), ["pkg/a.py"])
         self.assertIsNone(validate_anchors(self.rt, []))
         self.assertIsNone(validate_anchors(self.rt, ["pkg/a.py", "missing.py"]))
+
+    def test_question_requires_one_assigned_chapter_anchor_but_allows_cross_file_context(self):
+        self.rt.text["other/context.py"] = "context = True\n"
+        self.rt.files.append("other/context.py")
+        item = quiz_item()
+        item.update(
+            quiz_episode_id="quiz-episode",
+            quiz_ordinal=0,
+            anchors=["pkg/a.py", "other/context.py"],
+        )
+        self.assertIsNone(_question_record_error(item, self.rt))
+        item["anchors"] = ["other/context.py"]
+        self.assertEqual(
+            _question_record_error(item, self.rt),
+            "question has no anchor in its assigned chapter",
+        )
 
     def test_evidence_is_exact_and_canonicalizes_tolerated_line_offset(self):
         evidence = validate_evidence(
@@ -369,12 +543,13 @@ class SplitLineageTests(unittest.TestCase):
 
     def test_resolved_training_record_requires_its_exact_model_call_graph(self):
         item = quiz_item()
-        attempt_seed = stable_seed(7, item["item_id"], "attempt")
+        attempt_seed = stable_seed(7, _item_seed_namespace(item), "attempt")
         fabricated = {
             **item,
             "input_note_sha256": "note",
-            "attempt": "fabricated answer",
+            "attempt": attempt_fixture(attempt_seed, answer="fabricated answer"),
             "attempt_seed": attempt_seed,
+            "attempt_protocol": _attempt_protocol(),
             "derivations": [],
             "reference_consensus": [],
             "reference_ids": [],
@@ -389,6 +564,18 @@ class SplitLineageTests(unittest.TestCase):
                 master_seed=7,
                 rt=FakeRepoTools(),
             )
+
+        drifted_trajectory = json.loads(json.dumps(fabricated))
+        drifted_trajectory["attempt"]["trajectory"]["fabricated"] = True
+        with self.assertRaisesRegex(SystemExit, "trajectory or seed"):
+            _validate_completed_item(
+                item, drifted_trajectory, "note", master_seed=7, rt=FakeRepoTools())
+
+        drifted_protocol = json.loads(json.dumps(fabricated))
+        drifted_protocol["attempt_protocol"]["max_iters"] = True
+        with self.assertRaisesRegex(SystemExit, "protocol or seed"):
+            _validate_completed_item(
+                item, drifted_protocol, "note", master_seed=7, rt=FakeRepoTools())
 
     def test_retest_preserves_origin_and_cannot_reenter_note(self):
         origin = quiz_item()
@@ -445,6 +632,17 @@ class SplitLineageTests(unittest.TestCase):
 
 
 class DeterminismAndArtifactTests(unittest.TestCase):
+    def test_pinned_dspy_chapter_scheduler_is_exact(self):
+        observed = chapters(RepoTools(CORPORA["dspy"], read_max_lines=READ_MAX_LINES))
+        self.assertEqual(tuple(observed), DSPY_SEMANTIC_CHAPTER_SYLLABUS)
+        scheduled = [
+            observed[((round_number - 1) * 4 + index) % len(observed)]
+            for round_number in range(1, 5)
+            for index in range(4)
+        ]
+        self.assertEqual(tuple(scheduled[:15]), DSPY_SEMANTIC_CHAPTER_SYLLABUS)
+        self.assertEqual(scheduled[15], DSPY_SEMANTIC_CHAPTER_SYLLABUS[0])
+
     def test_round_validates_corpus_before_writing_task_manifest(self):
         args = SimpleNamespace(
             task="dspy",
@@ -471,6 +669,93 @@ class DeterminismAndArtifactTests(unittest.TestCase):
         self.assertEqual(first, stable_seed(7, "study", "dspy", 1, "quiz", 0))
         self.assertNotEqual(first, stable_seed(7, "study", "dspy", 1, "quiz", 1))
         self.assertNotEqual(first, stable_seed(8, "study", "dspy", 1, "quiz", 0))
+
+    def test_attempt_is_open_book_react_with_a_hashed_trajectory(self):
+        observed = {}
+
+        class Program:
+            def __call__(self, **kwargs):
+                observed["inputs"] = kwargs
+                return SimpleNamespace(
+                    answer="source-backed answer",
+                    trajectory={"tool_name": "read_file", "tool_result": "evidence"},
+                )
+
+        def fake_react(signature, *, tools, max_iters):
+            observed.update(signature=signature, tools=tools, max_iters=max_iters)
+            return Program()
+
+        lm = SimpleNamespace(history=[])
+        with patch("studybench.selfquiz.fresh_lm", return_value=lm), \
+                patch("studybench.selfquiz.dspy.context", return_value=nullcontext()), \
+                patch("studybench.selfquiz.dspy.ReAct", side_effect=fake_react):
+            attempt, calls = _attempt(
+                "What does it do?", "my note", repository_tools(), "unused",
+                seed=11, owner_id="question-1", phase="attempt",
+            )
+
+        self.assertIs(observed["signature"], AttemptSig)
+        self.assertEqual([tool.__name__ for tool in observed["tools"]],
+                         ["grep", "glob", "read_file"])
+        self.assertEqual(observed["max_iters"], ATTEMPT_MAX_ITERS)
+        self.assertEqual(observed["inputs"], {
+            "note": "my note", "question": "What does it do?"})
+        self.assertEqual(attempt["answer"], "source-backed answer")
+        self.assertEqual(attempt["trajectory_sha256"],
+                         sha256_json(attempt["trajectory"]))
+        self.assertEqual(calls, [])
+
+        with patch("studybench.selfquiz.fresh_lm", return_value=lm), \
+                patch("studybench.selfquiz.dspy.context", return_value=nullcontext()), \
+                patch("studybench.selfquiz.dspy.ReAct", side_effect=fake_react):
+            _attempt(
+                "Bare question", "", repository_tools(), "unused",
+                seed=12, owner_id="question-bare", phase="attempt",
+            )
+        self.assertEqual(
+            observed["inputs"], {"note": "", "question": "Bare question"}
+        )
+
+        with self.assertRaisesRegex(ValueError, "complete repository tool set"):
+            _attempt(
+                "question", "note", repository_tools()[:2], "unused",
+                seed=11, owner_id="question-1", phase="attempt",
+            )
+
+    def test_closed_attempt_is_exactly_one_tool_free_predict_program(self):
+        observed = {"predict_programs": 0}
+
+        class Program:
+            def __call__(self, **kwargs):
+                observed["inputs"] = kwargs
+                return SimpleNamespace(answer="memory-only answer")
+
+        def fake_predict(signature):
+            observed["predict_programs"] += 1
+            observed["signature"] = signature
+            return Program()
+
+        lm = SimpleNamespace(history=[])
+        with patch("studybench.selfquiz.fresh_lm", return_value=lm), \
+                patch("studybench.selfquiz.dspy.context", return_value=nullcontext()), \
+                patch("studybench.selfquiz.dspy.Predict", side_effect=fake_predict), \
+                patch("studybench.selfquiz.dspy.ReAct") as react:
+            attempt, calls = _attempt(
+                "What does it do?", "prior note", repository_tools(), "unused",
+                seed=13, owner_id="question-closed", phase="attempt",
+                attempt_access="closed-book",
+            )
+
+        self.assertEqual(observed["predict_programs"], 1)
+        self.assertIs(observed["signature"], AttemptSig)
+        self.assertEqual(observed["inputs"], {
+            "note": "prior note", "question": "What does it do?",
+        })
+        react.assert_not_called()
+        self.assertEqual(attempt["trajectory"], {})
+        self.assertEqual(attempt["answer"], "memory-only answer")
+        self.assertEqual(calls, [])
+        self.assertEqual(_attempt_protocol("closed-book")["tools"], [])
 
     def test_record_ids_are_stable_and_namespaced(self):
         self.assertEqual(_record_id("q", "a", 1), _record_id("q", "a", 1))
@@ -510,28 +795,20 @@ class DeterminismAndArtifactTests(unittest.TestCase):
             with _study_round_lock(args):
                 pass
 
-    def test_round_rechecks_final_manifest_inside_lock_before_work(self):
+    def test_round_rejects_finalized_nonready_manifest_inside_lock(self):
         args = SimpleNamespace(
             study_id="replication-01", task="dspy", round=1, seed=7,
             smoke=False, chapters=4, questions=5, concurrency=8,
             base_urls="http://localhost:8100/v1", audit_protocol=None,
+            attempt_access="react-corpus",
         )
         with tempfile.TemporaryDirectory() as directory, \
                 patch("studybench.selfquiz.ROOT", Path(directory)):
             sdir = _study_dir(args)
             sdir.mkdir(parents=True)
-            (sdir / "manifest.json").write_text(json.dumps({
-                "study_id": args.study_id,
-                "task": args.task,
-                "master_seed": args.seed,
-                "config": {
-                    "chapters_per_round": args.chapters,
-                    "questions_per_chapter": args.questions,
-                    "smoke": args.smoke,
-                    "concurrency": args.concurrency,
-                },
-                "server_transport": {"server_count": 1},
-            }))
+            task_manifest = write_semantic_task_manifest(
+                sdir / "manifest.json", args
+            )
             _write_note(
                 args, sdir, "final note", [], input_note_sha256=sha256_text(""),
                 round_calls=[], cumulative_calls=[], round_construction_calls=[],
@@ -539,9 +816,21 @@ class DeterminismAndArtifactTests(unittest.TestCase):
                 automated_claim_ready=False,
                 automated_readiness={"complete": False},
             )
-            with patch("studybench.selfquiz._run_round_locked") as inner:
-                run_round(args)
+            with patch(
+                "studybench.selfquiz._write_task_manifest",
+                return_value=(task_manifest, {}),
+            ) as validate_current, patch(
+                "studybench.selfquiz._validate_round_environment_provenance"
+            ), patch(
+                "studybench.selfquiz._run_round_locked"
+            ) as inner:
+                with self.assertRaisesRegex(
+                    SystemExit, "failed its automated gates"
+                ):
+                    run_round(args)
             inner.assert_not_called()
+            self.assertFalse(validate_current.call_args.kwargs["snapshot_launch"])
+            self.assertTrue(validate_current.call_args.kwargs["validate_only"])
 
     def test_dedup_is_deterministic(self):
         seen = ["How does Foo handle a missing value?"]
@@ -560,7 +849,7 @@ class DeterminismAndArtifactTests(unittest.TestCase):
         }]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            (root / "manifest.json").write_text("{}")
+            write_semantic_task_manifest(root / "manifest.json", args)
             manifest = _write_note(
                 args, root, "exact note", [entry], input_note_sha256="input",
                 round_calls=calls, cumulative_calls=calls,
@@ -591,6 +880,7 @@ class DeterminismAndArtifactTests(unittest.TestCase):
         args = SimpleNamespace(
             study_id="replication-01", task="dspy", round=1, seed=7, smoke=False,
             chapters=4, questions=5, concurrency=11, audit_protocol=None,
+            attempt_access="react-corpus",
         )
         corpus = SimpleNamespace(name="dspy", commit="corpus-commit")
         environment = {"server_count": "2"}
@@ -610,10 +900,47 @@ class DeterminismAndArtifactTests(unittest.TestCase):
                 ["http://localhost:8100/v1", "http://127.0.0.1:8101/v1"],
             )
         self.assertEqual(manifest["server_transport"]["server_count"], 2)
+        self.assertEqual(manifest["method"], "semantic-selfquiz-v2")
         self.assertEqual(manifest["server_transport"]["scope"], "loopback")
         self.assertEqual(manifest["config"]["concurrency"], 11)
         self.assertEqual(manifest["config"]["provider_retries"], 0)
+        self.assertNotIn("focus_chapter", manifest["config"])
+        self.assertEqual(manifest["config"]["attempt_access"], "react-corpus")
+        self.assertEqual(manifest["config"]["attempt_protocol"], _attempt_protocol())
         self.assertTrue(launch_environment["snapshot"].startswith("r1/environments/"))
+
+    def test_validate_only_never_recreates_a_missing_task_manifest(self):
+        args = SimpleNamespace(
+            study_id="replication-01", task="dspy", round=1, seed=7,
+            smoke=True, chapters=4, questions=5, concurrency=1,
+            audit_protocol=None, attempt_access="react-corpus",
+        )
+        corpus = SimpleNamespace(name="dspy", commit="corpus-commit")
+        environment = {"server_count": "1"}
+        with tempfile.TemporaryDirectory() as directory, patch(
+            "studybench.selfquiz.corpus_record",
+            return_value={
+                "name": "dspy", "commit": "corpus-commit", "dirty": False,
+            },
+        ), patch(
+            "studybench.selfquiz.source_record",
+            return_value={"dirty": True},
+        ), patch(
+            "studybench.selfquiz.environment_record",
+            return_value=environment,
+        ):
+            root = Path(directory)
+            with self.assertRaisesRegex(SystemExit, "missing its immutable"):
+                _write_task_manifest(
+                    args,
+                    corpus,
+                    root,
+                    ["http://localhost:8100/v1"],
+                    snapshot_launch=False,
+                    validate_only=True,
+                )
+            self.assertFalse((root / "manifest.json").exists())
+            self.assertFalse((root / "audit-protocols").exists())
 
     def test_task_manifest_resumes_only_across_compatible_launches(self):
         args = SimpleNamespace(
@@ -687,6 +1014,20 @@ class DeterminismAndArtifactTests(unittest.TestCase):
                     ["http://localhost:8100/v1", "http://localhost:8101/v1"],
                 )
 
+            with patch(
+                "studybench.selfquiz.environment_record",
+                return_value=retry_environment,
+            ), patch(
+                "studybench.selfquiz.MODEL_REVISION", "drifted-revision"
+            ), self.assertRaisesRegex(SystemExit, "task manifest drifted"):
+                _write_task_manifest(
+                    args,
+                    corpus,
+                    root,
+                    ["http://localhost:8100/v1", "http://localhost:8101/v1"],
+                    snapshot_launch=False,
+                )
+
     def test_model_artifacts_bind_their_own_exact_compatible_launch(self):
         baseline = {
             "model_revision": "revision",
@@ -744,13 +1085,19 @@ class DeterminismAndArtifactTests(unittest.TestCase):
     def test_quiz_protocol_rejects_variable_raw_or_valid_question_counts(self):
         args = SimpleNamespace(
             study_id="replication-01", task="dspy", round=1, seed=7,
-            smoke=True, questions=5,
+            smoke=True, questions=5, concurrency=1,
+            attempt_access="react-corpus",
         )
 
         def episode_with(questions):
-            def fake_run(chapter, tools, url, n, *, seed, owner_id):
+            def fake_run(
+                chapter, tools, url, n, *, seed, owner_id,
+                attempt_access, seed_namespace,
+            ):
                 return {
                     "owner_id": owner_id, "chapter": chapter, "seed": seed,
+                    "attempt_access": attempt_access,
+                    "seed_namespace": seed_namespace,
                     "status": "ok", "questions": questions, "trajectory": {},
                     "trajectory_sha256": sha256_json({}), "calls": [], "usage": usage_totals([]),
                 }
@@ -772,18 +1119,23 @@ class DeterminismAndArtifactTests(unittest.TestCase):
                 )
 
         invalid = [valid(0), valid(1), valid(2)]
-        invalid[2] = {**invalid[2], "anchors": ["missing.py"]}
+        invalid[2] = {**invalid[2], "anchors": ["chapter-a/source.py"]}
+        rt = FakeRepoTools()
         with tempfile.TemporaryDirectory() as directory, \
                 patch("studybench.selfquiz.run_quiz", side_effect=episode_with(invalid)), \
                 patch("studybench.selfquiz._validate_artifact_environment"):
             rdir = Path(directory)
             with self.assertRaisesRegex(SystemExit, "exactly 3 are required"):
                 _prepare_questions(
-                    args, FakeRepoTools(), [], ["http://localhost:8100/v1"],
+                    args, rt, [], ["http://localhost:8100/v1"],
                     rdir, ["pkg"], [], [], task_manifest={},
                     launch_environment={"snapshot": "test"},
                 )
             self.assertTrue((rdir / "rejected-questions.jsonl").is_file())
+            self.assertIn(
+                "no anchor belongs to the assigned chapter",
+                (rdir / "rejected-questions.jsonl").read_text(),
+            )
 
     def test_question_provenance_requires_the_complete_planned_chapter_set(self):
         args, records, episodes = question_provenance_fixture(["chapter-a", "chapter-b"])
@@ -822,6 +1174,31 @@ class DeterminismAndArtifactTests(unittest.TestCase):
                 expected_question_count=3,
             )
 
+    def test_question_provenance_rejects_context_truncated_quiz_trajectory(self):
+        args, records, episodes = question_provenance_fixture(["chapter-a"])
+        suffix = {
+            "thought_1": "oldest turn was removed",
+            "tool_name_1": "read_file",
+            "tool_args_1": {"path": "chapter-a/source.py"},
+            "observation_1": "value_a = 1",
+        }
+        for truncated in ({}, suffix):
+            with self.subTest(truncated=truncated):
+                candidate = json.loads(json.dumps(episodes))
+                candidate[0]["trajectory"] = truncated
+                candidate[0]["trajectory_sha256"] = sha256_json(truncated)
+                with self.assertRaisesRegex(
+                    SystemExit, "empty successful|incomplete or noncontiguous"
+                ):
+                    _validate_question_provenance(
+                        args,
+                        records,
+                        candidate,
+                        FakeRepoTools(),
+                        expected_chapters=["chapter-a"],
+                        expected_question_count=3,
+                    )
+
     def test_cross_study_exact_reuse_fails_freshness(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -853,6 +1230,93 @@ class DeterminismAndArtifactTests(unittest.TestCase):
                 "study-selfquiz-run1/dspy/r3/questions.jsonl",
             )
 
+    def test_freshness_replay_uses_constructor_path_component_order(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source_paths = (
+                root / "study-selfquiz" / "dspy" / "r1" / "questions.jsonl",
+                root / "study-selfquiz-run1" / "dspy" / "r1" / "questions.jsonl",
+            )
+            for index, source in enumerate(source_paths):
+                source.parent.mkdir(parents=True)
+                source.write_text(
+                    json.dumps({"question": f"Historical question {index}?"}) + "\n"
+                )
+            current_dir = (
+                root / "study-selfquiz" / "studies" / "new-study" / "dspy"
+            )
+            record = quiz_item("new")
+            record["question"] = "How is the current value resolved?"
+            audit = freshness_audit(
+                [record],
+                task="dspy",
+                study_dir=current_dir,
+                root=root,
+                snapshot_dir=current_dir / "r1" / "freshness-sources",
+            )
+            self.assertEqual(
+                [source["path"] for source in audit["comparison_sources"]],
+                [
+                    "study-selfquiz/dspy/r1/questions.jsonl",
+                    "study-selfquiz-run1/dspy/r1/questions.jsonl",
+                ],
+            )
+            self.assertTrue(freshness_audit_recomputed(
+                current_dir / "r1",
+                [record],
+                audit,
+                study_id="new-study",
+                task="dspy",
+                round_number=1,
+            ))
+
+            forged = json.loads(json.dumps(audit))
+            forged["comparison_sources"][0]["path"] = "../outside/questions.jsonl"
+            forged["comparison_bundle_sha256"] = sha256_json(
+                forged["comparison_sources"]
+            )
+            self.assertFalse(freshness_audit_recomputed(
+                current_dir / "r1",
+                [record],
+                forged,
+                study_id="new-study",
+                task="dspy",
+                round_number=1,
+            ))
+
+    def test_bundled_audit_protocol_must_be_a_direct_child(self):
+        protocol = {
+            "schema_version": 1,
+            "protocol_id": "blind-audit-01",
+            "blinding": "condition_and_method_labels_hidden",
+            "population": "all_train_dev_verdicts_and_admitted_entries",
+            "decision_rule": HUMAN_AUDIT_DECISION_RULE_ID,
+        }
+        protocol_bytes = canonical_json_bytes(protocol)
+        digest = sha256_text(protocol_bytes.decode("utf-8"))
+        nested = f"audit-protocols/nested/{digest}.json"
+        task = {
+            "task": "dspy",
+            "config": {"smoke": True},
+            "human_audit_protocol": {
+                "sha256": digest,
+                "path": nested,
+                "protocol_id": protocol["protocol_id"],
+                "protocol": protocol,
+            },
+        }
+        with self.assertRaisesRegex(
+            StudyProtocolError, "human-audit protocol path is invalid"
+        ):
+            validate_bundled_semantic_archive(
+                {"round": 1},
+                {
+                    "manifest.json": canonical_json_bytes(task),
+                    nested: protocol_bytes,
+                },
+                b"note",
+            )
+
     def test_freshness_compares_prior_rounds_in_the_same_study(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -873,6 +1337,28 @@ class DeterminismAndArtifactTests(unittest.TestCase):
                 "study-selfquiz/studies/same-study/dspy/r1/questions.jsonl",
             )
             self.assertTrue(freshness_sources_complete(current_dir / "r2", audit))
+            self.assertTrue(freshness_audit_recomputed(
+                current_dir / "r2",
+                [record],
+                audit,
+                study_id="same-study",
+                task="dspy",
+                round_number=2,
+            ))
+            forged = json.loads(json.dumps(audit))
+            forged["exact_overlaps"] = 0
+            forged["matches"] = []
+            forged["near_overlaps_including_exact"] = 0
+            forged["near_overlap_rate"] = 0.0
+            forged["fresh"] = True
+            self.assertFalse(freshness_audit_recomputed(
+                current_dir / "r2",
+                [record],
+                forged,
+                study_id="same-study",
+                task="dspy",
+                round_number=2,
+            ))
 
     def test_distinct_cross_study_questions_are_fresh(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -888,7 +1374,7 @@ class DeterminismAndArtifactTests(unittest.TestCase):
             self.assertTrue(audit["fresh"])
 
     def test_human_audit_promotion_is_separate_exact_and_blinded(self):
-        args = SimpleNamespace(study_id="replication-01", task="dspy", round=2, seed=7)
+        args = SimpleNamespace(study_id="replication-01", task="dspy", round=4, seed=7)
         with tempfile.TemporaryDirectory() as directory, \
                 patch("studybench.selfquiz.ROOT", Path(directory)):
             sdir, construction, audit = human_audit_fixture(args)
@@ -927,14 +1413,18 @@ class DeterminismAndArtifactTests(unittest.TestCase):
             self.assertEqual(
                 promoted["human_audit"]["auditor_id"], audit["auditor_id"])
             run_root = Path(directory) / "run-snapshot"
-            _, note_record = _load_note(
-                run_root,
-                sdir / "notes" / promoted["note_path"],
-                promoted_path,
-                require_manifest=True,
-                expected_task="dspy",
-                expected_corpus_commit="commit",
-            )
+            with patch(
+                "studybench.provenance.validate_study_note_archive",
+                return_value=construction_record["protocol_summary"],
+            ):
+                _, note_record = _load_note(
+                    run_root,
+                    sdir / "notes" / promoted["note_path"],
+                    promoted_path,
+                    require_manifest=True,
+                    expected_task="dspy",
+                    expected_corpus_commit="commit",
+                )
             self.assertEqual(
                 set(note_record["provenance_bundle"]["artifacts"]),
                 {"construction_manifest", "human_audit_result", "human_audit_protocol"},
@@ -955,7 +1445,10 @@ class DeterminismAndArtifactTests(unittest.TestCase):
             forged["human_audit"]["auditor_id"] = "different-auditor"
             forged_path = sdir / "notes" / "forged-auditor.manifest.json"
             forged_path.write_text(json.dumps(forged), encoding="utf-8")
-            with self.assertRaisesRegex(ValueError, "does not bind"):
+            with patch(
+                "studybench.provenance.validate_study_note_archive",
+                return_value=construction_record["protocol_summary"],
+            ), self.assertRaisesRegex(ValueError, "does not bind"):
                 _load_note(
                     Path(directory) / "forged-auditor-run",
                     sdir / "notes" / promoted["note_path"],
@@ -1160,6 +1653,54 @@ class DeterminismAndArtifactTests(unittest.TestCase):
 
 
 class TrajectoryAndUsageTests(unittest.TestCase):
+    def test_attempt_validation_accepts_only_the_exact_terminal_finish_turn(self):
+        trajectory = {
+            "thought_0": "I have enough evidence.",
+            "tool_name_0": "finish",
+            "tool_args_0": {},
+            "observation_0": "Completed.",
+        }
+        record = {
+            "status": "ok",
+            "answer": "source-backed answer",
+            "error": None,
+            "seed": 11,
+            "trajectory": trajectory,
+            "trajectory_sha256": sha256_json(trajectory),
+        }
+        self.assertIs(
+            _validate_attempt_record(record, seed=11, label="test attempt"),
+            record,
+        )
+
+        invalid_trajectories = (
+            {},
+            {**trajectory, "tool_args_0": {"unexpected": True}},
+            {**trajectory, "observation_0": "done"},
+            {
+                **trajectory,
+                "thought_1": "continue after finish",
+                "tool_name_1": "read_file",
+                "tool_args_1": {"path": "pkg/a.py"},
+                "observation_1": "source",
+            },
+            {key: value for key, value in trajectory.items() if key != "thought_0"},
+        )
+        for malformed in invalid_trajectories:
+            with self.subTest(malformed=malformed):
+                candidate = {
+                    **record,
+                    "trajectory": malformed,
+                    "trajectory_sha256": sha256_json(malformed),
+                }
+                with self.assertRaisesRegex(
+                    SystemExit,
+                    "empty successful|finish trajectory|incomplete or noncontiguous",
+                ):
+                    _validate_attempt_record(
+                        candidate, seed=11, label="test attempt"
+                    )
+
     def test_reference_support_rejects_truthy_non_boolean_outputs(self):
         derivation_prediction = SimpleNamespace(
             answer="The value is returned.",
@@ -1319,10 +1860,34 @@ class TrajectoryAndUsageTests(unittest.TestCase):
                 rt=FakeRepoTools(),
             )
 
+        suffix = {
+            "thought_1": "oldest turn was removed",
+            "tool_name_1": "read_file",
+            "tool_args_1": {"path": "pkg/a.py"},
+            "observation_1": "return value",
+        }
+        for lost in ({}, suffix):
+            with self.subTest(lost=lost):
+                truncated = json.loads(json.dumps(record))
+                truncated["derivations"][0]["trajectory"] = lost
+                truncated["derivations"][0]["trajectory_sha256"] = sha256_json(lost)
+                with self.assertRaisesRegex(
+                    SystemExit, "empty successful|incomplete or noncontiguous"
+                ):
+                    _validate_dev_reference(
+                        item,
+                        truncated,
+                        study_id="study-a",
+                        task="dspy",
+                        master_seed=7,
+                        rt=FakeRepoTools(),
+                    )
+
     def test_dev_arms_share_signature_seed_and_fixed_reference(self):
         item = quiz_item("dev", split="dev")
         reference = {
             "reference_id": "dev-reference-fixed",
+            "reference_content_id": "dev-reference-fixed",
             "references": [
                 {"derivation_id": "r1", "answer": "a", "evidence": []},
                 {"derivation_id": "r2", "answer": "a", "evidence": []},
@@ -1332,9 +1897,15 @@ class TrajectoryAndUsageTests(unittest.TestCase):
         attempts = []
         judges = []
 
-        def fake_attempt(question, note, url, *, seed, owner_id, phase):
-            attempts.append((question, note, seed, owner_id, phase))
-            return phase, model_calls(owner_id, phase, seed), None
+        def fake_attempt(
+            question, note, tools_fns, url, *, seed, owner_id, phase,
+            attempt_access="react-corpus",
+        ):
+            attempts.append((question, note, tools_fns, seed, owner_id, phase))
+            return (
+                attempt_fixture(seed, answer=phase),
+                model_calls(owner_id, phase, seed),
+            )
 
         def fake_judge(*args, **kwargs):
             judges.append(kwargs)
@@ -1360,13 +1931,18 @@ class TrajectoryAndUsageTests(unittest.TestCase):
         with patch("studybench.selfquiz._attempt", side_effect=fake_attempt), \
                 patch("studybench.selfquiz._judge_attempt", side_effect=fake_judge):
             record = run_dev_item(
-                item, "the note", reference, "unused", master_seed=7, exam_round=2)
+                item, "the note", reference, repository_tools(), "unused",
+                master_seed=7, exam_round=2)
         self.assertEqual(
-            {attempt[2] for attempt in attempts},
+            {attempt[3] for attempt in attempts},
             {record["attempt_protocol"]["paired_seed"]},
         )
         self.assertEqual([attempt[1] for attempt in attempts], ["the note", ""])
-        self.assertEqual(record["attempt_protocol"]["signature"], "note, question -> answer")
+        self.assertTrue(all(attempt[2][0].__name__ == "grep" for attempt in attempts))
+        self.assertEqual(record["attempt_protocol"]["signature"], "AttemptSig")
+        self.assertEqual(record["attempt_protocol"]["max_iters"], ATTEMPT_MAX_ITERS)
+        self.assertEqual(
+            record["attempt_protocol"]["tools"], ["grep", "glob", "read_file"])
         self.assertEqual(record["reference_sha256"], sha256_json(reference))
         self.assertEqual({judge["seed_phase"] for judge in judges}, {
             "dev-paired-adjudication"
@@ -1397,10 +1973,34 @@ class TrajectoryAndUsageTests(unittest.TestCase):
         float_seed = json.loads(json.dumps(record))
         float_seed["attempts"]["bare"]["seed"] = float(
             float_seed["attempts"]["bare"]["seed"])
-        with self.assertRaisesRegex(SystemExit, "attempt lineage"):
+        with self.assertRaisesRegex(SystemExit, "trajectory or seed"):
             _validate_dev_exam(
                 item,
                 float_seed,
+                reference,
+                note_sha256=sha256_text("the note"),
+                master_seed=7,
+                exam_round=2,
+            )
+
+        drifted_trajectory = json.loads(json.dumps(record))
+        drifted_trajectory["attempts"]["bare"]["trajectory"]["fabricated"] = True
+        with self.assertRaisesRegex(SystemExit, "trajectory or seed"):
+            _validate_dev_exam(
+                item,
+                drifted_trajectory,
+                reference,
+                note_sha256=sha256_text("the note"),
+                master_seed=7,
+                exam_round=2,
+            )
+
+        drifted_protocol = json.loads(json.dumps(record))
+        drifted_protocol["attempt_protocol"]["max_iters"] += 1
+        with self.assertRaisesRegex(SystemExit, "different protocols"):
+            _validate_dev_exam(
+                item,
+                drifted_protocol,
                 reference,
                 note_sha256=sha256_text("the note"),
                 master_seed=7,

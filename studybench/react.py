@@ -25,6 +25,7 @@ from dspy.predict.react import _fmt_exc
 
 from .dataset import CORPORA, ROOT, load_questions
 from .integrity import (
+    canonical_json_bytes,
     exclusive_process_lock,
     load_json_artifact,
     read_artifact_bytes,
@@ -40,11 +41,15 @@ from .provenance import (
     corpus_record,
     environment_record,
     environment_is_claim_ready,
+    environments_compatible,
     episode_identity,
     prepare_run,
     source_record,
     validate_id,
     validate_local_server_urls,
+    validate_screen_attempt_tree,
+    validate_screen_failure_state,
+    write_screen_attempt_intent,
     write_episode_result,
 )
 from .rollout import (
@@ -53,28 +58,31 @@ from .rollout import (
     _validate_final_episode,
     _validated_resumable_episode,
 )
-from .tools import TOOL_SCHEMAS, RepoTools
+from .study_protocol import (
+    DSPY_REPOSITORY_TOOL_CONTRACT,
+    FORCED50_CONFIG_SCHEMA_VERSION,
+    REACT_SAMPLING,
+    forced50_study_question,
+    forced50_study_task,
+)
+from .tools import (
+    DSPY_READ_MAX_LINES,
+    RepoTools,
+    dspy_tool_contract,
+)
 
 MODEL_ID = "openai/Qwen/Qwen3.5-9B"  # openai-compatible provider -> our vLLM
 MODEL_REVISION = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
-READ_MAX_LINES = 200  # author: "read file (lines, Capped at 200lines)"
+READ_MAX_LINES = DSPY_READ_MAX_LINES  # author: "read file (lines, Capped at 200lines)"
 
 # The cheatsheet study task (replication inference, carried over from the native
 # study loop — see experiments/002 §inferences). The forced-50 mechanism is the
 # author's ("same question for the cheatsheet study loop" -> catch finish).
 def study_task(corpus) -> str:
-    return (
-        f"Study the {corpus.display} repository and write yourself a cheatsheet: a "
-        f"reference document that will be prepended to every future question you are "
-        f"asked about {corpus.display}. You will not see the questions in advance, "
-        "but you will keep access to these repository tools when answering them. "
-        "Record whatever will make you fastest and most accurate later. After your "
-        "50 iterations of study, write the complete cheatsheet as your final answer."
-    )
-SAMPLING = dict(  # paper §B; passed through litellm to vLLM
-    temperature=1.0, top_p=0.95, max_tokens=32768, presence_penalty=1.5,
-    extra_body={"top_k": 20, "min_p": 0.0, "repetition_penalty": 1.0},
-)
+    return forced50_study_task(corpus.display)
+
+
+SAMPLING = REACT_SAMPLING  # paper §B; passed through litellm to vLLM
 
 log = logging.getLogger("react")
 
@@ -186,6 +194,31 @@ def _validate_completed_study(
         ) from exc
 
 
+def _stored_completed_study_config(
+    intent_path: Path, current_config: dict[str, object]
+) -> dict[str, object]:
+    """Rebase only compatible launch nuisances onto an immutable study intent."""
+
+    try:
+        stored = load_json_artifact(intent_path)
+    except (OSError, UnicodeError, ValueError) as exc:
+        raise SystemExit("completed study has no valid immutable intent") from exc
+    if not isinstance(stored, dict) or not isinstance(stored.get("environment"), dict):
+        raise SystemExit("completed study intent has no valid environment baseline")
+    current_environment = current_config.get("environment")
+    if not environments_compatible(stored["environment"], current_environment):
+        raise SystemExit(
+            "completed study environment has substantive drift; choose a new --study-id"
+        )
+    rebased = {**stored, "environment": current_environment}
+    if canonical_json_bytes(rebased) != canonical_json_bytes(current_config):
+        raise SystemExit(
+            "completed study protocol or source differs from this invocation; "
+            "choose a new --study-id"
+        )
+    return stored
+
+
 def make_tools(rt: RepoTools):
     def grep(pattern: str, path: str = "") -> str:
         """Search the repository code for a regular expression (case-sensitive).
@@ -199,13 +232,37 @@ def make_tools(rt: RepoTools):
         return rt.dispatch("glob", json.dumps({"pattern": pattern}))
 
     def read_file(path: str, start_line: int = 1, end_line: int = 0) -> str:
-        """Read a file from the repository by line range (1-indexed; at most
-        200 lines per call). end_line=0 reads from start_line to the cap."""
         args = {"path": path, "start_line": start_line,
                 **({"end_line": end_line} if end_line else {})}
         return rt.dispatch("read_file", json.dumps(args))
 
+    contract = dspy_tool_contract(rt.read_max_lines)
+    for function, record in zip((grep, glob, read_file), contract["tools"], strict=True):
+        function.__doc__ = record["desc"]
     return [grep, glob, read_file]
+
+
+def runtime_dspy_tool_contract(tools_fns) -> dict:
+    """Extract and verify the metadata DSPy will actually place in prompts."""
+
+    records = []
+    for function in tools_fns:
+        tool = dspy.Tool(function)
+        records.append({
+            "name": tool.name,
+            "desc": tool.desc,
+            "args": tool.args,
+            "has_kwargs": tool.has_kwargs,
+        })
+    observed = {
+        "schema_version": 1,
+        "adapter": "dspy.Tool",
+        "tools": records,
+    }
+    expected = DSPY_REPOSITORY_TOOL_CONTRACT
+    if canonical_json_bytes(observed) != canonical_json_bytes(expected):
+        raise ValueError("runtime DSPy tool metadata differs from its frozen contract")
+    return observed
 
 
 class ForcedReAct(dspy.ReAct):
@@ -415,9 +472,10 @@ def _run_study_locked(args, corpus, tools_fns, urls: list[str], out: Path) -> No
     )
     if not environment_ready and not (args.allow_dirty or args.smoke):
         raise SystemExit("study environment is incomplete; use the pinned server launcher")
-    question = {"id": "cheatsheet", "question": study_task(corpus)}
+    question = forced50_study_question(corpus.display)
+    tool_contract = runtime_dspy_tool_contract(tools_fns)
     config = {
-        "schema_version": 1,
+        "schema_version": FORCED50_CONFIG_SCHEMA_VERSION,
         "study_id": args.study_id,
         "task": args.task,
         "method": "forced-50-cheatsheet",
@@ -429,9 +487,11 @@ def _run_study_locked(args, corpus, tools_fns, urls: list[str], out: Path) -> No
         "episode_seed": seed,
         "study_prompt_sha256": sha256_text(question["question"]),
         "study_question_sha256": sha256_json(question),
-        "tool_schema_sha256": sha256_json(TOOL_SCHEMAS),
+        "tool_contract": tool_contract,
+        "tool_schema_sha256": sha256_json(tool_contract),
         "read_max_lines": READ_MAX_LINES,
         "forced_iterations": BUDGETS["s50"][0],
+        "repository_tool_scope": "full-pinned-corpus",
         "corpus": corpus_info,
         "source": source,
         "environment": environment,
@@ -445,7 +505,10 @@ def _run_study_locked(args, corpus, tools_fns, urls: list[str], out: Path) -> No
     }
     intent_path = out / "intent.json"
     if manifest_path.exists():
-        _validate_completed_study(manifest_path, intent_path, out, config)
+        stored_config = _stored_completed_study_config(intent_path, config)
+        _validate_completed_study(
+            manifest_path, intent_path, out, stored_config
+        )
         log.info("study already complete: %s", manifest_path)
         return
     write_immutable_json(intent_path, config)
@@ -526,6 +589,138 @@ def _run_study(args, corpus, tools_fns, urls: list[str]) -> None:
     lock = ROOT / "studies" / "cheatsheet" / ".locks" / args.study_id / f"{args.task}.lock"
     with exclusive_process_lock(lock):
         _run_study_locked(args, corpus, tools_fns, urls, out)
+
+
+def _run_evaluation_locked(
+    args,
+    corpus,
+    tools_fns,
+    urls: list[str],
+    questions: list[dict],
+    budgets: list[str],
+    context,
+    episode_contract: dict[str, str],
+) -> None:
+    """Preflight and run one evaluation while holding its run-level lock."""
+
+    prompted = [
+        (q, {**q, "question": context.prompt_prefix + q["question"]})
+        for q in questions
+    ]
+    cases = []
+    pending = []
+    for budget in budgets:
+        for rollout in range(args.rollouts):
+            for raw_q, q in prompted:
+                out = context.root / budget / f"r{rollout}" / f"{q['id']}.json"
+                seed = stable_seed(
+                    args.seed, "dspy-react", args.seed_group, args.task,
+                    q["id"], budget, rollout,
+                )
+                identity = episode_identity(
+                    context, q=raw_q, prompt=q["question"], budget=budget,
+                    rollout=rollout, seed=seed,
+                )
+                cases.append((raw_q, q, budget, rollout, out, seed, identity))
+                existing = _validated_resumable_episode(
+                    out, identity, context=context, **episode_contract
+                )
+                if existing:
+                    if existing.get("status") in ("ok", "no_answer"):
+                        continue
+                    raise ValueError(
+                        f"non-final artifact occupies expected episode path: {out}"
+                    )
+                pending.append((raw_q, q, budget, rollout, out, seed, identity))
+    screen_states = validate_screen_attempt_tree(
+        context,
+        [(case[4], case[6]) for case in cases],
+        episode_contract,
+    )
+    for _, _, _, _, out, _, _ in cases:
+        state = screen_states.get(out.relative_to(context.root).as_posix())
+        if state is None:
+            continue
+        if out.exists() and state["intent"] is None:
+            raise ValueError(f"screen final episode has no attempt intent: {out}")
+        if not out.exists() and state["intent"] is not None:
+            raise ValueError(
+                "screen cell has a terminal or ambiguous prior attempt; retry is "
+                f"prohibited: {state['intent']}"
+            )
+    log.info(
+        "%d episodes pending (task=%s, harness=dspy.ReAct)",
+        len(pending), args.task,
+    )
+
+    done = 0
+
+    def one(i, raw_q, q, budget, rollout, out, seed, identity):
+        nonlocal done
+        try:
+            lock = (
+                context.root / "locks" / out.relative_to(context.root)
+            ).with_suffix(".lock")
+            with exclusive_process_lock(lock):
+                if _validated_resumable_episode(
+                    out, identity, context=context, **episode_contract
+                ) is not None:
+                    return
+                state = validate_screen_failure_state(
+                    context, out, identity, episode_contract
+                )
+                if state["intent"] is not None or state["failed_attempts"]:
+                    raise ValueError(
+                        "terminal attempt appeared after preflight; screen retry "
+                        f"is prohibited: {state['intent']}"
+                    )
+                write_screen_attempt_intent(
+                    context, out, identity, episode_contract
+                )
+                ep = run_episode(
+                    corpus, tools_fns, q, budget, rollout, urls[i % len(urls)],
+                    seed=seed, identity=identity,
+                )
+                _reject_invalid_final_episode(ep, identity, **episode_contract)
+                artifact = write_episode_result(
+                    context,
+                    out,
+                    ep,
+                    validate_final=lambda value: _validate_final_episode(
+                        value, identity, **episode_contract
+                    ),
+                    screen_identity=identity,
+                    producer_contract=episode_contract,
+                )
+        except Exception:
+            log.exception("episode %s/%s/r%d failed", budget, q["id"], rollout)
+            return
+        done += 1
+        log.info(
+            "[%d/%d] %s/%s/r%d: status=%s iters=%d catches=%d calls=%d "
+            "gen_tokens=%d",
+            done, len(pending), budget, q["id"], rollout, ep["status"],
+            ep["n_react_iters"], ep["finish_catches"], ep["n_lm_calls"],
+            ep["gen_tokens"],
+        )
+        if artifact != out:
+            log.warning("retained failed attempt at %s", artifact)
+
+    with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
+        list(pool.map(lambda item: one(*item), [
+            (index, *case) for index, case in enumerate(pending)
+        ]))
+
+    statuses = {}
+    for _, _, _, _, out, _, identity in cases:
+        existing = _validated_resumable_episode(
+            out, identity, context=context, **episode_contract
+        )
+        status = existing.get("status", "missing") if existing else "missing"
+        statuses[status] = statuses.get(status, 0) + 1
+    log.info("all done: %s", statuses)
+    if statuses.keys() - {"ok", "no_answer"}:
+        raise SystemExit(1)
 
 
 def main():
@@ -636,6 +831,7 @@ def main():
     budgets = args.budgets.split(",")
     if any(budget not in BUDGETS or budget == "s50" for budget in budgets):
         raise SystemExit(f"invalid evaluation budgets: {args.budgets}")
+    tool_contract = runtime_dspy_tool_contract(tools_fns)
     context = prepare_run(
         run_id=args.run_id,
         task=args.task,
@@ -666,7 +862,8 @@ def main():
             "expected_response_model": MODEL_ID.removeprefix("openai/"),
             "model_context_tokens": 262_144,
             "tool_iterations": BUDGETS,
-            "tool_schema_sha256": sha256_json(TOOL_SCHEMAS),
+            "tool_contract": tool_contract,
+            "tool_schema_sha256": sha256_json(tool_contract),
             "read_max_lines": READ_MAX_LINES,
             "signature": "question -> answer",
             "adapter": "dspy.ChatAdapter",
@@ -678,86 +875,15 @@ def main():
             "concurrency": args.concurrency,
         },
     )
-    prompted = [
-        (q, {**q, "question": context.prompt_prefix + q["question"]})
-        for q in questions
-    ]
-
-    cases = []
-    pending = []
-    for budget in budgets:
-        for rollout in range(args.rollouts):
-            for raw_q, q in prompted:
-                out = context.root / budget / f"r{rollout}" / f"{q['id']}.json"
-                seed = stable_seed(
-                    args.seed, "dspy-react", args.seed_group, args.task,
-                    q["id"], budget, rollout,
-                )
-                identity = episode_identity(
-                    context, q=raw_q, prompt=q["question"], budget=budget,
-                    rollout=rollout, seed=seed,
-                )
-                cases.append((raw_q, q, budget, rollout, out, seed, identity))
-                existing = _validated_resumable_episode(
-                    out, identity, context=context, **episode_contract
-                )
-                if existing:
-                    if existing.get("status") in ("ok", "no_answer"):
-                        continue
-                    raise ValueError(f"non-final artifact occupies expected episode path: {out}")
-                pending.append((raw_q, q, budget, rollout, out, seed, identity))
-    log.info("%d episodes pending (task=%s, harness=dspy.ReAct)", len(pending), args.task)
-
-    done = 0
-
-    def one(i, raw_q, q, budget, rollout, out, seed, identity):
-        nonlocal done
-        try:
-            lock = context.root / "locks" / out.relative_to(context.root).with_suffix(".lock")
-            with exclusive_process_lock(lock):
-                if _validated_resumable_episode(
-                    out, identity, context=context, **episode_contract
-                ) is not None:
-                    return
-                ep = run_episode(
-                    corpus, tools_fns, q, budget, rollout, urls[i % len(urls)],
-                    seed=seed, identity=identity,
-                )
-                _reject_invalid_final_episode(
-                    ep, identity, **episode_contract
-                )
-                artifact = write_episode_result(
-                    context,
-                    out,
-                    ep,
-                    validate_final=lambda value: _validate_final_episode(
-                        value, identity, **episode_contract
-                    ),
-                )
-        except Exception:
-            log.exception("episode %s/%s/r%d failed", budget, q["id"], rollout)
-            return
-        done += 1
-        log.info("[%d/%d] %s/%s/r%d: status=%s iters=%d catches=%d calls=%d gen_tokens=%d",
-                 done, len(pending), budget, q["id"], rollout, ep["status"],
-                 ep["n_react_iters"], ep["finish_catches"], ep["n_lm_calls"],
-                 ep["gen_tokens"])
-        if artifact != out:
-            log.warning("retained failed attempt at %s", artifact)
-
-    with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        list(pool.map(lambda t: one(*t), [(i, *p) for i, p in enumerate(pending)]))
-
-    statuses = {}
-    for _, _, _, _, out, _, identity in cases:
-        existing = _validated_resumable_episode(
-            out, identity, context=context, **episode_contract
-        )
-        s = existing.get("status", "missing") if existing else "missing"
-        statuses[s] = statuses.get(s, 0) + 1
-    log.info("all done: %s", statuses)
-    if statuses.keys() - {"ok", "no_answer"}:
-        raise SystemExit(1)
+    lock = context.root / "locks" / "generation.lock"
+    try:
+        with exclusive_process_lock(lock):
+            _run_evaluation_locked(
+                args, corpus, tools_fns, urls, questions, budgets, context,
+                episode_contract,
+            )
+    except RuntimeError as error:
+        raise SystemExit(f"evaluation run is already active: {error}") from error
 
 
 if __name__ == "__main__":

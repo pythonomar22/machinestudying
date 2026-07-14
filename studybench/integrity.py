@@ -92,13 +92,19 @@ def _open_parent_directory(path: Path, *, create: bool):
             except FileNotFoundError:
                 if not create:
                     raise
+                created = False
                 try:
                     os.mkdir(component, mode=0o777, dir_fd=descriptor)
+                    created = True
                 except FileExistsError:
                     # Another creator won.  Opening with O_NOFOLLOW below
                     # validates that the winner installed a directory, not a
                     # link or another filesystem object.
                     pass
+                if created:
+                    # Persist each new directory entry before a child artifact
+                    # can be described as a durable write-ahead marker.
+                    os.fsync(descriptor)
                 child = _open_directory_at(descriptor, component, path)
             os.close(descriptor)
             descriptor = child
@@ -315,6 +321,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
                 src_dir_fd=parent_fd,
                 dst_dir_fd=parent_fd,
             )
+            os.fsync(parent_fd)
         finally:
             os.close(descriptor)
             try:
@@ -352,6 +359,7 @@ def _write_immutable(path: Path, data: bytes) -> None:
                     dst_dir_fd=parent_fd,
                     follow_symlinks=False,
                 )
+                os.fsync(parent_fd)
             except FileExistsError:
                 try:
                     existing = _read_regular_bytes_at(parent_fd, leaf, path)
@@ -367,6 +375,7 @@ def _write_immutable(path: Path, data: bytes) -> None:
             os.close(descriptor)
             try:
                 os.unlink(temporary, dir_fd=parent_fd)
+                os.fsync(parent_fd)
             except FileNotFoundError:
                 pass
 

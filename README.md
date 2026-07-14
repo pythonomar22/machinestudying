@@ -115,7 +115,10 @@ processes where those are claimed.
    rubric, judge, canonical provider endpoint, prompt, evidence mode, and
    checker configuration. The accepted raw response is retained and its hash,
    parsed verdict, claims, and score must agree. Malformed judge output is a
-   failed attempt, never a partial grade. There are at most two judge attempts.
+   failed attempt, never a partial grade. A durable judge-attempt intent is
+   written before the first request, so there are at most two judge requests
+   for that cell across all processes and resumes. An orphaned intent is
+   terminal and ambiguous; it is never permission to judge again.
 7. **Report the full intention-to-run population.** Missing answers remain
    zero. Reports reject missing, stale, duplicate, or unexpected episodes and
    grades. Failed generation and judge attempts are disclosed. Before writing,
@@ -194,55 +197,104 @@ filesystem immutable or rule out an adversarial write-and-restore wholly
 between checks. A read-only content-addressed cache mount remains the stronger
 deployment when that threat is in scope.
 
-A forced-50 cheatsheet study and a selfquiz study are distinct methods. Give
-each a fresh ID. The selfquiz protocol must exist before round 1:
+### Full-DSPy self-quizzing screen
+
+Forced-50 cheatsheet, semantic selfquiz, and deterministic static-neighborhood
+study are distinct methods and require distinct immutable IDs. The current
+semantic protocol runs four sequential rounds of four chapter slots, covering
+all 15 production chapters (the fourth round wraps once), with five generated
+questions per slot. Later rounds consume the prior note and include retention
+retests. Its ATTEMPT is one at-most-five-turn `dspy.ReAct` policy
+with the complete pinned DSPy corpus available through `grep`, `glob`, and
+200-line `read_file`. DSPy also supplies the pinned terminal `finish` action.
+The graph protocol instead uses a frozen sample of 16 train and four held-out
+development targets, strict JSON edge sets, exact model-free scoring, and
+model-free gold corrections. Its relation is conservative static syntax, not a
+complete Python runtime call graph.
+
+Construction is deliberately separate from downstream evaluation and grading.
+These two commands only construct and finalize their content-addressed notes:
 
 ```bash
-SB_TASKS=dspy SB_STUDY=1 SB_STUDY_ID=cheatsheet-dspy-001 \
-SB_RUN_SEED=42001 sbatch scripts/react.sbatch
-
-SB_TASKS=dspy SB_ROUND=1 SB_STUDY_ID=selfquiz-dspy-001 \
-SB_STUDY_SEED=43001 SB_AUDIT_PROTOCOL=protocols/blind-audit-001.json \
+SB_STUDY_ID=dspy-semantic-react-r4-20260713 SB_STUDY_SEED=43001 \
+SB_ATTEMPT_ACCESS=react-corpus SB_SMOKE=0 SB_DEBUG=0 SB_AUDIT_PROTOCOL= \
 sbatch scripts/selfquiz.sbatch
 
-.venv-dspy/bin/python -m studybench.selfquiz \
-  --task dspy --round 1 --study-id selfquiz-dspy-001 --seed 43001 \
-  --promote-human-audit audits/selfquiz-dspy-001-r1.json
+SB_STUDY_ID=dspy-callgraph-react-r1-20260713 SB_STUDY_SEED=43001 \
+SB_SMOKE=0 SB_DEBUG=0 sbatch scripts/graph_study.sbatch
 ```
 
-Only the final promotion command is offline. It must use a genuinely completed
-independent audit; creating a syntactically passing declaration is not an
-audit. Subsequent selfquiz rounds reuse the same study ID and seed, increment
-`SB_ROUND`, and do not accept a new protocol.
+After both constructions finish, resolve the exact content-addressed note paths
+from the immutable manifests:
+
+```bash
+S_MANIFEST=study-selfquiz/studies/dspy-semantic-react-r4-20260713/dspy/notes/note-r4.manifest.json
+G_MANIFEST=study-graph/studies/dspy-callgraph-react-r1-20260713/dspy/notes/note-r1.manifest.json
+S_NOTE=$(.venv/bin/python -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); print(p.parent / json.loads(p.read_text())["note_path"])' "$S_MANIFEST")
+G_NOTE=$(.venv/bin/python -c 'import json,sys; from pathlib import Path; p=Path(sys.argv[1]); print(p.parent / json.loads(p.read_text())["note_path"])' "$G_MANIFEST")
+test -f "$S_NOTE" -a -f "$G_NOTE"
+```
+
+Launch the fresh no-note control and the two note treatments with the same
+evaluation seed and seed group:
+
+```bash
+SB_TASKS=dspy SB_RUN_ID=dspy-local-base-20260713 SB_RUN_SEED=44001 \
+SB_SEED_GROUP=dspy-local-selfquiz-screen-20260713 SB_ROLLOUTS=3 \
+SB_BUDGETS=direct,k5,k20,k20f SB_EXPLORATORY=1 \
+SB_STUDY=0 SB_SMOKE=0 SB_LIMIT=0 SB_NOTE_PATH= SB_NOTE_MANIFEST= \
+sbatch scripts/react.sbatch
+
+SB_TASKS=dspy SB_RUN_ID=dspy-local-semantic-react-r4-20260713 \
+SB_RUN_SEED=44001 SB_SEED_GROUP=dspy-local-selfquiz-screen-20260713 \
+SB_ROLLOUTS=3 SB_BUDGETS=direct,k5,k20,k20f SB_EXPLORATORY=1 \
+SB_STUDY=0 SB_SMOKE=0 SB_LIMIT=0 \
+SB_NOTE_PATH="$S_NOTE" SB_NOTE_MANIFEST="$S_MANIFEST" \
+sbatch scripts/react.sbatch
+
+SB_TASKS=dspy SB_RUN_ID=dspy-local-callgraph-r1-20260713 \
+SB_RUN_SEED=44001 SB_SEED_GROUP=dspy-local-selfquiz-screen-20260713 \
+SB_ROLLOUTS=3 SB_BUDGETS=direct,k5,k20,k20f SB_EXPLORATORY=1 \
+SB_STUDY=0 SB_SMOKE=0 SB_LIMIT=0 \
+SB_NOTE_PATH="$G_NOTE" SB_NOTE_MANIFEST="$G_MANIFEST" \
+sbatch scripts/react.sbatch
+```
+
+Each full run contains 30 questions × four budgets × three rollouts. Once all
+three grids are complete, grade and report them with separate local-only jobs:
+
+```bash
+SB_TASK=dspy SB_RUN_ID=dspy-local-base-20260713 \
+SB_GRADE_ID=qwen-local-base-20260713 SB_EVIDENCE_MODE=excerpt_evidence \
+SB_GRADE_CONCURRENCY=8 SB_LOCAL_SMOKE=0 SB_DEBUG=0 \
+SB_CI_REPLICATES=10000 SB_CI_SEED=45001 sbatch scripts/grade_local.sbatch
+
+SB_TASK=dspy SB_RUN_ID=dspy-local-semantic-react-r4-20260713 \
+SB_GRADE_ID=qwen-local-semantic-react-r4-20260713 \
+SB_EVIDENCE_MODE=excerpt_evidence SB_GRADE_CONCURRENCY=8 \
+SB_LOCAL_SMOKE=0 SB_DEBUG=0 SB_CI_REPLICATES=10000 SB_CI_SEED=45001 \
+sbatch scripts/grade_local.sbatch
+
+SB_TASK=dspy SB_RUN_ID=dspy-local-callgraph-r1-20260713 \
+SB_GRADE_ID=qwen-local-callgraph-20260713 \
+SB_EVIDENCE_MODE=excerpt_evidence SB_GRADE_CONCURRENCY=8 \
+SB_LOCAL_SMOKE=0 SB_DEBUG=0 SB_CI_REPLICATES=10000 SB_CI_SEED=45001 \
+sbatch scripts/grade_local.sbatch
+```
+
+The semantic note remains exploratory and requires a genuinely independent,
+pre-registered audit before any separate audited manifest could be created. A
+syntactically valid audit declaration is not an audit. The current local-Qwen
+screen is adaptive and cannot be promoted into a confirmatory claim. The exact
+design, historical results, frozen graph bank, and interpretation limits are in
+[`experiments/011-full-dspy-selfquiz-ablations.md`](experiments/011-full-dspy-selfquiz-ablations.md).
 
 ### Exploratory local-Qwen screening
 
 During method development, evaluate complete exploratory control and treatment
-runs before using an external judge. Use distinct run IDs, the same
-master seed and seed group, and the immutable note and construction manifest
-emitted by the candidate method. For example, this launches one treatment arm:
-
-```bash
-SB_TASKS=dspy SB_RUN_ID=screen-method-dspy-001 SB_RUN_SEED=44001 \
-SB_SEED_GROUP=screen-pair-dspy-001 SB_ROLLOUTS=3 SB_EXPLORATORY=1 \
-SB_NOTE_PATH=PATH_TO_IMMUTABLE_NOTE \
-SB_NOTE_MANIFEST=PATH_TO_CONSTRUCTION_MANIFEST \
-sbatch scripts/react.sbatch
-```
-
-Replace both `PATH_TO_...` values with the content-addressed artifacts emitted
-by the method; they are not literal filenames.
-
-Repeat the evaluation without the note under a distinct control run ID. Then
-grade and report each arm locally:
-
-```bash
-SB_TASK=dspy SB_RUN_ID=screen-method-dspy-001 \
-SB_GRADE_ID=local-qwen-excerpts-001 \
-SB_EVIDENCE_MODE=excerpt_evidence SB_GRADE_CONCURRENCY=8 \
-SB_CI_REPLICATES=1000 SB_CI_SEED=45001 \
-sbatch scripts/grade_local.sbatch
-```
+runs before using an external judge. Use distinct run IDs, the same master seed
+and seed group, and the exact immutable note and construction manifest emitted
+by each candidate method. The commands above are the frozen current screen.
 
 `grade_local.sbatch` reserves exactly two GPUs, launches one authenticated TP=2
 server for the exact pinned `Qwen/Qwen3.5-9B` model and revision used by the
@@ -274,12 +326,18 @@ comparison path.
 When the deterministic checker configuration is ready, a local report may show
 strict and compile-aware metrics as secondary diagnostics. When it is not
 ready, the report explicitly labels the interpretation
-`lenient-only-checker-unavailable`. Raw aggregate JSON retains zero-valued
-strict/compile fields as fail-closed sentinels; they are unavailable and must
-not be reported as model failures or measured strict performance.
+`lenient-and-core-conjunctive-checker-unavailable`. Core-conjunctive rubric
+accuracy and its WAUC remain reportable because they do not use compilation.
+Low-level grade records retain zero-valued strict/compile fields as fail-closed
+sentinels, but full and slice report JSON projects only unavailable strict and
+compile aggregate fields to explicit `null` values. Neither sentinel is
+measured strict performance or a model failure.
 
-After both complete local reports exist, compare the matched arms with the
-separate screening command:
+After complete local reports exist, compare matched arms with the separate
+screening command. For experiment 011, the three frozen comparisons and their
+exact intervention descriptions are recorded in
+[`experiments/011-full-dspy-selfquiz-ablations.md`](experiments/011-full-dspy-selfquiz-ablations.md).
+The generic form is:
 
 ```bash
 .venv/bin/python -m studybench.screen_compare \
@@ -425,9 +483,17 @@ responsibilities.
 ## Failure and stopping policy
 
 - A genuine model non-answer is an intention-to-run score of zero.
-- Infrastructure errors and forced-search shortfalls are failed attempts. They
-  are preserved outside the successful population and must be retried under
-  the identical immutable run contract before strict reporting.
+- Confirmatory generation follows its committed preregistration: infrastructure
+  errors and forced-search shortfalls are retained outside the successful
+  population and retried only under the identical immutable run contract.
+- Smoke and exploratory generation are stricter one-shot screens. A durable
+  per-cell attempt intent is written before provider contact. Any persisted
+  nonfinal attempt, orphaned intent, or partial intent write is terminal for
+  that cell; rerunning it could select a luckier completion. Only an
+  interruption before intent writing begins is resumable.
+- Judge requests use the same pre-contact principle for every grading tier.
+  Once a judge intent exists, that cell can produce either its one final grade
+  or one terminal failed-judge audit, never a new judging session after a crash.
 - Serialized tool syntax after exhausted format repair is a non-answer, not an
   invented natural-language answer.
 - Invalid or stale grades are fatal. They are never silently overwritten or
@@ -507,11 +573,12 @@ use.
 | `studies/` | namespaced forced-50 cheatsheet studies |
 | `runs/`, `grades/`, `reports/`, `comparisons/`, `screen-comparisons/` | evaluation, grading, strict comparison, and nonclaim local-screen artifacts |
 | `study-selfquiz/studies/` | namespaced selfquiz construction and human-audit artifacts |
+| `study-graph/studies/` | namespaced deterministic static-neighborhood study artifacts |
 | `tests/` | offline research-integrity and boundary tests |
 
-Artifact roots such as `studies/`, `reports/`, `comparisons/`,
-`screen-comparisons/`, and `preregistrations/` are created on first use and may
-be absent in a fresh checkout.
+Artifact roots such as `studies/`, `study-graph/studies/`, `reports/`,
+`comparisons/`, `screen-comparisons/`, and `preregistrations/` are created on
+first use and may be absent in a fresh checkout.
 
 `CLAUDE.md` and root `AGENTS.md` are intentionally byte-for-byte identical and
 state the repository's operating and research-integrity rules.

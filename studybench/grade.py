@@ -9,7 +9,7 @@ as source-grounded rather than private. Scores:
   strict  = 0 unless the compilation check passes AND every core claim scores 1;
             otherwise equal to the weighted sum
 
-Writes grades/{run_id}/{judge}/{task}/{budget}/r{rollout}/{qid}.json for episodes
+Writes grades/{run_id}/{grade_id}/{task}/{budget}/r{rollout}/{qid}.json for episodes
 in runs/{run_id}/. Claim-ready grading requires an immutable run manifest; legacy
 artifacts are preserved but are not silently mixed into new result populations.
 
@@ -30,7 +30,7 @@ import os
 from datetime import datetime, timezone
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from openai import AsyncOpenAI
 
@@ -44,7 +44,12 @@ from .human_audit import (
 )
 from .integrity import (canonical_json_bytes, exclusive_process_lock, read_artifact_bytes,
                         sha256_json, stable_seed, strict_json_loads, write_immutable_json)
-from .preregistration import PreregistrationError, revalidate_run_preregistration
+from .preregistration import (
+    RUN_FAILURE_POLICY,
+    SCREEN_FAILURE_POLICY,
+    PreregistrationError,
+    revalidate_run_preregistration,
+)
 from .provenance import (
     environment_contract_is_valid,
     environment_is_claim_ready,
@@ -56,6 +61,16 @@ from .provenance import (
     validate_environment_snapshot,
     validate_id,
     validate_local_server_urls,
+)
+from .study_protocol import (
+    HUMAN_AUDITED_NOTE_MANIFEST_TYPE,
+    SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
+    STATIC_GRAPH_NOTE_MANIFEST_TYPE,
+    StudyProtocolError,
+    validate_construction_protocol,
+    validate_forced50_config,
+    validate_forced50_episode,
+    validate_study_note_archive,
 )
 
 CANONICAL_OPENAI_BASE_URL = "https://api.openai.com/v1"
@@ -76,9 +91,11 @@ GRADERS = {  # GRADER_MODEL env var -> (judge model id, base_url, api key env va
     "local": (LOCAL_GRADER_MODEL, None, "SB_VLLM_API_KEY"),
 }
 
-GRADE_SCHEMA_VERSION = 5
+GRADE_SCHEMA_VERSION = 6
 MAX_JUDGE_ATTEMPTS = 2
-FAILED_JUDGE_AUDIT_SCHEMA_VERSION = 3
+FAILED_JUDGE_AUDIT_SCHEMA_VERSION = 4
+JUDGE_ATTEMPT_INTENT_SCHEMA_VERSION = 1
+JUDGE_ATTEMPT_POLICY = "one-session-judge-attempt-intent-v1"
 
 
 class GradeIntegrityError(ValueError):
@@ -415,8 +432,9 @@ def load_claim_manifest(
     The default path retains the claim-ready confirmatory contract. The sole
     relaxed path is for local proxy grading and accepts only an explicitly
     exploratory, non-claim-ready run. ``allow_smoke`` is narrower still: it
-    accepts one isolated generation-smoke manifest so the live local judge
-    interface can be tested before a full exploratory population is generated.
+    accepts one isolated generation-smoke manifest so the live local judge,
+    including an automated-ready treatment note when present, can be tested
+    before a full exploratory population is generated.
     """
 
     if type(require_claim_ready) is not bool or type(allow_smoke) is not bool:
@@ -451,6 +469,15 @@ def load_claim_manifest(
     elif spec.get("claim_ready") is not False or spec.get("purpose") != "exploratory":
         raise GradeIntegrityError(
             "local proxy grading requires an explicitly non-claim-ready exploratory run"
+        )
+    expected_failure_policy = (
+        RUN_FAILURE_POLICY
+        if spec.get("purpose") == "confirmatory"
+        else SCREEN_FAILURE_POLICY
+    )
+    if spec.get("failure_policy") != expected_failure_policy:
+        raise GradeIntegrityError(
+            f"{spec.get('purpose')} run has an invalid failure policy"
         )
     if spec.get("task") != corpus.name:
         raise GradeIntegrityError("run manifest task does not match the requested corpus")
@@ -597,10 +624,8 @@ def load_claim_manifest(
     note = ""
     note_sha256 = None
     note_manifest = None
-    if allow_smoke and note_record is not None:
-        raise GradeIntegrityError(
-            "local end-to-end smoke requires a no-note generation episode"
-        )
+    note_protocol_summary = None
+    forced50_protocol = None
     if note_record is not None:
         if not isinstance(note_record, dict):
             raise GradeIntegrityError("run note record is invalid")
@@ -669,13 +694,26 @@ def load_claim_manifest(
                     "confirmatory_claim_ready",
                 )
             )
+            readiness_shape_valid = (
+                isinstance(readiness, dict)
+                and bool(readiness)
+                and all(type(value) is bool for value in readiness.values())
+            )
+            full_automated_gate = (
+                readiness_shape_valid
+                and construction.get("automated_claim_ready") is True
+                and all(readiness.values())
+            )
+            smoke_automated_gate = (
+                allow_smoke
+                and readiness_shape_valid
+                and construction.get("automated_claim_ready") is False
+                and readiness.get("non_smoke") is False
+            )
             if (type(construction.get("schema_version")) is not int
                     or construction["schema_version"] <= 0
                     or contradictory_readiness
-                    or construction.get("automated_claim_ready") is not True
-                    or not isinstance(readiness, dict) or not readiness
-                    or any(type(value) is not bool or value is not True
-                           for value in readiness.values())
+                    or not (full_automated_gate or smoke_automated_gate)
                     or not isinstance(bundle, dict)
                     or set(bundle) != {
                         "root", "manifest_snapshot", "note_snapshot",
@@ -698,14 +736,50 @@ def load_claim_manifest(
                     or read_artifact_bytes(bundled_note) != note_bytes):
                 raise GradeIntegrityError(
                     "exploratory note provenance bundle changed its manifest or note")
-            _load_bundled_construction_dependencies(
+            construction_dependencies = _load_bundled_construction_dependencies(
                 run_task_root,
                 bundle,
                 bundle_root,
                 inventory,
                 inventory_sha256,
             )
-        elif manifest_type == "human-audited-note":
+            if manifest_type not in {
+                SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
+                STATIC_GRAPH_NOTE_MANIFEST_TYPE,
+            }:
+                raise GradeIntegrityError(
+                    "exploratory note type does not match a recognized protocol"
+                )
+            try:
+                note_protocol_summary = validate_study_note_archive(
+                    construction,
+                    construction_dependencies,
+                    note_bytes,
+                    expected_task=spec.get("task"),
+                    expected_model=spec.get("model"),
+                    expected_model_revision=spec.get("model_revision"),
+                    expected_sampling=spec.get("sampling"),
+                    expected_corpus_commit=pinned_commit,
+                    expected_corpus=spec.get("corpus"),
+                    expected_source=spec.get("source"),
+                    expected_environment=spec.get("environment"),
+                    expected_environment_contract=spec.get("environment_contract"),
+                    environments_compatible=provenance.environments_compatible,
+                    require_final_semantic=True,
+                    allow_smoke=allow_smoke,
+                )
+            except StudyProtocolError as exc:
+                raise GradeIntegrityError(
+                    f"exploratory note protocol binding is invalid: {exc}"
+                ) from exc
+            if (
+                "protocol_summary" in note_record
+                and note_record.get("protocol_summary") != note_protocol_summary
+            ):
+                raise GradeIntegrityError(
+                    "run note record does not preserve its validated protocol summary"
+                )
+        elif manifest_type == HUMAN_AUDITED_NOTE_MANIFEST_TYPE:
             if "automated_readiness" not in construction:
                 raise GradeIntegrityError(
                     "human-audited note has no automated readiness record")
@@ -766,6 +840,7 @@ def load_claim_manifest(
             shared = (
                 "study_id", "task", "round", "corpus_commit", "note_sha256",
                 "note_path", "entry_ids", "entries", "usage",
+                "method", "protocol_summary",
                 "automated_claim_ready", "automated_readiness",
                 "construction_artifacts", "construction_artifacts_sha256",
             )
@@ -782,6 +857,62 @@ def load_claim_manifest(
                 base.get("construction_artifacts"),
                 base.get("construction_artifacts_sha256"),
             )
+            if base.get("manifest_type") not in {
+                SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
+                STATIC_GRAPH_NOTE_MANIFEST_TYPE,
+            }:
+                raise GradeIntegrityError(
+                    "human-audited base note type is not a recognized protocol"
+                )
+            try:
+                base_protocol_summary = validate_study_note_archive(
+                    base,
+                    construction_dependencies,
+                    note_bytes,
+                    expected_task=spec.get("task"),
+                    expected_model=spec.get("model"),
+                    expected_model_revision=spec.get("model_revision"),
+                    expected_sampling=spec.get("sampling"),
+                    expected_corpus_commit=pinned_commit,
+                    expected_corpus=spec.get("corpus"),
+                    expected_source=spec.get("source"),
+                    expected_environment=spec.get("environment"),
+                    expected_environment_contract=spec.get("environment_contract"),
+                    environments_compatible=provenance.environments_compatible,
+                    require_final_semantic=True,
+                    allow_smoke=allow_smoke,
+                )
+                note_protocol_summary = validate_construction_protocol(
+                    construction,
+                    construction_dependencies,
+                    expected_task=spec.get("task"),
+                    expected_model=spec.get("model"),
+                    expected_model_revision=spec.get("model_revision"),
+                    expected_sampling=spec.get("sampling"),
+                    expected_corpus_commit=pinned_commit,
+                    expected_corpus=spec.get("corpus"),
+                    expected_source=spec.get("source"),
+                    expected_environment=spec.get("environment"),
+                    expected_environment_contract=spec.get("environment_contract"),
+                    environments_compatible=provenance.environments_compatible,
+                    allow_human_audited=True,
+                    require_final_semantic=True,
+                )
+            except StudyProtocolError as exc:
+                raise GradeIntegrityError(
+                    f"human-audited note protocol binding is invalid: {exc}"
+                ) from exc
+            if note_protocol_summary != base_protocol_summary:
+                raise GradeIntegrityError(
+                    "human-audited note protocol differs from its base construction"
+                )
+            if (
+                "protocol_summary" in note_record
+                and note_record.get("protocol_summary") != note_protocol_summary
+            ):
+                raise GradeIntegrityError(
+                    "run note record does not preserve its validated protocol summary"
+                )
             try:
                 audit_validation = validate_human_audit_result(
                     audit_result, base, construction_dependencies
@@ -828,26 +959,39 @@ def load_claim_manifest(
             if (type(construction.get("manifest_schema")) is not int
                     or construction["manifest_schema"] != 1
                     or not isinstance(config, dict)
-                    or type(config.get("schema_version")) is not int
-                    or config["schema_version"] != 1
-                    or config.get("method") != "forced-50-cheatsheet"
-                    or config.get("claim_ready") is not True
                     or config.get("study_id") != construction["study_id"]
                     or config.get("task") != construction["task"]
-                    or config.get("corpus") != spec.get("corpus")
                     or not isinstance(config.get("environment"), dict)
                     or not environment_is_claim_ready(config["environment"])
-                    or not isinstance(config.get("model"), str)
-                    or not config["model"]
-                    or not isinstance(config.get("model_revision"), str)
-                    or not config["model_revision"]
-                    or not isinstance(config.get("expected_response_model"), str)
-                    or not config["expected_response_model"]
-                    or type(config.get("episode_seed")) is not int
-                    or config.get("forced_iterations") != 50
-                    or not _valid_sha256(config.get("study_question_sha256"))
                     or not isinstance(bundle, dict)):
                 raise GradeIntegrityError("forced-50 construction manifest is incomplete")
+            try:
+                forced50_protocol = validate_forced50_config(
+                    config,
+                    corpus_display=corpus.display,
+                    expected_task=spec.get("task"),
+                    expected_model=spec.get("model"),
+                    expected_model_revision=spec.get("model_revision"),
+                    expected_response_model=spec.get("extra", {}).get(
+                        "expected_response_model"
+                    ),
+                    expected_sampling=spec.get("sampling"),
+                    expected_corpus=spec.get("corpus"),
+                    expected_source=spec.get("source"),
+                    expected_environment=spec.get("environment"),
+                    environments_compatible=provenance.environments_compatible,
+                )
+            except StudyProtocolError as exc:
+                raise GradeIntegrityError(
+                    f"forced-50 protocol binding is invalid: {exc}"
+                ) from exc
+            if (
+                "forced50_protocol" in note_record
+                and note_record.get("forced50_protocol") != forced50_protocol
+            ):
+                raise GradeIntegrityError(
+                    "run note record does not preserve its validated forced-50 protocol"
+                )
             _validate_source_record(config.get("source"), label="forced-50 study")
             bundle_root = Path(str(bundle.get("root", "")))
             if (bundle_root.is_absolute() or not bundle_root.parts
@@ -888,31 +1032,21 @@ def load_claim_manifest(
                 raise GradeIntegrityError(
                     "forced-50 dependencies are not canonical JSON objects")
             validate_episode(episode, {"id": "cheatsheet"})
-            study_provider_identity = episode_provider_identity(episode)
+            try:
+                validate_forced50_episode(
+                    episode_bytes,
+                    config=config,
+                    expected_note_sha256=note_sha256,
+                )
+            except StudyProtocolError as exc:
+                raise GradeIntegrityError(
+                    f"forced-50 study episode is invalid: {exc}"
+                ) from exc
             if (intent != config
                     or construction.get("intent_sha256") != sha256_json(intent)
                     or construction.get("episode_sha256") != sha256_json(episode)
                     or episode.get("study_intent_sha256")
                     != construction.get("intent_sha256")
-                    or episode.get("question_sha256")
-                    != config.get("study_question_sha256")
-                    or episode.get("task") != corpus.name
-                    or episode.get("qid") != "cheatsheet"
-                    or episode.get("budget") != "s50"
-                    or type(episode.get("rollout")) is not int
-                    or episode["rollout"] != 0
-                    or episode.get("harness") != "dspy.ReAct"
-                    or episode.get("status") != "ok"
-                    or episode.get("model") != config.get("model")
-                    or episode.get("model_revision") != config.get("model_revision")
-                    or episode.get("seed") != config.get("episode_seed")
-                    or study_provider_identity["response_models"]
-                    != [config["expected_response_model"]]
-                    or not isinstance(episode.get("answer"), str)
-                    or sha256_bytes(episode["answer"].encode("utf-8")) != note_sha256
-                    or episode.get("n_react_iters") != config.get("forced_iterations")
-                    or episode.get("n_tool_iters", 0) + episode.get("finish_catches", 0)
-                    != config.get("forced_iterations")
                     or construction.get("study_generated_tokens")
                     != episode.get("completion_tokens")
                     or construction.get("study_prompt_tokens")
@@ -943,6 +1077,20 @@ def load_claim_manifest(
     }
     if prompt_policy.get("presented_prompt_sha256") != presented_prompts:
         raise GradeIntegrityError("run presented-prompt hashes do not match the prompt policy")
+    generation_attempt_intents = []
+    if spec.get("purpose") in {"smoke", "exploratory"}:
+        try:
+            generation_attempt_intents = (
+                provenance.validate_persisted_screen_attempt_tree(
+                    run_task_root,
+                    manifest,
+                    require_complete=True,
+                )
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            raise GradeIntegrityError(
+                f"screen generation attempt ledger is invalid: {exc}"
+            ) from exc
     return {
         "manifest": manifest,
         "manifest_sha256": sha256_bytes(manifest_bytes),
@@ -957,7 +1105,10 @@ def load_claim_manifest(
             note_record["construction_manifest"]["sha256"] if note_record else None
         ),
         "note_manifest": note_manifest,
+        "note_protocol_summary": note_protocol_summary,
+        "forced50_protocol": forced50_protocol,
         "preregistration": preregistration,
+        "generation_attempt_intents": generation_attempt_intents,
     }
 
 
@@ -1959,6 +2110,187 @@ def _validate_judge_audit(grade: dict, corpus, row: dict, ep: dict,
         raise GradeIntegrityError("stored cumulative judge usage does not match")
 
 
+def _judge_attempt_intent_path(out_root: Path, episode: dict[str, Any]) -> Path:
+    task = _path_component(episode.get("task"), label="judge-intent task")
+    budget = _path_component(episode.get("budget"), label="judge-intent budget")
+    qid = _path_component(episode.get("qid"), label="judge-intent question ID")
+    rollout = episode.get("rollout")
+    if type(rollout) is not int or rollout < 0:
+        raise GradeIntegrityError("judge-intent rollout is invalid")
+    return (
+        out_root / "judge-attempt-intents" / task / budget
+        / f"r{rollout}" / f"{qid}.json"
+    )
+
+
+def _judge_attempt_intent(
+    *,
+    source_episode: str,
+    episode: dict[str, Any],
+    episode_sha256: str,
+    grading_spec_sha256: str,
+    grading_runtime_sha256: str,
+    local_judge_runtime_sha256: str | None,
+    judge_model: str,
+    judge_base_url: str,
+    judge_prompt_sha256: str,
+) -> dict[str, Any]:
+    """Build the exact durable marker written immediately before judge contact."""
+
+    if not isinstance(source_episode, str) or not source_episode:
+        raise GradeIntegrityError("judge-attempt intent has no source episode")
+    for label, digest in (
+        ("episode", episode_sha256),
+        ("grading specification", grading_spec_sha256),
+        ("grading runtime", grading_runtime_sha256),
+        ("judge prompt", judge_prompt_sha256),
+    ):
+        if not _valid_sha256(digest):
+            raise GradeIntegrityError(
+                f"judge-attempt intent has an invalid {label} hash"
+            )
+    if local_judge_runtime_sha256 is not None and not _valid_sha256(
+        local_judge_runtime_sha256
+    ):
+        raise GradeIntegrityError(
+            "judge-attempt intent has an invalid local-judge runtime hash"
+        )
+    if not isinstance(judge_model, str) or not judge_model:
+        raise GradeIntegrityError("judge-attempt intent has no judge model")
+    if not isinstance(judge_base_url, str) or not judge_base_url:
+        raise GradeIntegrityError("judge-attempt intent has no judge endpoint")
+    _judge_attempt_intent_path(Path("."), episode)
+    return {
+        "schema_version": JUDGE_ATTEMPT_INTENT_SCHEMA_VERSION,
+        "policy": JUDGE_ATTEMPT_POLICY,
+        "source_episode": source_episode,
+        "episode_sha256": episode_sha256,
+        "grading_spec_sha256": grading_spec_sha256,
+        "grading_runtime_sha256": grading_runtime_sha256,
+        "local_judge_runtime_sha256": local_judge_runtime_sha256,
+        "task": episode["task"],
+        "qid": episode["qid"],
+        "budget": episode["budget"],
+        "rollout": episode["rollout"],
+        "judge_requested_model": judge_model,
+        "judge_endpoint_identity": (
+            LOCAL_GRADER_ENDPOINT_IDENTITY
+            if judge_model == LOCAL_GRADER_MODEL
+            else judge_base_url
+        ),
+        "judge_prompt_sha256": judge_prompt_sha256,
+    }
+
+
+def validate_judge_attempt_intent(
+    out_root: Path,
+    *,
+    source_episode: str,
+    episode: dict[str, Any],
+    episode_sha256: str,
+    grading_spec_sha256: str,
+    grading_runtime_sha256: str,
+    local_judge_runtime_sha256: str | None,
+    judge_model: str,
+    judge_base_url: str,
+    judge_prompt_sha256: str,
+) -> tuple[Path, str] | None:
+    """Validate one judge marker and return its path/content hash if present."""
+
+    path = _judge_attempt_intent_path(out_root, episode)
+    if not path.exists():
+        if path.is_symlink():
+            raise GradeIntegrityError(
+                f"judge-attempt intent is an unsafe symlink: {path}"
+            )
+        return None
+    try:
+        data = read_artifact_bytes(path)
+        observed = parse_json(data, label=f"judge-attempt intent {path}")
+    except (OSError, ValueError, GradeIntegrityError) as exc:
+        raise GradeIntegrityError(
+            f"judge-attempt intent is invalid: {path}"
+        ) from exc
+    expected = _judge_attempt_intent(
+        source_episode=source_episode,
+        episode=episode,
+        episode_sha256=episode_sha256,
+        grading_spec_sha256=grading_spec_sha256,
+        grading_runtime_sha256=grading_runtime_sha256,
+        local_judge_runtime_sha256=local_judge_runtime_sha256,
+        judge_model=judge_model,
+        judge_base_url=judge_base_url,
+        judge_prompt_sha256=judge_prompt_sha256,
+    )
+    if data != canonical_json_bytes(observed) or observed != expected:
+        raise GradeIntegrityError(
+            f"judge-attempt intent drifted: {path}"
+        )
+    return path, sha256_bytes(data)
+
+
+def write_judge_attempt_intent(
+    out_root: Path,
+    *,
+    source_episode: str,
+    episode: dict[str, Any],
+    episode_sha256: str,
+    grading_spec_sha256: str,
+    grading_runtime_sha256: str,
+    local_judge_runtime_sha256: str | None,
+    judge_model: str,
+    judge_base_url: str,
+    judge_prompt_sha256: str,
+) -> tuple[Path, str]:
+    """Durably mark a grading cell before its first judge provider request."""
+
+    if validate_judge_attempt_intent(
+        out_root,
+        source_episode=source_episode,
+        episode=episode,
+        episode_sha256=episode_sha256,
+        grading_spec_sha256=grading_spec_sha256,
+        grading_runtime_sha256=grading_runtime_sha256,
+        local_judge_runtime_sha256=local_judge_runtime_sha256,
+        judge_model=judge_model,
+        judge_base_url=judge_base_url,
+        judge_prompt_sha256=judge_prompt_sha256,
+    ) is not None:
+        raise GradeIntegrityError(
+            "grading cell already has a terminal judge-attempt intent"
+        )
+    path = _judge_attempt_intent_path(out_root, episode)
+    intent = _judge_attempt_intent(
+        source_episode=source_episode,
+        episode=episode,
+        episode_sha256=episode_sha256,
+        grading_spec_sha256=grading_spec_sha256,
+        grading_runtime_sha256=grading_runtime_sha256,
+        local_judge_runtime_sha256=local_judge_runtime_sha256,
+        judge_model=judge_model,
+        judge_base_url=judge_base_url,
+        judge_prompt_sha256=judge_prompt_sha256,
+    )
+    write_immutable_json(path, intent)
+    observed = validate_judge_attempt_intent(
+        out_root,
+        source_episode=source_episode,
+        episode=episode,
+        episode_sha256=episode_sha256,
+        grading_spec_sha256=grading_spec_sha256,
+        grading_runtime_sha256=grading_runtime_sha256,
+        local_judge_runtime_sha256=local_judge_runtime_sha256,
+        judge_model=judge_model,
+        judge_base_url=judge_base_url,
+        judge_prompt_sha256=judge_prompt_sha256,
+    )
+    if observed is None:
+        raise GradeIntegrityError(
+            "judge-attempt intent disappeared after its durable write"
+        )
+    return observed
+
+
 def _failed_judge_audit(*, ep: dict, episode_sha256: str,
                         grading_spec_sha256: str,
                         grading_runtime_sha256: str,
@@ -1966,7 +2298,8 @@ def _failed_judge_audit(*, ep: dict, episode_sha256: str,
                         judge_model: str,
                         judge_prompt_sha256: str,
                         attempts: list[dict[str, Any]], failure: BaseException,
-                        request_attempt_count: int | None = None) -> dict:
+                        request_attempt_count: int | None = None,
+                        judge_attempt_intent_sha256: str | None = None) -> dict:
     safe_failure_message = (
         str(failure) if isinstance(failure, GradeIntegrityError)
         else "provider request failed after prior invalid verdict(s)"
@@ -1997,6 +2330,12 @@ def _failed_judge_audit(*, ep: dict, episode_sha256: str,
         "judge_usage_status": usage_summary["status"],
         "failure": {"type": type(failure).__name__, "message": safe_failure_message},
     }
+    if judge_attempt_intent_sha256 is not None:
+        if not _valid_sha256(judge_attempt_intent_sha256):
+            raise GradeIntegrityError(
+                "failed judge audit has an invalid attempt-intent hash"
+            )
+        audit["judge_attempt_intent_sha256"] = judge_attempt_intent_sha256
     if judge_model == LOCAL_GRADER_MODEL:
         audit.update({
             "claim_ready": False,
@@ -2024,12 +2363,156 @@ def write_failed_judge_audit(out_root: Path, source_episode: str,
     return path
 
 
+def existing_failed_judge_audit(
+    out_root: Path,
+    *,
+    source_episode: str,
+    episode: dict[str, Any],
+    episode_sha256: str,
+    grading_spec_sha256: str,
+    grading_runtime_sha256: str | None = None,
+    local_judge_runtime_sha256: str | None = None,
+    judge_model: str | None = None,
+    judge_prompt_sha256: str | None = None,
+    judge_attempt_intent_sha256: str | None = None,
+    require_judge_attempt_intent: bool = False,
+) -> Path | None:
+    """Return one exact terminal judge failure and reject ambiguous history."""
+
+    if (
+        type(require_judge_attempt_intent) is not bool
+    ):
+        raise GradeIntegrityError("judge failure intent policy is invalid")
+
+    directory = (
+        out_root / "failed-judge-audits" / episode["task"]
+        / episode["budget"] / f"r{episode['rollout']}"
+    )
+    paths = sorted(directory.glob(f"{episode['qid']}-*.json"))
+    if not paths:
+        return None
+    if len(paths) != 1 or not paths[0].is_file():
+        raise GradeIntegrityError("judge failure history is ambiguous")
+    path = paths[0]
+    data = read_artifact_bytes(path)
+    artifact = parse_json(data, label=f"failed judge audit {path}")
+    if (
+        not isinstance(artifact, dict)
+        or canonical_json_bytes(artifact) != data
+        or artifact.get("failed_judge_audit_schema_version")
+        != FAILED_JUDGE_AUDIT_SCHEMA_VERSION
+        or artifact.get("source_episode") != source_episode
+        or artifact.get("episode_sha256") != episode_sha256
+        or artifact.get("grading_spec_sha256") != grading_spec_sha256
+        or artifact.get("task") != episode["task"]
+        or artifact.get("qid") != episode["qid"]
+        or artifact.get("budget") != episode["budget"]
+        or artifact.get("rollout") != episode["rollout"]
+        or path.name != f"{episode['qid']}-{sha256_json(artifact)}.json"
+    ):
+        raise GradeIntegrityError("terminal failed judge audit drifted")
+    expected_episode_bindings = {
+        "manifest_sha256": episode.get("manifest_sha256"),
+        "question_sha256": episode.get("question_sha256"),
+        "prompt_sha256": episode.get("prompt_sha256"),
+        "note_sha256": episode.get("note_sha256"),
+    }
+    if any(artifact.get(key) != value for key, value in expected_episode_bindings.items()):
+        raise GradeIntegrityError(
+            "terminal failed judge audit episode bindings drifted"
+        )
+    if (
+        grading_runtime_sha256 is not None
+        and artifact.get("grading_runtime_sha256") != grading_runtime_sha256
+    ):
+        raise GradeIntegrityError("terminal failed judge audit runtime drifted")
+    if judge_model is not None and artifact.get("judge_requested_model") != judge_model:
+        raise GradeIntegrityError("terminal failed judge audit model drifted")
+    if (
+        judge_prompt_sha256 is not None
+        and artifact.get("judge_prompt_sha256") != judge_prompt_sha256
+    ):
+        raise GradeIntegrityError("terminal failed judge audit prompt drifted")
+    if judge_model == LOCAL_GRADER_MODEL:
+        expected_local = {
+            "claim_ready": False,
+            "grading_tier": "diagnostic-local-proxy",
+            "local_proxy": True,
+            "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
+            "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
+            "local_judge_runtime_sha256": local_judge_runtime_sha256,
+        }
+        if any(artifact.get(key) != value for key, value in expected_local.items()):
+            raise GradeIntegrityError(
+                "terminal local failed judge audit provenance drifted"
+            )
+    elif local_judge_runtime_sha256 is not None:
+        raise GradeIntegrityError(
+            "external judge failure cannot bind a local-judge runtime"
+        )
+
+    attempts = artifact.get("judge_attempts")
+    request_count = artifact.get("judge_request_attempt_count")
+    attempt_count = artifact.get("judge_attempt_count")
+    if (
+        not isinstance(attempts, list)
+        or type(request_count) is not int
+        or not 1 <= request_count <= MAX_JUDGE_ATTEMPTS
+        or type(attempt_count) is not int
+        or attempt_count != len(attempts)
+        or not 0 <= attempt_count <= request_count
+        or request_count not in {attempt_count, attempt_count + 1}
+    ):
+        raise GradeIntegrityError(
+            "terminal failed judge audit request history is invalid"
+        )
+    for index, attempt in enumerate(attempts, 1):
+        validate_judge_attempt_record(attempt, index, accepted=False)
+    usage = judge_usage_summary(attempts, request_count)
+    if (
+        artifact.get("judge_usage_status") != usage["status"]
+        or artifact.get("judge_usage_total") != usage["total"]
+        or artifact.get("judge_usage_known_total") != usage["known_total"]
+    ):
+        raise GradeIntegrityError(
+            "terminal failed judge audit usage history is invalid"
+        )
+    failure = artifact.get("failure")
+    if (
+        not isinstance(failure, dict)
+        or set(failure) != {"type", "message"}
+        or not isinstance(failure.get("type"), str)
+        or not failure["type"]
+        or not isinstance(failure.get("message"), str)
+    ):
+        raise GradeIntegrityError(
+            "terminal failed judge audit failure record is invalid"
+        )
+    observed_intent = artifact.get("judge_attempt_intent_sha256")
+    if require_judge_attempt_intent and (
+        not _valid_sha256(judge_attempt_intent_sha256)
+        or observed_intent != judge_attempt_intent_sha256
+    ):
+        raise GradeIntegrityError(
+            "terminal screen failed judge audit has no valid prior intent"
+        )
+    if observed_intent is not None and not _valid_sha256(observed_intent):
+        raise GradeIntegrityError(
+            "terminal failed judge audit has an invalid attempt-intent hash"
+        )
+    return path
+
+
 async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict,
                         ep: dict, whole_files: bool = False, effort: str = "",
                         *, episode_sha256: str, grading_spec_sha256: str,
                         judge_base_url: str | None = None,
                         grading_runtime: dict[str, object] | None = None,
-                        local_judge_runtime: dict[str, object] | None = None) -> dict:
+                        local_judge_runtime: dict[str, object] | None = None,
+                        judge_attempt_intent_writer: (
+                            Callable[[str], str] | None
+                        ) = None) -> dict:
     validate_episode(ep, row)
     judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
     request_options = _judge_request_options(judge_model, effort)
@@ -2113,6 +2596,16 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
             "judge was not contacted")
     judge_prompt = build_prompt(corpus, row, answer, whole_files)
     grade["judge_prompt_sha256"] = sha256_bytes(judge_prompt.encode("utf-8"))
+    judge_attempt_intent_sha256 = None
+    if judge_attempt_intent_writer is not None:
+        judge_attempt_intent_sha256 = judge_attempt_intent_writer(
+            grade["judge_prompt_sha256"]
+        )
+        if not _valid_sha256(judge_attempt_intent_sha256):
+            raise GradeIntegrityError(
+                "judge-attempt intent writer returned an invalid content hash"
+            )
+        grade["judge_attempt_intent_sha256"] = judge_attempt_intent_sha256
 
     last_error = None
     attempts: list[dict[str, Any]] = []
@@ -2136,6 +2629,7 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
                 attempts=attempts,
                 failure=exc,
                 request_attempt_count=attempt + 1,
+                judge_attempt_intent_sha256=judge_attempt_intent_sha256,
             )
             raise JudgeAttemptsFailed(
                 f"judge request {attempt + 1} failed after "
@@ -2171,6 +2665,7 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
                     attempts=attempts,
                     failure=response_error,
                     request_attempt_count=attempt + 1,
+                    judge_attempt_intent_sha256=judge_attempt_intent_sha256,
                 )
                 raise JudgeAttemptsFailed(
                     f"judge response {attempt + 1} had incomplete identity or usage; "
@@ -2204,6 +2699,7 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
             judge_prompt_sha256=grade["judge_prompt_sha256"],
             attempts=attempts,
             failure=last_error,
+            judge_attempt_intent_sha256=judge_attempt_intent_sha256,
         )
         raise JudgeAttemptsFailed(
             f"{ep['budget']}/{ep['qid']}/r{ep['rollout']}: judge returned "
@@ -2236,6 +2732,7 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
                           corpus=None, whole_files: bool = False,
                           source_episode: str | None = None,
                           recheck_checker: bool = True,
+                          require_judge_attempt_intent: bool = False,
                           grading_runtime: dict[str, object] | None = None,
                           local_judge_runtime: dict[str, object] | None = None) -> None:
     """Validate provenance and recompute every stored deterministic score."""
@@ -2259,6 +2756,7 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
     if grade.get("judge_model") != judge_model:
         raise GradeIntegrityError("grade judge model does not match the requested judge")
     judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
+    expected_local_runtime_sha256 = None
     if judge_model == LOCAL_GRADER_MODEL:
         local_judge_runtime = (
             local_judge_runtime_record()
@@ -2324,6 +2822,47 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
         raise GradeIntegrityError("grade generated-token count does not match the episode")
     if grade.get("needs_regrade") is not False:
         raise GradeIntegrityError("stored grade is marked needs_regrade")
+
+    if type(require_judge_attempt_intent) is not bool:
+        raise GradeIntegrityError("judge-attempt intent policy must be a boolean")
+    intent_digest = grade.get("judge_attempt_intent_sha256")
+    if (
+        require_judge_attempt_intent
+        and ep["status"] == "ok"
+        and intent_digest is None
+    ):
+        raise GradeIntegrityError(
+            "stored grade has no required pre-contact judge intent"
+        )
+    if intent_digest is not None:
+        if ep["status"] != "ok":
+            raise GradeIntegrityError(
+                "a no-answer grade cannot contain a judge-attempt intent"
+            )
+        if source_episode is None or not _valid_sha256(intent_digest):
+            raise GradeIntegrityError(
+                "stored grade has an invalid judge-attempt intent binding"
+            )
+        prompt_digest = grade.get("judge_prompt_sha256")
+        if not _valid_sha256(prompt_digest):
+            raise GradeIntegrityError(
+                "stored grade intent has no valid judge-prompt binding"
+            )
+        expected_intent = _judge_attempt_intent(
+            source_episode=source_episode,
+            episode=ep,
+            episode_sha256=episode_sha256,
+            grading_spec_sha256=grading_spec_sha256,
+            grading_runtime_sha256=expected_runtime_sha256,
+            local_judge_runtime_sha256=expected_local_runtime_sha256,
+            judge_model=judge_model,
+            judge_base_url=judge_base_url,
+            judge_prompt_sha256=prompt_digest,
+        )
+        if intent_digest != sha256_json(expected_intent):
+            raise GradeIntegrityError(
+                "stored grade judge-attempt intent binding does not match"
+            )
 
     if corpus is None:
         raise GradeIntegrityError(
@@ -2446,6 +2985,296 @@ def stored_grade_is_current(grade_path: Path, episode_path: Path, corpus, row: d
     return True
 
 
+def _validate_closed_grade_artifact_tree(
+    root: Path,
+    allowed_files: set[Path],
+    *,
+    label: str,
+    known_file_paths: set[Path] | None = None,
+) -> None:
+    """Reject unknown, symlinked, or special files in a grading sidecar tree."""
+
+    # ``Path.exists()`` follows links and is false for a broken symlink, so
+    # inspect the directory entry first.  A dangling destination link is not
+    # equivalent to an absent destination: a later target could redirect all
+    # grade writes outside the locked and preflighted namespace.
+    if root.is_symlink():
+        raise GradeIntegrityError(f"{label} root is not a safe directory: {root}")
+    if not root.exists():
+        return
+    if not root.is_dir():
+        raise GradeIntegrityError(f"{label} root is not a safe directory: {root}")
+    allowed_relative = {path.relative_to(root) for path in allowed_files}
+    directory_sources = (
+        allowed_files if known_file_paths is None else known_file_paths
+    )
+    allowed_directories = {
+        Path(*relative.parts[:depth])
+        for path in directory_sources
+        for relative in (path.relative_to(root),)
+        for depth in range(1, len(relative.parts))
+    }
+    for candidate in root.rglob("*"):
+        relative = candidate.relative_to(root)
+        if candidate.is_symlink():
+            raise GradeIntegrityError(f"{label} tree contains a symlink: {candidate}")
+        if candidate.is_dir():
+            if relative not in allowed_directories:
+                raise GradeIntegrityError(
+                    f"{label} tree contains an unknown directory: {candidate}"
+                )
+        elif candidate.is_file():
+            if relative not in allowed_relative:
+                raise GradeIntegrityError(
+                    f"{label} tree contains an unknown file: {candidate}"
+                )
+        else:
+            raise GradeIntegrityError(
+                f"{label} tree contains a special file: {candidate}"
+            )
+
+
+def validate_judge_attempt_inventory(
+    out_root: Path,
+    population_bindings: list[dict[str, Any]],
+    *,
+    judge_model: str,
+    judge_base_url: str | None,
+    grading_runtime_sha256: str,
+    local_judge_runtime_sha256: str | None,
+) -> list[dict[str, Any]]:
+    """Validate and inventory every judge-attempt marker in one population.
+
+    ``population_bindings`` must contain one exact binding for every manifest
+    cell.  Each binding has precisely ``source_episode``, ``episode``,
+    ``episode_sha256``, ``grading_spec_sha256``, and
+    ``judge_prompt_sha256``.  The prompt hash is null only for a ``no_answer``
+    cell.  Answered cells require one canonical pre-contact marker and exactly
+    one terminal grade or failed-judge audit; no-answer cells require a grade
+    and prohibit both judge sidecars.  The three artifact trees are closed
+    against unknown files, directories, links, and special nodes.
+    """
+
+    if not isinstance(population_bindings, list) or not population_bindings:
+        raise GradeIntegrityError(
+            "judge-attempt inventory requires a non-empty complete population"
+        )
+    if not _valid_sha256(grading_runtime_sha256):
+        raise GradeIntegrityError(
+            "judge-attempt inventory has an invalid grading-runtime hash"
+        )
+    judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
+    if judge_model == LOCAL_GRADER_MODEL:
+        if not _valid_sha256(local_judge_runtime_sha256):
+            raise GradeIntegrityError(
+                "local judge-attempt inventory has no runtime hash"
+            )
+    elif local_judge_runtime_sha256 is not None:
+        raise GradeIntegrityError(
+            "external judge-attempt inventory cannot bind a local runtime"
+        )
+
+    required_binding_fields = {
+        "source_episode",
+        "episode",
+        "episode_sha256",
+        "grading_spec_sha256",
+        "judge_prompt_sha256",
+    }
+    seen_cells: set[tuple[str, str, int, str]] = set()
+    tasks: set[str] = set()
+    expected_grade_files: set[Path] = set()
+    allowed_grade_files: set[Path] = set()
+    allowed_intent_files: set[Path] = set()
+    allowed_failure_files: set[Path] = set()
+    records: list[dict[str, Any]] = []
+
+    for binding in population_bindings:
+        if not isinstance(binding, dict) or set(binding) != required_binding_fields:
+            raise GradeIntegrityError(
+                "judge-attempt population binding has unknown or missing fields"
+            )
+        source_episode = binding["source_episode"]
+        episode = binding["episode"]
+        episode_sha256 = binding["episode_sha256"]
+        grading_spec_sha256 = binding["grading_spec_sha256"]
+        judge_prompt_sha256 = binding["judge_prompt_sha256"]
+        if not isinstance(episode, dict):
+            raise GradeIntegrityError("judge-attempt population episode is not an object")
+        if episode.get("status") not in {"ok", "no_answer"}:
+            raise GradeIntegrityError("judge-attempt population status is invalid")
+        if not _valid_sha256(episode_sha256) or not _valid_sha256(
+            grading_spec_sha256
+        ):
+            raise GradeIntegrityError(
+                "judge-attempt population binding has an invalid content hash"
+            )
+        if episode["status"] == "ok":
+            if not _valid_sha256(judge_prompt_sha256):
+                raise GradeIntegrityError(
+                    "answered judge-attempt binding has no prompt hash"
+                )
+        elif judge_prompt_sha256 is not None:
+            raise GradeIntegrityError(
+                "no-answer judge-attempt binding has a prompt hash"
+            )
+
+        intent_path = _judge_attempt_intent_path(out_root, episode)
+        task = episode["task"]
+        cell = (task, episode["budget"], episode["rollout"], episode["qid"])
+        if cell in seen_cells:
+            raise GradeIntegrityError(
+                f"judge-attempt population contains duplicate cell {cell!r}"
+            )
+        seen_cells.add(cell)
+        tasks.add(task)
+        grade_path = (
+            out_root / task / episode["budget"]
+            / f"r{episode['rollout']}" / f"{episode['qid']}.json"
+        )
+        expected_grade_files.add(grade_path)
+
+        intent_state = None
+        if episode["status"] == "ok":
+            allowed_intent_files.add(intent_path)
+            intent_state = validate_judge_attempt_intent(
+                out_root,
+                source_episode=source_episode,
+                episode=episode,
+                episode_sha256=episode_sha256,
+                grading_spec_sha256=grading_spec_sha256,
+                grading_runtime_sha256=grading_runtime_sha256,
+                local_judge_runtime_sha256=local_judge_runtime_sha256,
+                judge_model=judge_model,
+                judge_base_url=judge_base_url,
+                judge_prompt_sha256=judge_prompt_sha256,
+            )
+            if intent_state is None:
+                raise GradeIntegrityError(
+                    f"answered grading cell has no judge-attempt intent: {cell!r}"
+                )
+
+        intent_digest = intent_state[1] if intent_state is not None else None
+        failure_path = existing_failed_judge_audit(
+            out_root,
+            source_episode=source_episode,
+            episode=episode,
+            episode_sha256=episode_sha256,
+            grading_spec_sha256=grading_spec_sha256,
+            grading_runtime_sha256=grading_runtime_sha256,
+            local_judge_runtime_sha256=local_judge_runtime_sha256,
+            judge_model=judge_model,
+            judge_prompt_sha256=judge_prompt_sha256,
+            judge_attempt_intent_sha256=intent_digest,
+            require_judge_attempt_intent=episode["status"] == "ok",
+        )
+        if episode["status"] == "no_answer" and failure_path is not None:
+            raise GradeIntegrityError(
+                f"no-answer grading cell has a failed-judge audit: {cell!r}"
+            )
+
+        if grade_path.is_symlink():
+            raise GradeIntegrityError(
+                f"grade outcome is an unsafe symlink: {grade_path}"
+            )
+        grade_exists = grade_path.exists()
+        if grade_exists and not grade_path.is_file():
+            raise GradeIntegrityError(
+                f"grade outcome is not a regular file: {grade_path}"
+            )
+        if grade_exists == (failure_path is not None):
+            outcome = "both" if grade_exists else "neither"
+            raise GradeIntegrityError(
+                f"grading cell has {outcome} grade and failed-audit outcomes: {cell!r}"
+            )
+
+        if grade_exists:
+            grade_bytes = read_artifact_bytes(grade_path)
+            grade_artifact = parse_json(
+                grade_bytes, label=f"judge-attempt grade outcome {grade_path}"
+            )
+            if (
+                not isinstance(grade_artifact, dict)
+                or grade_bytes != canonical_json_bytes(grade_artifact)
+            ):
+                raise GradeIntegrityError(
+                    f"grade outcome is not a canonical object: {grade_path}"
+                )
+            expected_grade_bindings = {
+                "grade_schema_version": GRADE_SCHEMA_VERSION,
+                "source_episode": source_episode,
+                "episode_sha256": episode_sha256,
+                "grading_spec_sha256": grading_spec_sha256,
+                "task": episode["task"],
+                "qid": episode["qid"],
+                "budget": episode["budget"],
+                "rollout": episode["rollout"],
+                "episode_status": episode["status"],
+            }
+            if any(
+                grade_artifact.get(field) != value
+                for field, value in expected_grade_bindings.items()
+            ):
+                raise GradeIntegrityError(
+                    f"grade outcome does not match its population binding: {grade_path}"
+                )
+            if episode["status"] == "ok":
+                if grade_artifact.get("judge_attempt_intent_sha256") != intent_digest:
+                    raise GradeIntegrityError(
+                        f"grade outcome does not bind its judge intent: {grade_path}"
+                    )
+            elif "judge_attempt_intent_sha256" in grade_artifact:
+                raise GradeIntegrityError(
+                    f"no-answer grade binds a judge intent: {grade_path}"
+                )
+            allowed_grade_files.add(grade_path)
+            terminal_path = grade_path
+            terminal_bytes = grade_bytes
+            terminal_outcome = "grade"
+        else:
+            if failure_path is None:
+                raise AssertionError("terminal judge outcome invariant failed")
+            allowed_failure_files.add(failure_path)
+            terminal_path = failure_path
+            terminal_bytes = read_artifact_bytes(failure_path)
+            terminal_outcome = "failed"
+
+        if intent_state is not None:
+            intent_bytes = read_artifact_bytes(intent_state[0])
+            records.append({
+                "expected_episode": source_episode,
+                "path": intent_state[0].relative_to(out_root).as_posix(),
+                "sha256": intent_digest,
+                "bytes": len(intent_bytes),
+                "outcome": terminal_outcome,
+                "terminal_path": terminal_path.relative_to(out_root).as_posix(),
+                "terminal_sha256": sha256_bytes(terminal_bytes),
+            })
+
+    for task in tasks:
+        _validate_closed_grade_artifact_tree(
+            out_root / task,
+            {path for path in allowed_grade_files if path.parts[-4] == task},
+            label="grade destination",
+            known_file_paths={
+                path for path in expected_grade_files if path.parts[-4] == task
+            },
+        )
+        _validate_closed_grade_artifact_tree(
+            out_root / "judge-attempt-intents" / task,
+            {path for path in allowed_intent_files if path.parts[-4] == task},
+            label="judge-attempt intent",
+        )
+        _validate_closed_grade_artifact_tree(
+            out_root / "failed-judge-audits" / task,
+            {path for path in allowed_failure_files if path.parts[-4] == task},
+            label="failed-judge audit",
+        )
+
+    records.sort(key=lambda record: record["expected_episode"])
+    return records
+
+
 def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
                                questions: list[dict], manifest_context: dict,
                                judge_model: str, whole_files: bool,
@@ -2454,22 +3283,34 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
                                grading_runtime: dict[str, object] | None = None,
                                local_judge_runtime: dict[str, object] | None = None,
                                ) -> list[dict[str, Any]]:
-    """Validate the entire run grid before allowing the first judge request."""
+    """Validate the whole grade namespace before allowing any judge request."""
+
     grading_runtime = (
         grading_runtime_record() if grading_runtime is None else grading_runtime
     )
-    provenance_grading_runtime_sha256(grading_runtime)
+    grading_runtime_digest = provenance_grading_runtime_sha256(grading_runtime)
+    local_runtime_digest = None
     if judge_model == LOCAL_GRADER_MODEL:
         local_judge_runtime = (
             local_judge_runtime_record()
             if local_judge_runtime is None
             else local_judge_runtime
         )
-        provenance_local_judge_runtime_sha256(local_judge_runtime)
+        local_runtime_digest = provenance_local_judge_runtime_sha256(
+            local_judge_runtime
+        )
     elif local_judge_runtime is not None:
         raise GradeIntegrityError(
             "local judge runtime provenance is valid only for local grading"
         )
+    judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
+    spec = manifest_context.get("spec")
+    if not isinstance(spec, dict):
+        raise GradeIntegrityError("run manifest has no grading specification")
+    purpose = spec.get("purpose")
+    if purpose not in {"confirmatory", "exploratory", "smoke"}:
+        raise GradeIntegrityError("run purpose is invalid at grading preflight")
+
     rows = {question["id"]: question for question in questions}
     run_task_root = runs_root / corpus.name
     expected_run_files = {
@@ -2492,6 +3333,8 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
         errors.append(f"unexpected grade outside manifest grid: {path.relative_to(ROOT)}")
 
     records = []
+    allowed_intent_files: set[Path] = set()
+    validated_failure_files: set[Path] = set()
     for relative in manifest_context["expected_episodes"]:
         run_path = run_task_root / relative
         grade_path = out_root / corpus.name / relative
@@ -2523,10 +3366,66 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
                 grading_runtime=grading_runtime,
                 local_judge_runtime=local_judge_runtime)
             source_episode = run_path.relative_to(ROOT).as_posix()
+            episode_digest = sha256_bytes(episode_bytes)
+            judge_prompt_digest = (
+                sha256_bytes(
+                    build_prompt(
+                        corpus, row, episode["answer"], whole_files
+                    ).encode("utf-8")
+                )
+                if episode["status"] == "ok"
+                else None
+            )
+            intent_state = None
+            if episode["status"] == "ok":
+                intent_path = _judge_attempt_intent_path(out_root, episode)
+                allowed_intent_files.add(intent_path)
+                intent_state = validate_judge_attempt_intent(
+                    out_root,
+                    source_episode=source_episode,
+                    episode=episode,
+                    episode_sha256=episode_digest,
+                    grading_spec_sha256=spec_sha256,
+                    grading_runtime_sha256=grading_runtime_digest,
+                    local_judge_runtime_sha256=local_runtime_digest,
+                    judge_model=judge_model,
+                    judge_base_url=judge_base_url,
+                    judge_prompt_sha256=judge_prompt_digest,
+                )
+            intent_digest = intent_state[1] if intent_state is not None else None
+            failure_path = existing_failed_judge_audit(
+                out_root,
+                source_episode=source_episode,
+                episode=episode,
+                episode_sha256=episode_digest,
+                grading_spec_sha256=spec_sha256,
+                grading_runtime_sha256=grading_runtime_digest,
+                local_judge_runtime_sha256=local_runtime_digest,
+                judge_model=judge_model,
+                judge_prompt_sha256=judge_prompt_digest,
+                judge_attempt_intent_sha256=intent_digest,
+                require_judge_attempt_intent=episode["status"] == "ok",
+            )
+            if failure_path is not None:
+                validated_failure_files.add(failure_path)
+                if episode["status"] != "ok":
+                    raise GradeIntegrityError(
+                        "a no-answer episode has an impossible failed judge audit"
+                    )
         except (OSError, KeyError, TypeError, ValueError, GradeIntegrityError) as exc:
-            errors.append(f"invalid run episode {run_path.relative_to(ROOT)}: {exc}")
+            errors.append(f"invalid run/grade state {run_path.relative_to(ROOT)}: {exc}")
             continue
 
+        if failure_path is not None:
+            errors.append(
+                "terminal failed judge audit already exists; the whole grading "
+                f"invocation is blocked before judge contact: {failure_path.relative_to(ROOT)}"
+            )
+            if grade_path.is_file():
+                errors.append(
+                    "grade and terminal failed-judge audit coexist for one cell: "
+                    f"{grade_path.relative_to(ROOT)}"
+                )
         if grade_path.exists() and not grade_path.is_file():
             errors.append(
                 f"grade path exists but is not a file: {grade_path.relative_to(ROOT)}")
@@ -2537,20 +3436,39 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
                     read_artifact_bytes(grade_path), label=f"stored grade {grade_path}")
                 validate_stored_grade(
                     stored, row, episode,
-                    episode_sha256=sha256_bytes(episode_bytes),
+                    episode_sha256=episode_digest,
                     grading_spec_sha256=spec_sha256,
                     judge_model=judge_model,
                     judge_base_url=judge_base_url,
                     corpus=corpus,
                     whole_files=whole_files,
                     source_episode=source_episode,
+                    require_judge_attempt_intent=True,
                     grading_runtime=grading_runtime,
                     local_judge_runtime=local_judge_runtime,
                 )
+                stored_intent = stored.get("judge_attempt_intent_sha256")
+                if episode["status"] == "ok":
+                    if intent_state is None or stored_intent != intent_digest:
+                        raise GradeIntegrityError(
+                            "grade has no matching pre-contact judge intent"
+                        )
+                elif "judge_attempt_intent_sha256" in stored:
+                    raise GradeIntegrityError(
+                        "no-answer grade unexpectedly binds a judge intent"
+                    )
             except (OSError, KeyError, TypeError, ValueError, GradeIntegrityError) as exc:
                 errors.append(
                     f"existing grade is stale or invalid and was preserved: "
                     f"{grade_path.relative_to(ROOT)} ({exc}); choose a new --grade-id")
+            continue
+        if episode["status"] == "ok" and intent_state is not None:
+            errors.append(
+                "grading cell has an orphan judge-attempt intent; its outcome is "
+                f"terminal/ambiguous and retry is prohibited: {intent_state[0].relative_to(ROOT)}"
+            )
+            continue
+        if failure_path is not None:
             continue
         records.append({
             "run_path": run_path,
@@ -2561,6 +3479,25 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
             "grading_spec_sha256": spec_sha256,
             "source_episode": source_episode,
         })
+
+    try:
+        _validate_closed_grade_artifact_tree(
+            out_root / corpus.name,
+            expected_grade_files,
+            label="grade destination",
+        )
+        _validate_closed_grade_artifact_tree(
+            out_root / "judge-attempt-intents" / corpus.name,
+            allowed_intent_files,
+            label="judge-attempt intent",
+        )
+        _validate_closed_grade_artifact_tree(
+            out_root / "failed-judge-audits" / corpus.name,
+            validated_failure_files,
+            label="failed-judge audit",
+        )
+    except GradeIntegrityError as exc:
+        errors.append(str(exc))
 
     if errors:
         preview = "\n".join(f"  - {error}" for error in errors[:20])
@@ -2598,7 +3535,40 @@ def select_local_smoke_record(
     return judged[:1]
 
 
+def _grade_namespace(args) -> tuple[Path, Path]:
+    """Resolve the run and grade roots used by both locking and grading."""
+
+    grader = os.environ.get("GRADER_MODEL", "openai")
+    if grader not in GRADERS:
+        raise GradeIntegrityError(
+            f"unknown GRADER_MODEL={grader!r}; choose one of {sorted(GRADERS)}"
+        )
+    judge_model = GRADERS[grader][0]
+    local_smoke = bool(getattr(args, "local_smoke", False))
+    if local_smoke and grader != "local":
+        raise GradeIntegrityError("--local-smoke is available only for local grading")
+    runs_base = ROOT / "runs" / "smoke" if local_smoke else ROOT / "runs"
+    grades_base = ROOT / "grades" / "smoke" if local_smoke else ROOT / "grades"
+    runs_root = runs_base / args.run_id
+    judge_name = "local-qwen3.5-9b" if grader == "local" else judge_model
+    judge_dir = (
+        judge_name
+        + ("-wholefiles" if args.whole_files else "-excerpts")
+        + (f"-effort-{args.judge_effort}" if args.judge_effort else "")
+    )
+    return runs_root, grades_base / args.run_id / (args.grade_id or judge_dir)
+
+
 async def main_async(args):
+    """Hold one namespace-wide lock across preflight and every judge request."""
+
+    _, out_root = _grade_namespace(args)
+    lock_path = out_root / ".locks" / "grading.lock"
+    with exclusive_process_lock(lock_path):
+        await _main_async_locked(args)
+
+
+async def _main_async_locked(args):
     corpus = CORPORA[args.task]
     questions = load_questions(args.task)
     rows = {q["id"]: q for q in questions}
@@ -2629,14 +3599,7 @@ async def main_async(args):
         "grader=%s judge_model=%s judge_base_url=%s",
         grader, judge_model, judge_base_url,
     )
-    runs_base = ROOT / "runs" / "smoke" if local_smoke else ROOT / "runs"
-    grades_base = ROOT / "grades" / "smoke" if local_smoke else ROOT / "grades"
-    runs_root = runs_base / args.run_id
-    judge_name = "local-qwen3.5-9b" if grader == "local" else judge_model
-    judge_dir = (judge_name + ("-wholefiles" if args.whole_files else "-excerpts")
-                 + (f"-effort-{args.judge_effort}" if args.judge_effort else ""))
-    grade_id = args.grade_id or judge_dir
-    out_root = grades_base / args.run_id / grade_id
+    runs_root, out_root = _grade_namespace(args)
 
     manifest_context = load_claim_manifest(
         runs_root / args.task,
@@ -2700,6 +3663,12 @@ async def main_async(args):
         client = _make_grader_client(
             grader, api_key, judge_base_url=judge_base_url)
 
+    grading_runtime_digest = provenance_grading_runtime_sha256(grading_runtime)
+    local_runtime_digest = (
+        provenance_local_judge_runtime_sha256(local_runtime)
+        if local_runtime is not None
+        else None
+    )
     sem = asyncio.Semaphore(args.concurrency)
     done = 0
     failures = []
@@ -2735,6 +3704,7 @@ async def main_async(args):
                             corpus=corpus,
                             whole_files=args.whole_files,
                             source_episode=record["source_episode"],
+                            require_judge_attempt_intent=True,
                             grading_runtime=grading_runtime,
                             local_judge_runtime=local_runtime,
                         )
@@ -2744,15 +3714,86 @@ async def main_async(args):
                             done, len(pending), gf,
                         )
                         return
-                    grade = await grade_episode(
-                        client, judge_model, corpus, row, ep, args.whole_files,
-                        args.judge_effort,
+                    prior_failure = existing_failed_judge_audit(
+                        out_root,
+                        source_episode=record["source_episode"],
+                        episode=ep,
                         episode_sha256=sha256_bytes(episode_bytes),
                         grading_spec_sha256=record["grading_spec_sha256"],
-                        judge_base_url=judge_base_url,
-                        grading_runtime=grading_runtime,
-                        local_judge_runtime=local_runtime,
+                        grading_runtime_sha256=grading_runtime_digest,
+                        local_judge_runtime_sha256=local_runtime_digest,
+                        judge_model=judge_model,
+                        judge_prompt_sha256=(
+                            sha256_bytes(
+                                build_prompt(
+                                    corpus, row, ep["answer"], args.whole_files
+                                ).encode("utf-8")
+                            )
+                            if ep["status"] == "ok"
+                            else None
+                        ),
+                        require_judge_attempt_intent=ep["status"] == "ok",
                     )
+                    if prior_failure is not None:
+                        raise GradeIntegrityError(
+                            "terminal failed judge audit already exists; "
+                            f"judge retry is prohibited: {prior_failure}"
+                        )
+                    intent_writer = None
+                    if ep["status"] == "ok":
+                        def intent_writer(prompt_sha256: str) -> str:
+                            _, digest = write_judge_attempt_intent(
+                                out_root,
+                                source_episode=record["source_episode"],
+                                episode=ep,
+                                episode_sha256=sha256_bytes(episode_bytes),
+                                grading_spec_sha256=record["grading_spec_sha256"],
+                                grading_runtime_sha256=grading_runtime_digest,
+                                local_judge_runtime_sha256=local_runtime_digest,
+                                judge_model=judge_model,
+                                judge_base_url=judge_base_url,
+                                judge_prompt_sha256=prompt_sha256,
+                            )
+                            return digest
+                    try:
+                        grade = await grade_episode(
+                            client, judge_model, corpus, row, ep, args.whole_files,
+                            args.judge_effort,
+                            episode_sha256=sha256_bytes(episode_bytes),
+                            grading_spec_sha256=record["grading_spec_sha256"],
+                            judge_base_url=judge_base_url,
+                            grading_runtime=grading_runtime,
+                            local_judge_runtime=local_runtime,
+                            judge_attempt_intent_writer=intent_writer,
+                        )
+                    except JudgeAttemptsFailed as exc:
+                        if ep["status"] == "ok":
+                            prompt_digest = exc.audit.get("judge_prompt_sha256")
+                            intent_state = validate_judge_attempt_intent(
+                                out_root,
+                                source_episode=record["source_episode"],
+                                episode=ep,
+                                episode_sha256=sha256_bytes(episode_bytes),
+                                grading_spec_sha256=record["grading_spec_sha256"],
+                                grading_runtime_sha256=grading_runtime_digest,
+                                local_judge_runtime_sha256=local_runtime_digest,
+                                judge_model=judge_model,
+                                judge_base_url=judge_base_url,
+                                judge_prompt_sha256=prompt_digest,
+                            )
+                            if (
+                                intent_state is None
+                                or exc.audit.get("judge_attempt_intent_sha256")
+                                != intent_state[1]
+                            ):
+                                raise GradeIntegrityError(
+                                    "screen failed-judge audit has no matching "
+                                    "pre-contact intent"
+                                ) from exc
+                        exc.audit_path = write_failed_judge_audit(
+                            out_root, record["source_episode"], exc.audit
+                        )
+                        raise
                     grade["source_episode"] = record["source_episode"]
                     validate_stored_grade(
                         grade, row, ep,
@@ -2768,6 +3809,7 @@ async def main_async(args):
                         # independently rerun it; doing so here would execute
                         # generated code twice before the immutable write.
                         recheck_checker=False,
+                        require_judge_attempt_intent=True,
                         grading_runtime=grading_runtime,
                         local_judge_runtime=local_runtime,
                     )
@@ -2777,8 +3819,10 @@ async def main_async(args):
                     write_immutable_json(gf, grade)
             except JudgeAttemptsFailed as exc:
                 run_path = record["run_path"]
-                audit_path = write_failed_judge_audit(
-                    out_root, record["source_episode"], exc.audit)
+                audit_path = getattr(exc, "audit_path", None)
+                if audit_path is None:
+                    audit_path = write_failed_judge_audit(
+                        out_root, record["source_episode"], exc.audit)
                 log.exception(
                     "grading %s failed (no grade written; judge audit saved to %s)",
                     run_path, audit_path,
@@ -2787,7 +3831,11 @@ async def main_async(args):
                 return
             except Exception as exc:
                 run_path = record["run_path"]
-                log.exception("grading %s failed (no grade written; rerun to retry)", run_path)
+                log.exception(
+                    "grading %s failed (no grade written; rerun will re-preflight "
+                    "the complete namespace)",
+                    run_path,
+                )
                 failures.append((run_path, exc))
                 return
             done += 1

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from copy import deepcopy
 from dataclasses import dataclass
+from datetime import datetime
 from fnmatch import fnmatchcase
 from functools import lru_cache
 from importlib import metadata
@@ -50,8 +51,19 @@ from .model_cache import ATTESTATION_POLICY as MODEL_CACHE_ATTESTATION_POLICY
 from .preregistration import (
     PREREGISTRATION_SCHEMA_VERSION,
     RUN_FAILURE_POLICY,
+    SCREEN_FAILURE_POLICY,
     bind_preregistration,
     revalidate_run_preregistration,
+)
+from .study_protocol import (
+    HUMAN_AUDITED_NOTE_MANIFEST_TYPE,
+    SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
+    STATIC_GRAPH_NOTE_MANIFEST_TYPE,
+    StudyProtocolError,
+    validate_construction_protocol,
+    validate_forced50_config,
+    validate_forced50_episode,
+    validate_study_note_archive,
 )
 
 
@@ -2118,13 +2130,22 @@ def _load_note(
     *,
     require_manifest: bool,
     require_claim_ready: bool | None = None,
+    allow_smoke: bool = False,
     expected_task: str | None = None,
+    expected_model: str | None = None,
+    expected_model_revision: str | None = None,
+    expected_response_model: str | None = None,
+    expected_sampling: dict[str, object] | None = None,
     expected_corpus_commit: str | None = None,
+    expected_corpus: dict[str, object] | None = None,
+    expected_source: dict[str, object] | None = None,
+    expected_environment: dict[str, object] | None = None,
+    expected_corpus_display: str | None = None,
     expected_note_sha256: str | None = None,
     expected_note_manifest_sha256: str | None = None,
 ) -> tuple[str, dict[str, object] | None]:
-    if type(require_manifest) is not bool:
-        raise ValueError("require_manifest must be boolean")
+    if type(require_manifest) is not bool or type(allow_smoke) is not bool:
+        raise ValueError("require_manifest and allow_smoke must be boolean")
     if require_claim_ready is None:
         # Preserve the historical direct-call contract while allowing
         # prepare_run to distinguish full exploratory runs from confirmation.
@@ -2133,6 +2154,19 @@ def _load_note(
         raise ValueError("require_claim_ready must be boolean")
     if require_claim_ready and not require_manifest:
         raise ValueError("claim-ready notes require a construction manifest")
+    protocol_expectations_supplied = any(
+        value is not None
+        for value in (
+            expected_model,
+            expected_model_revision,
+            expected_response_model,
+            expected_sampling,
+            expected_corpus,
+            expected_source,
+            expected_environment,
+            expected_corpus_display,
+        )
+    )
 
     def contained_regular_file(parent: Path, relative: Path, label: str) -> Path:
         """Validate a manifest-relative file without resolving through symlinks."""
@@ -2169,6 +2203,8 @@ def _load_note(
     auxiliary_artifacts: dict[str, tuple[Path, bytes]] = {}
     construction_dependencies: dict[str, tuple[dict[str, object], bytes]] = {}
     construction_inventory_sha256: str | None = None
+    protocol_summary: dict[str, object] | None = None
+    forced50_protocol: dict[str, object] | None = None
     relative_note: Path | None = None
     if note_manifest_path is None:
         if require_manifest:
@@ -2229,13 +2265,26 @@ def _load_note(
                         "confirmatory_claim_ready",
                     )
                 )
+                readiness_shape_valid = (
+                    isinstance(readiness, dict)
+                    and bool(readiness)
+                    and all(type(value) is bool for value in readiness.values())
+                )
+                full_automated_gate = (
+                    readiness_shape_valid
+                    and construction.get("automated_claim_ready") is True
+                    and all(readiness.values())
+                )
+                smoke_automated_gate = (
+                    allow_smoke
+                    and readiness_shape_valid
+                    and construction.get("automated_claim_ready") is False
+                    and readiness.get("non_smoke") is False
+                )
                 if (type(construction.get("schema_version")) is not int
                         or construction["schema_version"] <= 0
                         or contradictory_readiness
-                        or construction.get("automated_claim_ready") is not True
-                        or not isinstance(readiness, dict) or not readiness
-                        or any(type(value) is not bool or value is not True
-                               for value in readiness.values())
+                        or not (full_automated_gate or smoke_automated_gate)
                         or not isinstance(inventory, dict) or not inventory
                         or not isinstance(construction_inventory_sha256, str)
                         or not re.fullmatch(
@@ -2274,7 +2323,42 @@ def _load_note(
                         raise ValueError(
                             f"construction dependency changed: {raw_relative}")
                     construction_dependencies[raw_relative] = (artifact_record, data)
-            elif manifest_type == "human-audited-note":
+                if manifest_type not in {
+                    SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
+                    STATIC_GRAPH_NOTE_MANIFEST_TYPE,
+                }:
+                    raise ValueError(
+                        "exploratory note type does not match a recognized protocol"
+                    )
+                try:
+                    protocol_summary = validate_study_note_archive(
+                        construction,
+                        {
+                            path: data
+                            for path, (_, data) in construction_dependencies.items()
+                        },
+                        note_bytes,
+                        expected_task=expected_task,
+                        expected_model=expected_model,
+                        expected_model_revision=expected_model_revision,
+                        expected_sampling=expected_sampling,
+                        expected_corpus_commit=expected_corpus_commit,
+                        expected_corpus=expected_corpus,
+                        expected_source=expected_source,
+                        expected_environment=expected_environment,
+                        expected_environment_contract=(
+                            environment_contract_record(expected_environment)
+                            if expected_environment is not None else None
+                        ),
+                        environments_compatible=environments_compatible,
+                        require_final_semantic=True,
+                        allow_smoke=allow_smoke,
+                    )
+                except StudyProtocolError as error:
+                    raise ValueError(
+                        f"exploratory note protocol binding is invalid: {error}"
+                    ) from error
+            elif manifest_type == HUMAN_AUDITED_NOTE_MANIFEST_TYPE:
                 if "automated_readiness" not in construction:
                     raise ValueError("human-audited note has no automated readiness record")
                 human = construction.get("human_audit")
@@ -2323,6 +2407,7 @@ def _load_note(
                     raise ValueError("human-audit chain contains invalid JSON") from error
                 shared = ("study_id", "task", "round", "corpus_commit", "note_sha256",
                           "note_path", "entry_ids", "entries", "usage",
+                          "method", "protocol_summary",
                           "automated_claim_ready", "automated_readiness",
                           "construction_artifacts", "construction_artifacts_sha256")
                 if (not isinstance(base, dict) or base.get("claim_ready") is not False
@@ -2369,6 +2454,66 @@ def _load_note(
                             f"construction dependency changed: {raw_relative}"
                         )
                     construction_dependencies[raw_relative] = (artifact_record, data)
+                if protocol_expectations_supplied or "protocol_summary" in construction:
+                    if base.get("manifest_type") not in {
+                        SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
+                        STATIC_GRAPH_NOTE_MANIFEST_TYPE,
+                    }:
+                        raise ValueError(
+                            "human-audited base note type is not a recognized protocol"
+                        )
+                    dependency_bytes = {
+                        path: data
+                        for path, (_, data) in construction_dependencies.items()
+                    }
+                    try:
+                        base_summary = validate_study_note_archive(
+                            base,
+                            dependency_bytes,
+                            note_bytes,
+                            expected_task=expected_task,
+                            expected_model=expected_model,
+                            expected_model_revision=expected_model_revision,
+                            expected_sampling=expected_sampling,
+                            expected_corpus_commit=expected_corpus_commit,
+                            expected_corpus=expected_corpus,
+                            expected_source=expected_source,
+                            expected_environment=expected_environment,
+                            expected_environment_contract=(
+                                environment_contract_record(expected_environment)
+                                if expected_environment is not None else None
+                            ),
+                            environments_compatible=environments_compatible,
+                            require_final_semantic=True,
+                            allow_smoke=allow_smoke,
+                        )
+                        protocol_summary = validate_construction_protocol(
+                            construction,
+                            dependency_bytes,
+                            expected_task=expected_task,
+                            expected_model=expected_model,
+                            expected_model_revision=expected_model_revision,
+                            expected_sampling=expected_sampling,
+                            expected_corpus_commit=expected_corpus_commit,
+                            expected_corpus=expected_corpus,
+                            expected_source=expected_source,
+                            expected_environment=expected_environment,
+                            expected_environment_contract=(
+                                environment_contract_record(expected_environment)
+                                if expected_environment is not None else None
+                            ),
+                            environments_compatible=environments_compatible,
+                            allow_human_audited=True,
+                            require_final_semantic=True,
+                        )
+                    except StudyProtocolError as error:
+                        raise ValueError(
+                            f"human-audited note protocol binding is invalid: {error}"
+                        ) from error
+                    if protocol_summary != base_summary:
+                        raise ValueError(
+                            "human-audited note protocol differs from its base construction"
+                        )
                 try:
                     audit_validation = validate_human_audit_result(
                         audit_result,
@@ -2422,13 +2567,43 @@ def _load_note(
                 inventory = construction.get("construction_artifacts")
                 construction_inventory_sha256 = construction.get(
                     "construction_artifacts_sha256")
-                if (not isinstance(config, dict)
+                if (type(construction.get("manifest_schema")) is not int
+                        or construction["manifest_schema"] != 1
+                        or not isinstance(config, dict)
                         or config.get("method") != "forced-50-cheatsheet"
                         or config.get("claim_ready") is not True
+                        or config.get("study_id") != construction.get("study_id")
+                        or config.get("task") != construction.get("task")
+                        or not isinstance(config.get("corpus"), dict)
+                        or config["corpus"].get("commit")
+                        != construction.get("corpus_commit")
                         or not isinstance(inventory, dict)
                         or set(inventory) != {"intent.json", "episode.json"}
                         or construction_inventory_sha256 != sha256_json(inventory)):
                     raise ValueError("forced-50 construction manifest is incomplete")
+                if expected_corpus_display is not None:
+                    try:
+                        forced50_protocol = validate_forced50_config(
+                            config,
+                            corpus_display=expected_corpus_display,
+                            expected_task=expected_task,
+                            expected_model=expected_model,
+                            expected_model_revision=expected_model_revision,
+                            expected_response_model=expected_response_model,
+                            expected_sampling=expected_sampling,
+                            expected_corpus=expected_corpus,
+                            expected_source=expected_source,
+                            expected_environment=expected_environment,
+                            environments_compatible=environments_compatible,
+                        )
+                    except StudyProtocolError as error:
+                        raise ValueError(
+                            f"forced-50 protocol binding is invalid: {error}"
+                        ) from error
+                elif protocol_expectations_supplied:
+                    raise ValueError(
+                        "forced-50 preflight requires the evaluation corpus display name"
+                    )
                 loaded_dependencies = {}
                 for raw_relative, artifact_record in inventory.items():
                     if (not isinstance(artifact_record, dict)
@@ -2461,6 +2636,21 @@ def _load_note(
                     construction_dependencies[raw_relative] = (artifact_record, data)
                 intent = loaded_dependencies["intent.json"]
                 episode = loaded_dependencies["episode.json"]
+                if canonical_json_bytes(intent) != construction_dependencies[
+                    "intent.json"
+                ][1]:
+                    raise ValueError("forced-50 intent is not canonically encoded")
+                if forced50_protocol is not None:
+                    try:
+                        validate_forced50_episode(
+                            construction_dependencies["episode.json"][1],
+                            config=config,
+                            expected_note_sha256=note_hash,
+                        )
+                    except StudyProtocolError as error:
+                        raise ValueError(
+                            f"forced-50 study episode is invalid: {error}"
+                        ) from error
                 intent_hash = construction.get("intent_sha256")
                 episode_hash = construction.get("episode_sha256")
                 integer_identities = (
@@ -2512,6 +2702,10 @@ def _load_note(
         "snapshot": str(snapshot),
         "source_name": note_path.name,
     }
+    if protocol_summary is not None:
+        record["protocol_summary"] = protocol_summary
+    if forced50_protocol is not None:
+        record["forced50_protocol"] = forced50_protocol
     if note_manifest_path is not None:
         manifest_snapshot = Path("inputs") / f"note-manifest-{manifest_hash}.json"
         write_immutable_bytes(run_root / manifest_snapshot, manifest_bytes)
@@ -2757,10 +2951,24 @@ def prepare_run(
         run_root,
         note_path,
         note_manifest_path,
-        require_manifest=not smoke,
+        # A bounded diagnostic may omit a construction manifest only when no
+        # manifest was supplied. If one is supplied, exercise the exact same
+        # note/protocol/final-round validation as the full evaluation path.
+        require_manifest=(not smoke or note_manifest_path is not None),
         require_claim_ready=not (smoke or exploratory),
+        allow_smoke=smoke,
         expected_task=task,
+        expected_model=model,
+        expected_model_revision=model_revision,
+        expected_response_model=extra_record["expected_response_model"],
+        expected_sampling=sampling,
         expected_corpus_commit=corpus.commit,
+        expected_corpus=corpus_info,
+        expected_source=source,
+        expected_environment=environment,
+        expected_corpus_display=(
+            getattr(corpus, "display", None) if note_path is not None else None
+        ),
         expected_note_sha256=(existing_note or {}).get("sha256"),
         expected_note_manifest_sha256=(existing_construction or {}).get("sha256"),
     )
@@ -2852,7 +3060,9 @@ def prepare_run(
             "presented_prompt_sha256": presented_prompt_hashes,
         },
         "expected_episodes": expected,
-        "failure_policy": RUN_FAILURE_POLICY,
+        "failure_policy": (
+            SCREEN_FAILURE_POLICY if smoke or exploratory else RUN_FAILURE_POLICY
+        ),
         "preregistration": preregistration_record,
         "corpus": corpus_info,
         "source": source,
@@ -2976,12 +3186,753 @@ def validate_resumable_episode(
     return episode
 
 
+SCREEN_ATTEMPT_INTENT_SCHEMA_VERSION = 1
+SCREEN_ATTEMPT_POLICY = "screen-one-shot-attempt-intent-v1"
+_PRODUCER_CONTRACT_KEYS = {
+    "expected_model",
+    "expected_model_revision",
+    "expected_harness",
+    "expected_response_model",
+}
+
+
+def _screen_attempt_paths(
+    context: RunContext, expected_path: Path
+) -> tuple[Path, Path, PurePosixPath]:
+    try:
+        relative_path = expected_path.relative_to(context.root)
+    except ValueError as error:
+        raise ValueError("expected episode is outside its run root") from error
+    relative = PurePosixPath(relative_path.as_posix())
+    if (
+        relative.is_absolute()
+        or not relative.parts
+        or any(part in ("", ".", "..") for part in relative.parts)
+        or relative.suffix != ".json"
+    ):
+        raise ValueError("expected episode path is unsafe")
+    intent = context.root.joinpath("attempt-intents", *relative.parts)
+    failures = context.root.joinpath(
+        "failed-attempts", *relative.with_suffix("").parts
+    )
+    return intent, failures, relative
+
+
+def _validate_screen_policy(context: RunContext) -> bool:
+    spec = context.manifest.get("spec")
+    if not isinstance(spec, dict):
+        raise ValueError("run manifest has no spec")
+    purpose = spec.get("purpose")
+    if purpose == "confirmatory":
+        if spec.get("failure_policy") != RUN_FAILURE_POLICY:
+            raise ValueError("confirmatory run failure policy is invalid")
+        return False
+    if purpose not in {"smoke", "exploratory"}:
+        raise ValueError("run purpose is invalid")
+    if spec.get("failure_policy") != SCREEN_FAILURE_POLICY:
+        raise ValueError("screen run failure policy is invalid")
+    return True
+
+
+def _validate_producer_contract(contract: object) -> dict[str, str]:
+    if (
+        not isinstance(contract, dict)
+        or set(contract) != _PRODUCER_CONTRACT_KEYS
+        or any(not isinstance(value, str) or not value for value in contract.values())
+    ):
+        raise ValueError("episode producer contract is invalid")
+    return contract
+
+
+def _validate_screen_failed_episode(
+    episode: object,
+    identity: dict[str, object],
+    contract: dict[str, str],
+    *,
+    expected_episode: str,
+    attempt: int,
+) -> None:
+    """Validate the common exact producer contract for a failed screen cell."""
+
+    if not isinstance(episode, dict):
+        raise ValueError("screen failed episode is not an object")
+    if (
+        episode.get("status") not in {"error", "forced_short"}
+        or not isinstance(episode.get("error"), str)
+        or not episode["error"]
+        or episode.get("failure_attempt") != attempt
+        or episode.get("expected_episode") != expected_episode
+        or episode.get("model") != contract["expected_model"]
+        or episode.get("model_revision") != contract["expected_model_revision"]
+        or episode.get("harness") != contract["expected_harness"]
+        or not isinstance(episode.get("started"), str)
+        or not episode["started"]
+        or not isinstance(episode.get("finished"), str)
+        or not episode["finished"]
+        or not isinstance(episode.get("answer"), str)
+        or not isinstance(episode.get("turns"), list)
+    ):
+        raise ValueError("screen failed episode lifecycle or producer is invalid")
+    try:
+        started = datetime.fromisoformat(episode["started"])
+        finished = datetime.fromisoformat(episode["finished"])
+    except ValueError as error:
+        raise ValueError("screen failed episode timestamps are invalid") from error
+    if (
+        started.tzinfo is None
+        or finished.tzinfo is None
+        or finished < started
+    ):
+        raise ValueError("screen failed episode timestamp order is invalid")
+    for key, expected in identity.items():
+        if canonical_json_bytes(episode.get(key)) != canonical_json_bytes(expected):
+            raise ValueError(f"screen failed episode identity mismatch for {key}")
+    counters = [
+        episode.get(field)
+        for field in (
+            "prompt_tokens", "completion_tokens", "total_tokens", "gen_tokens"
+        )
+    ]
+    if (
+        any(type(value) is not int or value < 0 for value in counters)
+        or counters[2] != counters[0] + counters[1]
+        or counters[3] != counters[1]
+    ):
+        raise ValueError("screen failed episode token accounting is invalid")
+    for field in ("n_tool_iters",):
+        if type(episode.get(field)) is not int or episode[field] < 0:
+            raise ValueError("screen failed episode iteration count is invalid")
+    if contract["expected_harness"] == "dspy.ReAct":
+        if (
+            type(episode.get("n_react_iters")) is not int
+            or episode["n_react_iters"] < 0
+            or type(episode.get("finish_catches")) is not int
+            or episode["finish_catches"] < 0
+            or type(episode.get("n_lm_calls")) is not int
+            or episode["n_lm_calls"] < 0
+            or not isinstance(episode.get("usage_ledger"), list)
+        ):
+            raise ValueError("DSPy failed episode audit is invalid")
+        if (
+            episode["n_react_iters"] != len(episode["turns"])
+            or episode["n_tool_iters"] + episode["finish_catches"]
+            != episode["n_react_iters"]
+        ):
+            raise ValueError("DSPy failed episode trajectory counts are invalid")
+    elif not isinstance(episode.get("request_attempts"), list):
+        raise ValueError("native failed episode request audit is invalid")
+    expected_usage = _screen_failure_usage_audit(episode, contract)
+    if episode.get("failure_usage") != expected_usage:
+        raise ValueError("screen failed episode usage audit is invalid")
+
+
+def _screen_failure_usage_audit(
+    episode: dict[str, object], contract: dict[str, str]
+) -> dict[str, object]:
+    """Validate known provider ledgers and label unobserved failure usage."""
+
+    prompt = episode.get("prompt_tokens")
+    completion = episode.get("completion_tokens")
+    total = episode.get("total_tokens")
+    if contract["expected_harness"] == "dspy.ReAct":
+        ledger = episode.get("usage_ledger")
+        calls = episode.get("n_lm_calls")
+        if not isinstance(ledger, list) or type(calls) is not int or calls < len(ledger):
+            raise ValueError("DSPy failed usage ledger length is invalid")
+        ledger_prompt = ledger_completion = ledger_total = 0
+        required = {
+            "call", "response_model", "response_id", "system_fingerprint",
+            "request_messages_sha256", "outputs_sha256", "provider_usage",
+            "prompt_tokens", "completion_tokens", "total_tokens",
+        }
+        for index, record in enumerate(ledger):
+            if (
+                not isinstance(record, dict)
+                or set(record) != required
+                or record.get("call") != index
+                or type(record.get("call")) is not int
+                or not isinstance(record.get("request_messages_sha256"), str)
+                or not _SHA256.fullmatch(record["request_messages_sha256"])
+                or not isinstance(record.get("outputs_sha256"), str)
+                or not _SHA256.fullmatch(record["outputs_sha256"])
+            ):
+                raise ValueError("DSPy failed usage call record is invalid")
+            values = [record.get(field) for field in (
+                "prompt_tokens", "completion_tokens", "total_tokens"
+            )]
+            usage = record.get("provider_usage")
+            if (
+                any(type(value) is not int or value < 0 for value in values)
+                or values[2] != values[0] + values[1]
+                or not isinstance(usage, dict)
+                or any(usage.get(field) != value for field, value in zip(
+                    ("prompt_tokens", "completion_tokens", "total_tokens"),
+                    values,
+                ))
+            ):
+                raise ValueError("DSPy failed provider usage is invalid")
+            for field in ("response_model", "response_id", "system_fingerprint"):
+                value = record.get(field)
+                if value is not None and (not isinstance(value, str) or not value):
+                    raise ValueError(f"DSPy failed call has invalid {field}")
+            ledger_prompt += values[0]
+            ledger_completion += values[1]
+            ledger_total += values[2]
+        if [ledger_prompt, ledger_completion, ledger_total] != [
+            prompt, completion, total
+        ]:
+            raise ValueError("DSPy failed usage prefix disagrees with counters")
+        unknown = calls - len(ledger)
+    else:
+        turns = episode.get("turns")
+        attempts = episode.get("request_attempts")
+        if not isinstance(turns, list) or not isinstance(attempts, list):
+            raise ValueError("native failed provider audit is invalid")
+        turn_prompt = turn_completion = turn_total = 0
+        response_attempts = []
+        grouped: dict[int, list[int]] = {}
+        for record in attempts:
+            if not isinstance(record, dict):
+                raise ValueError("native failed request attempt is not an object")
+            logical = record.get("logical_call")
+            attempt = record.get("attempt")
+            status = record.get("status")
+            if (
+                type(logical) is not int
+                or logical < 0
+                or type(attempt) is not int
+                or not 1 <= attempt <= 4
+                or not isinstance(record.get("request_sha256"), str)
+                or not _SHA256.fullmatch(record["request_sha256"])
+                or status not in {"response", "transport_error"}
+            ):
+                raise ValueError("native failed request attempt identity is invalid")
+            grouped.setdefault(logical, []).append(attempt)
+            if status == "response":
+                if not {
+                    "logical_call", "attempt", "status", "request_sha256",
+                    "response_id", "response_model",
+                }.issubset(record):
+                    raise ValueError("native failed response attempt is incomplete")
+                response_attempts.append(record)
+            elif (
+                not {
+                    "logical_call", "attempt", "status", "request_sha256",
+                    "error_type", "error", "usage",
+                }.issubset(record)
+                or record.get("usage") != "unknown"
+                or not isinstance(record.get("error_type"), str)
+                or not isinstance(record.get("error"), str)
+            ):
+                raise ValueError("native failed transport attempt is incomplete")
+        if grouped and sorted(grouped) != list(range(max(grouped) + 1)):
+            raise ValueError("native failed request logical calls are not contiguous")
+        if any(values != list(range(1, len(values) + 1)) for values in grouped.values()):
+            raise ValueError("native failed request retry sequence is invalid")
+        required_turn = {
+            "response_id", "response_model", "system_fingerprint", "reasoning",
+            "content", "tool_calls", "observations", "finish_reason",
+            "prompt_tokens", "completion_tokens", "total_tokens",
+        }
+        for index, turn in enumerate(turns):
+            if not isinstance(turn, dict) or not required_turn.issubset(turn):
+                raise ValueError("native failed completed turn is incomplete")
+            values = [turn.get(field) for field in (
+                "prompt_tokens", "completion_tokens", "total_tokens"
+            )]
+            if (
+                any(type(value) is not int or value < 0 for value in values)
+                or values[2] != values[0] + values[1]
+                or index >= len(response_attempts)
+                or response_attempts[index].get("logical_call") != index
+                or response_attempts[index].get("response_id")
+                != turn.get("response_id")
+                or response_attempts[index].get("response_model")
+                != turn.get("response_model")
+            ):
+                raise ValueError("native failed completed turn audit is invalid")
+            turn_prompt += values[0]
+            turn_completion += values[1]
+            turn_total += values[2]
+        if [turn_prompt, turn_completion, turn_total] != [prompt, completion, total]:
+            raise ValueError("native failed known usage disagrees with counters")
+        if len(response_attempts) not in {len(turns), len(turns) + 1}:
+            raise ValueError("native failed response/turn mapping is invalid")
+        if episode.get("n_tool_iters") > len(turns):
+            raise ValueError("native failed tool count exceeds completed turns")
+        unknown = len(attempts) - len(turns)
+    return {
+        "status": "complete" if unknown == 0 else "partial-known-prefix",
+        "known_prompt_tokens": prompt,
+        "known_completion_tokens": completion,
+        "known_total_tokens": total,
+        "unknown_provider_attempts": unknown,
+    }
+
+
+def validate_screen_failure_state(
+    context: RunContext,
+    expected_path: Path,
+    identity: dict[str, object],
+    producer_contract: dict[str, str],
+    *,
+    require_current_environment: bool = False,
+) -> dict[str, object]:
+    """Validate and return terminal failed attempts for one screen cell.
+
+    Smoke and exploratory runs are one-shot at the cell level.  The existence
+    of any persisted nonfinal attempt therefore blocks every subsequent model
+    request for that cell.  We validate the complete append-only directory so
+    malformed state cannot be silently ignored or used to reset the policy.
+    Confirmatory runs retain their separately preregistered retry policy.
+    """
+
+    contract = _validate_producer_contract(producer_contract)
+    if type(require_current_environment) is not bool:
+        raise ValueError("screen environment-binding flag must be a boolean")
+    if not isinstance(identity, dict) or not identity:
+        raise ValueError("episode identity is invalid")
+    screen = _validate_screen_policy(context)
+    intent_path, failure_dir, relative = _screen_attempt_paths(
+        context, expected_path
+    )
+    if not screen:
+        return {"intent": None, "failed_attempts": []}
+
+    intent = None
+    if intent_path.exists():
+        try:
+            intent_bytes = read_artifact_bytes(intent_path)
+            intent = strict_json_loads(intent_bytes, label=f"attempt intent {intent_path}")
+        except (OSError, ValueError) as error:
+            raise ValueError(f"invalid screen attempt intent: {intent_path}") from error
+        if (
+            not isinstance(intent, dict)
+            or set(intent) != {
+                "schema_version", "policy", "expected_episode", "identity",
+                "producer_contract",
+            }
+            or intent_bytes != canonical_json_bytes(intent)
+            or intent.get("schema_version") != SCREEN_ATTEMPT_INTENT_SCHEMA_VERSION
+            or type(intent.get("schema_version")) is not int
+            or intent.get("policy") != SCREEN_ATTEMPT_POLICY
+            or intent.get("expected_episode") != str(relative)
+            or intent.get("producer_contract") != contract
+            or not isinstance(intent.get("identity"), dict)
+            or set(intent["identity"]) != set(identity)
+        ):
+            raise ValueError(f"screen attempt intent is invalid: {intent_path}")
+        for key, expected in identity.items():
+            if key == "environment_snapshot":
+                continue
+            observed = intent["identity"].get(key)
+            if (
+                key in {"seed", "rollout"}
+                and type(observed) is not int
+                or type(observed) is not type(expected)
+                or canonical_json_bytes(observed) != canonical_json_bytes(expected)
+            ):
+                raise ValueError(
+                    f"screen attempt intent identity mismatch for {key}: {intent_path}"
+                )
+        spec = context.manifest["spec"]
+        try:
+            validate_environment_snapshot(
+                context.root,
+                intent["identity"].get("environment_snapshot"),
+                baseline=spec["environment"],
+                require_claim_ready=spec.get("purpose") != "smoke",
+            )
+        except (KeyError, ValueError) as error:
+            raise ValueError(
+                f"screen attempt intent environment is invalid: {intent_path}"
+            ) from error
+        if (
+            require_current_environment
+            and canonical_json_bytes(intent["identity"].get("environment_snapshot"))
+            != canonical_json_bytes(identity.get("environment_snapshot"))
+        ):
+            raise ValueError(
+                f"screen attempt intent is bound to another launch: {intent_path}"
+            )
+    elif intent_path.is_symlink():
+        raise ValueError(f"screen attempt intent is a symlink: {intent_path}")
+
+    if not failure_dir.exists():
+        return {"intent": intent_path if intent is not None else None,
+                "failed_attempts": []}
+    if failure_dir.is_symlink() or not failure_dir.is_dir():
+        raise ValueError(f"failed-attempt path is not a safe directory: {failure_dir}")
+
+    entries = sorted(failure_dir.iterdir(), key=lambda path: path.name)
+    indexed: dict[int, Path] = {}
+    for path in entries:
+        match = re.fullmatch(r"attempt-([1-9][0-9]*)\.json", path.name)
+        if (
+            match is None
+            or path.is_symlink()
+            or not path.is_file()
+            or int(match.group(1)) in indexed
+        ):
+            raise ValueError(f"invalid failed-attempt artifact: {path}")
+        indexed[int(match.group(1))] = path
+    if sorted(indexed) != [1]:
+        raise ValueError(
+            f"screen failed-attempt directory must contain exactly attempt 1: {failure_dir}"
+        )
+    if intent is None:
+        raise ValueError(f"screen failed attempt has no prior intent: {failure_dir}")
+
+    validated = []
+    expected_relative = str(relative)
+    for index in sorted(indexed):
+        path = indexed[index]
+        try:
+            failure_bytes = read_artifact_bytes(path)
+            parsed_failure = strict_json_loads(
+                failure_bytes, label=f"failed attempt {path}"
+            )
+        except (OSError, ValueError) as error:
+            raise ValueError(f"failed-attempt artifact is invalid: {path}") from error
+        if (
+            not isinstance(parsed_failure, dict)
+            or failure_bytes != canonical_json_bytes(parsed_failure)
+        ):
+            raise ValueError(f"failed-attempt artifact is not canonical: {path}")
+        episode = validate_resumable_episode(
+            path, intent["identity"], context=context
+        )
+        if episode is None or episode != parsed_failure:
+            raise ValueError(f"failed-attempt artifact is invalid: {path}")
+        try:
+            _validate_screen_failed_episode(
+                episode,
+                intent["identity"],
+                contract,
+                expected_episode=expected_relative,
+                attempt=index,
+            )
+        except ValueError as error:
+            raise ValueError(f"failed-attempt artifact is invalid: {path}") from error
+        validated.append(path)
+    return {"intent": intent_path, "failed_attempts": validated}
+
+
+def write_screen_attempt_intent(
+    context: RunContext,
+    expected_path: Path,
+    identity: dict[str, object],
+    producer_contract: dict[str, str],
+) -> Path | None:
+    """Durably mark a screen cell before the first provider request."""
+
+    state = validate_screen_failure_state(
+        context, expected_path, identity, producer_contract
+    )
+    if not _validate_screen_policy(context):
+        return None
+    if state["intent"] is not None or state["failed_attempts"]:
+        raise ValueError("screen cell already has an attempt intent")
+    intent_path, _, relative = _screen_attempt_paths(context, expected_path)
+    write_immutable_json(intent_path, {
+        "schema_version": SCREEN_ATTEMPT_INTENT_SCHEMA_VERSION,
+        "policy": SCREEN_ATTEMPT_POLICY,
+        "expected_episode": str(relative),
+        "identity": identity,
+        "producer_contract": _validate_producer_contract(producer_contract),
+    })
+    observed = validate_screen_failure_state(
+        context, expected_path, identity, producer_contract
+    )
+    if observed["intent"] != intent_path or observed["failed_attempts"]:
+        raise ValueError("screen attempt intent failed post-write validation")
+    return intent_path
+
+
+def validate_screen_attempt_tree(
+    context: RunContext,
+    cells: list[tuple[Path, dict[str, object]]],
+    producer_contract: dict[str, str],
+) -> dict[str, dict[str, object]]:
+    """Globally validate the closed screen attempt/failure namespace.
+
+    This must run while the caller holds the run-level generation lock and
+    before it starts any worker.  Unknown, malformed, or out-of-grid artifacts
+    then fail the whole invocation before provider contact.
+    """
+
+    contract = _validate_producer_contract(producer_contract)
+    if not _validate_screen_policy(context):
+        return {}
+    expected: dict[PurePosixPath, tuple[Path, dict[str, object]]] = {}
+    intent_files: set[PurePosixPath] = set()
+    failure_files: set[PurePosixPath] = set()
+    for path, identity in cells:
+        intent_path, _, relative = _screen_attempt_paths(context, path)
+        if relative in expected:
+            raise ValueError(f"duplicate expected screen cell: {relative}")
+        expected[relative] = (path, identity)
+        intent_files.add(PurePosixPath(intent_path.relative_to(
+            context.root / "attempt-intents").as_posix()))
+        failure_files.add(relative.with_suffix("") / "attempt-1.json")
+
+    def validate_closed_tree(
+        root: Path, allowed_files: set[PurePosixPath], label: str
+    ) -> None:
+        if root.is_symlink():
+            raise ValueError(f"{label} root is a symlink: {root}")
+        if not root.exists():
+            return
+        if not root.is_dir():
+            raise ValueError(f"{label} root is not a safe directory: {root}")
+        allowed_dirs = {
+            PurePosixPath(*relative.parts[:depth])
+            for relative in allowed_files
+            for depth in range(1, len(relative.parts))
+        }
+        for candidate in root.rglob("*"):
+            relative = PurePosixPath(candidate.relative_to(root).as_posix())
+            if candidate.is_symlink():
+                raise ValueError(f"{label} tree contains a symlink: {candidate}")
+            if candidate.is_dir():
+                if relative not in allowed_dirs:
+                    raise ValueError(f"{label} tree contains an unknown directory: {candidate}")
+            elif candidate.is_file():
+                if relative not in allowed_files:
+                    raise ValueError(f"{label} tree contains an unknown file: {candidate}")
+            else:
+                raise ValueError(f"{label} tree contains a special file: {candidate}")
+
+    validate_closed_tree(
+        context.root / "attempt-intents", intent_files, "attempt-intent"
+    )
+    validate_closed_tree(
+        context.root / "failed-attempts", failure_files, "failed-attempt"
+    )
+    budgets = {relative.parts[0] for relative in expected}
+    for budget in budgets:
+        budget_files = {
+            PurePosixPath(*relative.parts[1:])
+            for relative in expected
+            if relative.parts[0] == budget
+        }
+        validate_closed_tree(
+            context.root / budget, budget_files, f"result budget {budget}"
+        )
+    for candidate in context.root.glob("*/r*/*"):
+        relative = PurePosixPath(candidate.relative_to(context.root).as_posix())
+        if relative.parts[0] not in budgets:
+            raise ValueError(
+                f"result tree contains an unknown budget artifact: {candidate}"
+            )
+    states = {}
+    for relative, (path, identity) in expected.items():
+        state = validate_screen_failure_state(
+            context, path, identity, contract
+        )
+        if path.exists() and state["failed_attempts"]:
+            raise ValueError(
+                f"screen cell has both a final result and a failed attempt: {relative}"
+            )
+        if path.exists():
+            if state["intent"] is None:
+                raise ValueError(
+                    f"screen final result has no attempt intent: {relative}"
+                )
+            try:
+                result_bytes = read_artifact_bytes(path)
+                result = strict_json_loads(
+                    result_bytes, label=f"screen result {path}"
+                )
+                intent_bytes = read_artifact_bytes(state["intent"])
+                intent = strict_json_loads(
+                    intent_bytes, label=f"attempt intent {state['intent']}"
+                )
+            except (OSError, ValueError) as error:
+                raise ValueError(
+                    f"screen final result binding is invalid: {relative}"
+                ) from error
+            if (
+                not isinstance(result, dict)
+                or not isinstance(intent, dict)
+                or result_bytes != canonical_json_bytes(result)
+                or result.get("status") not in {"ok", "no_answer"}
+                or any(
+                    canonical_json_bytes(result.get(key))
+                    != canonical_json_bytes(value)
+                    for key, value in intent["identity"].items()
+                )
+                or result.get("model") != contract["expected_model"]
+                or result.get("model_revision")
+                != contract["expected_model_revision"]
+                or result.get("harness") != contract["expected_harness"]
+            ):
+                raise ValueError(
+                    f"screen final result does not bind its attempt intent: {relative}"
+                )
+        states[str(relative)] = state
+    return states
+
+
+def validate_persisted_screen_attempt_tree(
+    run_task_root: Path,
+    manifest: dict[str, object],
+    *,
+    require_complete: bool = True,
+) -> list[dict[str, object]]:
+    """Reconstruct and validate a persisted screen's one-shot attempt ledger.
+
+    Grading and reporting call this independently of the generation process.
+    The only environment candidate is read from each immutable intent, then
+    re-attested against the manifest baseline and required to equal the result.
+    """
+
+    if type(require_complete) is not bool:
+        raise ValueError("screen completeness flag must be a boolean")
+    if (
+        not isinstance(manifest, dict)
+        or set(manifest) != {"manifest_schema", "spec"}
+        or type(manifest.get("manifest_schema")) is not int
+        or manifest["manifest_schema"] != SCHEMA_VERSION
+        or not isinstance(manifest.get("spec"), dict)
+    ):
+        raise ValueError("run manifest is invalid")
+    spec = manifest["spec"]
+    if spec.get("purpose") == "confirmatory":
+        if spec.get("failure_policy") != RUN_FAILURE_POLICY:
+            raise ValueError("confirmatory run failure policy is invalid")
+        return []
+    if spec.get("purpose") not in {"smoke", "exploratory"}:
+        raise ValueError("run purpose is invalid")
+    extra = spec.get("extra")
+    expected = spec.get("expected_episodes")
+    questions = spec.get("questions")
+    seeds = spec.get("seed_policy", {}).get("episode_seeds") \
+        if isinstance(spec.get("seed_policy"), dict) else None
+    prompts = spec.get("prompt_policy", {}).get("presented_prompt_sha256") \
+        if isinstance(spec.get("prompt_policy"), dict) else None
+    note = spec.get("note")
+    if (
+        not isinstance(extra, dict)
+        or not isinstance(expected, list)
+        or not expected
+        or not isinstance(questions, list)
+        or not isinstance(seeds, dict)
+        or not isinstance(prompts, dict)
+        or (note is not None and not isinstance(note, dict))
+    ):
+        raise ValueError("screen manifest ledger inputs are invalid")
+    contract = _validate_producer_contract({
+        "expected_model": spec.get("model"),
+        "expected_model_revision": spec.get("model_revision"),
+        "expected_harness": spec.get("harness"),
+        "expected_response_model": extra.get("expected_response_model"),
+    })
+    question_hashes = {}
+    for question in questions:
+        if (
+            not isinstance(question, dict)
+            or set(question) != {"id", "sha256", "question_text_sha256"}
+            or not isinstance(question.get("id"), str)
+            or question["id"] in question_hashes
+            or not isinstance(question.get("sha256"), str)
+        ):
+            raise ValueError("screen question manifest is invalid")
+        question_hashes[question["id"]] = question["sha256"]
+    try:
+        manifest_bytes = read_artifact_bytes(run_task_root / "manifest.json")
+    except (OSError, ValueError) as error:
+        raise ValueError("screen manifest artifact is unavailable") from error
+    if (
+        manifest_bytes != canonical_json_bytes(manifest)
+        or strict_json_loads(manifest_bytes, label="screen manifest") != manifest
+    ):
+        raise ValueError("screen manifest artifact is not canonical or current")
+    context = RunContext(
+        Path(run_task_root), manifest, sha256_bytes(manifest_bytes), "", ""
+    )
+    cells = []
+    for raw_relative in expected:
+        if not isinstance(raw_relative, str) or "\\" in raw_relative:
+            raise ValueError("screen expected episode path is invalid")
+        relative = PurePosixPath(raw_relative)
+        if (
+            relative.is_absolute()
+            or len(relative.parts) != 3
+            or str(relative) != raw_relative
+            or relative.suffix != ".json"
+            or not relative.parts[1].startswith("r")
+            or not relative.parts[1][1:].isdecimal()
+        ):
+            raise ValueError("screen expected episode path is invalid")
+        budget, rollout_dir, filename = relative.parts
+        qid = filename.removesuffix(".json")
+        if qid not in question_hashes:
+            raise ValueError("screen expected episode has an unknown question")
+        intent_path = run_task_root.joinpath("attempt-intents", *relative.parts)
+        intent_environment = None
+        if intent_path.exists() or intent_path.is_symlink():
+            try:
+                candidate = strict_json_loads(
+                    read_artifact_bytes(intent_path), label=f"attempt intent {intent_path}"
+                )
+            except (OSError, ValueError):
+                candidate = None
+            if isinstance(candidate, dict) and isinstance(
+                candidate.get("identity"), dict
+            ):
+                intent_environment = candidate["identity"].get(
+                    "environment_snapshot"
+                )
+        identity = {
+            "manifest_sha256": context.manifest_sha256,
+            "question_sha256": question_hashes[qid],
+            "prompt_sha256": prompts.get(qid),
+            "note_sha256": note.get("sha256") if isinstance(note, dict) else None,
+            "seed": seeds.get(raw_relative),
+            "task": spec.get("task"),
+            "qid": qid,
+            "budget": budget,
+            "rollout": int(rollout_dir[1:]),
+            "environment_snapshot": intent_environment,
+        }
+        cells.append((run_task_root.joinpath(*relative.parts), identity))
+    states = validate_screen_attempt_tree(context, cells, contract)
+    records = []
+    for path, _ in cells:
+        relative = path.relative_to(run_task_root).as_posix()
+        state = states[relative]
+        if require_complete and not path.is_file():
+            raise ValueError(
+                f"screen cell is terminally incomplete or unattempted: {relative}"
+            )
+        if state["intent"] is None:
+            if require_complete:
+                raise ValueError(f"screen cell has no attempt intent: {relative}")
+            continue
+        intent_bytes = read_artifact_bytes(state["intent"])
+        records.append({
+            "expected_episode": relative,
+            "path": state["intent"].relative_to(run_task_root).as_posix(),
+            "sha256": sha256_bytes(intent_bytes),
+            "bytes": len(intent_bytes),
+            "outcome": (
+                "final" if path.is_file()
+                else ("failed" if state["failed_attempts"] else "ambiguous")
+            ),
+        })
+    records.sort(key=lambda record: record["expected_episode"])
+    return records
+
+
 def write_episode_result(
     context: RunContext,
     expected_path: Path,
     episode: dict[str, Any],
     *,
     validate_final: Callable[[dict[str, Any]], None] | None = None,
+    screen_identity: dict[str, object] | None = None,
+    producer_contract: dict[str, str] | None = None,
 ) -> Path:
     """Write a validated final outcome or retain a failed attempt.
 
@@ -3007,6 +3958,30 @@ def write_episode_result(
             require_claim_ready=spec.get("purpose") != "smoke",
         )
     status = episode.get("status")
+    spec = context.manifest.get("spec")
+    screen = isinstance(spec, dict) and spec.get("purpose") in {
+        "smoke", "exploratory"
+    }
+    if screen:
+        if not isinstance(screen_identity, dict) or not isinstance(
+            producer_contract, dict
+        ):
+            raise ValueError(
+                "screen persistence requires exact identity and producer contract"
+            )
+        screen_state = validate_screen_failure_state(
+            context,
+            expected_path,
+            screen_identity,
+            producer_contract,
+            require_current_environment=True,
+        )
+        if screen_state["intent"] is None:
+            raise ValueError(
+                "screen result has no unused valid pre-contact attempt intent"
+            )
+        if screen_state["failed_attempts"]:
+            raise ValueError("screen cell already has a terminal failed attempt")
     if status in ("ok", "no_answer"):
         if not callable(validate_final):
             raise ValueError(
@@ -3014,21 +3989,63 @@ def write_episode_result(
             )
         validate_final(episode)
         write_immutable_json(expected_path, episode)
+        if screen:
+            observed = validate_screen_failure_state(
+                context,
+                expected_path,
+                screen_identity,
+                producer_contract,
+                require_current_environment=True,
+            )
+            if observed["intent"] is None or observed["failed_attempts"]:
+                raise ValueError("persisted screen final failed post-write validation")
         return expected_path
 
     relative = expected_path.relative_to(context.root)
     failure_dir = context.root / "failed-attempts" / relative.with_suffix("")
     index = 1
-    while (failure_dir / f"attempt-{index}.json").exists():
+    if screen and failure_dir.exists():
+        raise ValueError("screen cell already has a terminal failed attempt")
+    if screen and (expected_path.exists() or expected_path.is_symlink()):
+        raise ValueError("screen cell already has a final result")
+    while not screen and (failure_dir / f"attempt-{index}.json").exists():
         index += 1
     while True:
         failure_path = failure_dir / f"attempt-{index}.json"
-        try:
-            write_immutable_json(
-                failure_path,
-                {**episode, "failure_attempt": index, "expected_episode": str(relative)},
+        stored_episode = {
+            **episode,
+            "failure_attempt": index,
+            "expected_episode": str(relative),
+        }
+        if screen:
+            validated_contract = _validate_producer_contract(producer_contract)
+            stored_episode["failure_usage"] = _screen_failure_usage_audit(
+                stored_episode, validated_contract
             )
+            _validate_screen_failed_episode(
+                stored_episode,
+                screen_identity,
+                validated_contract,
+                expected_episode=str(relative),
+                attempt=index,
+            )
+        try:
+            write_immutable_json(failure_path, stored_episode)
+            if screen:
+                observed = validate_screen_failure_state(
+                    context,
+                    expected_path,
+                    screen_identity,
+                    producer_contract,
+                    require_current_environment=True,
+                )
+                if observed["failed_attempts"] != [failure_path]:
+                    raise ValueError(
+                        "persisted screen failure failed post-write validation"
+                    )
             return failure_path
         except FileExistsError:
+            if screen:
+                raise
             # A concurrent retry claimed this index with different bytes.
             index += 1

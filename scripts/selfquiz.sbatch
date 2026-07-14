@@ -6,27 +6,25 @@
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/slurm/%x-%j.out
 #SBATCH --error=logs/slurm/%x-%j.out
-# One namespaced, deterministically seeded self-quizzing study round.
+# One namespaced, deterministically seeded DSPy selfquiz construction.
 set -euo pipefail
 cd "$SLURM_SUBMIT_DIR"
 
 source scripts/run_args.sh
-TASKS=${SB_TASKS:-dspy,openclaw}
-ROUND=${SB_ROUND:-1}
 SMOKE=${SB_SMOKE:-0}
 DEBUG=${SB_DEBUG:-$SMOKE}
 STUDY_ID=${SB_STUDY_ID:?set a unique SB_STUDY_ID}
 STUDY_SEED=${SB_STUDY_SEED:?set SB_STUDY_SEED explicitly}
 AUDIT_PROTOCOL=${SB_AUDIT_PROTOCOL:-}
+ATTEMPT_ACCESS=${SB_ATTEMPT_ACCESS:-react-corpus}
 
-validate_csv_members SB_TASKS "$TASKS" dspy,openclaw
-validate_positive_int SB_ROUND "$ROUND"
 validate_bool SB_SMOKE "$SMOKE"
 validate_bool SB_DEBUG "$DEBUG"
 validate_id SB_STUDY_ID "$STUDY_ID"
 validate_seed SB_STUDY_SEED "$STUDY_SEED"
+[[ "$ATTEMPT_ACCESS" = closed-book || "$ATTEMPT_ACCESS" = react-corpus ]] \
+    || fail_arg "SB_ATTEMPT_ACCESS must be closed-book or react-corpus"
 if [ -n "$AUDIT_PROTOCOL" ]; then
-    [ "$ROUND" = 1 ] || fail_arg "SB_AUDIT_PROTOCOL may only be registered in round 1"
     [ -f "$AUDIT_PROTOCOL" ] || fail_arg "SB_AUDIT_PROTOCOL must be a regular file"
     [ ! -L "$AUDIT_PROTOCOL" ] || fail_arg "SB_AUDIT_PROTOCOL must not be a symlink"
     [ -r "$AUDIT_PROTOCOL" ] || fail_arg "SB_AUDIT_PROTOCOL must be readable"
@@ -48,12 +46,18 @@ PY
 fi
 source scripts/serve_and_wait.sh
 
-flags=(--study-id "$STUDY_ID" --seed "$STUDY_SEED")
-[ -z "$AUDIT_PROTOCOL" ] || flags+=(--audit-protocol "$AUDIT_PROTOCOL")
-[ "$SMOKE" = 0 ] || flags+=(--smoke)
-[ "$DEBUG" = 0 ] || flags+=(--debug)
-for task in ${TASKS//,/ }; do
-    .venv-dspy/bin/python -m studybench.selfquiz --task "$task" --round "$ROUND" \
+rounds=(1 2 3 4)
+[ "$SMOKE" = 0 ] || rounds=(1)
+for round in "${rounds[@]}"; do
+    flags=(--task dspy --round "$round" --study-id "$STUDY_ID" \
+        --seed "$STUDY_SEED" --chapters 4 --questions 5 \
+        --attempt-access "$ATTEMPT_ACCESS")
+    [ "$SMOKE" = 0 ] || flags+=(--smoke)
+    [ "$DEBUG" = 0 ] || flags+=(--debug)
+    if [ "$round" = 1 ] && [ -n "$AUDIT_PROTOCOL" ]; then
+        flags+=(--audit-protocol "$AUDIT_PROTOCOL")
+    fi
+    .venv-dspy/bin/python -m studybench.selfquiz \
         --base-urls "$BASE_URLS" --concurrency "$((4 * SB_NGPU))" "${flags[@]}"
 done
-echo "selfquiz round $ROUND complete for study $STUDY_ID"
+echo "semantic selfquiz construction complete for study $STUDY_ID"

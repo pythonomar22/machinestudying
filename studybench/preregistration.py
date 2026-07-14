@@ -38,6 +38,20 @@ RUN_FAILURE_POLICY = {
     "forced_short": "invalid_until_retried",
 }
 
+# Exploratory screens are deliberately stricter than a preregistered
+# confirmatory run.  Once a nonfinal model/provider attempt has been persisted,
+# rerunning that cell could select a luckier completion after observing the
+# failure.  A crash before the durable pre-contact intent remains resumable; an
+# orphaned intent is conservatively terminal because a provider request may
+# already have occurred even when no response artifact reached stable storage.
+SCREEN_FAILURE_POLICY = {
+    "model_no_answer": "intention-to-run_zero",
+    "persisted_nonfinal_attempt": "terminal_incomplete_no_retry",
+    "interruption_before_attempt_intent_write": "invalid_until_retried",
+    "partial_attempt_intent_write": "terminal_ambiguous_no_retry",
+    "orphaned_persisted_intent": "terminal_ambiguous_no_retry",
+}
+
 _TOP_LEVEL_KEYS = {
     "schema_version",
     "preregistration_id",

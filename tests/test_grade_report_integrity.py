@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from copy import deepcopy
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -13,6 +14,20 @@ from unittest.mock import patch
 from studybench import grade, provenance, report
 from studybench.integrity import canonical_json_bytes, sha256_json, stable_seed
 from studybench.provenance import _load_note, environment_contract_record
+from studybench.study_protocol import (
+    DSPY_REPOSITORY_TOOL_CONTRACT,
+    FORCED50_CONFIG_SCHEMA_VERSION,
+    FORCED50_ITERATIONS,
+    REACT_SAMPLING,
+    SEMANTIC_SELFQUIZ_METHOD,
+    SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
+    SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE,
+    StudyProtocolError,
+    derive_protocol_summary,
+    forced50_study_question,
+    openbook_attempt_protocol,
+)
+from studybench.tools import DSPY_READ_MAX_LINES
 
 
 TEST_JUDGE_BASE_URL = "https://judge.test/v1"
@@ -328,12 +343,32 @@ class GradeVerdictTests(unittest.TestCase):
         source = Path(grade.__file__).read_text()
         self.assertEqual(source.count("await asyncio.gather"), 1)
         self.assertIn("with exclusive_process_lock(lock_path):", source)
+        self.assertIn('out_root / ".locks" / "grading.lock"', source)
+        self.assertIn("await _main_async_locked(args)", source)
         self.assertIn("if gf.exists():", source)
 
     def test_grader_disables_hidden_sdk_retries(self) -> None:
         source = Path(grade.__file__).read_text()
         self.assertEqual(source.count("AsyncOpenAI("), 1)
         self.assertIn("max_retries=0", source)
+
+    def test_grade_run_lock_blocks_a_second_invocation_before_preflight(self) -> None:
+        args = SimpleNamespace(
+            run_id="run-a",
+            grade_id="grade-a",
+            whole_files=False,
+            judge_effort="",
+            local_smoke=False,
+        )
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+            grade, "ROOT", Path(directory)
+        ), patch.dict(os.environ, {"GRADER_MODEL": "openai"}):
+            _, out_root = grade._grade_namespace(args)
+            lock_path = out_root / ".locks" / "grading.lock"
+            with grade.exclusive_process_lock(lock_path), self.assertRaisesRegex(
+                RuntimeError, "already working"
+            ):
+                asyncio.run(grade.main_async(args))
 
     def test_local_smoke_selects_one_answer_only_from_a_fresh_grid(self) -> None:
         pending = [
@@ -804,7 +839,7 @@ class GradeVerdictTests(unittest.TestCase):
             {"round": 1},
             {
                 "schema_version": 1,
-                "round": 1,
+                "round": 4,
                 "blinding_preserved": True,
                 "reviewer_independent": True,
             },
@@ -876,6 +911,157 @@ class GradeVerdictTests(unittest.TestCase):
         self.assertIsNone(result["judge_accepted_content"])
         self.assertEqual(result["judge_attempts"], [])
 
+    def test_judge_intent_precedes_contact_and_is_port_stable(self) -> None:
+        corpus = SimpleNamespace(name="fake", display="Fake", language="python")
+        episode = native_episode()
+        source_episode = "runs/run-a/fake/direct/r0/q1.json"
+        episode_digest = "a" * 64
+        spec_digest = "b" * 64
+        runtime_digest = provenance.grading_runtime_sha256(self.grading_runtime)
+        local_digest = provenance.local_judge_runtime_sha256(
+            self.local_judge_runtime
+        )
+        client = FakeClient(
+            [verdict()], response_model=grade.LOCAL_GRADER_MODEL
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            out_root = Path(directory)
+
+            def write_intent(prompt_digest: str) -> str:
+                self.assertEqual(client.completions.calls, 0)
+                _, digest = grade.write_judge_attempt_intent(
+                    out_root,
+                    source_episode=source_episode,
+                    episode=episode,
+                    episode_sha256=episode_digest,
+                    grading_spec_sha256=spec_digest,
+                    grading_runtime_sha256=runtime_digest,
+                    local_judge_runtime_sha256=local_digest,
+                    judge_model=grade.LOCAL_GRADER_MODEL,
+                    judge_base_url="http://localhost:8123/v1",
+                    judge_prompt_sha256=prompt_digest,
+                )
+                return digest
+
+            with patch(
+                "studybench.grade.sandbox.check", return_value=checker_result()
+            ):
+                stored = asyncio.run(grade.grade_episode(
+                    client,
+                    grade.LOCAL_GRADER_MODEL,
+                    corpus,
+                    question(),
+                    episode,
+                    judge_base_url="http://localhost:8123/v1",
+                    episode_sha256=episode_digest,
+                    grading_spec_sha256=spec_digest,
+                    grading_runtime=self.grading_runtime,
+                    local_judge_runtime=self.local_judge_runtime,
+                    judge_attempt_intent_writer=write_intent,
+                ))
+            self.assertEqual(client.completions.calls, 1)
+            intent_path = grade._judge_attempt_intent_path(out_root, episode)
+            intent = json.loads(intent_path.read_bytes())
+            self.assertNotIn("judge_base_url", intent)
+            self.assertEqual(
+                intent["judge_endpoint_identity"],
+                grade.LOCAL_GRADER_ENDPOINT_IDENTITY,
+            )
+            observed = grade.validate_judge_attempt_intent(
+                out_root,
+                source_episode=source_episode,
+                episode=episode,
+                episode_sha256=episode_digest,
+                grading_spec_sha256=spec_digest,
+                grading_runtime_sha256=runtime_digest,
+                local_judge_runtime_sha256=local_digest,
+                judge_model=grade.LOCAL_GRADER_MODEL,
+                judge_base_url="http://localhost:9123/v1",
+                judge_prompt_sha256=stored["judge_prompt_sha256"],
+            )
+            self.assertIsNotNone(observed)
+            self.assertEqual(
+                stored["judge_attempt_intent_sha256"], observed[1]
+            )
+            stored["source_episode"] = source_episode
+            grade.validate_stored_grade(
+                stored,
+                question(),
+                episode,
+                episode_sha256=episode_digest,
+                grading_spec_sha256=spec_digest,
+                judge_model=grade.LOCAL_GRADER_MODEL,
+                judge_base_url="http://localhost:8123/v1",
+                corpus=corpus,
+                source_episode=source_episode,
+                recheck_checker=False,
+                grading_runtime=self.grading_runtime,
+                local_judge_runtime=self.local_judge_runtime,
+            )
+
+    def test_failed_judge_audit_requires_prior_intent(self) -> None:
+        corpus = SimpleNamespace(name="fake", display="Fake", language="python")
+        episode = native_episode()
+        source_episode = "runs/run-a/fake/direct/r0/q1.json"
+        runtime_digest = provenance.grading_runtime_sha256(self.grading_runtime)
+        client = FakeClient([RuntimeError("provider unavailable")])
+        with tempfile.TemporaryDirectory() as directory:
+            out_root = Path(directory)
+
+            def write_intent(prompt_digest: str) -> str:
+                _, digest = grade.write_judge_attempt_intent(
+                    out_root,
+                    source_episode=source_episode,
+                    episode=episode,
+                    episode_sha256="a" * 64,
+                    grading_spec_sha256="b" * 64,
+                    grading_runtime_sha256=runtime_digest,
+                    local_judge_runtime_sha256=None,
+                    judge_model="judge",
+                    judge_base_url=TEST_JUDGE_BASE_URL,
+                    judge_prompt_sha256=prompt_digest,
+                )
+                return digest
+
+            with patch(
+                "studybench.grade.sandbox.check", return_value=checker_result()
+            ), self.assertRaises(grade.JudgeAttemptsFailed) as caught:
+                asyncio.run(grade.grade_episode(
+                    client,
+                    "judge",
+                    corpus,
+                    question(),
+                    episode,
+                    judge_base_url=TEST_JUDGE_BASE_URL,
+                    episode_sha256="a" * 64,
+                    grading_spec_sha256="b" * 64,
+                    grading_runtime=self.grading_runtime,
+                    judge_attempt_intent_writer=write_intent,
+                ))
+            intent_digest = caught.exception.audit[
+                "judge_attempt_intent_sha256"
+            ]
+            audit_path = grade.write_failed_judge_audit(
+                out_root, source_episode, caught.exception.audit
+            )
+            self.assertEqual(
+                grade.existing_failed_judge_audit(
+                    out_root,
+                    source_episode=source_episode,
+                    episode=episode,
+                    episode_sha256="a" * 64,
+                    grading_spec_sha256="b" * 64,
+                    grading_runtime_sha256=runtime_digest,
+                    judge_model="judge",
+                    judge_prompt_sha256=caught.exception.audit[
+                        "judge_prompt_sha256"
+                    ],
+                    judge_attempt_intent_sha256=intent_digest,
+                    require_judge_attempt_intent=True,
+                ),
+                audit_path,
+            )
+
     def test_second_invalid_attempt_is_fatal(self) -> None:
         client = FakeClient([verdict(duplicate=True), verdict(score=100)])
         corpus = SimpleNamespace(name="fake", display="Fake", language="python")
@@ -896,6 +1082,16 @@ class GradeVerdictTests(unittest.TestCase):
             )
             self.assertTrue(path.is_file())
             self.assertNotIn("claims", json.loads(path.read_bytes()))
+            self.assertEqual(
+                grade.existing_failed_judge_audit(
+                    Path(directory),
+                    source_episode="runs/run-a/fake/direct/r0/q1.json",
+                    episode=native_episode(),
+                    episode_sha256="a" * 64,
+                    grading_spec_sha256="b" * 64,
+                ),
+                path,
+            )
 
     def test_first_request_failure_has_an_immutable_audit_and_no_usage_claim(self) -> None:
         corpus = SimpleNamespace(name="fake", display="Fake", language="python")
@@ -1025,11 +1221,56 @@ class ReportMathTests(unittest.TestCase):
         points = [(6_000, 10), (1_000, 50)]
         self.assertAlmostEqual(report.expertise(points), 50.0)
 
+    def test_checker_availability_projection_is_explicit_and_nonmutating(self) -> None:
+        population = {
+            budget: [{
+                "qid": "q1",
+                "lenient": 60,
+                "strict": 0,
+                "cores_ok": False,
+                "compile_check": {"compile_ok": False},
+                "gen_tokens": 4_000,
+                "episode_status": "ok",
+            }]
+            for budget in report.BUDGET_ORDER
+        }
+        aggregate = report.aggregate_population(population)
+        bootstrap = report.bootstrap_population(population, 3, seed=1)
+
+        unavailable = report.reportable_aggregate(
+            aggregate, checker_ready=False
+        )
+        for budget in report.BUDGET_ORDER:
+            self.assertEqual(unavailable["budgets"][budget]["len_cc"], 0)
+            self.assertIsNone(unavailable["budgets"][budget]["strict"])
+            self.assertIsNone(unavailable["budgets"][budget]["compile_rate"])
+            self.assertEqual(unavailable["budgets"][budget]["lenient"], 60)
+            self.assertEqual(aggregate["budgets"][budget]["strict"], 0)
+        self.assertIsNone(unavailable["expertise_strict"])
+        self.assertEqual(report.reportable_bootstrap(
+            bootstrap, checker_ready=False
+        )["wauc_cc"], bootstrap["wauc_cc"])
+        self.assertIsNotNone(bootstrap["wauc_cc"])
+
+        self.assertEqual(
+            report.reportable_aggregate(aggregate, checker_ready=True),
+            aggregate,
+        )
+        self.assertEqual(
+            report.reportable_bootstrap(bootstrap, checker_ready=True),
+            bootstrap,
+        )
+        with self.assertRaises(report.ReportIntegrityError):
+            report.reportable_aggregate(aggregate, checker_ready=1)
+
 
 class EvaluationFixture:
-    def __init__(self, root: Path, *, local: bool = False) -> None:
+    def __init__(
+        self, root: Path, *, local: bool = False, task: str = "fake"
+    ) -> None:
         self.root = root
         self.local = local
+        self.task = task
         self.run_id = "run-a"
         self.judge_model = (
             grade.LOCAL_GRADER_MODEL if local else "gpt-5.4"
@@ -1041,8 +1282,8 @@ class EvaluationFixture:
             "local-qwen3.5-9b-excerpts" if local else "gpt-5.4-excerpts"
         )
         self.corpus = SimpleNamespace(
-            name="fake",
-            display="Fake",
+            name=task,
+            display="DSPy" if task == "dspy" else "Fake",
             repo=root / "corpus",
             roots=("src",),
             language="python",
@@ -1051,7 +1292,7 @@ class EvaluationFixture:
         )
         self.questions = [question()]
         self.run_root = root / "runs" / self.run_id
-        self.run_task_root = self.run_root / "fake"
+        self.run_task_root = self.run_root / task
         self.grade_root = root / "grades" / self.run_id / self.judge_dir
         self.expected = [
             f"{budget}/r0/q1.json" for budget in report.BUDGET_ORDER
@@ -1070,11 +1311,11 @@ class EvaluationFixture:
         for relative in self.expected:
             budget, _, _ = relative.split("/")
             episode_seeds[relative] = stable_seed(
-                11, "native-react", seed_group, "fake", "q1", budget, 0)
+                11, "native-react", seed_group, self.task, "q1", budget, 0)
         spec = {
             "schema_version": 1,
             "run_id": self.run_id,
-            "task": "fake",
+            "task": self.task,
             "purpose": "confirmatory",
             "claim_ready": True,
             "harness": "native-react",
@@ -1115,7 +1356,7 @@ class EvaluationFixture:
                 "forced_short": "invalid_until_retried",
             },
             "corpus": {
-                "name": "fake",
+                "name": self.task,
                 "commit": self.corpus.commit,
                 "dirty": False,
                 "roots": ["src"],
@@ -1147,6 +1388,7 @@ class EvaluationFixture:
             spec.update({
                 "purpose": "exploratory",
                 "claim_ready": False,
+                "failure_policy": deepcopy(grade.SCREEN_FAILURE_POLICY),
                 "preregistration": {
                     "schema_version": 1,
                     "status": "not_provided",
@@ -1185,6 +1427,7 @@ class EvaluationFixture:
             episode_path.parent.mkdir(parents=True, exist_ok=True)
             episode_path.write_bytes(canonical_json_bytes(episode))
             episode_bytes = episode_path.read_bytes()
+            source_episode = episode_path.relative_to(self.root).as_posix()
             spec_sha256 = grade.grade_spec_sha256(
                 self.corpus,
                 self.questions[0],
@@ -1192,6 +1435,31 @@ class EvaluationFixture:
                 judge_base_url=self.judge_base_url,
             )
             if status == "ok":
+                def write_intent(prompt_digest: str) -> str:
+                    _, digest = grade.write_judge_attempt_intent(
+                        self.grade_root,
+                        source_episode=source_episode,
+                        episode=episode,
+                        episode_sha256=grade.sha256_bytes(episode_bytes),
+                        grading_spec_sha256=spec_sha256,
+                        grading_runtime_sha256=provenance.grading_runtime_sha256(
+                            grade.grading_runtime_record()
+                        ),
+                        local_judge_runtime_sha256=(
+                            provenance.local_judge_runtime_sha256(
+                                grade.local_judge_runtime_record()
+                            )
+                            if self.local
+                            else None
+                        ),
+                        judge_model=self.judge_model,
+                        judge_base_url=(
+                            self.judge_base_url or grade.CANONICAL_OPENAI_BASE_URL
+                        ),
+                        judge_prompt_sha256=prompt_digest,
+                    )
+                    return digest
+
                 with patch(
                     "studybench.grade.sandbox.check", return_value=checker_result()
                 ):
@@ -1204,6 +1472,7 @@ class EvaluationFixture:
                         episode_sha256=grade.sha256_bytes(episode_bytes),
                         grading_spec_sha256=spec_sha256,
                         judge_base_url=self.judge_base_url,
+                        judge_attempt_intent_writer=write_intent,
                     ))
             else:
                 stored = asyncio.run(grade.grade_episode(
@@ -1216,17 +1485,48 @@ class EvaluationFixture:
                     grading_spec_sha256=spec_sha256,
                     judge_base_url=self.judge_base_url,
                 ))
-            stored["source_episode"] = episode_path.relative_to(self.root).as_posix()
-            grade_path = self.grade_root / "fake" / relative
+            stored["source_episode"] = source_episode
+            grade_path = self.grade_root / self.task / relative
             grade_path.parent.mkdir(parents=True, exist_ok=True)
             grade_path.write_bytes(canonical_json_bytes(stored))
 
     def patches(self):
         return (
             patch.object(report, "ROOT", self.root),
-            patch.object(report, "CORPORA", {"fake": self.corpus}),
+            patch.object(report, "CORPORA", {self.task: self.corpus}),
             patch.object(report, "load_questions", return_value=self.questions),
         )
+
+
+def judge_population_bindings(fixture: EvaluationFixture) -> list[dict]:
+    """Build the complete report-facing binding list for one test fixture."""
+
+    bindings = []
+    for relative in fixture.expected:
+        episode_path = fixture.run_task_root / relative
+        episode_bytes = episode_path.read_bytes()
+        episode = json.loads(episode_bytes)
+        bindings.append({
+            "source_episode": episode_path.relative_to(fixture.root).as_posix(),
+            "episode": episode,
+            "episode_sha256": grade.sha256_bytes(episode_bytes),
+            "grading_spec_sha256": grade.grade_spec_sha256(
+                fixture.corpus,
+                fixture.questions[0],
+                fixture.judge_model,
+                judge_base_url=fixture.judge_base_url,
+            ),
+            "judge_prompt_sha256": (
+                grade.sha256_bytes(
+                    grade.build_prompt(
+                        fixture.corpus, fixture.questions[0], episode["answer"]
+                    ).encode("utf-8")
+                )
+                if episode["status"] == "ok"
+                else None
+            ),
+        })
+    return bindings
 
 
 class StrictReportTests(unittest.TestCase):
@@ -1258,6 +1558,20 @@ class StrictReportTests(unittest.TestCase):
             return_value={"claim_ready": True},
         )
         self.environment_snapshot_patch.start()
+        self.screen_attempt_tree_patch = patch(
+            "studybench.grade.provenance.validate_persisted_screen_attempt_tree",
+            side_effect=lambda run_root, manifest, require_complete: [
+                {
+                    "expected_episode": relative,
+                    "path": f"attempt-intents/{relative}",
+                    "sha256": "8" * 64,
+                    "bytes": 2,
+                    "outcome": "final",
+                }
+                for relative in manifest["spec"]["expected_episodes"]
+            ],
+        )
+        self.screen_attempt_tree_patch.start()
         # EvaluationFixture intentionally stores a synthetic successful
         # checker outcome.  Keep report-time independent rechecks synthetic as
         # well; production validation still invokes the real checker.
@@ -1288,6 +1602,7 @@ class StrictReportTests(unittest.TestCase):
         self.current_source_patch.stop()
         self.preregistration_patch.stop()
         self.checker_patch.stop()
+        self.screen_attempt_tree_patch.stop()
         self.environment_snapshot_patch.stop()
         self.environment_patch.stop()
         for runtime_patch in reversed(self.runtime_patches):
@@ -1522,7 +1837,7 @@ class StrictReportTests(unittest.TestCase):
                 checker["score_interpretation"],
                 "all-metrics"
                 if expected_ready
-                else "lenient-only-checker-unavailable",
+                else "lenient-and-core-conjunctive-checker-unavailable",
             )
 
             root_patch, corpora_patch, questions_patch = fixture.patches()
@@ -1569,6 +1884,137 @@ class StrictReportTests(unittest.TestCase):
             self.assertFalse(artifact["claim_ready"])
             self.assertIsNone(artifact["paper_comparison"])
             self.assertEqual(artifact["grading_manifest"], audit["grading_manifest"])
+
+    def test_local_report_nulls_unavailable_checker_metrics_after_recompute(self) -> None:
+        checker_configuration = {
+            "language": "python",
+            "ready": False,
+            "check_level": "syntax-only",
+            "sandboxed": False,
+            "error": "test checker unavailable",
+        }
+        with (
+            patch.object(
+                grade,
+                "sandbox_configuration_record",
+                return_value=checker_configuration,
+            ),
+            patch.object(
+                report,
+                "sandbox_configuration_record",
+                return_value=checker_configuration,
+            ),
+            tempfile.TemporaryDirectory() as directory,
+        ):
+            fixture = EvaluationFixture(Path(directory), local=True)
+            population, audit = self._load_local(fixture)
+            raw_aggregate = report.aggregate_population(population)
+            raw_bootstrap = report.bootstrap_population(population, 3, seed=23)
+            root_patch, corpora_patch, questions_patch = fixture.patches()
+            with root_patch, corpora_patch, questions_patch:
+                artifact_path = report.write_report_artifact(
+                    task="fake",
+                    run_id=fixture.run_id,
+                    judge_dir=fixture.judge_dir,
+                    aggregate_result=raw_aggregate,
+                    bootstrap_result=raw_bootstrap,
+                    bootstrap_replicates=3,
+                    bootstrap_seed=23,
+                    audit=audit,
+                )
+                with self.assertRaisesRegex(
+                    report.ReportIntegrityError,
+                    "aggregate does not recompute",
+                ):
+                    report.write_report_artifact(
+                        task="fake",
+                        run_id=fixture.run_id,
+                        judge_dir=fixture.judge_dir,
+                        aggregate_result=report.reportable_aggregate(
+                            raw_aggregate, checker_ready=False
+                        ),
+                        bootstrap_result=raw_bootstrap,
+                        bootstrap_replicates=3,
+                        bootstrap_seed=23,
+                        audit=audit,
+                    )
+
+            artifact = json.loads(artifact_path.read_bytes())
+            self.assertIsNone(artifact["aggregate"]["expertise_strict"])
+            for budget in report.BUDGET_ORDER:
+                values = artifact["aggregate"]["budgets"][budget]
+                self.assertIsNotNone(values["len_cc"])
+                self.assertIsNone(values["strict"])
+                self.assertIsNone(values["compile_rate"])
+                self.assertIsNotNone(values["lenient"])
+            self.assertIsNotNone(artifact["bootstrap"]["results"]["wauc_cc"])
+            self.assertIsNotNone(artifact["bootstrap"]["results"]["wauc"])
+
+    def test_local_console_keeps_core_conjunctive_metrics_without_checker(self) -> None:
+        population = {
+            budget: [{
+                "lenient": 50.0,
+                "cores_ok": True,
+                "strict": 0.0,
+                "compile_check": {"compile_ok": False},
+                "gen_tokens": 100,
+                "episode_status": "ok",
+            }]
+            for budget in report.BUDGET_ORDER
+        }
+        audit = {
+            "grading_manifest": {
+                "config": {
+                    "checker_interpretation": {
+                        "ready": False,
+                        "score_interpretation": (
+                            "lenient-and-core-conjunctive-checker-unavailable"
+                        ),
+                    }
+                }
+            },
+            "failed_attempts": {"count": 0},
+            "failed_judge_audits": {"count": 0},
+        }
+        bootstrap = {
+            budget: (50.0, 40.0, 60.0) for budget in report.BUDGET_ORDER
+        } | {
+            "wauc": (50.0, 40.0, 60.0),
+            "wauc_cc": (49.0, 39.0, 59.0),
+        }
+        argv = [
+            "report",
+            "--tasks", "dspy",
+            "--run-id", "fake-run",
+            "--grader", "local",
+            "--grade-id", "fake-grade",
+            "--judge-base-url", "http://localhost:30000/v1",
+            "--excerpt-evidence",
+            "--ci", "3",
+        ]
+        output = StringIO()
+        with (
+            patch("sys.argv", argv),
+            patch("sys.stdout", output),
+            patch.object(
+                report,
+                "load_local_diagnostic_evaluation",
+                return_value=(population, audit),
+            ),
+            patch.object(report, "bootstrap_population", return_value=bootstrap),
+            patch.object(
+                report,
+                "write_report_artifact",
+                return_value=Path("report.json"),
+            ),
+        ):
+            report.main()
+
+        rendered = output.getvalue()
+        self.assertIn("len-cc", rendered)
+        self.assertIn("WAUC len-cc", rendered)
+        self.assertNotIn("compile", rendered)
+        self.assertNotIn("strict WAUC", rendered)
 
     def test_recorded_local_revalidation_needs_no_live_judge_runtime(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -1864,7 +2310,7 @@ class StrictReportTests(unittest.TestCase):
             self.assertEqual(
                 audit["failed_attempts"]["artifacts"][0]["status"], "error")
 
-    def test_failed_judge_audits_are_validated_and_disclosed(self) -> None:
+    def test_report_rejects_failed_judge_audit_with_complete_grade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = EvaluationFixture(Path(directory))
             episode_path = fixture.run_task_root / "k5/r0/q1.json"
@@ -1891,17 +2337,12 @@ class StrictReportTests(unittest.TestCase):
                     episode_path.relative_to(fixture.root).as_posix(),
                     caught.exception.audit,
                 )
-            population, audit = self._load(fixture)
-            self.assertEqual(sum(len(values) for values in population.values()), 4)
-            inventory = audit["failed_judge_audits"]
-            self.assertEqual(inventory["count"], 1)
-            self.assertTrue(inventory["artifacts"][0]["all_bindings_current"])
-            self.assertEqual(
-                inventory["artifacts"][0]["judge_usage_total"]["total_tokens"],
-                360,
-            )
+            with self.assertRaisesRegex(
+                report.ReportIntegrityError, "judge-attempt intent ledger"
+            ):
+                self._load(fixture)
 
-    def test_report_discloses_failed_response_with_unavailable_usage(self) -> None:
+    def test_report_rejects_unavailable_usage_failure_with_complete_grade(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = EvaluationFixture(Path(directory))
             episode_path = fixture.run_task_root / "k5/r0/q1.json"
@@ -1928,22 +2369,29 @@ class StrictReportTests(unittest.TestCase):
                     episode_path.relative_to(fixture.root).as_posix(),
                     caught.exception.audit,
                 )
-            population, audit = self._load(fixture)
-            self.assertEqual(sum(len(values) for values in population.values()), 4)
-            artifact = audit["failed_judge_audits"]["artifacts"][0]
-            self.assertEqual(
-                artifact["judge_usage_status"],
-                "unavailable-for-response-without-usage",
-            )
-            self.assertIsNone(artifact["judge_usage_total"])
-            self.assertEqual(artifact["judge_usage_known_total"]["total_tokens"], 0)
-            self.assertEqual(artifact["incomplete_response_fields"], ["usage"])
+            with self.assertRaisesRegex(
+                report.ReportIntegrityError, "judge-attempt intent ledger"
+            ):
+                self._load(fixture)
 
     def test_missing_grade_is_fatal(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             fixture = EvaluationFixture(Path(directory))
             (fixture.grade_root / "fake/k5/r0/q1.json").unlink()
             with self.assertRaises(report.ReportIntegrityError):
+                self._load(fixture)
+
+    def test_report_rejects_deleted_judge_attempt_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = EvaluationFixture(Path(directory))
+            intent = (
+                fixture.grade_root
+                / "judge-attempt-intents/fake/k5/r0/q1.json"
+            )
+            intent.unlink()
+            with self.assertRaisesRegex(
+                report.ReportIntegrityError, "judge-attempt intent ledger"
+            ):
                 self._load(fixture)
 
     def test_episode_drift_makes_grade_stale(self) -> None:
@@ -2013,6 +2461,238 @@ class StrictReportTests(unittest.TestCase):
                         whole_files=False,
                         effort="",
                     )
+
+    def test_preflight_globally_blocks_an_orphan_judge_intent(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = EvaluationFixture(Path(directory))
+            (fixture.grade_root / "fake/k5/r0/q1.json").unlink()
+            context = grade.load_claim_manifest(
+                fixture.run_task_root, fixture.corpus, fixture.questions
+            )
+            with patch.object(grade, "ROOT", fixture.root), self.assertRaisesRegex(
+                grade.GradeIntegrityError, "orphan judge-attempt intent"
+            ):
+                grade.preflight_grade_population(
+                    runs_root=fixture.run_root,
+                    out_root=fixture.grade_root,
+                    corpus=fixture.corpus,
+                    questions=fixture.questions,
+                    manifest_context=context,
+                    judge_model=fixture.judge_model,
+                    whole_files=False,
+                    effort="",
+                )
+
+    def test_preflight_globally_blocks_failed_audit_and_grade_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = EvaluationFixture(Path(directory))
+            episode_path = fixture.run_task_root / "k5/r0/q1.json"
+            episode_bytes = episode_path.read_bytes()
+            episode = json.loads(episode_bytes)
+            source_episode = episode_path.relative_to(fixture.root).as_posix()
+            spec_digest = grade.grade_spec_sha256(
+                fixture.corpus, fixture.questions[0], fixture.judge_model
+            )
+            intent_path = grade._judge_attempt_intent_path(
+                fixture.grade_root, episode
+            )
+            intent_digest = grade.sha256_bytes(intent_path.read_bytes())
+            audit = grade._failed_judge_audit(
+                ep=episode,
+                episode_sha256=grade.sha256_bytes(episode_bytes),
+                grading_spec_sha256=spec_digest,
+                grading_runtime_sha256=provenance.grading_runtime_sha256(
+                    self.grading_runtime
+                ),
+                local_judge_runtime_sha256=None,
+                judge_model=fixture.judge_model,
+                judge_prompt_sha256=grade.sha256_bytes(
+                    grade.build_prompt(
+                        fixture.corpus, fixture.questions[0], episode["answer"]
+                    ).encode("utf-8")
+                ),
+                attempts=[],
+                failure=RuntimeError("provider unavailable"),
+                request_attempt_count=1,
+                judge_attempt_intent_sha256=intent_digest,
+            )
+            grade.write_failed_judge_audit(
+                fixture.grade_root, source_episode, audit
+            )
+            context = grade.load_claim_manifest(
+                fixture.run_task_root, fixture.corpus, fixture.questions
+            )
+            with patch.object(grade, "ROOT", fixture.root), self.assertRaisesRegex(
+                grade.GradeIntegrityError,
+                "whole grading invocation is blocked|coexist",
+            ):
+                grade.preflight_grade_population(
+                    runs_root=fixture.run_root,
+                    out_root=fixture.grade_root,
+                    corpus=fixture.corpus,
+                    questions=fixture.questions,
+                    manifest_context=context,
+                    judge_model=fixture.judge_model,
+                    whole_files=False,
+                    effort="",
+                )
+
+    def test_preflight_rejects_symlinked_grade_destination_before_contact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = EvaluationFixture(Path(directory))
+            alternate = fixture.root / "grades/run-a/alternate"
+            target = fixture.root / "grade-target"
+            target.mkdir()
+            (alternate / "fake").mkdir(parents=True)
+            (alternate / "fake/k5").symlink_to(
+                target, target_is_directory=True
+            )
+            context = grade.load_claim_manifest(
+                fixture.run_task_root, fixture.corpus, fixture.questions
+            )
+            with patch.object(grade, "ROOT", fixture.root), self.assertRaisesRegex(
+                grade.GradeIntegrityError, "grade destination tree contains a symlink"
+            ):
+                grade.preflight_grade_population(
+                    runs_root=fixture.run_root,
+                    out_root=alternate,
+                    corpus=fixture.corpus,
+                    questions=fixture.questions,
+                    manifest_context=context,
+                    judge_model=fixture.judge_model,
+                    whole_files=False,
+                    effort="",
+                )
+
+    def test_preflight_rejects_broken_symlinked_grade_root_before_contact(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = EvaluationFixture(Path(directory))
+            alternate = fixture.root / "grades/run-a/alternate"
+            alternate.mkdir(parents=True)
+            (alternate / "fake").symlink_to(
+                fixture.root / "missing-grade-target", target_is_directory=True
+            )
+            context = grade.load_claim_manifest(
+                fixture.run_task_root, fixture.corpus, fixture.questions
+            )
+            with patch.object(grade, "ROOT", fixture.root), self.assertRaisesRegex(
+                grade.GradeIntegrityError, "grade destination root is not a safe directory"
+            ):
+                grade.preflight_grade_population(
+                    runs_root=fixture.run_root,
+                    out_root=alternate,
+                    corpus=fixture.corpus,
+                    questions=fixture.questions,
+                    manifest_context=context,
+                    judge_model=fixture.judge_model,
+                    whole_files=False,
+                    effort="",
+                )
+
+    def test_judge_attempt_inventory_is_complete_sorted_and_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = EvaluationFixture(Path(directory))
+            records = grade.validate_judge_attempt_inventory(
+                fixture.grade_root,
+                judge_population_bindings(fixture),
+                judge_model=fixture.judge_model,
+                judge_base_url=grade.CANONICAL_OPENAI_BASE_URL,
+                grading_runtime_sha256=provenance.grading_runtime_sha256(
+                    self.grading_runtime
+                ),
+                local_judge_runtime_sha256=None,
+            )
+            self.assertEqual(len(records), 3)
+            self.assertEqual(
+                [record["expected_episode"] for record in records],
+                sorted(record["expected_episode"] for record in records),
+            )
+            self.assertEqual({record["outcome"] for record in records}, {"grade"})
+            self.assertTrue(all(record["path"].startswith(
+                "judge-attempt-intents/fake/"
+            ) for record in records))
+
+            direct_intent = (
+                fixture.grade_root
+                / "judge-attempt-intents/fake/direct/r0/q1.json"
+            )
+            direct_intent.parent.mkdir(parents=True, exist_ok=True)
+            direct_intent.symlink_to(
+                fixture.grade_root
+                / "judge-attempt-intents/fake/k5/r0/q1.json"
+            )
+            with self.assertRaisesRegex(
+                grade.GradeIntegrityError,
+                "judge-attempt intent tree contains (?:an unknown directory|a symlink)",
+            ):
+                grade.validate_judge_attempt_inventory(
+                    fixture.grade_root,
+                    judge_population_bindings(fixture),
+                    judge_model=fixture.judge_model,
+                    judge_base_url=grade.CANONICAL_OPENAI_BASE_URL,
+                    grading_runtime_sha256=provenance.grading_runtime_sha256(
+                        self.grading_runtime
+                    ),
+                    local_judge_runtime_sha256=None,
+                )
+
+    def test_judge_attempt_inventory_accepts_one_bound_failed_outcome(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = EvaluationFixture(Path(directory))
+            relative = "k5/r0/q1.json"
+            episode_path = fixture.run_task_root / relative
+            episode_bytes = episode_path.read_bytes()
+            episode = json.loads(episode_bytes)
+            grade_path = fixture.grade_root / "fake" / relative
+            grade_path.unlink()
+            intent_path = grade._judge_attempt_intent_path(
+                fixture.grade_root, episode
+            )
+            intent_digest = grade.sha256_bytes(intent_path.read_bytes())
+            source_episode = episode_path.relative_to(fixture.root).as_posix()
+            spec_digest = grade.grade_spec_sha256(
+                fixture.corpus, fixture.questions[0], fixture.judge_model
+            )
+            prompt_digest = grade.sha256_bytes(
+                grade.build_prompt(
+                    fixture.corpus, fixture.questions[0], episode["answer"]
+                ).encode("utf-8")
+            )
+            audit = grade._failed_judge_audit(
+                ep=episode,
+                episode_sha256=grade.sha256_bytes(episode_bytes),
+                grading_spec_sha256=spec_digest,
+                grading_runtime_sha256=provenance.grading_runtime_sha256(
+                    self.grading_runtime
+                ),
+                local_judge_runtime_sha256=None,
+                judge_model=fixture.judge_model,
+                judge_prompt_sha256=prompt_digest,
+                attempts=[],
+                failure=RuntimeError("provider unavailable"),
+                request_attempt_count=1,
+                judge_attempt_intent_sha256=intent_digest,
+            )
+            grade.write_failed_judge_audit(
+                fixture.grade_root, source_episode, audit
+            )
+
+            records = grade.validate_judge_attempt_inventory(
+                fixture.grade_root,
+                judge_population_bindings(fixture),
+                judge_model=fixture.judge_model,
+                judge_base_url=grade.CANONICAL_OPENAI_BASE_URL,
+                grading_runtime_sha256=provenance.grading_runtime_sha256(
+                    self.grading_runtime
+                ),
+                local_judge_runtime_sha256=None,
+            )
+            failed = [record for record in records if record["outcome"] == "failed"]
+            self.assertEqual(len(failed), 1)
+            self.assertEqual(failed[0]["expected_episode"], source_episode)
+            self.assertTrue(failed[0]["terminal_path"].startswith(
+                "failed-judge-audits/fake/k5/r0/q1-"
+            ))
 
     def test_manifest_and_population_inputs_reject_symlink_components(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -2188,12 +2868,78 @@ class StrictReportTests(unittest.TestCase):
 
     def test_exploratory_manifest_accepts_only_bundled_automated_ready_note(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            fixture = EvaluationFixture(Path(directory))
+            fixture = EvaluationFixture(Path(directory), task="dspy")
+            fixture.manifest["spec"]["sampling"] = deepcopy(REACT_SAMPLING)
+            spec_contract = fixture.manifest["spec"]
             note_bytes = b"automatically validated exploratory note\n"
             dependency_bytes = canonical_json_bytes({"record": "complete"})
+            task_manifest = {
+                "schema_version": 4,
+                "manifest_type": SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE,
+                "method": SEMANTIC_SELFQUIZ_METHOD,
+                "study_id": "study-a",
+                "task": "dspy",
+                "master_seed": 11,
+                "model": spec_contract["model"],
+                "model_revision": spec_contract["model_revision"],
+                "sampling": deepcopy(spec_contract["sampling"]),
+                "corpus_commit": fixture.corpus.commit,
+                "corpus": deepcopy(spec_contract["corpus"]),
+                "source": deepcopy(spec_contract["source"]),
+                "environment": deepcopy(spec_contract["environment"]),
+                "environment_contract": deepcopy(
+                    spec_contract["environment_contract"]
+                ),
+                "server_transport": {
+                    "scope": "loopback",
+                    "protocol": "openai-compatible-http",
+                    "server_count": 1,
+                    "assignment": (
+                        "stable_seed(master_seed, stochastic_namespace, server) modulo server_count"
+                    ),
+                },
+                "provenance_readiness": {
+                    "corpus_pinned_clean": True,
+                    "source_pinned_clean": True,
+                    "environment_complete": True,
+                    "model_revision_pinned": True,
+                    "server_count_matches_environment": True,
+                },
+                "automated_provenance_ready": True,
+                "human_audit_protocol": None,
+                "config": {
+                    "chapter_syllabus": [
+                        "dspy/teleprompt", "dspy/adapters", "dspy/clients",
+                        "dspy/predict", "dspy/primitives", "dspy/utils",
+                        "dspy/dsp", "dspy/signatures", "dspy/datasets",
+                        "dspy/retrievers", "dspy/streaming", "dspy/evaluate",
+                        "dspy/propose", "dspy", "dspy/experimental",
+                    ],
+                    "chapters_per_round": 4,
+                    "final_round": 4,
+                    "questions_per_chapter": 5,
+                    "attempt_access": "react-corpus",
+                    "smoke": False,
+                    "quiz_max_iters": 15,
+                    "attempt_protocol": openbook_attempt_protocol(),
+                    "derive_max_iters": 15,
+                    "train_ensemble": 2,
+                    "dev_ensemble": 2,
+                    "retest_fraction": 0.2,
+                    "freshness_near_jaccard": 0.8,
+                    "max_freshness_near_rate": 0.1,
+                    "concurrency": 8,
+                    "provider_retries": 0,
+                },
+            }
+            task_manifest_bytes = canonical_json_bytes(task_manifest)
             note_sha256 = grade.sha256_bytes(note_bytes)
             dependency_sha256 = grade.sha256_bytes(dependency_bytes)
             inventory = {
+                "manifest.json": {
+                    "sha256": grade.sha256_bytes(task_manifest_bytes),
+                    "bytes": len(task_manifest_bytes),
+                },
                 "rounds/round-1/record.json": {
                     "sha256": dependency_sha256,
                     "bytes": len(dependency_bytes),
@@ -2201,9 +2947,12 @@ class StrictReportTests(unittest.TestCase):
             }
             construction = {
                 "schema_version": 2,
+                "manifest_type": SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
+                "method": SEMANTIC_SELFQUIZ_METHOD,
+                "protocol_summary": derive_protocol_summary(task_manifest_bytes),
                 "study_id": "study-a",
-                "task": "fake",
-                "round": 1,
+                "task": "dspy",
+                "round": 4,
                 "corpus_commit": fixture.corpus.commit,
                 "claim_ready": False,
                 "publication_claim_ready": False,
@@ -2220,15 +2969,17 @@ class StrictReportTests(unittest.TestCase):
             bundle_root = Path("inputs") / f"note-provenance-{construction_sha256}"
             construction_snapshot = Path("inputs/construction.json")
             note_snapshot = Path("inputs/note.md")
-            bundled_manifest = bundle_root / "note-r1.manifest.json"
+            bundled_manifest = bundle_root / "note-r4.manifest.json"
             bundled_note = bundle_root / construction["note_path"]
             bundled_dependency = (
                 bundle_root / "construction/rounds/round-1/record.json")
+            bundled_task_manifest = bundle_root / "construction/manifest.json"
             for relative, data in (
                 (construction_snapshot, construction_bytes),
                 (note_snapshot, note_bytes),
                 (bundled_manifest, construction_bytes),
                 (bundled_note, note_bytes),
+                (bundled_task_manifest, task_manifest_bytes),
                 (bundled_dependency, dependency_bytes),
             ):
                 path = fixture.run_task_root / relative
@@ -2239,6 +2990,7 @@ class StrictReportTests(unittest.TestCase):
             spec = manifest["spec"]
             spec["purpose"] = "exploratory"
             spec["claim_ready"] = False
+            spec["failure_policy"] = deepcopy(grade.SCREEN_FAILURE_POLICY)
             spec["preregistration"] = {
                 "schema_version": 1,
                 "status": "not_provided",
@@ -2270,6 +3022,10 @@ class StrictReportTests(unittest.TestCase):
                         "root": str(bundle_root / "construction"),
                         "inventory_sha256": sha256_json(inventory),
                         "artifacts": {
+                            "manifest.json": {
+                                **inventory["manifest.json"],
+                                "snapshot": str(bundled_task_manifest),
+                            },
                             "rounds/round-1/record.json": {
                                 **inventory["rounds/round-1/record.json"],
                                 "snapshot": str(bundled_dependency),
@@ -2280,13 +3036,86 @@ class StrictReportTests(unittest.TestCase):
             }
             manifest_path = fixture.run_task_root / "manifest.json"
             manifest_path.write_bytes(canonical_json_bytes(manifest))
-            context = grade.load_claim_manifest(
-                fixture.run_task_root,
-                fixture.corpus,
-                fixture.questions,
-                require_claim_ready=False,
-            )
+            with self.assertRaisesRegex(
+                grade.GradeIntegrityError, "unknown schema"
+            ):
+                grade.load_claim_manifest(
+                    fixture.run_task_root,
+                    fixture.corpus,
+                    fixture.questions,
+                    require_claim_ready=False,
+                )
+            with patch.object(
+                grade,
+                "validate_study_note_archive",
+                return_value=construction["protocol_summary"],
+            ):
+                context = grade.load_claim_manifest(
+                    fixture.run_task_root,
+                    fixture.corpus,
+                    fixture.questions,
+                    require_claim_ready=False,
+                )
             self.assertFalse(context["note_manifest"]["claim_ready"])
+
+            smoke_manifest = deepcopy(manifest)
+            smoke_spec = smoke_manifest["spec"]
+            smoke_spec["purpose"] = "smoke"
+            smoke_spec["claim_ready"] = False
+            smoke_spec["preregistration"] = {
+                "schema_version": 1,
+                "status": "not_provided",
+                "reason": "smoke",
+            }
+            manifest_path.write_bytes(canonical_json_bytes(smoke_manifest))
+            with patch.object(
+                grade,
+                "validate_study_note_archive",
+                return_value=construction["protocol_summary"],
+            ) as smoke_archive_validator:
+                smoke_context = grade.load_claim_manifest(
+                    fixture.run_task_root,
+                    fixture.corpus,
+                    fixture.questions,
+                    require_claim_ready=False,
+                    allow_smoke=True,
+                )
+            self.assertTrue(
+                smoke_archive_validator.call_args.kwargs["allow_smoke"]
+            )
+            self.assertEqual(
+                smoke_context["note_protocol_summary"],
+                construction["protocol_summary"],
+            )
+
+            round_three = {**construction, "round": 3}
+            round_three_bytes = canonical_json_bytes(round_three)
+            for relative in (construction_snapshot, bundled_manifest):
+                (fixture.run_task_root / relative).write_bytes(round_three_bytes)
+            smoke_manifest["spec"]["note"]["construction_manifest"]["sha256"] = (
+                grade.sha256_bytes(round_three_bytes)
+            )
+            manifest_path.write_bytes(canonical_json_bytes(smoke_manifest))
+            with patch.object(
+                grade,
+                "validate_study_note_archive",
+                side_effect=StudyProtocolError(
+                    "semantic evaluation requires the final construction round"
+                ),
+            ), self.assertRaisesRegex(
+                grade.GradeIntegrityError, "final construction round"
+            ):
+                grade.load_claim_manifest(
+                    fixture.run_task_root,
+                    fixture.corpus,
+                    fixture.questions,
+                    require_claim_ready=False,
+                    allow_smoke=True,
+                )
+
+            for relative in (construction_snapshot, bundled_manifest):
+                (fixture.run_task_root / relative).write_bytes(construction_bytes)
+            manifest_path.write_bytes(canonical_json_bytes(manifest))
 
             contradictory = {**construction, "publication_claim_ready": True}
             contradictory_bytes = canonical_json_bytes(contradictory)
@@ -2380,22 +3209,44 @@ class StrictReportTests(unittest.TestCase):
             study_root.mkdir()
             note = "verified forced study note\n"
             note_sha256 = grade.sha256_bytes(note.encode("utf-8"))
-            question_sha256 = "1" * 64
+            study_question = forced50_study_question(fixture.corpus.display)
+            question_sha256 = sha256_json(study_question)
+            master_seed = 31
+            episode_seed = stable_seed(
+                master_seed, "cheatsheet", "study-a", "fake"
+            )
             config = {
-                "schema_version": 1,
+                "schema_version": FORCED50_CONFIG_SCHEMA_VERSION,
                 "study_id": "study-a",
                 "task": "fake",
                 "method": "forced-50-cheatsheet",
                 "model": "model",
                 "model_revision": "revision-a",
                 "expected_response_model": "generation-revision",
-                "episode_seed": 19,
+                "sampling": REACT_SAMPLING,
+                "master_seed": master_seed,
+                "episode_seed": episode_seed,
+                "study_prompt_sha256": grade.sha256_bytes(
+                    study_question["question"].encode("utf-8")
+                ),
                 "study_question_sha256": question_sha256,
-                "forced_iterations": 50,
+                "tool_contract": DSPY_REPOSITORY_TOOL_CONTRACT,
+                "tool_schema_sha256": sha256_json(
+                    DSPY_REPOSITORY_TOOL_CONTRACT
+                ),
+                "read_max_lines": DSPY_READ_MAX_LINES,
+                "forced_iterations": FORCED50_ITERATIONS,
+                "repository_tool_scope": "full-pinned-corpus",
                 "corpus": deepcopy(fixture.manifest["spec"]["corpus"]),
                 "source": deepcopy(fixture.manifest["spec"]["source"]),
                 "environment": deepcopy(fixture.manifest["spec"]["environment"]),
                 "claim_ready": True,
+                "server_transport": {
+                    "scope": "loopback",
+                    "protocol": "openai-compatible-http",
+                    "available_server_count": 1,
+                    "selected_server_index": 0,
+                },
             }
             episode = {
                 "task": "fake",
@@ -2405,10 +3256,12 @@ class StrictReportTests(unittest.TestCase):
                 "model": "model",
                 "model_revision": "revision-a",
                 "harness": "dspy.ReAct",
-                "seed": 19,
+                "seed": episode_seed,
                 "study_intent_sha256": sha256_json(config),
                 "question_sha256": question_sha256,
                 "status": "ok",
+                "started": "2026-01-01T00:00:00+00:00",
+                "finished": "2026-01-01T00:01:00+00:00",
                 "answer": note,
                 "n_react_iters": 50,
                 "n_tool_iters": 50,
@@ -2479,9 +3332,18 @@ class StrictReportTests(unittest.TestCase):
                 construction_path,
                 require_manifest=True,
                 expected_task="fake",
+                expected_model="model",
+                expected_model_revision="revision-a",
+                expected_response_model="generation-revision",
+                expected_sampling=REACT_SAMPLING,
                 expected_corpus_commit=fixture.corpus.commit,
+                expected_corpus=fixture.manifest["spec"]["corpus"],
+                expected_source=fixture.manifest["spec"]["source"],
+                expected_environment=fixture.manifest["spec"]["environment"],
+                expected_corpus_display=fixture.corpus.display,
             )
             manifest = deepcopy(fixture.manifest)
+            manifest["spec"]["sampling"] = deepcopy(REACT_SAMPLING)
             manifest["spec"]["note"] = note_record
             template = "Study note:\n{note}\nQuestion:\n"
             manifest["spec"]["prompt_policy"] = {
@@ -2496,6 +3358,72 @@ class StrictReportTests(unittest.TestCase):
             context = grade.load_claim_manifest(
                 fixture.run_task_root, fixture.corpus, fixture.questions)
             self.assertEqual(context["note_sha256"], note_sha256)
+
+            parity_mutations = {
+                "turns": lambda value: value.update(turns=[]),
+                "gen-tokens": lambda value: value.update(gen_tokens=9),
+            }
+            for label, mutate in parity_mutations.items():
+                with self.subTest(preflight_parity=label):
+                    invalid_episode = deepcopy(episode)
+                    mutate(invalid_episode)
+                    invalid_episode_bytes = canonical_json_bytes(invalid_episode)
+                    invalid_construction = deepcopy(construction)
+                    invalid_construction["episode_sha256"] = sha256_json(
+                        invalid_episode
+                    )
+                    invalid_construction["construction_artifacts"]["episode.json"] = {
+                        "sha256": grade.sha256_bytes(invalid_episode_bytes),
+                        "bytes": len(invalid_episode_bytes),
+                    }
+                    invalid_construction["construction_artifacts_sha256"] = sha256_json(
+                        invalid_construction["construction_artifacts"]
+                    )
+                    episode_path.write_bytes(invalid_episode_bytes)
+                    construction_path.write_bytes(
+                        canonical_json_bytes(invalid_construction)
+                    )
+                    with self.assertRaisesRegex(ValueError, "study episode"):
+                        _load_note(
+                            fixture.root / f"preflight-{label}",
+                            note_path,
+                            construction_path,
+                            require_manifest=True,
+                            expected_task="fake",
+                            expected_model="model",
+                            expected_model_revision="revision-a",
+                            expected_response_model="generation-revision",
+                            expected_sampling=REACT_SAMPLING,
+                            expected_corpus_commit=fixture.corpus.commit,
+                            expected_corpus=fixture.manifest["spec"]["corpus"],
+                            expected_source=fixture.manifest["spec"]["source"],
+                            expected_environment=fixture.manifest["spec"]["environment"],
+                            expected_corpus_display=fixture.corpus.display,
+                        )
+
+                    _, legacy_record = _load_note(
+                        fixture.run_task_root,
+                        note_path,
+                        construction_path,
+                        require_manifest=True,
+                        expected_task="fake",
+                        expected_corpus_commit=fixture.corpus.commit,
+                    )
+                    invalid_manifest = deepcopy(fixture.manifest)
+                    invalid_manifest["spec"]["sampling"] = deepcopy(REACT_SAMPLING)
+                    invalid_manifest["spec"]["note"] = legacy_record
+                    invalid_manifest["spec"]["prompt_policy"] = deepcopy(
+                        manifest["spec"]["prompt_policy"]
+                    )
+                    manifest_path.write_bytes(canonical_json_bytes(invalid_manifest))
+                    with self.assertRaises(grade.GradeIntegrityError):
+                        grade.load_claim_manifest(
+                            fixture.run_task_root, fixture.corpus, fixture.questions
+                        )
+
+            episode_path.write_bytes(canonical_json_bytes(episode))
+            construction_path.write_bytes(canonical_json_bytes(construction))
+            manifest_path.write_bytes(canonical_json_bytes(manifest))
 
             construction_snapshot = fixture.run_task_root / note_record[
                 "construction_manifest"
@@ -2516,10 +3444,107 @@ class StrictReportTests(unittest.TestCase):
                     manifest_path.write_bytes(canonical_json_bytes(invalid_manifest))
                     with self.assertRaisesRegex(
                         grade.GradeIntegrityError,
-                        "forced-50 construction manifest is incomplete",
+                        "forced-50 (construction manifest|protocol binding)",
                     ):
                         grade.load_claim_manifest(
                             fixture.run_task_root, fixture.corpus, fixture.questions)
+
+            def invalid_config(label, mutate) -> None:
+                invalid_construction = deepcopy(construction)
+                mutate(invalid_construction["config"])
+                invalid_bytes = canonical_json_bytes(invalid_construction)
+                construction_snapshot.write_bytes(invalid_bytes)
+                invalid_manifest = deepcopy(manifest)
+                invalid_manifest["spec"]["note"]["construction_manifest"][
+                    "sha256"
+                ] = grade.sha256_bytes(invalid_bytes)
+                manifest_path.write_bytes(canonical_json_bytes(invalid_manifest))
+                with self.subTest(protocol_field=label), self.assertRaises(
+                    grade.GradeIntegrityError
+                ):
+                    grade.load_claim_manifest(
+                        fixture.run_task_root, fixture.corpus, fixture.questions
+                    )
+
+            invalid_config(
+                "unknown-key", lambda value: value.__setitem__("unknown", True)
+            )
+            invalid_config(
+                "sampling", lambda value: value.__setitem__(
+                    "sampling", {"temperature": 0}
+                )
+            )
+            invalid_config(
+                "read-max", lambda value: value.__setitem__("read_max_lines", 201)
+            )
+            invalid_config(
+                "tool-contract", lambda value: value["tool_contract"].__setitem__(
+                    "adapter", "other"
+                )
+            )
+            invalid_config(
+                "tool-hash", lambda value: value.__setitem__(
+                    "tool_schema_sha256", "0" * 64
+                )
+            )
+            invalid_config(
+                "prompt-hash", lambda value: value.__setitem__(
+                    "study_prompt_sha256", "0" * 64
+                )
+            )
+            invalid_config(
+                "question-hash", lambda value: value.__setitem__(
+                    "study_question_sha256", "0" * 64
+                )
+            )
+            invalid_config(
+                "master-seed", lambda value: value.__setitem__(
+                    "master_seed", value["master_seed"] + 1
+                )
+            )
+            invalid_config(
+                "episode-seed", lambda value: value.__setitem__(
+                    "episode_seed", value["episode_seed"] + 1
+                )
+            )
+            invalid_config(
+                "server-index-bool", lambda value: value[
+                    "server_transport"
+                ].__setitem__("selected_server_index", False)
+            )
+            invalid_config(
+                "server-count", lambda value: value[
+                    "server_transport"
+                ].__setitem__("available_server_count", 2)
+            )
+            invalid_config(
+                "model", lambda value: value.__setitem__("model", "other")
+            )
+            invalid_config(
+                "response-model", lambda value: value.__setitem__(
+                    "expected_response_model", "other"
+                )
+            )
+            invalid_config(
+                "source", lambda value: value["source"].__setitem__(
+                    "git_commit", "b" * 40
+                )
+            )
+            invalid_config(
+                "environment", lambda value: value["environment"].__setitem__(
+                    "vllm_version", "other"
+                )
+            )
+
+            construction_snapshot.write_bytes(canonical_json_bytes(construction))
+            manifest_path.write_bytes(canonical_json_bytes(manifest))
+            with patch(
+                "studybench.grade.provenance.environments_compatible",
+                return_value=False,
+            ), self.assertRaises(grade.GradeIntegrityError):
+                grade.load_claim_manifest(
+                    fixture.run_task_root, fixture.corpus, fixture.questions
+                )
 
             construction_snapshot.write_bytes(canonical_json_bytes(construction))
             manifest_path.write_bytes(canonical_json_bytes(manifest))
