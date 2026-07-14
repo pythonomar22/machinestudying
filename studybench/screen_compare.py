@@ -53,7 +53,7 @@ from .provenance import (
 )
 
 
-SCREEN_COMPARISON_SCHEMA_VERSION = 5
+SCREEN_COMPARISON_SCHEMA_VERSION = 6
 INTERVENTION_KIND = "study-note"
 DIAGNOSTIC_BANNER = (
     "DIAGNOSTIC LOCAL-QWEN SCREEN ONLY — NOT CLAIM-READY; "
@@ -272,6 +272,12 @@ def _local_grading_config(artifact: dict[str, Any]) -> dict[str, Any]:
             raise ScreenComparisonIntegrityError(
                 f"local report has invalid {field.replace('_', ' ')} provenance"
             )
+    try:
+        report._recorded_local_qualification_path(config)
+    except report.ReportIntegrityError as exc:
+        raise ScreenComparisonIntegrityError(
+            "local report has invalid qualification provenance"
+        ) from exc
     base_url = config.get("judge_base_url")
     validation_urls = config.get("judge_validation_urls")
     transport_urls = config.get("judge_transport_urls")
@@ -543,6 +549,9 @@ def load_local_report(path: str | Path) -> LoadedScreenArm:
             run_root,
             rollouts=specification.get("rollouts"),
             judge_base_url=",".join(config["judge_validation_urls"]),
+            qualification_audit=report._recorded_local_qualification_path(
+                config
+            ),
             grading_runtime=config["grading_runtime"],
             local_judge_runtime=config["local_judge_runtime"],
             whole_files=config.get("whole_files", False),
@@ -937,6 +946,15 @@ def validate_pair(
         "grading_manifest": treatment.audit["grading_manifest"],
         "run_manifest": treatment.audit["run_manifest"],
     })
+    if (
+        control_grading["local_judge_qualification_sha256"]
+        != treatment_grading["local_judge_qualification_sha256"]
+        or control_grading["local_judge_qualification"]
+        != treatment_grading["local_judge_qualification"]
+    ):
+        raise ScreenComparisonIntegrityError(
+            "paired screens require the exact same local-judge qualification"
+        )
     control_contract = _normalized_grading_contract(
         control.audit["grading_manifest"]
     )
@@ -1063,6 +1081,16 @@ def validate_pair(
         "matched_grading_contract_sha256": sha256_json(control_contract),
         "generation_runtime_pairing": generation_runtime_pairing,
         "accepted_judge_runtime_pairing": judge_runtime_pairing,
+        "local_judge_qualification": {
+            "policy": "exact-same-revalidated-passing-audit-v1",
+            "audit_sha256": control_grading[
+                "local_judge_qualification_sha256"
+            ],
+            "binding_sha256": control_grading[
+                "local_judge_qualification"
+            ]["binding_sha256"],
+            "audit": control_grading["local_judge_qualification"]["audit"],
+        },
         "grading_transport": {
             "policy": (
                 "authenticated-loopback-validation-recorded-routes-and-contacts-"
@@ -1143,6 +1171,12 @@ def _source_record(arm: LoadedScreenArm) -> dict[str, Any]:
             "grading_runtime_sha256": grading["grading_runtime_sha256"],
             "local_judge_runtime_sha256": grading[
                 "local_judge_runtime_sha256"
+            ],
+            "local_judge_qualification_sha256": grading[
+                "local_judge_qualification_sha256"
+            ],
+            "local_judge_qualification": grading[
+                "local_judge_qualification"
             ],
             "checker_interpretation": grading["checker_interpretation"],
         },

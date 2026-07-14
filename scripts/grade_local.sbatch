@@ -67,12 +67,26 @@ source scripts/serve_and_wait.sh
     && [ "$SB_TP_EFFECTIVE" -eq 2 ] \
     || fail_arg "local grading requires the declared number of homogeneous TP=2 servers"
 JUDGE_BASE_URLS=$BASE_URLS
+QUALIFICATION_AUDIT="logs/local-judge-qualification-${SB_SERVER_LAUNCH_ID}.json"
+QUALIFICATION_INTENT="${QUALIFICATION_AUDIT}.intent.json"
+
+# The launch ID makes this the only qualification namespace accepted for this
+# server lifecycle. Any prior intent or audit terminalizes the launch.
+for qualification_path in "$QUALIFICATION_AUDIT" "$QUALIFICATION_INTENT"; do
+    if [ -e "$qualification_path" ] || [ -L "$qualification_path" ]; then
+        fail_arg "qualification namespace must be fresh and one-shot: $qualification_path"
+    fi
+done
+.venv/bin/python -m studybench.local_judge_qualification \
+    --judge-base-url "$JUDGE_BASE_URLS" \
+    --output "$QUALIFICATION_AUDIT"
 
 grade_args=(
     --task "$TASK"
     --run-id "$RUN_ID"
     --grade-id "$GRADE_ID"
     --judge-base-url "$JUDGE_BASE_URLS"
+    --qualification-audit "$QUALIFICATION_AUDIT"
     "$EVIDENCE_FLAG"
     --concurrency "$CONCURRENCY"
 )
@@ -91,6 +105,7 @@ fi
     --grader local \
     --grade-id "$GRADE_ID" \
     --judge-base-url "$JUDGE_BASE_URLS" \
+    --qualification-audit "$QUALIFICATION_AUDIT" \
     "$EVIDENCE_FLAG" \
     --ci "$CI_REPLICATES" \
     --ci-seed "$CI_SEED"

@@ -43,8 +43,10 @@ from .grade import (CURRENT_SMOKE_SOURCE_POLICY,
                     LOCAL_GRADER_VERDICT_CONTRACT,
                     MAX_JUDGE_ATTEMPTS,
                     GradeIntegrityError, file_sha256,
-                    build_prompt, episode_provider_identity, grade_spec_sha256,
+                    build_judge_messages, episode_provider_identity,
+                    grade_spec_sha256,
                     grader_identity_for_model, judge_usage_summary,
+                    judge_messages_sha256,
                     load_claim_manifest, parse_json, sha256_bytes,
                     sandbox_configuration_record,
                     sandbox_configuration_sha256,
@@ -91,7 +93,7 @@ class ReportIntegrityError(RuntimeError):
     """The requested result population is incomplete, stale, or unverifiable."""
 
 
-REPORT_SCHEMA_VERSION = 13
+REPORT_SCHEMA_VERSION = 14
 
 PAPER = {  # Table 1, lenient: (task, variant) -> budget -> (acc %, tokens k)
     ("dspy", ""): {"direct": (3.3, 4.1), "k5": (8.6, 7.9), "k20": (9.6, 8.6),
@@ -434,6 +436,132 @@ def _valid_sha256(value: object) -> bool:
             and all(character in "0123456789abcdef" for character in value))
 
 
+def _root_relative_artifact_path(path: str | Path, *, label: str) -> tuple[Path, str]:
+    """Return one normalized workspace path without following symlinks."""
+
+    if (
+        not isinstance(path, (str, Path))
+        or not str(path)
+        or (isinstance(path, str) and "\\" in path)
+    ):
+        raise ReportIntegrityError(f"{label} path is invalid")
+    raw = Path(path)
+    candidate = raw if raw.is_absolute() else ROOT / raw
+    root = ROOT.absolute()
+    candidate = candidate.absolute()
+    try:
+        relative = candidate.relative_to(root)
+    except ValueError as exc:
+        raise ReportIntegrityError(f"{label} must be inside the workspace root") from exc
+    if not relative.parts or any(
+        part in ("", ".", "..") for part in relative.parts
+    ):
+        raise ReportIntegrityError(f"{label} path is not normalized")
+    return candidate, relative.as_posix()
+
+
+def _validate_local_qualification_audit(
+    path: str | Path,
+    *,
+    expected_urls: list[str],
+    expected_source: dict,
+    expected_runtime: dict,
+) -> dict:
+    """Lazily revalidate and content-bind one local-judge qualification audit."""
+
+    source, displayed = _root_relative_artifact_path(
+        path, label="local-judge qualification audit"
+    )
+    # Keep the local-only calibration dependency off the external report path
+    # and, more importantly, do not duplicate its validation rules.
+    from .local_judge_qualification import (
+        QualificationIntegrityError,
+        validate_qualification_audit,
+    )
+    try:
+        binding = validate_qualification_audit(
+            source,
+            expected_urls=expected_urls,
+            expected_source=expected_source,
+            expected_runtime=expected_runtime,
+        )
+        audit_bytes = read_artifact_bytes(source)
+    except (OSError, ValueError, QualificationIntegrityError) as exc:
+        raise ReportIntegrityError(
+            f"local-judge qualification audit is invalid: {exc}"
+        ) from exc
+    if not isinstance(binding, dict):
+        raise ReportIntegrityError(
+            "local-judge qualification validator returned an invalid binding"
+        )
+    binding_sha256 = binding.get("binding_sha256")
+    binding_payload = {
+        key: value for key, value in binding.items() if key != "binding_sha256"
+    }
+    audit_sha256 = sha256_bytes(audit_bytes)
+    if (
+        not _valid_sha256(binding_sha256)
+        or binding_sha256 != sha256_json(binding_payload)
+        or binding.get("audit_sha256") != audit_sha256
+        or binding.get("audit_bytes") != len(audit_bytes)
+    ):
+        raise ReportIntegrityError(
+            "local-judge qualification binding is internally inconsistent"
+        )
+    return {
+        "binding": binding,
+        "binding_sha256": binding_sha256,
+        "audit": {
+            "path": displayed,
+            "sha256": audit_sha256,
+            "bytes": len(audit_bytes),
+        },
+    }
+
+
+def _recorded_local_qualification_path(config: dict) -> Path:
+    """Structurally validate a report's qualification record and return its path."""
+
+    record = config.get("local_judge_qualification")
+    if not isinstance(record, dict) or set(record) != {
+        "binding", "binding_sha256", "audit"
+    }:
+        raise ReportIntegrityError(
+            "local report has no complete qualification binding"
+        )
+    binding = record.get("binding")
+    audit = record.get("audit")
+    if (
+        not isinstance(binding, dict)
+        or not isinstance(audit, dict)
+        or set(audit) != {"path", "sha256", "bytes"}
+        or record.get("binding_sha256") != binding.get("binding_sha256")
+        or record.get("binding_sha256")
+        != sha256_json({
+            key: value for key, value in binding.items()
+            if key != "binding_sha256"
+        })
+        or config.get("local_judge_qualification_sha256")
+        != audit.get("sha256")
+        or binding.get("audit_sha256") != audit.get("sha256")
+        or binding.get("audit_bytes") != audit.get("bytes")
+        or not _valid_sha256(audit.get("sha256"))
+        or type(audit.get("bytes")) is not int
+        or audit["bytes"] <= 0
+    ):
+        raise ReportIntegrityError(
+            "local report has an inconsistent qualification binding"
+        )
+    path, displayed = _root_relative_artifact_path(
+        audit.get("path"), label="recorded local-judge qualification audit"
+    )
+    if displayed != audit["path"]:
+        raise ReportIntegrityError(
+            "recorded local-judge qualification path is not canonical"
+        )
+    return path
+
+
 def _inventory_failed_judge_audits(
     grade_root: Path,
     task: str,
@@ -443,6 +571,7 @@ def _inventory_failed_judge_audits(
     judge_model: str,
     grading_runtime_digest: str,
     local_judge_runtime_digest: str | None,
+    local_judge_qualification_digest: str | None,
     judge_base_urls: list[str],
 ) -> tuple[list[dict], list[str]]:
     """Validate and disclose judge calls that produced no grade."""
@@ -531,6 +660,9 @@ def _inventory_failed_judge_audits(
                     "judge_server_slot": episode.get("server_slot"),
                     "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
                     "local_judge_runtime_sha256": local_judge_runtime_digest,
+                    "local_judge_qualification_sha256": (
+                        local_judge_qualification_digest
+                    ),
                 }
                 for field, expected in expected_local_identity.items():
                     if artifact.get(field) != expected:
@@ -565,9 +697,12 @@ def _inventory_failed_judge_audits(
                         "manifest-bound server slot"
                     )
 
-            elif "local_judge_runtime_sha256" in artifact:
+            elif (
+                "local_judge_runtime_sha256" in artifact
+                or "local_judge_qualification_sha256" in artifact
+            ):
                 raise GradeIntegrityError(
-                    "external failed-judge audit contains local runtime provenance"
+                    "external failed-judge audit contains local provenance"
                 )
             elif (
                 len(judge_base_urls) != 1
@@ -620,6 +755,10 @@ def _inventory_failed_judge_audits(
                 "grading_spec": artifact["grading_spec_sha256"] == grading_specs[qid],
                 "grading_runtime": artifact["grading_runtime_sha256"]
                 == grading_runtime_digest,
+                "local_judge_qualification": (
+                    artifact.get("local_judge_qualification_sha256")
+                    == local_judge_qualification_digest
+                ),
                 "manifest": artifact["manifest_sha256"] == manifest_context["manifest_sha256"],
                 "question": artifact["question_sha256"]
                 == manifest_context["question_sha256"][qid],
@@ -670,6 +809,7 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                               judge_model: str, whole_files: bool = False,
                               effort: str = "", judge_base_url: str | None = None,
                               diagnostic_local: bool = False,
+                              qualification_audit: str | Path | None = None,
                               recorded_grading_runtime: dict | None = None,
                               recorded_local_judge_runtime: dict | None = None,
                               historical_exploratory_source_commit: str | None = None,
@@ -683,6 +823,10 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
         )
     if diagnostic_local and effort:
         raise ReportIntegrityError("local Qwen reports require empty judge effort")
+    if diagnostic_local != (qualification_audit is not None):
+        raise ReportIntegrityError(
+            "local Qwen reports require exactly one qualification audit"
+        )
     if historical_exploratory_source_commit is not None and not diagnostic_local:
         raise ReportIntegrityError(
             "historical generation-source reporting is local exploratory only"
@@ -781,6 +925,15 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                 "local judge endpoint count does not match the run manifest's "
                 "paired server-slot count"
             )
+        qualification_record = _validate_local_qualification_audit(
+            qualification_audit,
+            expected_urls=judge_base_urls,
+            expected_source=manifest_context["generation_source_validation"][
+                "grader_source"
+            ],
+            expected_runtime=local_runtime,
+        )
+        local_qualification_digest = qualification_record["audit"]["sha256"]
     else:
         try:
             grader, resolved_judge_base_url = grader_identity_for_model(
@@ -791,6 +944,8 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                 "reporting does not recognize the requested judge endpoint"
             ) from exc
         judge_base_urls = [resolved_judge_base_url]
+        qualification_record = None
+        local_qualification_digest = None
         try:
             validate_preregistered_grading_policy(
                 manifest_context["preregistration"],
@@ -861,6 +1016,7 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             judge_base_url=primary_judge_base_url,
             grading_runtime=grading_runtime,
             local_judge_runtime=local_runtime,
+            local_judge_qualification_sha256=local_qualification_digest,
             generation_source_validation=manifest_context[
                 "generation_source_validation"
             ],
@@ -876,6 +1032,7 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
         judge_model,
         grading_runtime_digest,
         local_runtime_digest,
+        local_qualification_digest,
         judge_base_urls,
     )
     errors.extend(failed_judge_errors)
@@ -933,6 +1090,9 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                 source_episode=_display_path(run_path),
                 grading_runtime=grading_runtime,
                 local_judge_runtime=local_runtime,
+                local_judge_qualification_sha256=(
+                    local_qualification_digest
+                ),
                 require_judge_attempt_intent=ep.get("status") == "ok",
             )
             judge_population_bindings.append({
@@ -941,11 +1101,11 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                 "episode_sha256": sha256_bytes(episode_bytes),
                 "grading_spec_sha256": grading_specs[qid],
                 "judge_prompt_sha256": (
-                    sha256_bytes(
-                        build_prompt(
+                    judge_messages_sha256(
+                        build_judge_messages(
                             corpus, rows[qid], ep["answer"], whole_files,
                             judge_model,
-                        ).encode("utf-8")
+                        )
                     )
                     if ep.get("status") == "ok"
                     else None
@@ -1009,6 +1169,7 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             judge_base_url=",".join(judge_base_urls),
             grading_runtime_sha256=grading_runtime_digest,
             local_judge_runtime_sha256=local_runtime_digest,
+            local_judge_qualification_sha256=local_qualification_digest,
         )
     except GradeIntegrityError as exc:
         judge_attempt_intents = []
@@ -1118,6 +1279,10 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
             "local_judge_runtime_sha256": local_runtime_digest,
             "local_judge_runtime": local_runtime,
+            "local_judge_qualification_sha256": (
+                local_qualification_digest
+            ),
+            "local_judge_qualification": qualification_record,
             "checker_interpretation": {
                 "language": corpus.language,
                 "sandbox_configuration_sha256": (
@@ -1191,6 +1356,19 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
         raise ReportIntegrityError(
             "grader source changed while the population report was built"
         ) from exc
+    if diagnostic_local:
+        final_qualification_record = _validate_local_qualification_audit(
+            qualification_audit,
+            expected_urls=judge_base_urls,
+            expected_source=manifest_context["generation_source_validation"][
+                "grader_source"
+            ],
+            expected_runtime=local_runtime,
+        )
+        if final_qualification_record != qualification_record:
+            raise ReportIntegrityError(
+                "local-judge qualification audit changed while the report was built"
+            )
     return population, audit
 
 
@@ -1211,6 +1389,7 @@ def load_local_diagnostic_evaluation(
     *,
     rollouts: int | None,
     judge_base_url: str,
+    qualification_audit: str | Path,
     whole_files: bool = False,
     historical_exploratory_source_commit: str | None = None,
 ) -> tuple[dict[str, list[dict]], dict]:
@@ -1226,6 +1405,7 @@ def load_local_diagnostic_evaluation(
         effort="",
         judge_base_url=judge_base_url,
         diagnostic_local=True,
+        qualification_audit=qualification_audit,
         historical_exploratory_source_commit=(
             historical_exploratory_source_commit
         ),
@@ -1239,6 +1419,7 @@ def revalidate_recorded_local_diagnostic_evaluation(
     *,
     rollouts: int | None,
     judge_base_url: str,
+    qualification_audit: str | Path,
     grading_runtime: dict,
     local_judge_runtime: dict,
     whole_files: bool = False,
@@ -1264,6 +1445,7 @@ def revalidate_recorded_local_diagnostic_evaluation(
         effort="",
         judge_base_url=judge_base_url,
         diagnostic_local=True,
+        qualification_audit=qualification_audit,
         recorded_grading_runtime=grading_runtime,
         recorded_local_judge_runtime=local_judge_runtime,
         historical_exploratory_source_commit=(
@@ -1585,6 +1767,7 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
         )
     checker_ready = True
     if diagnostic_local:
+        qualification_audit_path = _recorded_local_qualification_path(config)
         checker_configuration = sandbox_configuration_record(
             CORPORA[task].language
         )
@@ -1712,6 +1895,7 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
             run_root,
             rollouts=spec["rollouts"],
             judge_base_url=",".join(config["judge_validation_urls"]),
+            qualification_audit=qualification_audit_path,
             whole_files=whole_files,
             historical_exploratory_source_commit=historical_source_commit,
         )
@@ -1821,6 +2005,14 @@ def main():
         ),
     )
     p.add_argument(
+        "--qualification-audit",
+        type=Path,
+        help=(
+            "the immutable passing synthetic local-judge qualification audit; "
+            "required only for exploratory local-Qwen reports"
+        ),
+    )
+    p.add_argument(
         "--historical-exploratory-source-commit",
         help=(
             "LOCAL EXPLORATORY ONLY: report grades of a complete immutable run "
@@ -1878,6 +2070,8 @@ def main():
             p.error("the local grader uses the complete diagnostic path, not --legacy-partial")
         if not args.judge_base_url:
             p.error("--grader local requires --judge-base-url")
+        if args.qualification_audit is None:
+            p.error("--grader local requires --qualification-audit")
         if args.judge_effort:
             p.error("--grader local requires empty --judge-effort")
         if args.paper_variant:
@@ -1889,8 +2083,11 @@ def main():
             p.error(
                 "historical source reporting requires the explicit fresh --grade-id"
             )
-    elif args.judge_base_url is not None:
-        p.error("--judge-base-url is only available with --grader local")
+    elif args.judge_base_url is not None or args.qualification_audit is not None:
+        p.error(
+            "--judge-base-url and --qualification-audit are only available "
+            "with --grader local"
+        )
     elif args.historical_exploratory_source_commit is not None:
         p.error(
             "--historical-exploratory-source-commit requires --grader local"
@@ -1932,6 +2129,7 @@ def main():
                     runs,
                     rollouts=args.rollouts,
                     judge_base_url=args.judge_base_url,
+                    qualification_audit=args.qualification_audit,
                     whole_files=args.whole_files,
                     historical_exploratory_source_commit=(
                         args.historical_exploratory_source_commit

@@ -261,8 +261,10 @@ SB_NOTE_PATH="$G_NOTE" SB_NOTE_MANIFEST="$G_MANIFEST" \
 sbatch scripts/react.sbatch
 ```
 
-Each full run contains 30 questions × four budgets × three rollouts. Once all
-three grids are complete, grade and report them with separate local-only jobs:
+Each full run contains 30 questions × four budgets × three rollouts. The
+following separate local-only jobs can produce individual triage reports. Each
+launcher derives the sole allowed one-shot qualification path from its fresh
+authenticated server-launch ID:
 
 ```bash
 SB_TASK=dspy SB_RUN_ID=dspy-local-base-20260713 \
@@ -290,6 +292,12 @@ screen is adaptive and cannot be promoted into a confirmatory claim. The exact
 design, historical results, frozen graph bank, and interpretation limits are in
 [`experiments/011-full-dspy-selfquiz-ablations.md`](experiments/011-full-dspy-selfquiz-ablations.md).
 
+Do not feed those separately launched reports into a paired screen: their
+qualification and judge-launch identities necessarily differ. A paired
+control/treatment screen must qualify once, grade both frozen arms, and build
+both reports inside one uninterrupted server lifecycle. Experiment 012 records
+the exact multi-arm recipe used for the current SmallDSPy comparison.
+
 ### Exploratory local-Qwen screening
 
 During method development, evaluate complete exploratory control and treatment
@@ -308,16 +316,28 @@ authenticated launcher lifecycle, sets `GRADER_MODEL=local`, and neither
 requires nor uses an OpenAI or Sakana credential.
 
 Local judge requests use the fixed temperature-zero, seed-zero, 256-token,
-no-thinking score-only contract recorded by the grader. The compact constrained
-JSON contains every exact rubric claim ID mapped directly to binary `0/1`, plus
-`needs_regrade`; it requests no rationale and no model-generated total. The
-harness computes weighted scores deterministically. Grades and reports bind the
+no-thinking score-only contract recorded by the grader. An answer-centered
+system message prevents facts in the gold/evidence from being credited unless
+the candidate answer itself correctly asserts them; the candidate is supplied
+last in a JSON-escaped user payload. Constrained JSON contains every exact
+rubric claim ID mapped directly to binary `0/1`, plus `needs_regrade`; it
+requests no rationale and no model-generated total. The harness computes
+weighted scores deterministically. `disable_any_whitespace` prevents arbitrary
+grammar whitespace but permits xgrammar's fixed JSON separators, so raw
+compactness is never a validity condition. Grades and reports bind the
 local judge's model cache, software, CUDA, homogeneous GPU/topology, complete
 endpoint count and slot map, request contract, and high-entropy non-secret
 launcher ID. A loopback port remains disclosed transport, but a relaunch is a
 different substantive grading lifecycle and cannot be spliced into an existing
 population. The generic sbatch runner does not replace an experiment-specific
-predeclared calibration gate such as experiment 012's three-endpoint gate.
+predeclared calibration gate. `studybench.local_judge_qualification` provides
+experiment 012's balanced 20-case, 44-label, all-replica synthetic gate; it
+contains no StudyBench content. It writes an immutable complete 60-request
+pre-contact intent before its first judge call, then writes the terminal audit
+before returning pass or failure. Local grading and reporting refuse to run
+without revalidating and binding that exact same-launch passing audit. The
+audit path is canonical and keyed only by the authenticated server-launch ID,
+so a failed or orphaned intent cannot be bypassed by choosing another filename.
 `excerpt_evidence` is the lower-context screening mode;
 `SB_EVIDENCE_MODE=whole_files` supplies the full evidence files but still does
 not make Qwen grading paper-faithful. Give every regrade a fresh

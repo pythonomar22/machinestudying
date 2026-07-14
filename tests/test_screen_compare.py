@@ -27,6 +27,29 @@ TEST_LOCAL_JUDGE_RUNTIME = {
     "server_launch_id": "3" * 64,
     "server": {"server_count": 1},
 }
+TEST_QUALIFICATION_AUDIT_SHA256 = "7" * 64
+TEST_QUALIFICATION_BINDING_PAYLOAD = {
+    "qualification_binding_schema_version": 1,
+    "audit_sha256": TEST_QUALIFICATION_AUDIT_SHA256,
+    "audit_bytes": 2,
+    "intent_sha256": "8" * 64,
+}
+TEST_QUALIFICATION_BINDING = {
+    **TEST_QUALIFICATION_BINDING_PAYLOAD,
+    "binding_sha256": sha256_json(TEST_QUALIFICATION_BINDING_PAYLOAD),
+}
+
+
+def qualification_record() -> dict:
+    return {
+        "binding": deepcopy(TEST_QUALIFICATION_BINDING),
+        "binding_sha256": TEST_QUALIFICATION_BINDING["binding_sha256"],
+        "audit": {
+            "path": "logs/test-local-judge-qualification.json",
+            "sha256": TEST_QUALIFICATION_AUDIT_SHA256,
+            "bytes": 2,
+        },
+    }
 
 
 def source_record(commit: str = "a" * 40) -> dict:
@@ -180,6 +203,10 @@ def local_arm(
             **TEST_LOCAL_JUDGE_RUNTIME,
             "server": {"server_count": 2},
         },
+        "local_judge_qualification_sha256": (
+            TEST_QUALIFICATION_AUDIT_SHA256
+        ),
+        "local_judge_qualification": qualification_record(),
         "checker_interpretation": {
             "language": "python",
             "sandbox_configuration_sha256": checker_sha256,
@@ -232,6 +259,17 @@ class LocalPairTests(unittest.TestCase):
             intervention["seed_pairing"]["episode_seeds_sha256"],
             sha256_json(self.control.spec["seed_policy"]["episode_seeds"]),
         )
+        self.assertEqual(
+            intervention["local_judge_qualification"],
+            {
+                "policy": "exact-same-revalidated-passing-audit-v1",
+                "audit_sha256": TEST_QUALIFICATION_AUDIT_SHA256,
+                "binding_sha256": TEST_QUALIFICATION_BINDING[
+                    "binding_sha256"
+                ],
+                "audit": qualification_record()["audit"],
+            },
+        )
 
     def test_arm_specific_judge_intent_outcomes_are_normalized(self) -> None:
         treatment = deepcopy(self.treatment)
@@ -248,6 +286,54 @@ class LocalPairTests(unittest.TestCase):
             treatment,
             intervention_description=DESCRIPTION,
         )
+
+    def test_paired_qualification_must_match_exactly(self) -> None:
+        treatment = deepcopy(self.treatment)
+        config = treatment.audit["grading_manifest"]["config"]
+        qualification = config["local_judge_qualification"]
+        payload = {
+            key: value
+            for key, value in qualification["binding"].items()
+            if key != "binding_sha256"
+        }
+        payload["audit_sha256"] = "9" * 64
+        binding = {**payload, "binding_sha256": sha256_json(payload)}
+        qualification.update({
+            "binding": binding,
+            "binding_sha256": binding["binding_sha256"],
+            "audit": {
+                **qualification["audit"],
+                "sha256": payload["audit_sha256"],
+            },
+        })
+        config["local_judge_qualification_sha256"] = payload[
+            "audit_sha256"
+        ]
+        treatment.audit["grading_manifest"]["sha256"] = sha256_json(config)
+        with self.assertRaisesRegex(
+            screen_compare.ScreenComparisonIntegrityError,
+            "exact same local-judge qualification",
+        ):
+            screen_compare.validate_pair(
+                self.control,
+                treatment,
+                intervention_description=DESCRIPTION,
+            )
+
+    def test_malformed_qualification_binding_is_fatal(self) -> None:
+        treatment = deepcopy(self.treatment)
+        config = treatment.audit["grading_manifest"]["config"]
+        config["local_judge_qualification"]["binding"]["audit_bytes"] += 1
+        treatment.audit["grading_manifest"]["sha256"] = sha256_json(config)
+        with self.assertRaisesRegex(
+            screen_compare.ScreenComparisonIntegrityError,
+            "invalid qualification provenance",
+        ):
+            screen_compare.validate_pair(
+                self.control,
+                treatment,
+                intervention_description=DESCRIPTION,
+            )
 
     def test_malformed_judge_intent_ledger_is_fatal(self) -> None:
         for field, value in (
@@ -938,6 +1024,10 @@ class LocalReportLoaderTests(unittest.TestCase):
                 TEST_LOCAL_JUDGE_RUNTIME
             ),
             "local_judge_runtime": TEST_LOCAL_JUDGE_RUNTIME,
+            "local_judge_qualification_sha256": (
+                TEST_QUALIFICATION_AUDIT_SHA256
+            ),
+            "local_judge_qualification": qualification_record(),
             "checker_interpretation": {
                 "language": "python",
                 "sandbox_configuration_sha256": grade.stable_sha256(
@@ -1068,6 +1158,9 @@ class LocalReportLoaderTests(unittest.TestCase):
                 root / "runs/run-a",
                 rollouts=1,
                 judge_base_url="http://localhost:8223/v1",
+                qualification_audit=(
+                    root / "logs/test-local-judge-qualification.json"
+                ),
                 grading_runtime=TEST_GRADING_RUNTIME,
                 local_judge_runtime=TEST_LOCAL_JUDGE_RUNTIME,
                 whole_files=False,

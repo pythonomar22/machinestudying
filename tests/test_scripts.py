@@ -279,7 +279,24 @@ class ScriptContractTests(unittest.TestCase):
         self.assertNotIn('require_single_csv_value BASE_URLS "$BASE_URLS"', runner)
         self.assertIn("JUDGE_BASE_URLS=$BASE_URLS", runner)
         self.assertEqual(
-            runner.count('--judge-base-url "$JUDGE_BASE_URLS"'), 2
+            runner.count('--judge-base-url "$JUDGE_BASE_URLS"'), 3
+        )
+        self.assertNotIn("SB_QUALIFICATION_AUDIT", runner)
+        self.assertIn(
+            'QUALIFICATION_AUDIT="logs/local-judge-qualification-'
+            '${SB_SERVER_LAUNCH_ID}.json"',
+            runner,
+        )
+        self.assertIn("QUALIFICATION_INTENT", runner)
+        self.assertIn("-m studybench.local_judge_qualification", runner)
+        self.assertEqual(runner.count("for qualification_path in"), 1)
+        self.assertEqual(runner.count('--output "$QUALIFICATION_AUDIT"'), 1)
+        self.assertEqual(
+            runner.count('--qualification-audit "$QUALIFICATION_AUDIT"'), 2
+        )
+        self.assertLess(
+            runner.index("-m studybench.local_judge_qualification"),
+            runner.index("-m studybench.grade"),
         )
         self.assertIn("SB_EVIDENCE_MODE", runner)
         self.assertIn("SB_GRADE_CONCURRENCY", runner)
@@ -290,7 +307,7 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn("intentionally unreportable", runner)
         self.assertIn("-m studybench.grade", runner)
         self.assertIn("-m studybench.report", runner)
-        self.assertEqual(runner.count('--judge-base-url "$JUDGE_BASE_URLS"'), 2)
+        self.assertEqual(runner.count('--judge-base-url "$JUDGE_BASE_URLS"'), 3)
         self.assertIn("--grader local", runner)
 
     def test_shell_ids_match_python_provenance_constraints(self) -> None:
