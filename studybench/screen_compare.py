@@ -19,15 +19,19 @@ from . import compare as strict_compare
 from . import report
 from . import sandbox
 from .grade import (
+    CURRENT_SMOKE_SOURCE_POLICY,
     GRADE_SCHEMA_VERSION,
     GradeIntegrityError,
+    HISTORICAL_EXPLORATORY_SOURCE_POLICY,
     LOCAL_GRADER_ENDPOINT_IDENTITY,
     LOCAL_GRADER_MODEL,
     LOCAL_GRADER_MODEL_REVISION,
     LOCAL_GRADER_REQUEST_OPTIONS,
+    LOCAL_GRADER_REQUEST_POLICY,
     file_sha256,
     parse_json,
     stable_sha256,
+    validate_generation_source_validation,
 )
 from .integrity import (
     canonical_json_bytes,
@@ -44,7 +48,7 @@ from .provenance import (
 )
 
 
-SCREEN_COMPARISON_SCHEMA_VERSION = 1
+SCREEN_COMPARISON_SCHEMA_VERSION = 2
 INTERVENTION_KIND = "study-note"
 DIAGNOSTIC_BANNER = (
     "DIAGNOSTIC LOCAL-QWEN SCREEN ONLY — NOT CLAIM-READY; "
@@ -191,12 +195,32 @@ def _local_grading_config(artifact: dict[str, Any]) -> dict[str, Any]:
         "judge_requested_model": LOCAL_GRADER_MODEL,
         "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
         "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+        "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
         "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
         "judge_effort": "",
     }
     if any(config.get(field) != value for field, value in expected.items()):
         raise ScreenComparisonIntegrityError(
             "source report is not a pinned diagnostic local-Qwen report"
+        )
+    try:
+        source_validation = validate_generation_source_validation(
+            config.get("generation_source_validation")
+        )
+    except GradeIntegrityError as exc:
+        raise ScreenComparisonIntegrityError(
+            "source report has an invalid generation/grader source binding"
+        ) from exc
+    if source_validation["policy"] == CURRENT_SMOKE_SOURCE_POLICY:
+        raise ScreenComparisonIntegrityError(
+            "grading-smoke source binding is not valid for a complete local report"
+        )
+    if (
+        source_validation["claim_ready"] is not False
+        or source_validation["paper_comparison_allowed"] is not False
+    ):
+        raise ScreenComparisonIntegrityError(
+            "local source-stage binding permits claim-ready or paper use"
         )
     if (
         config.get("grade_schema_version") != GRADE_SCHEMA_VERSION
@@ -284,6 +308,12 @@ def _validate_checker_binding(
     config = _local_grading_config({
         "grading_manifest": arm.audit.get("grading_manifest")
     })
+    if config["generation_source_validation"]["generation_source"] != arm.spec.get(
+        "source"
+    ):
+        raise ScreenComparisonIntegrityError(
+            "source-stage record does not match the run manifest generation source"
+        )
     interpretation = config.get("checker_interpretation")
     language = (
         expected_language
@@ -427,6 +457,13 @@ def load_local_report(path: str | Path) -> LoadedScreenArm:
         )
 
     config = _local_grading_config(artifact)
+    source_validation = config["generation_source_validation"]
+    historical_source_commit = (
+        source_validation["generation_source"]["git_commit"]
+        if source_validation["policy"]
+        == HISTORICAL_EXPLORATORY_SOURCE_POLICY
+        else None
+    )
     try:
         run_root, grade_root = strict_compare._population_roots(artifact)
     except strict_compare.ComparisonIntegrityError as exc:
@@ -444,6 +481,7 @@ def load_local_report(path: str | Path) -> LoadedScreenArm:
             grading_runtime=config["grading_runtime"],
             local_judge_runtime=config["local_judge_runtime"],
             whole_files=config.get("whole_files", False),
+            historical_exploratory_source_commit=historical_source_commit,
         )
     except (KeyError, TypeError, report.ReportIntegrityError) as exc:
         raise ScreenComparisonIntegrityError(
@@ -975,9 +1013,11 @@ def _source_record(arm: LoadedScreenArm) -> dict[str, Any]:
         "population_sha256": arm.audit["population_sha256"],
         "population_size": len(arm.audit["population"]),
         "generation_runtime": arm.audit["generation_runtime"],
+        "source_stage": grading["generation_source_validation"],
         "judge_runtime": {
             "requested_model": grading["judge_requested_model"],
             "model_revision": grading["judge_model_revision"],
+            "request_policy": grading["judge_request_policy"],
             "request_options": grading["judge_request_options"],
             "response_models": grading["judge_response_models"],
             "system_fingerprints": grading["judge_system_fingerprints"],

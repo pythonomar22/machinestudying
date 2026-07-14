@@ -27,6 +27,53 @@ TEST_LOCAL_JUDGE_RUNTIME = {
 }
 
 
+def source_record(commit: str = "a" * 40) -> dict:
+    files = {
+        "studybench/example.py": {"sha256": "b" * 64, "bytes": 1},
+    }
+    return {
+        "git_commit": commit,
+        "dirty": False,
+        "files": files,
+        "tree_sha256": sha256_json(files),
+    }
+
+
+def source_validation(source: dict | None = None) -> dict:
+    source = source_record() if source is None else deepcopy(source)
+    return {
+        "schema_version": 1,
+        "policy": grade.CURRENT_GENERATION_SOURCE_POLICY,
+        "claim_ready": False,
+        "paper_comparison_allowed": False,
+        "generation_source": source,
+        "generation_source_sha256": sha256_json(source),
+        "grader_source": deepcopy(source),
+        "grader_source_sha256": sha256_json(source),
+    }
+
+
+def historical_source_validation(
+    source: dict, *, grader_commit: str = "c" * 40
+) -> dict:
+    validation = source_validation(source)
+    grader_source = source_record(grader_commit)
+    validation.update({
+        "policy": grade.HISTORICAL_EXPLORATORY_SOURCE_POLICY,
+        "grader_source": grader_source,
+        "grader_source_sha256": sha256_json(grader_source),
+    })
+    return validation
+
+
+def replace_source_validation(
+    arm: screen_compare.LoadedScreenArm, validation: dict
+) -> None:
+    config = arm.audit["grading_manifest"]["config"]
+    config["generation_source_validation"] = validation
+    arm.audit["grading_manifest"]["sha256"] = sha256_json(config)
+
+
 def local_arm(
     run_id: str,
     *,
@@ -44,6 +91,7 @@ def local_arm(
     spec.update({
         "purpose": "exploratory",
         "claim_ready": False,
+        "source": source_record(),
         "preregistration": {
             "schema_version": 1,
             "status": "not_provided",
@@ -91,7 +139,9 @@ def local_arm(
         "judge_endpoint_identity": grade.LOCAL_GRADER_ENDPOINT_IDENTITY,
         "judge_transport_urls": [url],
         "judge_model_revision": grade.LOCAL_GRADER_MODEL_REVISION,
+        "judge_request_policy": grade.LOCAL_GRADER_REQUEST_POLICY,
         "judge_request_options": grade.LOCAL_GRADER_REQUEST_OPTIONS,
+        "generation_source_validation": source_validation(spec["source"]),
         "local_judge_runtime_sha256": sha256_json(TEST_LOCAL_JUDGE_RUNTIME),
         "local_judge_runtime": TEST_LOCAL_JUDGE_RUNTIME,
         "checker_interpretation": {
@@ -183,21 +233,6 @@ class LocalPairTests(unittest.TestCase):
                 intervention_description=DESCRIPTION,
             )
 
-    def test_seed_and_substantive_grading_drift_are_fatal(self) -> None:
-        drifted = deepcopy(self.treatment)
-        drifted.audit["run_manifest"]["spec"]["seed_policy"][
-            "episode_seeds"
-        ]["direct/r0/q1.json"] += 1
-        with self.assertRaisesRegex(
-            screen_compare.ScreenComparisonIntegrityError,
-            "seed-policy episode_seeds",
-        ):
-            screen_compare.validate_pair(
-                self.control,
-                drifted,
-                intervention_description=DESCRIPTION,
-            )
-
         drifted = deepcopy(self.treatment)
         config = drifted.audit["grading_manifest"]["config"]
         config["judge_request_options"] = {"temperature": 0.1}
@@ -229,6 +264,134 @@ class LocalPairTests(unittest.TestCase):
             screen_compare.validate_pair(
                 self.control,
                 drifted,
+                intervention_description=DESCRIPTION,
+            )
+
+    def test_seed_and_substantive_grading_drift_are_fatal(self) -> None:
+        drifted = deepcopy(self.treatment)
+        drifted.audit["run_manifest"]["spec"]["seed_policy"][
+            "episode_seeds"
+        ]["direct/r0/q1.json"] += 1
+        with self.assertRaisesRegex(
+            screen_compare.ScreenComparisonIntegrityError,
+            "seed-policy episode_seeds",
+        ):
+            screen_compare.validate_pair(
+                self.control,
+                drifted,
+                intervention_description=DESCRIPTION,
+            )
+
+    def test_source_stage_digest_and_manifest_mismatches_are_fatal(self) -> None:
+        digest_tamper = deepcopy(self.treatment)
+        validation = deepcopy(
+            digest_tamper.audit["grading_manifest"]["config"]
+            ["generation_source_validation"]
+        )
+        validation["grader_source_sha256"] = "0" * 64
+        replace_source_validation(digest_tamper, validation)
+        with self.assertRaisesRegex(
+            screen_compare.ScreenComparisonIntegrityError,
+            "invalid generation/grader source binding",
+        ):
+            screen_compare.validate_pair(
+                self.control,
+                digest_tamper,
+                intervention_description=DESCRIPTION,
+            )
+
+        manifest_mismatch = deepcopy(self.treatment)
+        different = source_record("d" * 40)
+        replace_source_validation(
+            manifest_mismatch, source_validation(different)
+        )
+        with self.assertRaisesRegex(
+            screen_compare.ScreenComparisonIntegrityError,
+            "does not match the run manifest generation source",
+        ):
+            screen_compare.validate_pair(
+                self.control,
+                manifest_mismatch,
+                intervention_description=DESCRIPTION,
+            )
+
+    def test_pair_rejects_grader_source_and_source_policy_mismatches(self) -> None:
+        generation_mismatch = deepcopy(self.treatment)
+        different_generation = source_record("d" * 40)
+        generation_mismatch.audit["run_manifest"]["spec"]["source"] = (
+            different_generation
+        )
+        generation_mismatch.audit["run_manifest"]["spec_sha256"] = sha256_json(
+            generation_mismatch.spec
+        )
+        replace_source_validation(
+            generation_mismatch,
+            source_validation(different_generation),
+        )
+        with self.assertRaisesRegex(
+            screen_compare.ScreenComparisonIntegrityError,
+            "outside the note intervention",
+        ):
+            screen_compare.validate_pair(
+                self.control,
+                generation_mismatch,
+                intervention_description=DESCRIPTION,
+            )
+
+        control = deepcopy(self.control)
+        treatment = deepcopy(self.treatment)
+        replace_source_validation(
+            control,
+            historical_source_validation(
+                control.spec["source"], grader_commit="c" * 40
+            ),
+        )
+        replace_source_validation(
+            treatment,
+            historical_source_validation(
+                treatment.spec["source"], grader_commit="d" * 40
+            ),
+        )
+        with self.assertRaisesRegex(
+            screen_compare.ScreenComparisonIntegrityError,
+            "different substantive grading contracts",
+        ):
+            screen_compare.validate_pair(
+                control,
+                treatment,
+                intervention_description=DESCRIPTION,
+            )
+
+        historical_treatment = deepcopy(self.treatment)
+        replace_source_validation(
+            historical_treatment,
+            historical_source_validation(historical_treatment.spec["source"]),
+        )
+        with self.assertRaisesRegex(
+            screen_compare.ScreenComparisonIntegrityError,
+            "different substantive grading contracts",
+        ):
+            screen_compare.validate_pair(
+                self.control,
+                historical_treatment,
+                intervention_description=DESCRIPTION,
+            )
+
+    def test_screen_rejects_grading_smoke_source_policy(self) -> None:
+        smoke = deepcopy(self.treatment)
+        validation = deepcopy(
+            smoke.audit["grading_manifest"]["config"]
+            ["generation_source_validation"]
+        )
+        validation["policy"] = grade.CURRENT_SMOKE_SOURCE_POLICY
+        replace_source_validation(smoke, validation)
+        with self.assertRaisesRegex(
+            screen_compare.ScreenComparisonIntegrityError,
+            "grading-smoke source binding",
+        ):
+            screen_compare.validate_pair(
+                self.control,
+                smoke,
                 intervention_description=DESCRIPTION,
             )
 
@@ -641,6 +804,7 @@ class LocalReportLoaderTests(unittest.TestCase):
                 "status": "not_provided",
                 "reason": "exploratory",
             },
+            "source": source_record(),
             "extra": {"server_transport": {"server_count": 1}},
         }
         config = {
@@ -667,7 +831,9 @@ class LocalReportLoaderTests(unittest.TestCase):
             "judge_endpoint_identity": grade.LOCAL_GRADER_ENDPOINT_IDENTITY,
             "judge_transport_urls": ["http://localhost:8123/v1"],
             "judge_model_revision": grade.LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_policy": grade.LOCAL_GRADER_REQUEST_POLICY,
             "judge_request_options": grade.LOCAL_GRADER_REQUEST_OPTIONS,
+            "generation_source_validation": source_validation(spec["source"]),
             "local_judge_runtime_sha256": sha256_json(
                 TEST_LOCAL_JUDGE_RUNTIME
             ),
@@ -805,6 +971,7 @@ class LocalReportLoaderTests(unittest.TestCase):
                 grading_runtime=TEST_GRADING_RUNTIME,
                 local_judge_runtime=TEST_LOCAL_JUDGE_RUNTIME,
                 whole_files=False,
+                historical_exploratory_source_commit=None,
             )
 
     def test_loader_rejects_unavailable_checker_zero_sentinels(self) -> None:

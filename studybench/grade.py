@@ -22,10 +22,10 @@ separate immutable grade namespaces so populations cannot mix.
 
 import argparse
 import asyncio
+from copy import deepcopy
 import hashlib
 import json
 import logging
-import math
 import os
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -59,6 +59,7 @@ from .provenance import (
     local_judge_runtime_sha256 as provenance_local_judge_runtime_sha256,
     validate_current_source,
     validate_environment_snapshot,
+    validate_frozen_source_commit,
     validate_id,
     validate_local_server_urls,
 )
@@ -82,7 +83,18 @@ LOCAL_GRADER_REQUEST_OPTIONS = {
     "temperature": 0,
     "seed": 0,
     "max_tokens": 8192,
+    "extra_body": {
+        "chat_template_kwargs": {
+            "enable_thinking": False,
+        },
+    },
 }
+LOCAL_GRADER_REQUEST_POLICY = "qwen-no-thinking-strict-json-v1"
+CURRENT_GENERATION_SOURCE_POLICY = "current-generation-current-grader-v1"
+CURRENT_SMOKE_SOURCE_POLICY = "current-smoke-generation-current-grader-v1"
+HISTORICAL_EXPLORATORY_SOURCE_POLICY = (
+    "historical-clean-generation-current-grader-v1"
+)
 
 GRADERS = {  # GRADER_MODEL env var -> (judge model id, base_url, api key env var)
     "openai": ("gpt-5.4", CANONICAL_OPENAI_BASE_URL, "OPENAI_API_KEY"),
@@ -92,11 +104,11 @@ GRADERS = {  # GRADER_MODEL env var -> (judge model id, base_url, api key env va
     "local": (LOCAL_GRADER_MODEL, None, "SB_VLLM_API_KEY"),
 }
 
-GRADE_SCHEMA_VERSION = 6
+GRADE_SCHEMA_VERSION = 7
 MAX_JUDGE_ATTEMPTS = 2
-FAILED_JUDGE_AUDIT_SCHEMA_VERSION = 4
-JUDGE_ATTEMPT_INTENT_SCHEMA_VERSION = 1
-JUDGE_ATTEMPT_POLICY = "one-session-judge-attempt-intent-v1"
+FAILED_JUDGE_AUDIT_SCHEMA_VERSION = 5
+JUDGE_ATTEMPT_INTENT_SCHEMA_VERSION = 2
+JUDGE_ATTEMPT_POLICY = "one-session-judge-attempt-intent-v2"
 
 
 class GradeIntegrityError(ValueError):
@@ -199,7 +211,7 @@ def _judge_request_options(judge_model: str, effort: str) -> dict[str, Any]:
             raise GradeIntegrityError(
                 "local Qwen grading uses fixed request options; --judge-effort must be empty"
             )
-        return dict(LOCAL_GRADER_REQUEST_OPTIONS)
+        return deepcopy(LOCAL_GRADER_REQUEST_OPTIONS)
     return {"reasoning_effort": effort} if effort else {}
 
 
@@ -319,6 +331,85 @@ def _validate_source_record(
             raise GradeIntegrityError(f"{label} source file record is malformed")
 
 
+def validate_generation_source_validation(value: object) -> dict[str, object]:
+    """Validate the explicit generator/grader source-stage separation record."""
+
+    expected_keys = {
+        "schema_version",
+        "policy",
+        "claim_ready",
+        "paper_comparison_allowed",
+        "generation_source",
+        "generation_source_sha256",
+        "grader_source",
+        "grader_source_sha256",
+    }
+    if not isinstance(value, dict) or set(value) != expected_keys:
+        raise GradeIntegrityError("generation/grader source binding is malformed")
+    policy = value.get("policy")
+    if policy not in {
+        CURRENT_GENERATION_SOURCE_POLICY,
+        CURRENT_SMOKE_SOURCE_POLICY,
+        HISTORICAL_EXPLORATORY_SOURCE_POLICY,
+    }:
+        raise GradeIntegrityError("unknown generation-source validation policy")
+    if (
+        type(value.get("schema_version")) is not int
+        or value["schema_version"] != 1
+        or type(value.get("claim_ready")) is not bool
+        or type(value.get("paper_comparison_allowed")) is not bool
+        or (
+            value["paper_comparison_allowed"]
+            and not value["claim_ready"]
+        )
+    ):
+        raise GradeIntegrityError(
+            "generation/grader source research-status binding is invalid"
+        )
+    generation_source = value.get("generation_source")
+    grader_source = value.get("grader_source")
+    require_clean = policy != CURRENT_SMOKE_SOURCE_POLICY
+    _validate_source_record(
+        generation_source, label="bound generation", require_clean=require_clean
+    )
+    _validate_source_record(
+        grader_source, label="bound grader", require_clean=require_clean
+    )
+    if (
+        value.get("generation_source_sha256") != sha256_json(generation_source)
+        or value.get("grader_source_sha256") != sha256_json(grader_source)
+    ):
+        raise GradeIntegrityError("generation/grader source digest is inconsistent")
+    same_source = canonical_json_bytes(generation_source) == canonical_json_bytes(
+        grader_source
+    )
+    if policy in {
+        CURRENT_GENERATION_SOURCE_POLICY,
+        CURRENT_SMOKE_SOURCE_POLICY,
+    } and not same_source:
+        raise GradeIntegrityError(
+            "current-source policy contains different generator and grader source"
+        )
+    if policy == CURRENT_SMOKE_SOURCE_POLICY and (
+        value["claim_ready"]
+        or value["paper_comparison_allowed"]
+    ):
+        raise GradeIntegrityError(
+            "smoke-source grading must be same-current and non-claim-ready"
+        )
+    if policy == HISTORICAL_EXPLORATORY_SOURCE_POLICY and same_source:
+        raise GradeIntegrityError(
+            "historical-source policy does not separate generator and grader source"
+        )
+    if policy == HISTORICAL_EXPLORATORY_SOURCE_POLICY and (
+        value["claim_ready"] or value["paper_comparison_allowed"]
+    ):
+        raise GradeIntegrityError(
+            "historical-source regrading cannot be claim-ready or paper-comparable"
+        )
+    return deepcopy(value)
+
+
 def _load_bundled_construction_dependencies(
     run_task_root: Path,
     provenance_bundle: dict,
@@ -427,6 +518,7 @@ def load_claim_manifest(
     *,
     require_claim_ready: bool = True,
     allow_smoke: bool = False,
+    historical_exploratory_source_commit: str | None = None,
 ) -> dict:
     """Validate a complete run manifest and its immutable note snapshot.
 
@@ -440,8 +532,20 @@ def load_claim_manifest(
 
     if type(require_claim_ready) is not bool or type(allow_smoke) is not bool:
         raise GradeIntegrityError("manifest research-mode policies must be booleans")
+    if historical_exploratory_source_commit is not None and not _valid_git_commit(
+        historical_exploratory_source_commit
+    ):
+        raise GradeIntegrityError(
+            "historical exploratory source commit must be one full Git object ID"
+        )
     if allow_smoke and require_claim_ready:
         raise GradeIntegrityError("a diagnostic smoke cannot require claim readiness")
+    if historical_exploratory_source_commit is not None and (
+        require_claim_ready or allow_smoke
+    ):
+        raise GradeIntegrityError(
+            "historical source regrading is restricted to full exploratory runs"
+        )
     manifest_path = run_task_root / "manifest.json"
     try:
         manifest_bytes = read_artifact_bytes(manifest_path)
@@ -517,9 +621,37 @@ def load_claim_manifest(
     source = spec.get("source")
     _validate_source_record(source, label="run", require_clean=not allow_smoke)
     try:
-        validate_current_source(source)
+        if historical_exploratory_source_commit is not None:
+            if source.get("git_commit") != historical_exploratory_source_commit:
+                raise GradeIntegrityError(
+                    "requested historical source commit does not match the run manifest"
+                )
+            validate_frozen_source_commit(source)
+        else:
+            validate_current_source(source)
+        grader_source = provenance.source_record()
+        _validate_source_record(
+            grader_source, label="grader", require_clean=not allow_smoke
+        )
+        validate_current_source(grader_source)
     except ValueError as exc:
         raise GradeIntegrityError(str(exc)) from exc
+    generation_source_validation = validate_generation_source_validation({
+        "schema_version": 1,
+        "policy": (
+            CURRENT_SMOKE_SOURCE_POLICY
+            if allow_smoke
+            else HISTORICAL_EXPLORATORY_SOURCE_POLICY
+            if historical_exploratory_source_commit is not None
+            else CURRENT_GENERATION_SOURCE_POLICY
+        ),
+        "claim_ready": require_claim_ready,
+        "paper_comparison_allowed": require_claim_ready,
+        "generation_source": source,
+        "generation_source_sha256": sha256_json(source),
+        "grader_source": grader_source,
+        "grader_source_sha256": sha256_json(grader_source),
+    })
     corpus_record = spec.get("corpus")
     if (not isinstance(corpus_record, dict) or corpus_record.get("dirty") is not False
             or corpus_record.get("name") != corpus.name):
@@ -1123,6 +1255,7 @@ def load_claim_manifest(
         "forced50_protocol": forced50_protocol,
         "preregistration": preregistration,
         "generation_attempt_intents": generation_attempt_intents,
+        "generation_source_validation": generation_source_validation,
     }
 
 
@@ -1208,8 +1341,8 @@ def validate_manifest_episode(ep: dict, row: dict, manifest_context: dict) -> No
 GRADER_PROMPT = """You are grading one model answer for a source-grounded {library_name} expert QA benchmark.
 
 ## Scoring model
-- The question gets one final continuous 0-100 score.
-- Claims are only the internal rubric used to compute that question's score.
+- The harness deterministically computes the question's final 0-100 score from
+  your atomic claim labels and the rubric weights.
 - Score each claim as:
   - `0` = wrong or missing
   - `1` = fully correct
@@ -1219,7 +1352,7 @@ GRADER_PROMPT = """You are grading one model answer for a source-grounded {libra
 
 ## Output rules
 - Score every rubric claim exactly once.
-- `question_score` must equal the weighted sum of the claim scores.
+- Do not output a total question score; the harness computes it.
 - Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
 - Keep rationales concise and specific.
 
@@ -1270,10 +1403,9 @@ def judge_schema(row: dict) -> dict:
                             "additionalProperties": False,
                         },
                     },
-                    "question_score": {"type": "number"},
                     "needs_regrade": {"type": "boolean"},
                 },
-                "required": ["claims", "question_score", "needs_regrade"],
+                "required": ["claims", "needs_regrade"],
                 "additionalProperties": False,
             },
         },
@@ -1333,7 +1465,8 @@ def grade_spec_sha256(corpus, row: dict, judge_model: str,
                       whole_files: bool = False, effort: str = "", *,
                       judge_base_url: str | None = None,
                       grading_runtime: dict[str, object] | None = None,
-                      local_judge_runtime: dict[str, object] | None = None) -> str:
+                      local_judge_runtime: dict[str, object] | None = None,
+                      generation_source_validation: dict[str, object]) -> str:
     """Hash every static input that defines how this question is graded."""
     judge_base_url = _resolve_judge_base_url(judge_model, judge_base_url)
     grading_runtime = (
@@ -1344,6 +1477,24 @@ def grade_spec_sha256(corpus, row: dict, judge_model: str,
         LOCAL_GRADER_ENDPOINT_IDENTITY
         if judge_model == LOCAL_GRADER_MODEL else judge_base_url
     )
+    generation_source_validation = validate_generation_source_validation(
+        generation_source_validation
+    )
+    diagnostic_source_policy = generation_source_validation["policy"] in {
+        CURRENT_SMOKE_SOURCE_POLICY,
+        HISTORICAL_EXPLORATORY_SOURCE_POLICY,
+    }
+    if diagnostic_source_policy and judge_model != LOCAL_GRADER_MODEL:
+        raise GradeIntegrityError(
+            "diagnostic source-stage grading is restricted to local Qwen"
+        )
+    if judge_model == LOCAL_GRADER_MODEL and (
+        generation_source_validation["claim_ready"]
+        or generation_source_validation["paper_comparison_allowed"]
+    ):
+        raise GradeIntegrityError(
+            "local Qwen grading requires a non-claim-ready source-stage binding"
+        )
     specification = {
         "grade_schema_version": GRADE_SCHEMA_VERSION,
         "grader_source": {
@@ -1363,6 +1514,7 @@ def grade_spec_sha256(corpus, row: dict, judge_model: str,
         "judge_endpoint_identity": endpoint_identity,
         "whole_files": whole_files,
         "judge_effort": effort,
+        "generation_source_validation": generation_source_validation,
         "prompt": build_prompt(corpus, row, "<MODEL_ANSWER>", whole_files),
         "response_format": judge_schema(row),
     }
@@ -1377,6 +1529,7 @@ def grade_spec_sha256(corpus, row: dict, judge_model: str,
             "claim_ready": False,
             "grading_tier": "diagnostic-local-proxy",
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
             "judge_request_options": _judge_request_options(judge_model, effort),
             "local_judge_runtime": local_judge_runtime,
         })
@@ -1410,7 +1563,7 @@ def validate_verdict(row: dict, verdict: dict) -> tuple[list[dict], dict]:
     """Return canonical claims and scores, or reject the entire judge response."""
     if not isinstance(verdict, dict):
         raise GradeIntegrityError("judge verdict is not an object")
-    if set(verdict) != {"claims", "question_score", "needs_regrade"}:
+    if set(verdict) != {"claims", "needs_regrade"}:
         raise GradeIntegrityError("judge verdict has missing or unexpected fields")
     claims = verdict.get("claims")
     ids = rubric_ids(row)
@@ -1449,13 +1602,6 @@ def validate_verdict(row: dict, verdict: dict) -> tuple[list[dict], dict]:
             f"{row['id']}: judge claim ids mismatch (missing={missing}, extra={extra})")
 
     claim_scores = {claim_id: by_id[claim_id]["score"] for claim_id in ids}
-    scores = score_from_claims(row, claim_scores, compile_ok=False)
-    reported = verdict.get("question_score")
-    if (isinstance(reported, bool) or not isinstance(reported, (int, float))
-            or not math.isfinite(reported) or reported != scores["lenient"]):
-        raise GradeIntegrityError(
-            f"{row['id']}: judge question_score={reported!r}; "
-            f"recomputed={scores['lenient']}")
     if type(verdict.get("needs_regrade")) is not bool:
         raise GradeIntegrityError(f"{row['id']}: needs_regrade is not boolean")
     if verdict["needs_regrade"]:
@@ -2245,6 +2391,11 @@ def _judge_attempt_intent(
             raise GradeIntegrityError(
                 f"judge-attempt intent has an invalid {label} hash"
             )
+    local_judge = judge_model == LOCAL_GRADER_MODEL
+    if local_judge != (local_judge_runtime_sha256 is not None):
+        raise GradeIntegrityError(
+            "judge-attempt intent local runtime does not match its judge model"
+        )
     if local_judge_runtime_sha256 is not None and not _valid_sha256(
         local_judge_runtime_sha256
     ):
@@ -2256,7 +2407,7 @@ def _judge_attempt_intent(
     if not isinstance(judge_base_url, str) or not judge_base_url:
         raise GradeIntegrityError("judge-attempt intent has no judge endpoint")
     _judge_attempt_intent_path(Path("."), episode)
-    return {
+    intent = {
         "schema_version": JUDGE_ATTEMPT_INTENT_SCHEMA_VERSION,
         "policy": JUDGE_ATTEMPT_POLICY,
         "source_episode": source_episode,
@@ -2276,6 +2427,12 @@ def _judge_attempt_intent(
         ),
         "judge_prompt_sha256": judge_prompt_sha256,
     }
+    if local_judge:
+        intent.update({
+            "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
+            "judge_request_options": deepcopy(LOCAL_GRADER_REQUEST_OPTIONS),
+        })
+    return intent
 
 
 def validate_judge_attempt_intent(
@@ -2439,7 +2596,8 @@ def _failed_judge_audit(*, ep: dict, episode_sha256: str,
             "local_proxy": True,
             "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
-            "judge_request_options": dict(LOCAL_GRADER_REQUEST_OPTIONS),
+            "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
+            "judge_request_options": deepcopy(LOCAL_GRADER_REQUEST_OPTIONS),
             "local_judge_runtime_sha256": local_judge_runtime_sha256,
         })
     return audit
@@ -2536,6 +2694,7 @@ def existing_failed_judge_audit(
             "local_proxy": True,
             "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
             "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
             "local_judge_runtime_sha256": local_judge_runtime_sha256,
         }
@@ -2654,6 +2813,7 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
             "local_proxy": True,
             "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
             "judge_request_options": request_options,
             "local_judge_runtime_sha256": local_judge_runtime_digest,
         })
@@ -2667,7 +2827,6 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
                          "configuration_sha256": sandbox_config_sha256,
                      },
                      claims=[], needs_regrade=False, question_score=0,
-                     judge_question_score=0,
                      lenient=0, strict=0, cores_ok=False,
                      judge_prompt_sha256=None, judge_accepted_attempt=None,
                      judge_accepted_content=None,
@@ -2809,7 +2968,6 @@ async def grade_episode(client: AsyncOpenAI, judge_model: str, corpus, row: dict
         claims=claims,
         needs_regrade=False,
         question_score=scores["lenient"],
-        judge_question_score=scores["lenient"],
         judge_accepted_attempt=len(attempts),
         judge_accepted_content=content,
         judge_attempt_count=len(attempts),
@@ -2868,6 +3026,7 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
             "local_proxy": True,
             "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
             "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
             "local_judge_runtime_sha256": expected_local_runtime_sha256,
         }
@@ -2978,7 +3137,7 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
             raise GradeIntegrityError(
                 "no_answer grade is missing its accepted-content marker")
         expected = {
-            "claims": [], "question_score": 0, "judge_question_score": 0,
+            "claims": [], "question_score": 0,
             "lenient": 0, "strict": 0, "cores_ok": False,
             "judge_requested_model": judge_model,
             "judge_prompt_sha256": None, "judge_accepted_attempt": None,
@@ -3031,7 +3190,6 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
 
     verdict = {
         "claims": grade.get("claims"),
-        "question_score": grade.get("question_score"),
         "needs_regrade": grade.get("needs_regrade"),
     }
     canonical_claims, claim_scores = validate_verdict(row, verdict)
@@ -3041,14 +3199,20 @@ def validate_stored_grade(grade: dict, row: dict, ep: dict, *,
     for key, value in scores.items():
         if grade.get(key) != value:
             raise GradeIntegrityError(f"stored {key} does not match recomputation")
-    if grade.get("judge_question_score") != scores["lenient"]:
-        raise GradeIntegrityError("stored judge_question_score does not match recomputation")
+    if (
+        type(grade.get("question_score")) is not int
+        or grade["question_score"] != scores["lenient"]
+    ):
+        raise GradeIntegrityError(
+            "stored question_score does not match deterministic recomputation"
+        )
 
 
 def stored_grade_is_current(grade_path: Path, episode_path: Path, corpus, row: dict,
                             judge_model: str, whole_files: bool = False,
                             effort: str = "", *,
-                            judge_base_url: str | None = None) -> bool:
+                            judge_base_url: str | None = None,
+                            generation_source_validation: dict[str, object]) -> bool:
     """Content-based replacement for unreliable mtime freshness checks."""
     try:
         grading_runtime = grading_runtime_record()
@@ -3067,7 +3231,8 @@ def stored_grade_is_current(grade_path: Path, episode_path: Path, corpus, row: d
                 corpus, row, judge_model, whole_files, effort,
                 judge_base_url=judge_base_url,
                 grading_runtime=grading_runtime,
-                local_judge_runtime=local_judge_runtime),
+                local_judge_runtime=local_judge_runtime,
+                generation_source_validation=generation_source_validation),
             judge_model=judge_model,
             judge_base_url=judge_base_url,
             corpus=corpus,
@@ -3460,7 +3625,10 @@ def preflight_grade_population(*, runs_root: Path, out_root: Path, corpus,
                 corpus, row, judge_model, whole_files, effort,
                 judge_base_url=judge_base_url,
                 grading_runtime=grading_runtime,
-                local_judge_runtime=local_judge_runtime)
+                local_judge_runtime=local_judge_runtime,
+                generation_source_validation=manifest_context[
+                    "generation_source_validation"
+                ])
             source_episode = run_path.relative_to(ROOT).as_posix()
             episode_digest = sha256_bytes(episode_bytes)
             judge_prompt_digest = (
@@ -3678,8 +3846,20 @@ async def _main_async_locked(args):
             f"unknown GRADER_MODEL={grader!r}; choose one of {sorted(GRADERS)}")
     judge_model, _, key_var = GRADERS[grader]
     local_smoke = bool(getattr(args, "local_smoke", False))
+    historical_source_commit = getattr(
+        args, "historical_exploratory_source_commit", None
+    )
     if local_smoke and grader != "local":
         raise GradeIntegrityError("--local-smoke is available only for local grading")
+    if historical_source_commit is not None:
+        if grader != "local" or local_smoke:
+            raise GradeIntegrityError(
+                "historical source regrading requires local full-population grading"
+            )
+        if args.grade_id is None:
+            raise GradeIntegrityError(
+                "historical source regrading requires an explicit fresh --grade-id"
+            )
     judge_base_url = _resolve_judge_base_url(judge_model, args.judge_base_url)
     _judge_request_options(judge_model, args.judge_effort)
     if grader == "local":
@@ -3703,6 +3883,7 @@ async def _main_async_locked(args):
         questions,
         require_claim_ready=grader != "local",
         allow_smoke=local_smoke,
+        historical_exploratory_source_commit=historical_source_commit,
     )
     if manifest_context["spec"]["run_id"] != runs_root.name:
         raise GradeIntegrityError("run manifest ID does not match its directory")
@@ -3949,6 +4130,14 @@ async def _main_async_locked(args):
     finally:
         if client is not None:
             await client.close()
+    try:
+        validate_current_source(
+            manifest_context["generation_source_validation"]["grader_source"]
+        )
+    except ValueError as exc:
+        raise GradeIntegrityError(
+            "grader source changed during the grading population"
+        ) from exc
     if failures:
         raise RuntimeError(
             f"grading failed for {len(failures)}/{len(pending)} episodes; "
@@ -3997,11 +4186,26 @@ def main():
             "intentionally incomplete diagnostic namespace"
         ),
     )
+    p.add_argument(
+        "--historical-exploratory-source-commit",
+        help=(
+            "LOCAL EXPLORATORY ONLY: explicitly regrade a complete immutable run "
+            "generated by this exact full Git commit while binding the current "
+            "clean grader source separately"
+        ),
+    )
     args = p.parse_args()
     try:
         args.run_id = validate_id(args.run_id)
         if args.grade_id is not None:
             args.grade_id = validate_id(args.grade_id, "grade ID")
+        if (
+            args.historical_exploratory_source_commit is not None
+            and not _valid_git_commit(args.historical_exploratory_source_commit)
+        ):
+            raise ValueError(
+                "historical exploratory source commit must be one full Git object ID"
+            )
     except ValueError as exc:
         p.error(str(exc))
     if args.concurrency <= 0:

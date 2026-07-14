@@ -150,14 +150,55 @@ def question() -> dict:
     }
 
 
-def verdict(*, score: int = 60, duplicate: bool = False) -> dict:
+def fake_source_record(*, commit: str = "a" * 40) -> dict:
+    files = {
+        "studybench/example.py": {
+            "sha256": "b" * 64,
+            "bytes": 1,
+        }
+    }
+    return {
+        "git_commit": commit,
+        "dirty": False,
+        "files": files,
+        "tree_sha256": sha256_json(files),
+    }
+
+
+def fake_source_validation(
+    *,
+    historical: bool = False,
+    claim_ready: bool = False,
+    generation_commit: str = "a" * 40,
+    grader_commit: str | None = None,
+) -> dict:
+    generation_source = fake_source_record(commit=generation_commit)
+    if grader_commit is None:
+        grader_commit = "c" * 40 if historical else generation_commit
+    grader_source = fake_source_record(commit=grader_commit)
+    return {
+        "schema_version": 1,
+        "policy": (
+            grade.HISTORICAL_EXPLORATORY_SOURCE_POLICY
+            if historical
+            else grade.CURRENT_GENERATION_SOURCE_POLICY
+        ),
+        "claim_ready": claim_ready,
+        "paper_comparison_allowed": claim_ready,
+        "generation_source": generation_source,
+        "generation_source_sha256": sha256_json(generation_source),
+        "grader_source": grader_source,
+        "grader_source_sha256": sha256_json(grader_source),
+    }
+
+
+def verdict(*, duplicate: bool = False) -> dict:
     second_id = "core" if duplicate else "detail"
     return {
         "claims": [
             {"claim_id": "core", "score": 1, "rationale": "present"},
             {"claim_id": second_id, "score": 0, "rationale": "missing"},
         ],
-        "question_score": score,
         "needs_regrade": False,
     }
 
@@ -478,11 +519,25 @@ class GradeVerdictTests(unittest.TestCase):
                 grading_spec_sha256="b" * 64,
             ))
         self.assertEqual(len(calls), 1)
-        for key, value in grade.LOCAL_GRADER_REQUEST_OPTIONS.items():
-            self.assertEqual(calls[0][key], value)
+        request_options = {
+            key: calls[0][key]
+            for key in grade.LOCAL_GRADER_REQUEST_OPTIONS
+        }
+        self.assertEqual(request_options, {
+            "temperature": 0,
+            "seed": 0,
+            "max_tokens": 8192,
+            "extra_body": {
+                "chat_template_kwargs": {"enable_thinking": False},
+            },
+        })
         self.assertNotIn("reasoning_effort", calls[0])
         self.assertEqual(
             result["judge_request_options"], grade.LOCAL_GRADER_REQUEST_OPTIONS)
+        self.assertEqual(
+            result["judge_request_policy"], grade.LOCAL_GRADER_REQUEST_POLICY
+        )
+        self.assertNotIn("judge_question_score", result)
         self.assertFalse(result["claim_ready"])
         self.assertTrue(result["local_proxy"])
         self.assertEqual(
@@ -492,6 +547,119 @@ class GradeVerdictTests(unittest.TestCase):
         with self.assertRaisesRegex(grade.GradeIntegrityError, "must be empty"):
             grade._judge_request_options(grade.LOCAL_GRADER_MODEL, "high")
 
+        copied = grade._judge_request_options(grade.LOCAL_GRADER_MODEL, "")
+        copied["extra_body"]["chat_template_kwargs"]["enable_thinking"] = True
+        self.assertIs(
+            grade.LOCAL_GRADER_REQUEST_OPTIONS["extra_body"]
+            ["chat_template_kwargs"]["enable_thinking"],
+            False,
+        )
+
+    def test_judge_schema_delegates_only_atomic_claim_labels(self) -> None:
+        schema = grade.judge_schema(question())["json_schema"]["schema"]
+        self.assertEqual(schema["required"], ["claims", "needs_regrade"])
+        self.assertEqual(set(schema["properties"]), {"claims", "needs_regrade"})
+        prompt = grade.build_prompt(
+            SimpleNamespace(display="Fake"), question(), "candidate answer"
+        )
+        self.assertNotIn("`question_score`", prompt)
+        self.assertIn("Do not output a total question score", prompt)
+
+    def test_generation_and_grader_sources_are_exactly_bound(self) -> None:
+        current = fake_source_validation()
+        self.assertEqual(
+            grade.validate_generation_source_validation(current), current
+        )
+
+        historical = fake_source_validation(historical=True)
+        self.assertEqual(
+            grade.validate_generation_source_validation(historical), historical
+        )
+
+        for field in ("generation_source", "grader_source"):
+            with self.subTest(field=field):
+                tampered = deepcopy(historical)
+                tampered[field]["files"]["studybench/example.py"]["bytes"] += 1
+                tampered[field]["tree_sha256"] = sha256_json(
+                    tampered[field]["files"]
+                )
+                with self.assertRaisesRegex(
+                    grade.GradeIntegrityError, "digest is inconsistent"
+                ):
+                    grade.validate_generation_source_validation(tampered)
+
+        mixed_current = fake_source_validation(
+            grader_commit="d" * 40
+        )
+        with self.assertRaisesRegex(
+            grade.GradeIntegrityError, "different generator and grader"
+        ):
+            grade.validate_generation_source_validation(mixed_current)
+
+        claim_ready_historical = fake_source_validation(
+            historical=True, claim_ready=True
+        )
+        with self.assertRaisesRegex(
+            grade.GradeIntegrityError, "cannot be claim-ready"
+        ):
+            grade.validate_generation_source_validation(
+                claim_ready_historical
+            )
+
+    def test_grading_spec_hash_binds_each_source_stage(self) -> None:
+        corpus = SimpleNamespace(name="fake", display="Fake", language="python")
+
+        def digest(source_validation: dict) -> str:
+            return grade.grade_spec_sha256(
+                corpus,
+                question(),
+                grade.LOCAL_GRADER_MODEL,
+                judge_base_url="http://localhost:8123/v1",
+                grading_runtime=self.grading_runtime,
+                local_judge_runtime=self.local_judge_runtime,
+                generation_source_validation=source_validation,
+            )
+
+        reference = digest(fake_source_validation(historical=True))
+        generation_changed = digest(fake_source_validation(
+            historical=True,
+            generation_commit="d" * 40,
+        ))
+        grader_changed = digest(fake_source_validation(
+            historical=True,
+            grader_commit="e" * 40,
+        ))
+        self.assertNotEqual(reference, generation_changed)
+        self.assertNotEqual(reference, grader_changed)
+
+        with self.assertRaisesRegex(
+            grade.GradeIntegrityError, "restricted to local Qwen"
+        ):
+            grade.grade_spec_sha256(
+                corpus,
+                question(),
+                "judge",
+                judge_base_url=TEST_JUDGE_BASE_URL,
+                grading_runtime=self.grading_runtime,
+                generation_source_validation=fake_source_validation(
+                    historical=True
+                ),
+            )
+
+        smoke_source = fake_source_validation()
+        smoke_source["policy"] = grade.CURRENT_SMOKE_SOURCE_POLICY
+        with self.assertRaisesRegex(
+            grade.GradeIntegrityError, "restricted to local Qwen"
+        ):
+            grade.grade_spec_sha256(
+                corpus,
+                question(),
+                "judge",
+                judge_base_url=TEST_JUDGE_BASE_URL,
+                grading_runtime=self.grading_runtime,
+                generation_source_validation=smoke_source,
+            )
+
     def test_grading_spec_binds_explicit_judge_endpoint(self) -> None:
         corpus = SimpleNamespace(name="fake", display="Fake", language="python")
         first = grade.grade_spec_sha256(
@@ -499,12 +667,14 @@ class GradeVerdictTests(unittest.TestCase):
             question(),
             "judge",
             judge_base_url="https://judge-a.test/v1",
+            generation_source_validation=fake_source_validation(),
         )
         second = grade.grade_spec_sha256(
             corpus,
             question(),
             "judge",
             judge_base_url="https://judge-b.test/v1",
+            generation_source_validation=fake_source_validation(),
         )
         self.assertNotEqual(first, second)
 
@@ -515,12 +685,14 @@ class GradeVerdictTests(unittest.TestCase):
             question(),
             grade.LOCAL_GRADER_MODEL,
             judge_base_url="http://localhost:8123/v1",
+            generation_source_validation=fake_source_validation(),
         )
         second = grade.grade_spec_sha256(
             corpus,
             question(),
             grade.LOCAL_GRADER_MODEL,
             judge_base_url="http://127.0.0.1:9123/v1",
+            generation_source_validation=fake_source_validation(),
         )
         self.assertEqual(first, second)
 
@@ -577,6 +749,7 @@ class GradeVerdictTests(unittest.TestCase):
             "judge",
             judge_base_url=TEST_JUDGE_BASE_URL,
             grading_runtime=first_runtime,
+            generation_source_validation=fake_source_validation(),
         )
         second = grade.grade_spec_sha256(
             corpus,
@@ -584,6 +757,7 @@ class GradeVerdictTests(unittest.TestCase):
             "judge",
             judge_base_url=TEST_JUDGE_BASE_URL,
             grading_runtime=second_runtime,
+            generation_source_validation=fake_source_validation(),
         )
         self.assertNotEqual(first, second)
 
@@ -627,6 +801,7 @@ class GradeVerdictTests(unittest.TestCase):
         common = {
             "grading_runtime": self.grading_runtime,
             "judge_base_url": "http://localhost:8123/v1",
+            "generation_source_validation": fake_source_validation(),
         }
         first = grade.grade_spec_sha256(
             corpus,
@@ -739,9 +914,10 @@ class GradeVerdictTests(unittest.TestCase):
         with self.assertRaises(grade.GradeIntegrityError):
             grade.validate_verdict(row, extra_field)
 
-    def test_question_score_is_recomputed_and_claims_are_canonicalized(self) -> None:
+    def test_question_score_is_derived_and_claims_are_canonicalized(self) -> None:
         row = question()
-        wrong = verdict(score=100)
+        wrong = verdict()
+        wrong["question_score"] = 60
         with self.assertRaises(grade.GradeIntegrityError):
             grade.validate_verdict(row, wrong)
         out_of_order = verdict()
@@ -918,6 +1094,109 @@ class GradeVerdictTests(unittest.TestCase):
         self.assertIsNone(result["judge_accepted_content"])
         self.assertEqual(result["judge_attempts"], [])
 
+    def test_previous_judge_protocol_schemas_are_rejected(self) -> None:
+        corpus = SimpleNamespace(name="fake", display="Fake", language="python")
+        episode = native_episode(status="no_answer")
+        stored = asyncio.run(grade.grade_episode(
+            FakeClient([]),
+            "judge",
+            corpus,
+            question(),
+            episode,
+            judge_base_url=TEST_JUDGE_BASE_URL,
+            episode_sha256="a" * 64,
+            grading_spec_sha256="b" * 64,
+            grading_runtime=self.grading_runtime,
+        ))
+        stored["grade_schema_version"] = grade.GRADE_SCHEMA_VERSION - 1
+        with self.assertRaisesRegex(
+            grade.GradeIntegrityError, "legacy or unknown"
+        ):
+            grade.validate_stored_grade(
+                stored,
+                question(),
+                episode,
+                episode_sha256="a" * 64,
+                grading_spec_sha256="b" * 64,
+                judge_model="judge",
+                judge_base_url=TEST_JUDGE_BASE_URL,
+                corpus=corpus,
+                recheck_checker=False,
+                grading_runtime=self.grading_runtime,
+            )
+
+        answered = native_episode()
+        source_episode = "runs/run-a/fake/direct/r0/q1.json"
+        with tempfile.TemporaryDirectory() as directory:
+            out_root = Path(directory)
+            intent = grade._judge_attempt_intent(
+                source_episode=source_episode,
+                episode=answered,
+                episode_sha256="a" * 64,
+                grading_spec_sha256="b" * 64,
+                grading_runtime_sha256="c" * 64,
+                local_judge_runtime_sha256=None,
+                judge_model="judge",
+                judge_base_url=TEST_JUDGE_BASE_URL,
+                judge_prompt_sha256="d" * 64,
+            )
+            intent["schema_version"] = (
+                grade.JUDGE_ATTEMPT_INTENT_SCHEMA_VERSION - 1
+            )
+            intent["policy"] = "one-session-judge-attempt-intent-v1"
+            intent_path = grade._judge_attempt_intent_path(out_root, answered)
+            intent_path.parent.mkdir(parents=True)
+            intent_path.write_bytes(canonical_json_bytes(intent))
+            with self.assertRaisesRegex(
+                grade.GradeIntegrityError, "drifted"
+            ):
+                grade.validate_judge_attempt_intent(
+                    out_root,
+                    source_episode=source_episode,
+                    episode=answered,
+                    episode_sha256="a" * 64,
+                    grading_spec_sha256="b" * 64,
+                    grading_runtime_sha256="c" * 64,
+                    local_judge_runtime_sha256=None,
+                    judge_model="judge",
+                    judge_base_url=TEST_JUDGE_BASE_URL,
+                    judge_prompt_sha256="d" * 64,
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            out_root = Path(directory)
+            failure = grade._failed_judge_audit(
+                ep=answered,
+                episode_sha256="a" * 64,
+                grading_spec_sha256="b" * 64,
+                grading_runtime_sha256="c" * 64,
+                local_judge_runtime_sha256=None,
+                judge_model="judge",
+                judge_prompt_sha256="d" * 64,
+                attempts=[],
+                failure=RuntimeError("provider failed"),
+                request_attempt_count=1,
+            )
+            failure["failed_judge_audit_schema_version"] = (
+                grade.FAILED_JUDGE_AUDIT_SCHEMA_VERSION - 1
+            )
+            grade.write_failed_judge_audit(
+                out_root, source_episode, failure
+            )
+            with self.assertRaisesRegex(
+                grade.GradeIntegrityError, "drifted"
+            ):
+                grade.existing_failed_judge_audit(
+                    out_root,
+                    source_episode=source_episode,
+                    episode=answered,
+                    episode_sha256="a" * 64,
+                    grading_spec_sha256="b" * 64,
+                    grading_runtime_sha256="c" * 64,
+                    judge_model="judge",
+                    judge_prompt_sha256="d" * 64,
+                )
+
     def test_judge_intent_precedes_contact_and_is_port_stable(self) -> None:
         corpus = SimpleNamespace(name="fake", display="Fake", language="python")
         episode = native_episode()
@@ -973,6 +1252,14 @@ class GradeVerdictTests(unittest.TestCase):
             self.assertEqual(
                 intent["judge_endpoint_identity"],
                 grade.LOCAL_GRADER_ENDPOINT_IDENTITY,
+            )
+            self.assertEqual(
+                intent["judge_request_policy"],
+                grade.LOCAL_GRADER_REQUEST_POLICY,
+            )
+            self.assertEqual(
+                intent["judge_request_options"],
+                grade.LOCAL_GRADER_REQUEST_OPTIONS,
             )
             observed = grade.validate_judge_attempt_intent(
                 out_root,
@@ -1070,7 +1357,9 @@ class GradeVerdictTests(unittest.TestCase):
             )
 
     def test_second_invalid_attempt_is_fatal(self) -> None:
-        client = FakeClient([verdict(duplicate=True), verdict(score=100)])
+        unexpected_total = verdict()
+        unexpected_total["question_score"] = 100
+        client = FakeClient([verdict(duplicate=True), unexpected_total])
         corpus = SimpleNamespace(name="fake", display="Fake", language="python")
         with patch("studybench.grade.sandbox.check", return_value=checker_result()):
             with self.assertRaises(grade.JudgeAttemptsFailed) as caught:
@@ -1305,6 +1594,9 @@ class EvaluationFixture:
             f"{budget}/r0/q1.json" for budget in report.BUDGET_ORDER
         ]
         self.manifest = self._manifest()
+        self.source_validation = fake_source_validation(
+            claim_ready=not self.local
+        )
         self.run_task_root.mkdir(parents=True)
         (self.run_task_root / "manifest.json").write_bytes(
             canonical_json_bytes(self.manifest))
@@ -1371,12 +1663,7 @@ class EvaluationFixture:
                 "language": "python",
                 "suffixes": [".py"],
             },
-            "source": {
-                "git_commit": "a" * 40,
-                "dirty": False,
-                "files": {},
-                "tree_sha256": sha256_json({}),
-            },
+            "source": fake_source_record(),
             "environment": {
                 "gpu_models": ["test-gpu"],
                 "nvidia_driver": ["test-driver"],
@@ -1445,6 +1732,7 @@ class EvaluationFixture:
                 self.questions[0],
                 self.judge_model,
                 judge_base_url=self.judge_base_url,
+                generation_source_validation=self.source_validation,
             )
             if status == "ok":
                 def write_intent(prompt_digest: str) -> str:
@@ -1527,6 +1815,7 @@ def judge_population_bindings(fixture: EvaluationFixture) -> list[dict]:
                 fixture.questions[0],
                 fixture.judge_model,
                 judge_base_url=fixture.judge_base_url,
+                generation_source_validation=fixture.source_validation,
             ),
             "judge_prompt_sha256": (
                 grade.sha256_bytes(
@@ -1606,12 +1895,23 @@ class StrictReportTests(unittest.TestCase):
             },
         )
         self.preregistration_patch.start()
-        self.current_source_patch = patch(
-            "studybench.grade.validate_current_source", return_value={})
-        self.current_source_patch.start()
+        self.current_source_patches = [
+            patch.object(module, "validate_current_source", return_value={})
+            for module in (grade, report)
+        ]
+        self.source_record_patch = patch.object(
+            grade.provenance,
+            "source_record",
+            return_value=fake_source_record(),
+        )
+        for source_patch in self.current_source_patches:
+            source_patch.start()
+        self.source_record_patch.start()
 
     def tearDown(self) -> None:
-        self.current_source_patch.stop()
+        self.source_record_patch.stop()
+        for source_patch in reversed(self.current_source_patches):
+            source_patch.stop()
         self.preregistration_patch.stop()
         self.checker_patch.stop()
         self.screen_attempt_tree_patch.stop()
@@ -1825,7 +2125,15 @@ class StrictReportTests(unittest.TestCase):
             self.assertEqual(
                 config["judge_model_revision"], grade.LOCAL_GRADER_MODEL_REVISION)
             self.assertEqual(
+                config["judge_request_policy"],
+                grade.LOCAL_GRADER_REQUEST_POLICY,
+            )
+            self.assertEqual(
                 config["judge_request_options"], grade.LOCAL_GRADER_REQUEST_OPTIONS)
+            self.assertEqual(
+                config["generation_source_validation"],
+                fixture.source_validation,
+            )
             self.assertEqual(
                 config["local_judge_runtime"], self.local_judge_runtime
             )
@@ -1888,6 +2196,52 @@ class StrictReportTests(unittest.TestCase):
                         bootstrap_seed=23,
                         audit=audit,
                         paper_comparison={},
+                    )
+
+                tampered_audit = deepcopy(audit)
+                tampered_config = tampered_audit["grading_manifest"]["config"]
+                tampered_config["generation_source_validation"][
+                    "grader_source_sha256"
+                ] = "0" * 64
+                tampered_audit["grading_manifest"]["sha256"] = sha256_json(
+                    tampered_config
+                )
+                with self.assertRaisesRegex(
+                    report.ReportIntegrityError,
+                    "source separation is invalid",
+                ):
+                    report.write_report_artifact(
+                        task="fake",
+                        run_id=fixture.run_id,
+                        judge_dir=fixture.judge_dir,
+                        aggregate_result=aggregate,
+                        bootstrap_result=None,
+                        bootstrap_replicates=0,
+                        bootstrap_seed=23,
+                        audit=tampered_audit,
+                    )
+
+                smoke_audit = deepcopy(audit)
+                smoke_config = smoke_audit["grading_manifest"]["config"]
+                smoke_config["generation_source_validation"]["policy"] = (
+                    grade.CURRENT_SMOKE_SOURCE_POLICY
+                )
+                smoke_audit["grading_manifest"]["sha256"] = sha256_json(
+                    smoke_config
+                )
+                with self.assertRaisesRegex(
+                    report.ReportIntegrityError,
+                    "grading-smoke source binding",
+                ):
+                    report.write_report_artifact(
+                        task="fake",
+                        run_id=fixture.run_id,
+                        judge_dir=fixture.judge_dir,
+                        aggregate_result=aggregate,
+                        bootstrap_result=None,
+                        bootstrap_replicates=0,
+                        bootstrap_seed=23,
+                        audit=smoke_audit,
                     )
 
             self.assertEqual(repeated, first)
@@ -2210,6 +2564,82 @@ class StrictReportTests(unittest.TestCase):
             ):
                 self._load(fixture)
 
+    def test_historical_source_mode_requires_the_exact_exploratory_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            fixture = EvaluationFixture(Path(directory), local=True)
+            generation_source = fixture.manifest["spec"]["source"]
+            generation_commit = generation_source["git_commit"]
+            grader_source = fake_source_record(commit="c" * 40)
+            with patch.object(
+                grade, "validate_frozen_source_commit",
+                return_value=deepcopy(generation_source),
+            ) as validate_frozen, patch.object(
+                grade.provenance,
+                "source_record",
+                return_value=deepcopy(grader_source),
+            ):
+                context = grade.load_claim_manifest(
+                    fixture.run_task_root,
+                    fixture.corpus,
+                    fixture.questions,
+                    require_claim_ready=False,
+                    historical_exploratory_source_commit=generation_commit,
+                )
+            validate_frozen.assert_called_once_with(generation_source)
+            source_stage = context["generation_source_validation"]
+            self.assertEqual(
+                source_stage["policy"],
+                grade.HISTORICAL_EXPLORATORY_SOURCE_POLICY,
+            )
+            self.assertEqual(source_stage["generation_source"], generation_source)
+            self.assertEqual(source_stage["grader_source"], grader_source)
+            self.assertFalse(source_stage["claim_ready"])
+            self.assertFalse(source_stage["paper_comparison_allowed"])
+
+            with patch.object(
+                grade, "validate_frozen_source_commit"
+            ) as validate_frozen, self.assertRaisesRegex(
+                grade.GradeIntegrityError,
+                "does not match the run manifest",
+            ):
+                grade.load_claim_manifest(
+                    fixture.run_task_root,
+                    fixture.corpus,
+                    fixture.questions,
+                    require_claim_ready=False,
+                    historical_exploratory_source_commit="d" * 40,
+                )
+            validate_frozen.assert_not_called()
+
+    def test_historical_source_mode_rejects_confirmatory_and_smoke_runs(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            confirmatory = EvaluationFixture(Path(directory))
+            commit = confirmatory.manifest["spec"]["source"]["git_commit"]
+            with self.assertRaisesRegex(
+                grade.GradeIntegrityError, "full exploratory runs"
+            ):
+                grade.load_claim_manifest(
+                    confirmatory.run_task_root,
+                    confirmatory.corpus,
+                    confirmatory.questions,
+                    historical_exploratory_source_commit=commit,
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            smoke = EvaluationFixture(Path(directory), local=True)
+            commit = smoke.manifest["spec"]["source"]["git_commit"]
+            with self.assertRaisesRegex(
+                grade.GradeIntegrityError, "full exploratory runs"
+            ):
+                grade.load_claim_manifest(
+                    smoke.run_task_root,
+                    smoke.corpus,
+                    smoke.questions,
+                    require_claim_ready=False,
+                    allow_smoke=True,
+                    historical_exploratory_source_commit=commit,
+                )
+
     def test_no_answer_grade_requires_a_null_accepted_content_marker(self) -> None:
         for label, mutation in (
                 ("non-null", lambda stored: stored.update(
@@ -2328,8 +2758,12 @@ class StrictReportTests(unittest.TestCase):
             episode_path = fixture.run_task_root / "k5/r0/q1.json"
             episode = json.loads(episode_path.read_bytes())
             spec_sha256 = grade.grade_spec_sha256(
-                fixture.corpus, fixture.questions[0], fixture.judge_model)
-            client = FakeClient([verdict(duplicate=True), verdict(score=100)])
+                fixture.corpus,
+                fixture.questions[0],
+                fixture.judge_model,
+                generation_source_validation=fixture.source_validation,
+            )
+            client = FakeClient([verdict(duplicate=True), verdict(duplicate=True)])
             with patch(
                 "studybench.grade.sandbox.check", return_value=checker_result()
             ):
@@ -2360,7 +2794,11 @@ class StrictReportTests(unittest.TestCase):
             episode_path = fixture.run_task_root / "k5/r0/q1.json"
             episode = json.loads(episode_path.read_bytes())
             spec_sha256 = grade.grade_spec_sha256(
-                fixture.corpus, fixture.questions[0], fixture.judge_model)
+                fixture.corpus,
+                fixture.questions[0],
+                fixture.judge_model,
+                generation_source_validation=fixture.source_validation,
+            )
             client = FixedResponseClient(fixed_response(usage=None))
             with patch(
                 "studybench.grade.sandbox.check", return_value=checker_result()
@@ -2503,7 +2941,10 @@ class StrictReportTests(unittest.TestCase):
             episode = json.loads(episode_bytes)
             source_episode = episode_path.relative_to(fixture.root).as_posix()
             spec_digest = grade.grade_spec_sha256(
-                fixture.corpus, fixture.questions[0], fixture.judge_model
+                fixture.corpus,
+                fixture.questions[0],
+                fixture.judge_model,
+                generation_source_validation=fixture.source_validation,
             )
             intent_path = grade._judge_attempt_intent_path(
                 fixture.grade_root, episode
@@ -2663,7 +3104,10 @@ class StrictReportTests(unittest.TestCase):
             intent_digest = grade.sha256_bytes(intent_path.read_bytes())
             source_episode = episode_path.relative_to(fixture.root).as_posix()
             spec_digest = grade.grade_spec_sha256(
-                fixture.corpus, fixture.questions[0], fixture.judge_model
+                fixture.corpus,
+                fixture.questions[0],
+                fixture.judge_model,
+                generation_source_validation=fixture.source_validation,
             )
             prompt_digest = grade.sha256_bytes(
                 grade.build_prompt(
@@ -2788,7 +3232,6 @@ class StrictReportTests(unittest.TestCase):
                 fixture.questions[0], {"core": 1, "detail": 0}, False)
             for key, value in scores.items():
                 stored[key] = value
-            stored["judge_question_score"] = scores["lenient"]
             grade_path.write_bytes(canonical_json_bytes(stored))
             with self.assertRaisesRegex(
                 report.ReportIntegrityError, "independent deterministic rerun"
@@ -2867,6 +3310,10 @@ class StrictReportTests(unittest.TestCase):
                 )
             with patch(
                 "studybench.grade.environment_is_claim_ready", return_value=False
+            ), patch.object(
+                grade.provenance,
+                "source_record",
+                return_value=deepcopy(spec["source"]),
             ):
                 context = grade.load_claim_manifest(
                     fixture.run_task_root,
@@ -2877,6 +3324,10 @@ class StrictReportTests(unittest.TestCase):
                 )
             self.assertEqual(context["spec"]["purpose"], "smoke")
             self.assertFalse(context["spec"]["claim_ready"])
+            self.assertEqual(
+                context["generation_source_validation"]["policy"],
+                grade.CURRENT_SMOKE_SOURCE_POLICY,
+            )
 
     def test_exploratory_manifest_accepts_only_bundled_automated_ready_note(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

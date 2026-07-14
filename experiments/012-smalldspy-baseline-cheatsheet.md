@@ -13,20 +13,29 @@ summary is the local-Qwen pure weighted-rubric lenient WAUC for each arm; the
 four budget-level means, token costs, compile diagnostics, uncertainty, and
 paired deltas remain mandatory context.
 
-Status: implementation and infrastructure preflight complete, but no valid
-two-arm score has yet been observed. Replacement `b` and `c` runs exposed
-harness accounting defects and were stopped without reuse. Both `d` generation
-grids later completed, but the first isolated grading smoke exposed a deeper
-vLLM structured-output configuration defect that also contaminated generation:
-JSON schemas were enforced inside Qwen's hidden reasoning channel, where a
-schema-complete response could terminate with final `content=null`. Because the
-same path powered DSPy's JSON format repair, the defect contaminated all 11
-baseline and 18 treatment adapter failures; it does not prove what their
-counterfactual answers would have been. All `d` artifacts are preserved as
-invalidated diagnostics. No `d` population will be graded or scored further;
-the one failed grading smoke remains diagnostic. The corrected protocol is
-frozen in fresh `h` namespaces below; no prior episode, study note, or judge
-response is reused.
+Status: both final `h` generation populations and the forced-50 study artifact
+are complete and immutable, but no valid two-arm score has yet been observed.
+Replacement `b` and `c` runs exposed harness accounting defects and were
+stopped without reuse. Both `d` generation grids later completed, but the first
+isolated grading smoke exposed a deeper vLLM structured-output configuration
+defect that also contaminated generation: JSON schemas were enforced inside
+Qwen's hidden reasoning channel, where a schema-complete response could
+terminate with final `content=null`. Because the same path powered DSPy's JSON
+format repair, the defect contaminated all 11 baseline and 18 treatment adapter
+failures; it does not prove what their counterfactual answers would have been.
+All `d` artifacts are preserved as invalidated diagnostics.
+
+The corrected `h` generation was not regenerated after outcomes were seen. Its
+first full local-grading pass was stopped after a new judge-only defect became
+clear: the local judge could spend its entire 8,192-token allowance in hidden
+reasoning and return `content=null`, while the schema also asked the model to
+repeat deterministic weighted arithmetic. That old grading namespace contains
+50 stored grade files, four terminal failed-judge audits, and six interrupted
+intent records; it is diagnostic and permanently unreportable. The next and only
+score-bearing grading pass uniformly regrades both frozen `h` populations in
+fresh `i` namespaces with an atomic-only, non-thinking local-judge protocol.
+This is an adaptive correction made after inspecting failures, so any resulting
+numbers remain exploratory and non-claim-ready.
 
 ## What this dataset is—and is not
 
@@ -94,6 +103,9 @@ The design is an adaptive exploratory screen:
 |---|---|
 | generator and local judge | `Qwen/Qwen3.5-9B` @ `c202236235762e1c871ad0ccb60c8ee5ba337b9a` |
 | harness | author-confirmed `dspy.ReAct`; parse-only Chat-to-JSON format repair with independent provider-attempt audit; structured JSON constrained only after Qwen reasoning ends |
+| answer generation mode | paper sampling parameters with Qwen thinking enabled |
+| corrected local-judge mode | temperature 0, seed 0, maximum 8,192 output tokens, and `chat_template_kwargs.enable_thinking=false`; strict JSON contains only atomic claim labels, rationales, and `needs_regrade` |
+| lenient scoring | binary `0/1` claims following Jacob's correction; the harness alone computes the pure weighted sum, following Jacob's clarification that lenient is just the weights summed together |
 | arms | no note; exact forced-50 SmallDSPy note prepended |
 | answer-time corpus access | `grep`, `glob`, and pinned `read_file` in both arms |
 | budgets | `direct`, `k5`, `k20`, `k20f` |
@@ -103,6 +115,18 @@ The design is an adaptive exploratory screen:
 | judge evidence | dataset excerpts, identically in both arms |
 | bootstrap | 10,000 paired replicates, seed `45001` |
 | primary summary | pure-sum lenient WAUC for each arm |
+
+The published Appendix A.5 still shows the older `0/0.5/1` claim scale and asks
+the judge to echo `question_score`. In `docs/jacob.md`, the author explicitly
+corrected the claim scale to `0/1` because partial credit increased variance and
+later answered that “lenient is just weights summed together.” The implementation
+therefore treats each atomic label as the judge's only substantive decision and
+computes the weighted total deterministically. Removing the redundant model
+total cannot add credit; it removes an arithmetic failure mode. The paper used
+GPT-5.4 with whole evidence files, whereas this deliberately cheaper screen uses
+the same pinned 9B Qwen family as answerer and judge with dataset excerpts.
+Consequently this is a local proxy, not a byte-exact paper replication or an
+external validation of the rubric decisions.
 
 The full baseline grid runs before the full treatment grid. This fixed ordering
 is operationally simple but not counterbalanced, so time-dependent server or
@@ -131,7 +155,13 @@ retain its diagnostic banner.
 On 2026-07-13, allocation `16142825` exposed seven idle L40S GPUs. The 262k
 context requires TP=2 on this GPU class, so generation uses six GPUs as three
 identical TP=2 servers; no scientifically different TP=1 seventh server is
-introduced. Local grading uses one TP=2 server on two GPUs.
+introduced. Local grading uses one TP=2 server on two GPUs. The grader currently
+has a one-endpoint provenance contract; adding three judge replicas after the
+protocol failure would require a preregistered, paired per-cell assignment and
+new report/compare validation. For only 119 actual judge calls under the
+no-thinking protocol, that late change is not worth the additional confound or
+implementation risk. The other five GPUs remain free during grading rather
+than being claimed without scientifically valid work.
 
 The first full-corpus launcher diagnostics exposed two pre-provider failures:
 PyTorch 2.11 returns a typed CUDA UUID, and Hugging Face's offline repository-ID
@@ -269,10 +299,76 @@ The final `h` topology is therefore qualified only by deterministic
 authenticated identity, exact model/environment/cache attestation, and all
 engine logs recording
 `enable_in_reasoning=False`; it receives no model-output qualification probe.
-There is exactly one outcome topology and one later grading topology. Complete
-model responses that fail to expose a usable answer remain intention-to-treat
-non-answers; exhausted judge attempts produce no grade, never a fabricated
-zero or a topology retry.
+There is exactly one outcome-bearing generation topology. Each versioned
+grading protocol receives at most one topology and is never relaunched to seek
+more favorable judge output. Complete model responses that fail to expose a
+usable answer remain intention-to-treat non-answers; exhausted judge attempts
+produce no grade, never a fabricated zero or a topology retry.
+
+That `h` generation topology completed the preregistered sequence. The baseline
+manifest has SHA-256
+`53acd1a4f5fca258a190fc01f8330806c166c64ed5aad0e95b8d33ac3149bacd`;
+all 60 episodes are `ok`, with 465 model calls, 3,263,217 prompt tokens,
+543,322 generated tokens, and 3,806,539 total tokens. The forced-50 study then
+completed exactly 50 turns plus extraction. Its manifest has SHA-256
+`3444965f71f5a37d63e889a481b6d58a25f534b85224eae5ddfc9900842638e3`;
+the 4,553-byte note has SHA-256
+`8e3733d16c669642fa9bf96dfd2eb1de89366b75c6c7f42a5f7c9a7ba6eb33cb`;
+and study usage is 1,158,099 prompt, 23,557 generated, and 1,181,656 total
+tokens across 51 model calls. The treatment manifest has SHA-256
+`06da43b3014a22637d51c13be4357ead6faf344dbd0b81cda17fea260a9b18c3`.
+It contains 59 `ok` episodes and one protocol-valid intention-to-treat
+`no_answer`, with 500 model calls, 4,445,998 prompt tokens, 561,544 generated
+tokens, and 5,007,542 total tokens. The non-answer is
+`k20f/r1/dspy_2de37073e8e4` on canonical server slot 2 after 13 model calls and
+130,315 total tokens. Every arm has exactly 20 episodes per slot and paired
+cells share a slot. Both manifests bind generator commit
+`1d94e6777c6d50655a557d6c4ae8e904662bde28`, source-tree SHA-256
+`26f3434f843068e2fbcad636810e2bfaf808894be79fff797a845c2fd825546d`,
+and source-record SHA-256
+`3ca811f440d95b405b74b09c67df9458f5cac371c1b9c3b61f5dfad20050e4ef`.
+Deep population, note-binding, usage-ledger, environment, seed, slot, and
+manifest validation passed before the generation servers were shut down.
+
+The first `h` grading topology used one TP=2 local judge. Its isolated smoke
+returned a schema-valid grade, after which the full baseline pass was started.
+The pass was manually stopped as soon as the failure pattern became
+diagnostically clear. The preserved old namespace
+`qwen-local-base-20260714h` contains 50 grade files, four terminal failed-judge
+audits, and all 60 pre-contact intent records; six intents were in flight when
+the process was terminated. No treatment judge request was made. Three cells
+(`direct/r1/dspy_a5b116f00083`, `k5/r0/dspy_e175093485fd`, and
+`k5/r1/dspy_a5b116f00083`) each returned two complete 8,192-token responses
+whose final `content` was null. At `k5/r1/dspy_2de37073e8e4`, both responses
+gave the same atomic labels but supplied redundant totals of 2 and 40, while
+the harness recomputed 32. The stored rationale for one positive claim was
+also substantively questionable, so neither the labels nor 32 are salvaged.
+The partial namespace is terminal, cannot produce a report, and is never mixed
+with the corrected pass.
+
+The corrected judge contract has grade schema 7, judge-attempt-intent schema 2,
+and failed-judge-audit schema 5. It removes model-generated `question_score`
+from the prompt and response schema, retains only atomic binary labels and
+concise rationales, and records the harness-computed weighted total as
+`question_score`. For the pinned Qwen template,
+`chat_template_kwargs.enable_thinking=false` renders an empty closed thinking
+block before generation, so strict JSON is generated in final content rather
+than hidden reasoning. The exact request policy and options are hashed into
+every grade specification and repeated in every grade, intent, failure audit,
+report, and comparison contract.
+
+Because correcting grader code necessarily changes `HEAD`, the immutable `h`
+answers cannot pass the ordinary same-source gate. Rerunning answers after
+seeing them would be the worse scientific choice. The only permitted exception
+therefore requires the exact full historical generator commit on both the
+grading and reporting command lines, reconstructs every scoped file directly
+from Git and checks it against each run manifest, separately binds the current
+clean grader source and runtime, and hard-codes `claim_ready=false` and
+`paper_comparison_allowed=false`. It is unavailable to smoke, external,
+confirmatory, or paper-comparison paths. The paired comparison requires both
+arms to have byte-identical generator source records, grader source records,
+request policies, runtimes, and checker contracts. The default current-source
+gate remains unchanged.
 
 The `f` divergence also makes server replica an observed blocking variable.
 The implementation now assigns every expected episode a canonical server slot
@@ -355,17 +451,25 @@ test -f "$MANIFEST" -a ! -L "$MANIFEST" -a -f "$NOTE" -a ! -L "$NOTE"
 ```
 
 After the generation step exits and all six server processes are confirmed
-gone, a separate two-GPU Slurm step starts one fresh local judge. Grade one
-smoke first, inspect it, then grade and report both complete populations before
-the judge exits. Finally compare the two content-addressed reports with the
-already frozen description `forced-50 scoped SmallDSPy cheatsheet versus no
-note`:
+gone, a separate two-GPU Slurm step starts one fresh corrected local judge. An
+offline template test and one predeclared, non-benchmark strict-JSON calibration
+must first verify that the exact no-thinking option reaches vLLM, produces final
+content, and distinguishes one trivially satisfied atomic claim from one
+trivially contradicted claim. This is only a minimum transport/semantic sanity
+check; it cannot validate real-rubric judgment quality, score or select a
+benchmark answer, or establish agreement with GPT-5.4. If it fails, no benchmark
+grading request is made. There is no historical benchmark smoke:
+historical source separation is deliberately restricted to complete
+exploratory populations. After the synthetic gate, uniformly grade and report
+both complete frozen populations exactly once, then compare their
+content-addressed reports with the already frozen description `forced-50 scoped
+SmallDSPy cheatsheet versus no note`:
 
 ```bash
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=20 --cpu-bind=none --gres=gpu:l40s:2 \
-  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=35600 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-h \
+  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=35700 \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-i \
   bash --noprofile --norc
 
 # Inside that step, after setup and authenticated readiness:
@@ -377,31 +481,120 @@ verify_env_file
 sync_main_environment
 source scripts/serve_and_wait.sh
 PY=.venv/bin/python
+VLLM_PY=.venv-vllm/bin/python
 JUDGE_BASE_URL=$BASE_URLS
+GEN_COMMIT=1d94e6777c6d50655a557d6c4ae8e904662bde28
 
-"$PY" -m studybench.grade --task smalldspy \
-  --run-id smalldspy-generation-smoke-20260714h \
-  --grade-id qwen-local-smoke-20260714h \
-  --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
-  --concurrency 1 --local-smoke
+# Verify the pinned template closes an empty thinking block under the exact
+# local-judge option. Then run one predeclared synthetic atomic calibration
+# containing no StudyBench question, answer, gold, rubric, or evidence.
+"$VLLM_PY" - <<'PY'
+from pathlib import Path
+from transformers import AutoTokenizer
+
+snapshot = Path("/matx/u/omarah/hf/hub/models--Qwen--Qwen3.5-9B/snapshots") \
+    / "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
+tokenizer = AutoTokenizer.from_pretrained(snapshot, local_files_only=True)
+rendered = tokenizer.apply_chat_template(
+    [{"role": "user", "content": "synthetic transport check"}],
+    tokenize=False,
+    add_generation_prompt=True,
+    enable_thinking=False,
+)
+assert rendered.endswith("<think>\n\n</think>\n\n")
+PY
+
+JUDGE_BASE_URL="$JUDGE_BASE_URL" "$PY" - <<'PY'
+import asyncio
+import json
+import os
+from openai import AsyncOpenAI
+from types import SimpleNamespace
+from studybench.grade import (
+    LOCAL_GRADER_MODEL,
+    LOCAL_GRADER_REQUEST_OPTIONS,
+    build_prompt,
+    judge_schema,
+    validate_verdict,
+)
+
+# This predeclared non-benchmark calibration has one clearly satisfied and one
+# clearly contradicted atomic claim. It tests only a minimum semantic invariant,
+# not real-rubric validity or judge agreement with GPT-5.4.
+row = {
+    "id": "synthetic_atomic_calibration",
+    "topic": "synthetic",
+    "question": "What color and shape is the marker?",
+    "gold_answer": "The marker is blue and square.",
+    "rubric": [
+        {
+            "claim_id": "c1", "claim_type": "core", "weight": 50,
+            "claim": "Says that the marker is blue.",
+            "evidence_span_ids": ["s1"],
+        },
+        {
+            "claim_id": "c2", "claim_type": "core", "weight": 50,
+            "claim": "Says that the marker is square.",
+            "evidence_span_ids": ["s1"],
+        },
+    ],
+    "evidence": [{
+        "span_id": "s1", "path": "synthetic.txt",
+        "start_line": 1, "end_line": 1,
+        "excerpt": "The marker is blue and square.",
+    }],
+}
+prompt = build_prompt(
+    SimpleNamespace(display="Synthetic"),
+    row,
+    "The marker is blue and circular.",
+    whole_files=False,
+)
+
+async def main():
+    client = AsyncOpenAI(
+        api_key=os.environ["SB_VLLM_API_KEY"],
+        base_url=os.environ["JUDGE_BASE_URL"],
+        max_retries=0,
+    )
+    try:
+        response = await client.chat.completions.create(
+            model=LOCAL_GRADER_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format=judge_schema(row),
+            **LOCAL_GRADER_REQUEST_OPTIONS,
+        )
+    finally:
+        await client.close()
+    assert response.model == LOCAL_GRADER_MODEL
+    content = response.choices[0].message.content
+    value = json.loads(content)
+    _, scores = validate_verdict(row, value)
+    assert scores == {"c1": 1, "c2": 0}
+    print("synthetic no-thinking atomic calibration: PASS")
+
+asyncio.run(main())
+PY
 
 for arm in base cheatsheet; do
   "$PY" -m studybench.grade --task smalldspy \
     --run-id "smalldspy-local-$arm-20260714h" \
-    --grade-id "qwen-local-$arm-20260714h" \
-    --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence --concurrency 8
+    --grade-id "qwen-local-$arm-20260714i" \
+    --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence --concurrency 8 \
+    --historical-exploratory-source-commit "$GEN_COMMIT"
   "$PY" -m studybench.report --tasks smalldspy \
     --run-id "smalldspy-local-$arm-20260714h" --grader local \
-    --grade-id "qwen-local-$arm-20260714h" \
+    --grade-id "qwen-local-$arm-20260714i" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
+    --historical-exploratory-source-commit "$GEN_COMMIT" \
     --ci 10000 --ci-seed 45001
 done
 
 mapfile -t BASE_REPORTS < <(find \
-  reports/smalldspy-local-base-20260714h/qwen-local-base-20260714h/smalldspy \
+  reports/smalldspy-local-base-20260714h/qwen-local-base-20260714i/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 mapfile -t CHEAT_REPORTS < <(find \
-  reports/smalldspy-local-cheatsheet-20260714h/qwen-local-cheatsheet-20260714h/smalldspy \
+  reports/smalldspy-local-cheatsheet-20260714h/qwen-local-cheatsheet-20260714i/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 test "${#BASE_REPORTS[@]}" -eq 1 -a "${#CHEAT_REPORTS[@]}" -eq 1
 "$PY" -m studybench.screen_compare \
@@ -419,8 +612,11 @@ two requested primary numbers.
 
 ## Results
 
-Pending. The `d` generation grids and failed judge smoke are invalidated
-diagnostics, and `e` failed its pre-benchmark structured-output gate. Neither
-`e` nor the fully audited failed `f` gate is a result. No valid full-grid grade,
-WAUC, or arm comparison has yet been observed; only fresh `h` artifacts may
-populate this section.
+Pending corrected `i` grading. The immutable `h` generation populations are
+the only answer populations eligible for this screen. The `d` generation grids
+and failed judge smoke are invalidated diagnostics; `e` failed its
+pre-benchmark structured-output gate; and `f` failed its fully audited
+output-bearing gate. The old partial `h` grading is also terminal diagnostic
+evidence, not a result. No valid full-grid grade, WAUC, or arm comparison has
+yet been observed. Only the uniform fresh-schema `i` grades over all 120 frozen
+cells may populate this section.

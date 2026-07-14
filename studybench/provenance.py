@@ -275,9 +275,9 @@ def _source_path_in_scope(relative: str) -> bool:
     )
 
 
-def _head_source_entries() -> dict[str, tuple[str, str, str]]:
+def _commit_source_entries(commit: str) -> dict[str, tuple[str, str, str]]:
     entries: dict[str, tuple[str, str, str]] = {}
-    raw_entries = _git_bytes("ls-tree", "-r", "-z", "--full-tree", "HEAD")
+    raw_entries = _git_bytes("ls-tree", "-r", "-z", "--full-tree", commit)
     for raw_entry in raw_entries.split(b"\0"):
         if not raw_entry:
             continue
@@ -288,14 +288,18 @@ def _head_source_entries() -> dict[str, tuple[str, str, str]]:
             kind = raw_kind.decode("ascii")
             oid = raw_oid.decode("ascii")
         except (UnicodeDecodeError, ValueError) as error:
-            raise ValueError("malformed Git HEAD source entry") from error
+            raise ValueError("malformed Git commit source entry") from error
         relative = _source_git_path(raw_path)
         if not _source_path_in_scope(relative):
             continue
         if relative in entries:
-            raise ValueError(f"duplicate Git HEAD source entry: {relative}")
+            raise ValueError(f"duplicate Git commit source entry: {relative}")
         entries[relative] = (mode, kind, oid)
     return entries
+
+
+def _head_source_entries() -> dict[str, tuple[str, str, str]]:
+    return _commit_source_entries("HEAD")
 
 
 def _index_source_entries() -> set[tuple[str, str, str, str]]:
@@ -470,6 +474,72 @@ def validate_current_source(expected: object) -> dict[str, object]:
             "current research source differs from the run's frozen source record"
         )
     return current
+
+
+def validate_frozen_source_commit(expected: object) -> dict[str, object]:
+    """Reconstruct one clean historical source record from its Git commit.
+
+    This is deliberately narrower than :func:`validate_current_source`: it is
+    for explicitly stage-separated exploratory regrading after grader code has
+    changed.  It never accepts dirty generation source, missing commits,
+    symlinks, submodules, or a partial source inventory.
+    """
+
+    if (
+        not isinstance(expected, dict)
+        or set(expected) != {"git_commit", "dirty", "files", "tree_sha256"}
+        or expected.get("dirty") is not False
+        or not isinstance(expected.get("git_commit"), str)
+        or not re.fullmatch(r"(?:[0-9a-f]{40}|[0-9a-f]{64})", expected["git_commit"])
+        or not isinstance(expected.get("files"), dict)
+        or not expected["files"]
+        or expected.get("tree_sha256") != sha256_json(expected["files"])
+    ):
+        raise ValueError("historical generation source record is malformed or dirty")
+
+    commit = expected["git_commit"]
+    try:
+        resolved = _git("rev-parse", "--verify", f"{commit}^{{commit}}")
+        entries = _commit_source_entries(commit)
+    except (RuntimeError, ValueError) as error:
+        raise ValueError(
+            "historical generation source commit is unavailable or invalid"
+        ) from error
+    if resolved != commit:
+        raise ValueError("historical generation source commit is not canonical")
+
+    files: dict[str, dict[str, object]] = {}
+    for relative, (mode, kind, oid) in entries.items():
+        if kind != "blob" or mode not in {"100644", "100755"}:
+            raise ValueError(
+                f"historical generation source contains a non-file entry: {relative}"
+            )
+        try:
+            data = _git_bytes("cat-file", "blob", oid)
+        except RuntimeError as error:
+            raise ValueError(
+                f"historical generation source blob is unavailable: {relative}"
+            ) from error
+        files[relative] = {
+            "sha256": sha256_bytes(data),
+            "bytes": len(data),
+        }
+
+    reconstructed = {
+        "git_commit": commit,
+        "dirty": False,
+        "files": files,
+        "tree_sha256": sha256_json(files),
+    }
+    try:
+        matches = canonical_json_bytes(reconstructed) == canonical_json_bytes(expected)
+    except (TypeError, ValueError):
+        matches = False
+    if not matches:
+        raise ValueError(
+            "historical generation source record does not match its Git commit"
+        )
+    return reconstructed
 
 
 def _canonical_package_name(name: str) -> str:

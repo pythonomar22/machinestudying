@@ -31,10 +31,14 @@ from pathlib import Path
 from statistics import mean
 
 from .dataset import CORPORA, ROOT, load_questions
-from .grade import (FAILED_JUDGE_AUDIT_SCHEMA_VERSION, GRADE_SCHEMA_VERSION,
+from .grade import (CURRENT_SMOKE_SOURCE_POLICY,
+                    FAILED_JUDGE_AUDIT_SCHEMA_VERSION, GRADE_SCHEMA_VERSION,
+                    HISTORICAL_EXPLORATORY_SOURCE_POLICY,
+                    JUDGE_ATTEMPT_POLICY,
                     GRADERS, LOCAL_GRADER_ENDPOINT_IDENTITY, LOCAL_GRADER_MODEL,
                     LOCAL_GRADER_MODEL_REVISION,
-                    LOCAL_GRADER_REQUEST_OPTIONS, MAX_JUDGE_ATTEMPTS,
+                    LOCAL_GRADER_REQUEST_OPTIONS, LOCAL_GRADER_REQUEST_POLICY,
+                    MAX_JUDGE_ATTEMPTS,
                     GradeIntegrityError, file_sha256,
                     build_prompt, episode_provider_identity, grade_spec_sha256,
                     grader_identity_for_model, judge_usage_summary,
@@ -42,7 +46,8 @@ from .grade import (FAILED_JUDGE_AUDIT_SCHEMA_VERSION, GRADE_SCHEMA_VERSION,
                     sandbox_configuration_record,
                     sandbox_configuration_sha256,
                     validate_judge_attempt_record, validate_manifest_episode,
-                    validate_judge_attempt_inventory, validate_stored_grade)
+                    validate_judge_attempt_inventory, validate_stored_grade,
+                    validate_generation_source_validation)
 from .grade import validate_preregistered_grading_policy
 from .integrity import (canonical_json_bytes, read_artifact_bytes, sha256_json,
                         write_immutable_json)
@@ -53,6 +58,7 @@ from .provenance import (
     local_judge_runtime_sha256,
     validate_grading_runtime_record,
     validate_id,
+    validate_current_source,
     validate_local_judge_runtime_record,
 )
 from .study_protocol import SEMANTIC_SELFQUIZ_METHOD, STATIC_GRAPH_METHOD
@@ -80,7 +86,7 @@ class ReportIntegrityError(RuntimeError):
     """The requested result population is incomplete, stale, or unverifiable."""
 
 
-REPORT_SCHEMA_VERSION = 9
+REPORT_SCHEMA_VERSION = 10
 
 PAPER = {  # Table 1, lenient: (task, variant) -> budget -> (acc %, tokens k)
     ("dspy", ""): {"direct": (3.3, 4.1), "k5": (8.6, 7.9), "k20": (9.6, 8.6),
@@ -502,6 +508,7 @@ def _inventory_failed_judge_audits(
                     "local_proxy": True,
                     "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
                     "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+                    "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
                     "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
                     "local_judge_runtime_sha256": local_judge_runtime_digest,
                 }
@@ -605,6 +612,7 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
                               diagnostic_local: bool = False,
                               recorded_grading_runtime: dict | None = None,
                               recorded_local_judge_runtime: dict | None = None,
+                              historical_exploratory_source_commit: str | None = None,
                               ) -> tuple[dict[str, list[dict]], dict]:
     """Load one exact evaluation grid and its content-addressed audit record."""
     if type(diagnostic_local) is not bool:
@@ -615,6 +623,10 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
         )
     if diagnostic_local and effort:
         raise ReportIntegrityError("local Qwen reports require empty judge effort")
+    if historical_exploratory_source_commit is not None and not diagnostic_local:
+        raise ReportIntegrityError(
+            "historical generation-source reporting is local exploratory only"
+        )
     recorded_runtime = (
         recorded_grading_runtime is not None
         or recorded_local_judge_runtime is not None
@@ -680,6 +692,9 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             corpus,
             rows_list,
             require_claim_ready=not diagnostic_local,
+            historical_exploratory_source_commit=(
+                historical_exploratory_source_commit
+            ),
         )
     except GradeIntegrityError as exc:
         run_kind = "exploratory" if diagnostic_local else "claim-ready"
@@ -767,6 +782,9 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             judge_base_url=judge_base_url,
             grading_runtime=grading_runtime,
             local_judge_runtime=local_runtime,
+            generation_source_validation=manifest_context[
+                "generation_source_validation"
+            ],
         )
         for qid, row in rows.items()
     }
@@ -971,11 +989,14 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
         "grading_runtime": grading_runtime,
         "grading_spec_sha256_by_question": grading_specs,
         "judge_attempt_intents": {
-            "policy": "one-session-judge-attempt-intent-v1",
+            "policy": JUDGE_ATTEMPT_POLICY,
             "count": len(judge_attempt_intents),
             "sha256": sha256_json(judge_attempt_intents),
             "artifacts": judge_attempt_intents,
         },
+        "generation_source_validation": manifest_context[
+            "generation_source_validation"
+        ],
     }
     if diagnostic_local:
         grading_config.update({
@@ -985,6 +1006,7 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
             "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
             "judge_transport_urls": sorted(judge_transport_urls),
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
             "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
             "local_judge_runtime_sha256": local_runtime_digest,
             "local_judge_runtime": local_runtime,
@@ -1053,6 +1075,14 @@ def _load_complete_evaluation(task: str, grades_dir: str | Path,
         "population": population_records,
         "population_sha256": sha256_json(population_records),
     }
+    try:
+        validate_current_source(
+            manifest_context["generation_source_validation"]["grader_source"]
+        )
+    except ValueError as exc:
+        raise ReportIntegrityError(
+            "grader source changed while the population report was built"
+        ) from exc
     return population, audit
 
 
@@ -1074,6 +1104,7 @@ def load_local_diagnostic_evaluation(
     rollouts: int | None,
     judge_base_url: str,
     whole_files: bool = False,
+    historical_exploratory_source_commit: str | None = None,
 ) -> tuple[dict[str, list[dict]], dict]:
     """Load a complete local-Qwen population without making it claim-ready."""
 
@@ -1087,6 +1118,9 @@ def load_local_diagnostic_evaluation(
         effort="",
         judge_base_url=judge_base_url,
         diagnostic_local=True,
+        historical_exploratory_source_commit=(
+            historical_exploratory_source_commit
+        ),
     )
 
 
@@ -1100,6 +1134,7 @@ def revalidate_recorded_local_diagnostic_evaluation(
     grading_runtime: dict,
     local_judge_runtime: dict,
     whole_files: bool = False,
+    historical_exploratory_source_commit: str | None = None,
 ) -> tuple[dict[str, list[dict]], dict]:
     """Revalidate stored local artifacts without recreating their GPU runtime.
 
@@ -1123,6 +1158,9 @@ def revalidate_recorded_local_diagnostic_evaluation(
         diagnostic_local=True,
         recorded_grading_runtime=grading_runtime,
         recorded_local_judge_runtime=local_judge_runtime,
+        historical_exploratory_source_commit=(
+            historical_exploratory_source_commit
+        ),
     )
 
 
@@ -1379,6 +1417,24 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
     whole_files = config.get("whole_files")
     effort = config.get("judge_effort")
     spec = run_manifest.get("spec")
+    try:
+        source_validation = validate_generation_source_validation(
+            config.get("generation_source_validation")
+        )
+    except GradeIntegrityError as error:
+        raise ReportIntegrityError(
+            "generation/grader source separation is invalid"
+        ) from error
+    historical_source_commit = (
+        source_validation["generation_source"]["git_commit"]
+        if source_validation["policy"]
+        == HISTORICAL_EXPLORATORY_SOURCE_POLICY
+        else None
+    )
+    if source_validation["policy"] == CURRENT_SMOKE_SOURCE_POLICY:
+        raise ReportIntegrityError(
+            "grading-smoke source binding cannot produce a population report"
+        )
     if (
         not isinstance(judge_model, str)
         or not isinstance(judge_base_url, str)
@@ -1405,6 +1461,20 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
             f"report grading runtime is stale or invalid: {error}"
         ) from error
     diagnostic_local = judge_model == LOCAL_GRADER_MODEL
+    if historical_source_commit is not None and not diagnostic_local:
+        raise ReportIntegrityError(
+            "historical generation-source reports are local exploratory only"
+        )
+    if source_validation["generation_source"] != spec.get("source"):
+        raise ReportIntegrityError(
+            "source-stage record does not match the run manifest generation source"
+        )
+    if paper_comparison is not None and not source_validation[
+        "paper_comparison_allowed"
+    ]:
+        raise ReportIntegrityError(
+            "paper comparison is prohibited by the source-stage policy"
+        )
     checker_ready = True
     if diagnostic_local:
         checker_configuration = sandbox_configuration_record(
@@ -1417,6 +1487,7 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
             "local_proxy": True,
             "judge_endpoint_identity": LOCAL_GRADER_ENDPOINT_IDENTITY,
             "judge_model_revision": LOCAL_GRADER_MODEL_REVISION,
+            "judge_request_policy": LOCAL_GRADER_REQUEST_POLICY,
             "judge_request_options": LOCAL_GRADER_REQUEST_OPTIONS,
             "checker_interpretation": {
                 "language": CORPORA[task].language,
@@ -1485,6 +1556,7 @@ def write_report_artifact(*, task: str, run_id: str, judge_dir: str,
             rollouts=spec["rollouts"],
             judge_base_url=judge_base_url,
             whole_files=whole_files,
+            historical_exploratory_source_commit=historical_source_commit,
         )
     else:
         fresh_population, fresh_audit = load_complete_evaluation(
@@ -1591,6 +1663,13 @@ def main():
             "exploratory local-Qwen reports"
         ),
     )
+    p.add_argument(
+        "--historical-exploratory-source-commit",
+        help=(
+            "LOCAL EXPLORATORY ONLY: report grades of a complete immutable run "
+            "generated by this exact full Git commit"
+        ),
+    )
     p.add_argument("--rollouts", type=int,
                    help="optional assertion; strict mode normally reads this from the manifest")
     evidence = p.add_mutually_exclusive_group()
@@ -1646,8 +1725,19 @@ def main():
             p.error("--grader local requires empty --judge-effort")
         if args.paper_variant:
             p.error("paper comparison is unavailable for local proxy reports")
+        if (
+            args.historical_exploratory_source_commit is not None
+            and args.grade_id is None
+        ):
+            p.error(
+                "historical source reporting requires the explicit fresh --grade-id"
+            )
     elif args.judge_base_url is not None:
         p.error("--judge-base-url is only available with --grader local")
+    elif args.historical_exploratory_source_commit is not None:
+        p.error(
+            "--historical-exploratory-source-commit requires --grader local"
+        )
     if not args.legacy_partial and (args.legacy_grades_dir or args.legacy_runs_dir):
         p.error("--legacy-*-dir options require --legacy-partial")
     run_id = args.run_id or "base"
@@ -1686,6 +1776,9 @@ def main():
                     rollouts=args.rollouts,
                     judge_base_url=args.judge_base_url,
                     whole_files=args.whole_files,
+                    historical_exploratory_source_commit=(
+                        args.historical_exploratory_source_commit
+                    ),
                 )
                 agg = aggregate_population(population)
             else:

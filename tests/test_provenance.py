@@ -40,6 +40,7 @@ from studybench.provenance import (
     server_assignment_record,
     source_record,
     validate_current_source,
+    validate_frozen_source_commit,
     validate_id,
     validate_environment_snapshot,
     validate_resumable_episode,
@@ -493,6 +494,82 @@ class ProvenanceTests(unittest.TestCase):
             drifted["files"]["studybench/example.py"]["sha256"] = "d" * 64
             with self.assertRaisesRegex(ValueError, "differs from the run"):
                 validate_current_source(drifted)
+
+    def test_historical_source_is_reconstructed_from_its_clean_commit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._initialize_source_repo(root)
+            with patch("studybench.provenance.ROOT", root):
+                frozen = source_record()
+                (root / "studybench" / "example.py").write_text(
+                    "VALUE = 2\n", encoding="utf-8"
+                )
+                self.assertEqual(validate_frozen_source_commit(frozen), frozen)
+
+                drifted = deepcopy(frozen)
+                drifted["files"]["studybench/example.py"]["sha256"] = "0" * 64
+                drifted["tree_sha256"] = sha256_json(drifted["files"])
+                with self.assertRaisesRegex(ValueError, "does not match its Git commit"):
+                    validate_frozen_source_commit(drifted)
+
+                for label, mutate in (
+                    (
+                        "removed file",
+                        lambda value: value["files"].pop(
+                            "studybench/example.py"
+                        ),
+                    ),
+                    (
+                        "extra file",
+                        lambda value: value["files"].update({
+                            "studybench/extra.py": {
+                                "sha256": "1" * 64,
+                                "bytes": 1,
+                            }
+                        }),
+                    ),
+                    (
+                        "byte count",
+                        lambda value: value["files"]["studybench/example.py"].update(
+                            bytes=999
+                        ),
+                    ),
+                ):
+                    with self.subTest(label=label):
+                        drifted = deepcopy(frozen)
+                        mutate(drifted)
+                        drifted["tree_sha256"] = sha256_json(drifted["files"])
+                        with self.assertRaisesRegex(
+                            ValueError, "does not match its Git commit"
+                        ):
+                            validate_frozen_source_commit(drifted)
+
+    def test_historical_source_rejects_dirty_or_unavailable_commits(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self._initialize_source_repo(root)
+            with patch("studybench.provenance.ROOT", root):
+                frozen = source_record()
+                dirty = deepcopy(frozen)
+                dirty["dirty"] = True
+                with self.assertRaisesRegex(ValueError, "malformed or dirty"):
+                    validate_frozen_source_commit(dirty)
+
+                abbreviated = deepcopy(frozen)
+                abbreviated["git_commit"] = frozen["git_commit"][:12]
+                with self.assertRaisesRegex(ValueError, "malformed or dirty"):
+                    validate_frozen_source_commit(abbreviated)
+
+                empty = deepcopy(frozen)
+                empty["files"] = {}
+                empty["tree_sha256"] = sha256_json({})
+                with self.assertRaisesRegex(ValueError, "malformed or dirty"):
+                    validate_frozen_source_commit(empty)
+
+                missing = deepcopy(frozen)
+                missing["git_commit"] = "0" * 40
+                with self.assertRaisesRegex(ValueError, "unavailable or invalid"):
+                    validate_frozen_source_commit(missing)
 
     def test_source_record_rejects_symlinked_research_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
