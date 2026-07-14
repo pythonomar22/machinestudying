@@ -25,7 +25,7 @@ baseline and 18 treatment adapter failures; it does not prove what their
 counterfactual answers would have been. All `d` artifacts are preserved as
 invalidated diagnostics. No `d` population will be graded or scored further;
 the one failed grading smoke remains diagnostic. The corrected protocol is
-frozen in fresh `g` namespaces below; no prior episode, study note, or judge
+frozen in fresh `h` namespaces below; no prior episode, study note, or judge
 response is reused.
 
 ## What this dataset is—and is not
@@ -113,7 +113,7 @@ This is another reason to treat the comparison as diagnostic only.
 The treatment note is generated once by the existing forced-50 study protocol
 over only the scoped corpus, without benchmark access. It is not the historical
 full-DSPy `cheatsheets/dspy.md`. The immutable construction is
-`studies/cheatsheet/smalldspy-cheatsheet-s50-20260714g/smalldspy/`; evaluation
+`studies/cheatsheet/smalldspy-cheatsheet-s50-20260714h/smalldspy/`; evaluation
 must supply both its content-addressed note and manifest. Study tokens are
 reported separately and excluded from the evaluation token axis, matching the
 paper's estimand.
@@ -253,9 +253,21 @@ and no SmallDSPy artifact was created. All `f` run/study/grade IDs,
 This result shows that an all-slots content gate samples model behavior rather
 than only configuration: temperature zero and seed zero did not make replicas
 identical. Relaunching topologies until every model response happened to pass
-would be optional selection on favorable outputs. The final `g` topology is
-therefore qualified only by deterministic authenticated identity, exact
-model/environment/cache attestation, and all engine logs recording
+would be optional selection on favorable outputs.
+
+The first `g` launcher reached deterministic authenticated readiness on three
+TP=2 servers and all three logs recorded `enable_in_reasoning=False`. A local
+preflight then compared `HEAD` with an incorrectly transcribed full commit hash
+and terminated the shell before invoking `studybench.react`. No output-bearing
+model request, SmallDSPy prompt, run manifest, episode, study, grade, or report
+was created. The six workers exited with no GPU memory retained. This was a
+pre-outcome operator error, not a model-output qualification failure, but its
+logs, ports `35300`-`35302`, and all planned `g` IDs remain preserved and
+retired rather than reused.
+
+The final `h` topology is therefore qualified only by deterministic
+authenticated identity, exact model/environment/cache attestation, and all
+engine logs recording
 `enable_in_reasoning=False`; it receives no model-output qualification probe.
 There is exactly one outcome topology and one later grading topology. Complete
 model responses that fail to expose a usable answer remain intention-to-treat
@@ -295,8 +307,8 @@ before any outcome prompt.
 ```bash
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=60 --cpu-bind=none --gres=gpu:l40s:6 \
-  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=35300 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-generation-g \
+  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=35500 \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-generation-h \
   bash --noprofile --norc
 
 # Inside that step, after setup and authenticated readiness:
@@ -309,18 +321,18 @@ source scripts/serve_and_wait.sh
 PY=.venv-dspy/bin/python
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-generation-smoke-20260714g --seed 43999 \
-  --seed-group smalldspy-generation-smoke-20260714g \
+  --run-id smalldspy-generation-smoke-20260714h --seed 43999 \
+  --seed-group smalldspy-generation-smoke-20260714h \
   --budgets direct,k5 --rollouts 1 --limit 1 --smoke \
   --base-urls "$BASE_URLS" --concurrency 2
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-local-base-20260714g --seed 44001 \
+  --run-id smalldspy-local-base-20260714h --seed 44001 \
   --seed-group smalldspy-local-cheatsheet-screen-20260713 \
   --budgets direct,k5,k20,k20f --rollouts 3 --exploratory \
   --base-urls "$BASE_URLS" --concurrency 12
 
-STUDY_ID=smalldspy-cheatsheet-s50-20260714g
+STUDY_ID=smalldspy-cheatsheet-s50-20260714h
 "$PY" -m studybench.react --task smalldspy --study \
   --study-id "$STUDY_ID" --seed 43001 --base-urls "$BASE_URLS"
 MANIFEST="studies/cheatsheet/$STUDY_ID/smalldspy/manifest.json"
@@ -328,14 +340,14 @@ NOTE=$("$PY" -c 'import json,sys; from pathlib import Path; m=Path(sys.argv[1]);
 test -f "$MANIFEST" -a ! -L "$MANIFEST" -a -f "$NOTE" -a ! -L "$NOTE"
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-treatment-smoke-20260714g --seed 43999 \
-  --seed-group smalldspy-treatment-smoke-20260714g \
+  --run-id smalldspy-treatment-smoke-20260714h --seed 43999 \
+  --seed-group smalldspy-treatment-smoke-20260714h \
   --budgets direct,k5 --rollouts 1 --limit 1 --smoke \
   --note "$NOTE" --note-manifest "$MANIFEST" \
   --base-urls "$BASE_URLS" --concurrency 2
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-local-cheatsheet-20260714g --seed 44001 \
+  --run-id smalldspy-local-cheatsheet-20260714h --seed 44001 \
   --seed-group smalldspy-local-cheatsheet-screen-20260713 \
   --budgets direct,k5,k20,k20f --rollouts 3 --exploratory \
   --note "$NOTE" --note-manifest "$MANIFEST" \
@@ -352,8 +364,8 @@ note`:
 ```bash
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=20 --cpu-bind=none --gres=gpu:l40s:2 \
-  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=35400 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-g \
+  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=35600 \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-h \
   bash --noprofile --norc
 
 # Inside that step, after setup and authenticated readiness:
@@ -368,28 +380,28 @@ PY=.venv/bin/python
 JUDGE_BASE_URL=$BASE_URLS
 
 "$PY" -m studybench.grade --task smalldspy \
-  --run-id smalldspy-generation-smoke-20260714g \
-  --grade-id qwen-local-smoke-20260714g \
+  --run-id smalldspy-generation-smoke-20260714h \
+  --grade-id qwen-local-smoke-20260714h \
   --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
   --concurrency 1 --local-smoke
 
 for arm in base cheatsheet; do
   "$PY" -m studybench.grade --task smalldspy \
-    --run-id "smalldspy-local-$arm-20260714g" \
-    --grade-id "qwen-local-$arm-20260714g" \
+    --run-id "smalldspy-local-$arm-20260714h" \
+    --grade-id "qwen-local-$arm-20260714h" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence --concurrency 8
   "$PY" -m studybench.report --tasks smalldspy \
-    --run-id "smalldspy-local-$arm-20260714g" --grader local \
-    --grade-id "qwen-local-$arm-20260714g" \
+    --run-id "smalldspy-local-$arm-20260714h" --grader local \
+    --grade-id "qwen-local-$arm-20260714h" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
     --ci 10000 --ci-seed 45001
 done
 
 mapfile -t BASE_REPORTS < <(find \
-  reports/smalldspy-local-base-20260714g/qwen-local-base-20260714g/smalldspy \
+  reports/smalldspy-local-base-20260714h/qwen-local-base-20260714h/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 mapfile -t CHEAT_REPORTS < <(find \
-  reports/smalldspy-local-cheatsheet-20260714g/qwen-local-cheatsheet-20260714g/smalldspy \
+  reports/smalldspy-local-cheatsheet-20260714h/qwen-local-cheatsheet-20260714h/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 test "${#BASE_REPORTS[@]}" -eq 1 -a "${#CHEAT_REPORTS[@]}" -eq 1
 "$PY" -m studybench.screen_compare \
@@ -410,5 +422,5 @@ two requested primary numbers.
 Pending. The `d` generation grids and failed judge smoke are invalidated
 diagnostics, and `e` failed its pre-benchmark structured-output gate. Neither
 `e` nor the fully audited failed `f` gate is a result. No valid full-grid grade,
-WAUC, or arm comparison has yet been observed; only fresh `g` artifacts may
+WAUC, or arm comparison has yet been observed; only fresh `h` artifacts may
 populate this section.
