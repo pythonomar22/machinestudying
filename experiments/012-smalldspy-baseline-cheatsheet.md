@@ -13,8 +13,11 @@ summary is the local-Qwen pure weighted-rubric lenient WAUC for each arm; the
 four budget-level means, token costs, compile diagnostics, uncertainty, and
 paired deltas remain mandatory context.
 
-Status: implementation and infrastructure preflight complete; outcome-bearing
-generation has not started and results are pending.
+Status: implementation and infrastructure preflight complete. The first
+baseline smoke completed, then the first non-smoke study attempt failed closed
+before any model request because the runner check rejected DSPy's intentional
+editable install. That validator is corrected; replacement `b` namespaces are
+frozen below, and full-grid results remain pending.
 
 ## What this dataset is—and is not
 
@@ -101,7 +104,7 @@ This is another reason to treat the comparison as diagnostic only.
 The treatment note is generated once by the existing forced-50 study protocol
 over only the scoped corpus, without benchmark access. It is not the historical
 full-DSPy `cheatsheets/dspy.md`. The immutable construction is
-`studies/cheatsheet/smalldspy-cheatsheet-s50-20260713/smalldspy/`; evaluation
+`studies/cheatsheet/smalldspy-cheatsheet-s50-20260713b/smalldspy/`; evaluation
 must supply both its content-addressed note and manifest. Study tokens are
 reported separately and excluded from the evaluation token axis, matching the
 paper's estimand.
@@ -137,22 +140,33 @@ compiled the Python tree in both pinned environments, syntax-checked every
 shell launcher, reproduced the sparse checkout from a fresh local clone, passed
 `git diff --check`, and confirmed `AGENTS.md` is byte-identical to `CLAUDE.md`.
 
+The isolated run `smalldspy-generation-smoke-20260713` produced two successful,
+ungraded plumbing episodes for one question. The direct episode used one model
+call and 3,954 generated tokens; `k5` used four calls, three ReAct iterations,
+two tool iterations, one caught `finish`, and 4,861 generated tokens. Its
+manifest exposed the editable-import validator defect. The attempted study ID
+`smalldspy-cheatsheet-s50-20260713` created only a zero-byte process lock: no
+intent, episode, note, provider request, or study response exists. The fix now
+requires the exact pinned origin `corpora/dspy/dspy/__init__.py` and its exact
+hash; substituted editable or site-package origins remain invalid. The used
+smoke/study IDs, `generation-a` prefix, and ports `34100`-`34102` are retired.
+
 ## Execution namespaces and phase commands
 
 The outcome-bearing source tree must be committed, pushed, and clean. A failed
 smoke or full namespace is never deleted or reused; use a fresh suffix/ID.
 
 Generation runs inside one six-GPU Slurm step and one authenticated server
-lifecycle. It first runs a one-question baseline smoke, then the full forced-50
-construction, then a one-question note-bearing smoke. Each gate is inspected
-before sending the following commands in the same live step. Only then are the
-two paired 60-episode grids run sequentially:
+lifecycle. It first runs a one-question baseline smoke and the full baseline
+grid, then the forced-50 construction, a one-question note-bearing smoke, and
+the full treatment grid. Each smoke/construction gate is inspected before the
+next dependent phase. The two 60-episode evaluation grids remain sequential:
 
 ```bash
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=60 --cpu-bind=none --gres=gpu:l40s:6 \
-  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34100 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-generation-a \
+  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34300 \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-generation-b \
   bash --noprofile --norc
 
 # Inside that step, after setup and authenticated readiness:
@@ -165,12 +179,18 @@ source scripts/serve_and_wait.sh
 PY=.venv-dspy/bin/python
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-generation-smoke-20260713 --seed 43999 \
-  --seed-group smalldspy-generation-smoke-20260713 \
+  --run-id smalldspy-generation-smoke-20260713b --seed 43999 \
+  --seed-group smalldspy-generation-smoke-20260713b \
   --budgets direct,k5 --rollouts 1 --limit 1 --smoke \
   --base-urls "$BASE_URLS" --concurrency 2
 
-STUDY_ID=smalldspy-cheatsheet-s50-20260713
+"$PY" -m studybench.react --task smalldspy \
+  --run-id smalldspy-local-base-20260713b --seed 44001 \
+  --seed-group smalldspy-local-cheatsheet-screen-20260713 \
+  --budgets direct,k5,k20,k20f --rollouts 3 --exploratory \
+  --base-urls "$BASE_URLS" --concurrency 48
+
+STUDY_ID=smalldspy-cheatsheet-s50-20260713b
 "$PY" -m studybench.react --task smalldspy --study \
   --study-id "$STUDY_ID" --seed 43001 --base-urls "$BASE_URLS"
 MANIFEST="studies/cheatsheet/$STUDY_ID/smalldspy/manifest.json"
@@ -178,19 +198,14 @@ NOTE=$("$PY" -c 'import json,sys; from pathlib import Path; m=Path(sys.argv[1]);
 test -f "$MANIFEST" -a ! -L "$MANIFEST" -a -f "$NOTE" -a ! -L "$NOTE"
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-treatment-smoke-20260713 --seed 43999 \
-  --seed-group smalldspy-treatment-smoke-20260713 \
+  --run-id smalldspy-treatment-smoke-20260713b --seed 43999 \
+  --seed-group smalldspy-treatment-smoke-20260713b \
   --budgets direct,k5 --rollouts 1 --limit 1 --smoke \
   --note "$NOTE" --note-manifest "$MANIFEST" \
   --base-urls "$BASE_URLS" --concurrency 2
 
 "$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-local-base-20260713 --seed 44001 \
-  --seed-group smalldspy-local-cheatsheet-screen-20260713 \
-  --budgets direct,k5,k20,k20f --rollouts 3 --exploratory \
-  --base-urls "$BASE_URLS" --concurrency 48
-"$PY" -m studybench.react --task smalldspy \
-  --run-id smalldspy-local-cheatsheet-20260713 --seed 44001 \
+  --run-id smalldspy-local-cheatsheet-20260713b --seed 44001 \
   --seed-group smalldspy-local-cheatsheet-screen-20260713 \
   --budgets direct,k5,k20,k20f --rollouts 3 --exploratory \
   --note "$NOTE" --note-manifest "$MANIFEST" \
@@ -207,8 +222,8 @@ note`:
 ```bash
 srun --jobid=16142825 --overlap --nodes=1 --ntasks=1 \
   --cpus-per-task=20 --cpu-bind=none --gres=gpu:l40s:2 \
-  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34200 \
-  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-a \
+  env SLURM_SUBMIT_DIR="$PWD" SB_TP=2 SB_PORT_BASE=34400 \
+  SB_VLLM_LOG_PREFIX=logs/vllm-16142825-smalldspy-grading-b \
   bash --noprofile --norc
 
 # Inside that step, after setup and authenticated readiness:
@@ -223,28 +238,28 @@ PY=.venv/bin/python
 JUDGE_BASE_URL=$BASE_URLS
 
 "$PY" -m studybench.grade --task smalldspy \
-  --run-id smalldspy-generation-smoke-20260713 \
-  --grade-id qwen-local-smoke-20260713 \
+  --run-id smalldspy-generation-smoke-20260713b \
+  --grade-id qwen-local-smoke-20260713b \
   --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
   --concurrency 1 --local-smoke
 
 for arm in base cheatsheet; do
   "$PY" -m studybench.grade --task smalldspy \
-    --run-id "smalldspy-local-$arm-20260713" \
-    --grade-id "qwen-local-$arm-20260713" \
+    --run-id "smalldspy-local-$arm-20260713b" \
+    --grade-id "qwen-local-$arm-20260713b" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence --concurrency 8
   "$PY" -m studybench.report --tasks smalldspy \
-    --run-id "smalldspy-local-$arm-20260713" --grader local \
-    --grade-id "qwen-local-$arm-20260713" \
+    --run-id "smalldspy-local-$arm-20260713b" --grader local \
+    --grade-id "qwen-local-$arm-20260713b" \
     --judge-base-url "$JUDGE_BASE_URL" --excerpt-evidence \
     --ci 10000 --ci-seed 45001
 done
 
 mapfile -t BASE_REPORTS < <(find \
-  reports/smalldspy-local-base-20260713/qwen-local-base-20260713/smalldspy \
+  reports/smalldspy-local-base-20260713b/qwen-local-base-20260713b/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 mapfile -t CHEAT_REPORTS < <(find \
-  reports/smalldspy-local-cheatsheet-20260713/qwen-local-cheatsheet-20260713/smalldspy \
+  reports/smalldspy-local-cheatsheet-20260713b/qwen-local-cheatsheet-20260713b/smalldspy \
   -maxdepth 1 -type f -name 'report-*.json' | LC_ALL=C sort)
 test "${#BASE_REPORTS[@]}" -eq 1 -a "${#CHEAT_REPORTS[@]}" -eq 1
 "$PY" -m studybench.screen_compare \
@@ -262,4 +277,5 @@ two requested primary numbers.
 
 ## Results
 
-Pending. No SmallDSPy generation or grade outcome has been observed.
+Pending. Only the explicitly isolated, ungraded plumbing smoke above has been
+observed; no full-grid grade, WAUC, or arm comparison has been observed.

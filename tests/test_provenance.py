@@ -250,8 +250,12 @@ def claim_ready_environment(*, include_dspy: bool = True) -> dict[str, object]:
         "dspy_import": (
             {
                 "version": "3.0",
-                "origin": "/venv/lib/python/site-packages/dspy/__init__.py",
-                "origin_sha256": "9" * 64,
+                "origin": str(
+                    (ROOT / "corpora" / "dspy" / "dspy" / "__init__.py").resolve()
+                ),
+                "origin_sha256": sha256_file(
+                    ROOT / "corpora" / "dspy" / "dspy" / "__init__.py"
+                ),
             }
             if include_dspy
             else None
@@ -637,6 +641,18 @@ class ProvenanceTests(unittest.TestCase):
         wrong_runner_lock = deepcopy(environment)
         wrong_runner_lock["runner_lock"]["sync_check"]["status"] = "unchecked"
         self.assertFalse(environment_is_claim_ready(wrong_runner_lock))
+
+        wrong_dspy_origin = deepcopy(environment)
+        wrong_dspy_origin["runner_lock"]["dspy_import"]["origin"] = (
+            "/venv/lib/python/site-packages/dspy/__init__.py"
+        )
+        self.assertFalse(environment_is_claim_ready(wrong_dspy_origin))
+
+        wrong_dspy_origin_hash = deepcopy(environment)
+        wrong_dspy_origin_hash["runner_lock"]["dspy_import"][
+            "origin_sha256"
+        ] = "f" * 64
+        self.assertFalse(environment_is_claim_ready(wrong_dspy_origin_hash))
 
         wrong_live_allocation = deepcopy(environment)
         wrong_live_allocation["runner_allocation"]["slurm_job_id"] = "other"

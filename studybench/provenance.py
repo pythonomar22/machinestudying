@@ -856,9 +856,12 @@ def _runner_lock_attestation(runner: dict[str, object]) -> dict[str, object]:
         if spec is None or not isinstance(spec.origin, str):
             raise ValueError("cannot identify the imported DSPy package")
         origin = Path(spec.origin).resolve(strict=True)
-        prefix = Path(sys.prefix).resolve(strict=True)
-        if not origin.is_file() or not origin.is_relative_to(prefix):
-            raise ValueError("DSPy is not imported from the synchronized environment")
+        expected_origin = (project / "dspy" / "__init__.py").resolve(strict=True)
+        # The pinned DSPy lock installs its project entry in editable mode.  In
+        # a correctly synchronized environment the import therefore resolves
+        # to the pinned corpus checkout, not to a copied file under sys.prefix.
+        if not origin.is_file() or origin != expected_origin:
+            raise ValueError("DSPy is not imported from the pinned editable source")
         dspy_corpus = {"commit": commit, "dirty": dirty}
         dspy_import = {
             "version": versions["dspy"],
@@ -1229,14 +1232,20 @@ def _runner_lock_is_valid(
     dspy_corpus = attestation.get("dspy_corpus")
     dspy_import = attestation.get("dspy_import")
     if is_dspy:
+        try:
+            expected_origin = (
+                project_root / "dspy" / "__init__.py"
+            ).resolve(strict=True)
+            expected_origin_sha256 = sha256_file(expected_origin)
+        except (OSError, ValueError):
+            return False
         return bool(
             dspy_corpus == {"commit": DSPY_COMMIT, "dirty": False}
             and isinstance(dspy_import, dict)
             and set(dspy_import) == {"version", "origin", "origin_sha256"}
             and dspy_import.get("version") == versions["dspy"]
-            and isinstance(dspy_import.get("origin"), str)
-            and Path(dspy_import["origin"]).is_absolute()
-            and _SHA256.fullmatch(str(dspy_import.get("origin_sha256", "")))
+            and dspy_import.get("origin") == str(expected_origin)
+            and dspy_import.get("origin_sha256") == expected_origin_sha256
         )
     return dspy_corpus is None and dspy_import is None
 
