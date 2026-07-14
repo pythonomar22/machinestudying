@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 import subprocess
 import tempfile
@@ -119,6 +120,29 @@ class DatasetIntegrityTests(CorpusFixture):
         self.assertEqual(
             len(load_questions("openclaw")), CORPORA["openclaw"].question_count
         )
+        self.assertEqual(
+            len(load_questions("smalldspy")), CORPORA["smalldspy"].question_count
+        )
+
+    def test_smalldspy_is_the_exact_scoped_public_iteration_slice(self) -> None:
+        full = load_questions("dspy")
+        small = load_questions("smalldspy")
+        self.assertEqual(small, full[10:15])
+        tools = RepoTools(CORPORA["smalldspy"])
+        self.assertEqual(len(tools.files), 59)
+        self.assertTrue(
+            all(
+                path.startswith(
+                    (
+                        "dspy/adapters/",
+                        "dspy/predict/",
+                        "dspy/primitives/",
+                        "tests/predict/",
+                    )
+                )
+                for path in tools.files
+            )
+        )
 
     def test_valid_bundle_checks_hash_schema_and_exact_excerpt(self) -> None:
         corpus = self.make_corpus({"src/example.py": "value = 1\nother = 2\n"})
@@ -150,6 +174,55 @@ class DatasetIntegrityTests(CorpusFixture):
 
 
 class RepositoryBoundaryTests(CorpusFixture):
+    def test_nested_roots_expose_only_the_selected_subtree(self) -> None:
+        corpus = self.make_corpus(
+            {
+                "src/allowed/example.py": "visible = True\n",
+                "src/excluded/example.py": "hidden = True\n",
+            }
+        )
+        corpus = replace(corpus, roots=("src/allowed",))
+        validate_corpus_snapshot(corpus)
+        self.assertEqual(RepoTools(corpus).files, ["src/allowed/example.py"])
+
+    def test_sparse_checkout_flags_are_allowed_only_outside_scope(self) -> None:
+        corpus = self.make_corpus(
+            {
+                "src/allowed/example.py": "visible = True\n",
+                "src/excluded/example.py": "hidden = True\n",
+            }
+        )
+        corpus = replace(corpus, roots=("src/allowed",))
+        subprocess.run(
+            ["git", "-C", str(corpus.repo), "sparse-checkout", "init", "--cone"],
+            check=True,
+        )
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(corpus.repo),
+                "sparse-checkout",
+                "set",
+                "src/allowed",
+            ],
+            check=True,
+        )
+        validate_corpus_snapshot(corpus)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(corpus.repo),
+                "sparse-checkout",
+                "set",
+                "src/excluded",
+            ],
+            check=True,
+        )
+        with self.assertRaisesRegex(ValueError, "hidden index flags"):
+            validate_corpus_snapshot(corpus)
+
     def test_snapshot_must_be_exact_and_clean(self) -> None:
         corpus = self.make_corpus({"src/example.py": "value = 1\n"})
         validate_corpus_snapshot(corpus)

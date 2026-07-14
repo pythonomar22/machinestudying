@@ -62,7 +62,7 @@ def system_prompt(corpus, budget: str) -> str:
     base = (
         f"You are an expert on {corpus.display}, answering a user's question about it. "
         f"A checkout of the {corpus.display} repository is available; its code lives under "
-        f"these top-level directories: {', '.join(corpus.roots)}."
+        f"these configured source directories: {', '.join(corpus.roots)}."
     )
     max_iters, forced = BUDGETS[budget]
     if max_iters == 0:

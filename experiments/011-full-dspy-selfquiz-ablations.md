@@ -215,6 +215,16 @@ retired. The replacement above changes only the diagnostic smoke identifiers
 and port to `-b`/`30010`; the construction protocol, seeds, and all full-run
 identifiers remain frozen.
 
+The replacement `-b` launcher subsequently reached model startup but exited
+before authenticated readiness or any provider request: Hugging Face's
+repository-ID path rejected the otherwise attested offline snapshot because
+three non-inference metadata files were absent. That namespace and its logs are
+also retired. The launcher was changed to serve the exact byte-attested local
+snapshot path while retaining `Qwen/Qwen3.5-9B` as the served response name;
+the separate SmallDSPy infrastructure smoke recorded in experiment 012 then
+started and authenticated all three TP=2 servers successfully. The superseded
+full-DSPy objective was paused before any semantic study outcome was produced.
+
 Stop here. Inspect every smoke artifact before running anything below: confirm
 the served/response model identities, exact six-GPU/three-server construction
 topology, complete nontruncated ReAct trajectories and actual corpus calls,

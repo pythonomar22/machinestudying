@@ -411,9 +411,11 @@ SB_SERVER_LAUNCH_ID=$SB_VLLM_API_KEY_SHA256
 # Bracket vLLM's model load with the canonical inventory. This second complete
 # pass is intentionally immediately before starting the server processes; the
 # runner performs the matching post-readiness pass before any episode begins.
-"${SANITIZED_ENV[@]}" .venv-vllm/bin/python -I studybench/model_cache.py \
-    verify "$MODEL_ID" "$MODEL_REVISION" "$MODEL_CACHE_INVENTORY" \
-    "$MODEL_CACHE_SHA256"
+MODEL_SNAPSHOT=$("${SANITIZED_ENV[@]}" .venv-vllm/bin/python -I \
+    studybench/model_cache.py resolve "$MODEL_ID" "$MODEL_REVISION" \
+    "$MODEL_CACHE_INVENTORY" "$MODEL_CACHE_SHA256")
+[ -n "$MODEL_SNAPSHOT" ] && [ -d "$MODEL_SNAPSHOT" ] && [ ! -L "$MODEL_SNAPSHOT" ] \
+    || { echo "FATAL: attested local model snapshot is unavailable" >&2; exit 1; }
 
 URLS=""
 for ((i = 0; i < NSERVE; i++)); do
@@ -441,8 +443,8 @@ if not api_key or any(character.isspace() for character in api_key):
     raise SystemExit("invalid server credential")
 os.environ["VLLM_API_KEY"] = api_key
 os.execv(sys.argv[1], sys.argv[1:])
-' .venv-vllm/bin/vllm serve "$MODEL_ID" \
-        --revision "$MODEL_REVISION" \
+' .venv-vllm/bin/vllm serve "$MODEL_SNAPSHOT" \
+        --served-model-name "$MODEL_ID" \
         --host 127.0.0.1 \
         --port $((PORT_BASE + i)) \
         --tensor-parallel-size "$TP" \

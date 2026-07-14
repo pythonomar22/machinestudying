@@ -13,6 +13,8 @@ verify_env_file
 mkdir -p corpora logs/slurm
 ensure_corpus "$PWD/corpora/dspy" "$DSPY_URL" "$DSPY_SHA" DSPy
 ensure_corpus "$PWD/corpora/openclaw" "$OPENCLAW_URL" "$OPENCLAW_SHA" OpenClaw
+ensure_sparse_corpus "$PWD/corpora/smalldspy" "$DSPY_URL" "$DSPY_SHA" \
+    SmallDSPy dspy/adapters dspy/predict dspy/primitives tests/predict
 sync_main_environment
 sync_dspy_environment
 

@@ -23,7 +23,7 @@ CI_SEED=${SB_CI_SEED:-0}
 DEBUG=${SB_DEBUG:-0}
 LOCAL_SMOKE=${SB_LOCAL_SMOKE:-0}
 
-validate_csv_members SB_TASK "$TASK" dspy,openclaw
+validate_csv_members SB_TASK "$TASK" dspy,openclaw,smalldspy
 require_single_csv_value SB_TASK "$TASK"
 validate_id SB_RUN_ID "$RUN_ID"
 validate_id SB_GRADE_ID "$GRADE_ID"

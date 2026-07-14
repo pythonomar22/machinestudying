@@ -40,6 +40,17 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn("uv sync --frozen", common)
         self.assertIn("uv pip sync", common)
         self.assertIn("vllm-requirements.lock", common)
+        self.assertIn("ensure_sparse_corpus", common)
+        for name in ("setup.sh", "setup_grading.sh"):
+            setup = self.read(name)
+            self.assertIn("corpora/smalldspy", setup)
+            for root in (
+                "dspy/adapters",
+                "dspy/predict",
+                "dspy/primitives",
+                "tests/predict",
+            ):
+                self.assertIn(root, setup)
         self.assertNotIn("rm -rf", combined)
         self.assertNotIn("--extra optuna", combined)
         self.assertIn(".env must have mode 0600", common)
@@ -148,9 +159,11 @@ class ScriptContractTests(unittest.TestCase):
         self.assertIn("tree_sha256", (ROOT / "studybench/model_cache.py").read_text())
         self.assertIn("studybench/model_cache.py", serve)
         self.assertIn(
-            'verify "$MODEL_ID" "$MODEL_REVISION" "$MODEL_CACHE_INVENTORY"',
+            'resolve "$MODEL_ID" "$MODEL_REVISION"',
             serve,
         )
+        self.assertIn('serve "$MODEL_SNAPSHOT"', serve)
+        self.assertIn('--served-model-name "$MODEL_ID"', serve)
         self.assertIn("studybench/model_cache.py verify", wait)
         self.assertIn(
             '"$SB_MODEL_ID" "$SB_MODEL_REVISION" "$SB_MODEL_CACHE_INVENTORY"',
@@ -184,6 +197,8 @@ class ScriptContractTests(unittest.TestCase):
         selfquiz = self.read("selfquiz.sbatch")
         graph_study = self.read("graph_study.sbatch")
         grade_local = self.read("grade_local.sbatch")
+        self.assertIn("dspy,openclaw,smalldspy", react)
+        self.assertIn("dspy,openclaw,smalldspy", grade_local)
         for text in (react, rollout, retry):
             self.assertIn("SB_SEED_GROUP", text)
             self.assertIn("--seed-group", text)

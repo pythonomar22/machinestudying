@@ -24,7 +24,7 @@ RUN_SEED=${SB_RUN_SEED:?set SB_RUN_SEED explicitly}
 PREREGISTRATION=${SB_PREREGISTRATION:-}
 PREREGISTRATION_ROLE=${SB_PREREGISTRATION_ROLE:-}
 
-validate_csv_members SB_TASKS "$TASKS" dspy,openclaw
+validate_csv_members SB_TASKS "$TASKS" dspy,openclaw,smalldspy
 validate_csv_members SB_BUDGETS "$BUDGETS" direct,k5,k20,k20f
 validate_positive_int SB_ROLLOUTS "$ROLLOUTS"
 validate_nonnegative_int SB_LIMIT "$LIMIT"

@@ -18,6 +18,8 @@ configs:
   data_files: dspy.jsonl
 - config_name: openclaw
   data_files: openclaw.jsonl
+- config_name: smalldspy
+  data_files: smalldspy.jsonl
 ---
 
 # studybench
@@ -46,6 +48,14 @@ openclaw = load_dataset("jacobli/studybench", "openclaw")    # 20 questions
 |---|---:|---:|---|
 | `dspy` | 30 | 6 | [DSPy](https://github.com/stanfordnlp/dspy) |
 | `openclaw` | 20 | 4 | [OpenClaw](https://github.com/openclaw/openclaw) |
+| `smalldspy` | 5 | 1 | [DSPy](https://github.com/stanfordnlp/dspy) (local adaptive iteration slice) |
+
+`smalldspy` is a repository-local experiment fixture, not an additional upstream
+StudyBench release config. Its five parsed records are exactly rows 11–15 of the
+public DSPy config, all from `react_agents_and_tools`. It exists to shorten
+end-to-end method iteration against a matching sparse source checkout. It must
+not be described as private, independent, newly held out, or representative of
+the full 30-question DSPy task.
 
 ## Schema
 

@@ -111,6 +111,27 @@ ensure_corpus() {
     verify_corpus "$path" "$expected" "$name" || return 1
 }
 
+ensure_sparse_corpus() {
+    local path=$1 url=$2 expected=$3 name=$4 observed expected_patterns
+    shift 4
+    [ "$#" -gt 0 ] || { die "$name has no sparse-checkout roots"; return 1; }
+    if [ ! -e "$path" ]; then
+        git clone --filter=blob:none --no-checkout "$url" "$path" || return 1
+        git -C "$path" sparse-checkout init --cone || return 1
+        git -C "$path" sparse-checkout set -- "$@" || return 1
+        git -C "$path" checkout --detach "$expected" || return 1
+    fi
+    verify_corpus "$path" "$expected" "$name" || return 1
+    [ "$(git -C "$path" config --bool core.sparseCheckout)" = true ] \
+        || { die "$name is not a sparse checkout"; return 1; }
+    observed=$(git -C "$path" sparse-checkout list | LC_ALL=C sort) || return 1
+    expected_patterns=$(printf '%s\n' "$@" | LC_ALL=C sort)
+    if [ "$observed" != "$expected_patterns" ]; then
+        die "$name sparse roots differ from the pinned experiment scope"
+        return 1
+    fi
+}
+
 sync_main_environment() {
     require_command uv || return 1
     ensure_venv "$REPO_ROOT/.venv" "$MAIN_PYTHON_VERSION" "main" || return 1

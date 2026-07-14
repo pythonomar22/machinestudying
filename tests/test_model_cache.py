@@ -36,7 +36,7 @@ class ModelCacheIntegrityTests(unittest.TestCase):
     def test_valid_hugging_face_file_links_are_attested_and_revalidated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            hub, blobs, _ = self.cache(root)
+            hub, blobs, snapshot = self.cache(root)
             inventory = build_model_cache_inventory(MODEL, REVISION, hub)
             self.assertEqual(inventory["attestation_policy"], ATTESTATION_POLICY)
             self.assertEqual(
@@ -54,7 +54,10 @@ class ModelCacheIntegrityTests(unittest.TestCase):
             manifest_bytes = canonical_json_bytes(inventory)
             manifest.write_bytes(manifest_bytes)
             fingerprint = hashlib.sha256(manifest_bytes).hexdigest()
-            verify_model_cache_inventory(MODEL, REVISION, manifest, fingerprint)
+            self.assertEqual(
+                verify_model_cache_inventory(MODEL, REVISION, manifest, fingerprint),
+                snapshot,
+            )
 
             (blobs / "weights").write_bytes(b"drifted")
             with self.assertRaisesRegex(

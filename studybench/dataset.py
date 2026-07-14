@@ -56,7 +56,52 @@ CORPORA = {
         dataset_sha256="d08f953f9480623a54762fae9fa8b35a9538b375692c4d058895aeba5a1dc50f",
         question_count=20,
     ),
+    "smalldspy": Corpus(
+        name="smalldspy",
+        # Preserve the benchmark-facing library name in prompts; the distinct
+        # task name and pinned roots carry the scoped experimental identity.
+        display="DSPy",
+        repo=ROOT / "corpora/smalldspy",
+        roots=(
+            "dspy/adapters",
+            "dspy/predict",
+            "dspy/primitives",
+            "tests/predict",
+        ),
+        language="python",
+        commit="9cdb0aac28b2a04b064e40697ccd301872cf6a43",
+        code_suffixes=(".py",),
+        dataset_sha256="b152153a9ec159dc99f89d9a1ca085a88d04be818b348e58cebf620513b2c75d",
+        question_count=5,
+    ),
 }
+
+
+def _corpus_root_paths(corpus: Corpus) -> tuple[PurePosixPath, ...]:
+    roots: list[PurePosixPath] = []
+    for value in corpus.roots:
+        root = PurePosixPath(value)
+        if (
+            not value
+            or "\\" in value
+            or root.is_absolute()
+            or root.as_posix() != value
+            or any(part in ("", ".", "..") for part in root.parts)
+        ):
+            raise ValueError(f"unsafe configured corpus root: {value!r}")
+        if any(root == prior or root.is_relative_to(prior) or prior.is_relative_to(root)
+               for prior in roots):
+            raise ValueError(f"overlapping configured corpus root: {value!r}")
+        roots.append(root)
+    if not roots:
+        raise ValueError(f"{corpus.name} has no configured corpus roots")
+    return tuple(roots)
+
+
+def _within_roots(
+    path: PurePosixPath, roots: tuple[PurePosixPath, ...]
+) -> bool:
+    return any(path == root or path.is_relative_to(root) for root in roots)
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -90,6 +135,7 @@ def _git_bytes(repo: Path, *args: str) -> bytes:
 def _pinned_code_index(corpus: Corpus) -> tuple[str, dict[str, tuple[str, str]]]:
     """Return the pinned tree's code paths as ``path -> (mode, blob oid)``."""
 
+    roots = _corpus_root_paths(corpus)
     algorithm = _git(corpus.repo, "rev-parse", "--show-object-format")
     if algorithm not in hashlib.algorithms_available:
         raise ValueError(f"unsupported Git object format for {corpus.name}: {algorithm}")
@@ -101,7 +147,7 @@ def _pinned_code_index(corpus: Corpus) -> tuple[str, dict[str, tuple[str, str]]]
         "--full-tree",
         corpus.commit,
         "--",
-        *corpus.roots,
+        *(root.as_posix() for root in roots),
     )
     entries: dict[str, tuple[str, str]] = {}
     for record in raw.split(b"\0"):
@@ -123,7 +169,7 @@ def _pinned_code_index(corpus: Corpus) -> tuple[str, dict[str, tuple[str, str]]]
             or logical.as_posix() != relative
             or any(part in ("", ".", "..") for part in logical.parts)
             or not logical.parts
-            or logical.parts[0] not in corpus.roots
+            or not _within_roots(logical, roots)
             or relative in entries
         ):
             raise ValueError(f"unsafe pinned code entry in {corpus.name}: {relative!r}")
@@ -158,6 +204,7 @@ def read_pinned_code_bytes(corpus: Corpus, relative: str) -> bytes:
 def validate_corpus_snapshot(corpus: Corpus) -> None:
     """Fail unless *corpus* is the expected clean source snapshot."""
 
+    roots = _corpus_root_paths(corpus)
     if not corpus.repo.is_dir() or not (corpus.repo / ".git").is_dir():
         raise ValueError(f"missing git checkout for {corpus.name}: {corpus.repo}")
     head = _git(corpus.repo, "rev-parse", "HEAD")
@@ -170,17 +217,27 @@ def validate_corpus_snapshot(corpus: Corpus) -> None:
         first = dirty.splitlines()[0]
         raise ValueError(f"{corpus.name} checkout is dirty ({first}); refusing mixed provenance")
     indexed = _git_bytes(corpus.repo, "ls-files", "-v", "-z")
-    flagged = [
-        record for record in indexed.split(b"\0")
-        if record and record[:2] != b"H "
-    ]
+    flagged = []
+    for record in indexed.split(b"\0"):
+        if not record or record[:2] == b"H ":
+            continue
+        try:
+            logical = PurePosixPath(record[2:].decode("utf-8"))
+        except UnicodeDecodeError as exc:
+            raise ValueError(f"{corpus.name} index contains a non-UTF-8 path") from exc
+        # A sparse checkout deliberately marks files outside the exposed corpus
+        # roots skip-worktree. Inside any configured root, every tracked path
+        # must remain materialized and normally indexed. All other hidden flags
+        # (including assume-unchanged) remain forbidden everywhere.
+        if record[:2] != b"S " or _within_roots(logical, roots):
+            flagged.append(record)
     if flagged:
         raise ValueError(
             f"{corpus.name} checkout uses hidden index flags; refusing mixed provenance"
         )
 
     repo = corpus.repo.resolve(strict=True)
-    for root_name in corpus.roots:
+    for root_name in (root.as_posix() for root in roots):
         root_path = corpus.repo / root_name
         try:
             resolved = root_path.resolve(strict=True)
@@ -201,6 +258,7 @@ def resolve_code_path(corpus: Corpus, relative: str) -> Path:
     ):
         raise ValueError(f"invalid repository path: {relative!r}")
     logical = PurePosixPath(relative)
+    roots = _corpus_root_paths(corpus)
     if (
         logical.is_absolute()
         or logical.as_posix() != relative
@@ -209,7 +267,8 @@ def resolve_code_path(corpus: Corpus, relative: str) -> Path:
         raise ValueError(f"repository path must be normalized and relative: {relative!r}")
     if logical.suffix.lower() not in corpus.code_suffixes:
         raise ValueError(f"non-code path is outside the {corpus.name} scope: {relative}")
-    if logical.parts[0] not in corpus.roots:
+    matching_roots = [root for root in roots if logical.is_relative_to(root)]
+    if len(matching_roots) != 1:
         raise ValueError(f"path is outside configured roots for {corpus.name}: {relative}")
 
     candidate = corpus.repo.joinpath(*logical.parts)
@@ -217,7 +276,7 @@ def resolve_code_path(corpus: Corpus, relative: str) -> Path:
         resolved = candidate.resolve(strict=True)
     except OSError as exc:
         raise ValueError(f"missing corpus code file: {relative}") from exc
-    root = (corpus.repo / logical.parts[0]).resolve(strict=True)
+    root = corpus.repo.joinpath(*matching_roots[0].parts).resolve(strict=True)
     if candidate.is_symlink() or not resolved.is_file() or not resolved.is_relative_to(root):
         raise ValueError(f"path escapes configured corpus root: {relative}")
     return candidate

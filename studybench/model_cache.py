@@ -464,7 +464,7 @@ def verify_model_cache_inventory(
     revision: str,
     inventory_path: Path,
     expected_sha256: str,
-) -> None:
+) -> Path:
     """Fail unless the live cache exactly matches a canonical prior inventory."""
 
     data = _read_stable_regular(Path(inventory_path))
@@ -493,6 +493,10 @@ def verify_model_cache_inventory(
         raise ModelCacheIntegrityError(
             "model cache differs from its prelaunch canonical inventory"
         )
+    snapshot = observed.get("snapshot")
+    if not isinstance(snapshot, str) or not Path(snapshot).is_absolute():
+        raise ModelCacheIntegrityError("model-cache inventory has no absolute snapshot")
+    return Path(snapshot)
 
 
 def _write_new_inventory(path: Path, data: bytes) -> None:
@@ -523,15 +527,17 @@ def main(arguments: list[str] | None = None) -> int:
             inventory = build_model_cache_inventory(model, revision, Path(cache_root))
             _write_new_inventory(Path(destination), canonical_json_bytes(inventory))
             return 0
-        if len(arguments) == 5 and arguments[0] == "verify":
-            _, model, revision, inventory, expected_sha256 = arguments
-            verify_model_cache_inventory(
+        if len(arguments) == 5 and arguments[0] in {"verify", "resolve"}:
+            action, model, revision, inventory, expected_sha256 = arguments
+            snapshot = verify_model_cache_inventory(
                 model, revision, Path(inventory), expected_sha256
             )
+            if action == "resolve":
+                print(snapshot)
             return 0
         raise ModelCacheIntegrityError(
             "usage: model_cache.py create MODEL REVISION CACHE_ROOT DESTINATION; "
-            "or model_cache.py verify MODEL REVISION INVENTORY EXPECTED_SHA256"
+            "or model_cache.py verify|resolve MODEL REVISION INVENTORY EXPECTED_SHA256"
         )
     except (OSError, ModelCacheIntegrityError) as error:
         raise SystemExit(f"model-cache attestation failed: {error}") from error
