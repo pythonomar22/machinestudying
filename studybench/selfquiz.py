@@ -100,16 +100,23 @@ from .react import (
 from .study_protocol import (
     SEMANTIC_ATTEMPT_ACCESS_MODES,
     SEMANTIC_FINAL_ROUND,
+    SEMANTIC_READINESS_KEYS,
     SEMANTIC_SELFQUIZ_ADAPTER,
     SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
+    SEMANTIC_SELFQUIZ_CITATION_POLICY,
     SEMANTIC_SELFQUIZ_METHOD,
     SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
     SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE,
+    SEMANTIC_SELFQUIZ_UNRESOLVED_POLICY,
+    SEMANTIC_TREATMENT_READINESS_KEYS,
     StudyProtocolError,
     DSPY_REPOSITORY_TOOL_CONTRACT,
     derive_protocol_summary,
     semantic_chapter_syllabus,
     semantic_attempt_protocol,
+    semantic_dev_exam_terminal,
+    semantic_dev_reference_terminal,
+    semantic_training_item_terminal,
     validate_construction_protocol,
     validate_study_note_archive,
 )
@@ -124,7 +131,7 @@ DERIVE_MAX_ITERS = 15
 DEDUP_JACCARD = 0.5
 FRESHNESS_NEAR_JACCARD = 0.8
 MAX_FRESHNESS_NEAR_RATE = 0.1
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 TRAIN_ENSEMBLE = 2
 DEV_ENSEMBLE = 2
 ATTEMPT_TOOL_NAMES = ("grep", "glob", "read_file")
@@ -149,6 +156,14 @@ class Evidence(pydantic.BaseModel):
     file: str
     line: pydantic.StrictInt
     quote: str
+
+
+class CitationEvidence(pydantic.BaseModel):
+    """One citation-pass quote constrained to one nonempty physical line."""
+
+    file: str
+    line: pydantic.StrictInt
+    quote: str = pydantic.Field(min_length=1, pattern=r"^[^\r\n]+$")
 
 
 class QuizSig(dspy.Signature):
@@ -187,6 +202,20 @@ class DeriveSig(dspy.Signature):
     question: str = dspy.InputField()
     answer: str = dspy.OutputField(desc="the correct answer, precise and complete")
     evidence: list[Evidence] = dspy.OutputField()
+
+
+class CitationSig(dspy.Signature):
+    """Independently find source evidence for an answer that is already frozen.
+    Do not revise, extend, or restate the answer. Explore the repository with the
+    read-only tools and return only citations. Every evidence object must quote
+    exactly one nonempty physical source line: `quote` must contain no carriage
+    return or newline, and `line` must be that exact line's 1-indexed locator."""
+
+    question: str = dspy.InputField()
+    frozen_answer: str = dspy.InputField(
+        desc="the immutable answer to substantiate; do not alter or restate it"
+    )
+    evidence: list[CitationEvidence] = dspy.OutputField()
 
 
 class AdjudicateSig(dspy.Signature):
@@ -410,6 +439,41 @@ def validate_evidence(rt: RepoTools, evidence: object, tolerance: int = 2) -> di
         return None
     actual = min(matches, key=lambda value: (abs(value - line), value))
     return {"file": file, "line": actual, "quote": lines[actual - 1].strip()}
+
+
+def _validate_citation_pass_evidence(rt: RepoTools, evidence: object) -> dict | None:
+    """Validate one citation-pass output against exactly one physical line.
+
+    Unlike the compatibility citation gate, this phase neither repairs a nearby
+    locator nor unwraps multiline Markdown. Source indentation is normalized in
+    the canonical artifact, but the model's quote must otherwise equal the
+    nonempty contents of the exact requested line.
+    """
+
+    if isinstance(evidence, pydantic.BaseModel):
+        evidence = evidence.model_dump()
+    if not isinstance(evidence, dict):
+        return None
+    file = validate_anchor(rt, evidence.get("file"))
+    line = evidence.get("line")
+    quote = evidence.get("quote")
+    if (
+        file is None
+        or isinstance(line, bool)
+        or not isinstance(line, int)
+        or not isinstance(quote, str)
+        or not quote.strip()
+        or "\r" in quote
+        or "\n" in quote
+    ):
+        return None
+    lines = rt.text[file].splitlines()
+    if line < 1 or line > len(lines):
+        return None
+    source = lines[line - 1].strip()
+    if not source or quote != source:
+        return None
+    return {"file": file, "line": line, "quote": source}
 
 
 def quote_gate(rt: RepoTools, file: str, line: int, quote: str) -> bool:
@@ -1491,15 +1555,25 @@ def adapter_audit_complete(records: list[dict]) -> bool:
             audit.get("logical_call_start"),
         )].append(audit)
     for audits in grouped.values():
-        modes = [audit["mode"] for audit in audits]
-        outcomes = [audit["outcome"] for audit in audits]
-        if modes == ["chat-primary"] and outcomes not in (["accepted"], ["error"]):
+        if len(audits) == 1:
+            audit = audits[0]
+            if audit["mode"] != "chat-primary" \
+                    or audit["outcome"] not in {"accepted", "error"}:
+                return False
+            continue
+        if len(audits) != 2:
             return False
-        if modes == ["chat-primary", "strict-json-schema-repair"] and (
-            outcomes[0] != "rejected" or outcomes[1] not in {"accepted", "error"}
+        primary = [audit for audit in audits if audit["mode"] == "chat-primary"]
+        repair = [
+            audit for audit in audits
+            if audit["mode"] == "strict-json-schema-repair"
+        ]
+        if (
+            len(primary) != 1
+            or len(repair) != 1
+            or primary[0]["outcome"] != "rejected"
+            or repair[0]["outcome"] not in {"accepted", "error"}
         ):
-            return False
-        if len(modes) not in {1, 2}:
             return False
     return bool(records)
 
@@ -1743,10 +1817,67 @@ def _adjudicate(question: str, reference: dict, attempt: str, url: str, *,
     return result, usage_records(lm, phase=phase, owner_id=owner_id, seed=seed)
 
 
+def _citation_pass(
+    question: str,
+    frozen_answer: str,
+    tools_fns,
+    rt: RepoTools,
+    url: str,
+    *,
+    seed: int,
+    owner_id: str,
+    index: int,
+) -> tuple[dict, list[dict]]:
+    """Collect exact-line evidence without permitting the answer to change."""
+
+    lm = fresh_lm(url, seed)
+    result = {
+        "status": "ok",
+        "seed": seed,
+        "frozen_answer_sha256": sha256_text(frozen_answer),
+        "raw_evidence": [],
+        "accepted_evidence": [],
+        "rejected_evidence": [],
+        "trajectory": {},
+        "trajectory_sha256": sha256_json({}),
+        "error": None,
+    }
+    try:
+        with dspy.context(lm=lm, adapter=SemanticSelfquizAdapter()):
+            pred = dspy.ReAct(
+                CitationSig,
+                tools=list(tools_fns),
+                max_iters=DERIVE_MAX_ITERS,
+            )(question=question, frozen_answer=frozen_answer)
+        result["trajectory"] = serialize_trajectory(pred.trajectory)
+        result["raw_evidence"] = [
+            evidence.model_dump() for evidence in pred.evidence
+        ]
+        for raw in result["raw_evidence"]:
+            valid = _validate_citation_pass_evidence(rt, raw)
+            if valid is None:
+                result["rejected_evidence"].append(raw)
+            elif valid not in result["accepted_evidence"]:
+                result["accepted_evidence"].append(valid)
+        if not result["accepted_evidence"]:
+            result["status"] = "invalid"
+    except Exception as exc:
+        result.update(
+            status="error",
+            error=f"{type(exc).__name__}: {str(exc)[:300]}",
+        )
+    result["trajectory_sha256"] = sha256_json(result["trajectory"])
+    calls = usage_records(
+        lm, phase=f"citation-pass-{index}", owner_id=owner_id, seed=seed
+    )
+    return result, calls
+
+
 def _derive(item: dict, tools_fns, url: str, *, seed: int,
             owner_id: str, index: int,
             seed_namespace: str | None = None) -> tuple[dict, list[dict]]:
     seed_namespace = seed_namespace or owner_id
+    tools = list(tools_fns)
     lm = fresh_lm(url, seed)
     result = {
         "derivation_id": _record_id(
@@ -1759,6 +1890,7 @@ def _derive(item: dict, tools_fns, url: str, *, seed: int,
         "evidence": [],
         "rejected_evidence": [],
         "trajectory": {},
+        "citation_pass": None,
         "reference_support": None,
         "evidence_class": "quote-only",
     }
@@ -1766,25 +1898,33 @@ def _derive(item: dict, tools_fns, url: str, *, seed: int,
         with dspy.context(lm=lm, adapter=SemanticSelfquizAdapter()):
             pred = dspy.ReAct(
                 DeriveSig,
-                tools=list(tools_fns),
+                tools=tools,
                 max_iters=DERIVE_MAX_ITERS,
             )(question=item["question"])
         result["answer"] = pred.answer or ""
         result["trajectory"] = serialize_trajectory(pred.trajectory)
-        raw_evidence = [evidence.model_dump() for evidence in pred.evidence]
-        result["raw_evidence"] = raw_evidence
-        for raw in raw_evidence:
-            valid = validate_evidence(item["_rt"], raw)
-            if valid is None:
-                result["rejected_evidence"].append(raw)
-            elif valid not in result["evidence"]:
-                result["evidence"].append(valid)
-        if not result["answer"].strip() or not result["evidence"]:
+        result["raw_evidence"] = [
+            evidence.model_dump() for evidence in pred.evidence
+        ]
+        if not result["answer"].strip():
             result["status"] = "invalid"
     except Exception as exc:
         result.update(status="error", error=f"{type(exc).__name__}: {str(exc)[:300]}")
     calls = usage_records(lm, phase=f"derive-{index}", owner_id=owner_id, seed=seed)
     result["trajectory_sha256"] = sha256_json(result["trajectory"])
+
+    if result["status"] == "ok":
+        citation_seed = stable_seed(seed, "citation-pass")
+        citation_pass, citation_calls = _citation_pass(
+            item["question"], result["answer"], tools, item["_rt"], url,
+            seed=citation_seed, owner_id=owner_id, index=index,
+        )
+        result["citation_pass"] = citation_pass
+        result["evidence"] = citation_pass["accepted_evidence"]
+        result["rejected_evidence"] = citation_pass["rejected_evidence"]
+        calls += citation_calls
+        if citation_pass["status"] != "ok":
+            result["status"] = "invalid"
 
     if result["status"] == "ok":
         support_seed = stable_seed(seed, "reference-support")
@@ -2466,7 +2606,7 @@ def _write_task_manifest(
         or args.concurrency < 1
     ):
         raise SystemExit(
-            "semantic-selfquiz-v3 requires a supported DSPy task, rounds 1-4, "
+            "semantic-selfquiz-v4 requires a supported DSPy task, rounds 1-4, "
             "4 maximum chapters, and 5 questions per chapter"
         )
     try:
@@ -2611,6 +2751,8 @@ def _write_task_manifest(
             "attempt_access": _attempt_access(args),
             "adapter": SEMANTIC_SELFQUIZ_ADAPTER,
             "adapter_policy": SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
+            "citation_policy": SEMANTIC_SELFQUIZ_CITATION_POLICY,
+            "unresolved_policy": SEMANTIC_SELFQUIZ_UNRESOLVED_POLICY,
             "smoke": args.smoke,
             "quiz_max_iters": QUIZ_MAX_ITERS,
             "attempt_protocol": _attempt_protocol(_attempt_access(args)),
@@ -2832,6 +2974,110 @@ def _adjudication_result(checks: list[dict], reference_count: int) -> tuple[str,
     return verdict, delta
 
 
+def _citation_evidence_shape_exact(value: object) -> bool:
+    if not isinstance(value, dict) or set(value) != {"file", "line", "quote"}:
+        return False
+    try:
+        parsed = CitationEvidence.model_validate(value)
+    except pydantic.ValidationError:
+        return False
+    return parsed.model_dump() == value
+
+
+def _validate_citation_pass_artifact(
+    derivation: dict,
+    *,
+    seed: int,
+    index: int,
+    owner_id: str,
+    rt: RepoTools,
+    phases: dict[str, list[dict]],
+    label: str,
+) -> dict | None:
+    """Validate the fixed evidence-only phase and its answer/call lineage."""
+
+    citation = derivation.get("citation_pass")
+    initial_answer_succeeded = (
+        derivation.get("status") != "error"
+        and isinstance(derivation.get("answer"), str)
+        and bool(derivation["answer"].strip())
+    )
+    if not initial_answer_succeeded:
+        if citation is not None or derivation.get("evidence") != [] \
+                or derivation.get("rejected_evidence") != []:
+            raise SystemExit(f"{label} has citations without a successful frozen answer")
+        return None
+
+    expected_keys = {
+        "status", "seed", "frozen_answer_sha256", "raw_evidence",
+        "accepted_evidence", "rejected_evidence", "trajectory",
+        "trajectory_sha256", "error",
+    }
+    citation_seed = stable_seed(seed, "citation-pass")
+    if (
+        not isinstance(citation, dict)
+        or set(citation) != expected_keys
+        or citation.get("status") not in {"ok", "invalid", "error"}
+        or not _json_identity_equal(citation.get("seed"), citation_seed)
+        or citation.get("frozen_answer_sha256")
+        != sha256_text(derivation["answer"])
+        or not isinstance(citation.get("raw_evidence"), list)
+        or not isinstance(citation.get("accepted_evidence"), list)
+        or not isinstance(citation.get("rejected_evidence"), list)
+        or not _trajectory_hash_valid(citation)
+    ):
+        raise SystemExit(f"{label} has a drifted citation pass at index {index}")
+
+    if any(not _citation_evidence_shape_exact(raw)
+           for raw in citation["raw_evidence"]):
+        raise SystemExit(f"{label} has malformed raw citation evidence at index {index}")
+    expected_accepted, expected_rejected = [], []
+    for raw in citation["raw_evidence"]:
+        evidence = _validate_citation_pass_evidence(rt, raw)
+        if evidence is None:
+            expected_rejected.append(raw)
+        elif evidence not in expected_accepted:
+            expected_accepted.append(evidence)
+    if (
+        citation["accepted_evidence"] != expected_accepted
+        or citation["rejected_evidence"] != expected_rejected
+        or derivation["evidence"] != expected_accepted
+        or derivation["rejected_evidence"] != expected_rejected
+    ):
+        raise SystemExit(f"{label} has drifted citation evidence at index {index}")
+
+    citation_status = citation["status"]
+    citation_error = citation["error"]
+    if citation_status == "error":
+        if (not isinstance(citation_error, str) or not citation_error
+                or expected_accepted or expected_rejected
+                or citation["raw_evidence"]
+                or derivation.get("status") != "invalid"):
+            raise SystemExit(f"{label} has an invalid citation error at index {index}")
+    elif (citation_error is not None
+          or (citation_status == "ok") != bool(expected_accepted)
+          or (citation_status == "invalid") != (not expected_accepted)):
+        raise SystemExit(f"{label} has inconsistent citation status at index {index}")
+    if citation_status != "ok" and derivation.get("status") != "invalid":
+        raise SystemExit(f"{label} accepted a failed citation pass at index {index}")
+
+    _validate_react_trajectory(
+        citation["trajectory"],
+        label=f"{label} citation pass {index}",
+        max_iters=DERIVE_MAX_ITERS,
+        require_nonempty=citation_status != "error",
+    )
+    _consume_call_phase(
+        phases,
+        owner_id=owner_id,
+        phase=f"citation-pass-{index}",
+        seed=citation_seed,
+        label=label,
+        required=citation_status != "error",
+    )
+    return citation
+
+
 def _validate_derivations(
     record: dict,
     *,
@@ -2873,16 +3119,6 @@ def _validate_derivations(
             max_iters=DERIVE_MAX_ITERS,
             require_nonempty=derivation["status"] != "error",
         )
-        expected_evidence, expected_rejected = [], []
-        for raw in derivation["raw_evidence"]:
-            evidence = validate_evidence(rt, raw)
-            if evidence is None:
-                expected_rejected.append(raw)
-            elif evidence not in expected_evidence:
-                expected_evidence.append(evidence)
-        if (derivation["evidence"] != expected_evidence
-                or derivation["rejected_evidence"] != expected_rejected):
-            raise SystemExit(f"{label} has drifted raw-evidence lineage at index {index}")
         _consume_call_phase(
             phases,
             owner_id=owner_id,
@@ -2890,6 +3126,15 @@ def _validate_derivations(
             seed=seed,
             label=label,
             required=derivation["status"] != "error",
+        )
+        _validate_citation_pass_artifact(
+            derivation,
+            seed=seed,
+            index=index,
+            owner_id=owner_id,
+            rt=rt,
+            phases=phases,
+            label=label,
         )
         support = derivation.get("reference_support")
         if support is None:
@@ -3417,6 +3662,9 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
         raise SystemExit(f"cannot validate prior-round task protocol: {error}") from error
     syllabus = chapters(rt)
     if (not _json_identity_equal(task_manifest.get("schema_version"), SCHEMA_VERSION)
+            or task_manifest.get("manifest_type")
+            != SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE
+            or task_manifest.get("method") != SEMANTIC_SELFQUIZ_METHOD
             or task_manifest.get("study_id") != study_id
             or task_manifest.get("task") != task
             or type(master_seed) is not int
@@ -3424,6 +3672,10 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
             or type(protocol_smoke) is not bool
             or type(protocol_chapters) is not int or protocol_chapters < 1
             or protocol_attempt_access not in SEMANTIC_ATTEMPT_ACCESS_MODES
+            or task_config.get("citation_policy")
+            != SEMANTIC_SELFQUIZ_CITATION_POLICY
+            or task_config.get("unresolved_policy")
+            != SEMANTIC_SELFQUIZ_UNRESOLVED_POLICY
             or not _attempt_protocol_is_exact(
                 protocol_attempt, attempt_access=protocol_attempt_access
             )
@@ -3619,22 +3871,43 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
         freshness = load_json_artifact(required["freshness"])
         _validate_construction_artifacts(sdir, manifest)
         prior_readiness = manifest.get("automated_readiness")
-        nonready_final_smoke = (
-            allow_nonready_final_smoke
-            and protocol_smoke
-            and prior_round == round_number - 1
+        prior_treatment_readiness = manifest.get(
+            "automated_treatment_readiness"
         )
         readiness_valid = (
             isinstance(prior_readiness, dict)
-            and bool(prior_readiness)
+            and set(prior_readiness) == SEMANTIC_READINESS_KEYS
             and all(type(value) is bool for value in prior_readiness.values())
-            and (
-                prior_readiness.get("non_smoke") is False
-                if nonready_final_smoke
-                else all(value is True for value in prior_readiness.values())
-            )
+            and manifest.get("automated_claim_ready")
+            is all(prior_readiness.values())
         )
-        expected_automated = not nonready_final_smoke
+        treatment_readiness_valid = (
+            isinstance(prior_treatment_readiness, dict)
+            and set(prior_treatment_readiness)
+            == SEMANTIC_TREATMENT_READINESS_KEYS
+            and all(
+                type(value) is bool
+                for value in prior_treatment_readiness.values()
+            )
+            and manifest.get("automated_treatment_ready")
+            is all(prior_treatment_readiness.values())
+        )
+        if protocol_smoke:
+            smoke_readiness_valid = (
+                prior_readiness.get("non_smoke") is False
+                and prior_treatment_readiness.get("non_smoke") is False
+                and manifest.get("automated_claim_ready") is False
+                and manifest.get("automated_treatment_ready") is False
+            ) if readiness_valid and treatment_readiness_valid else False
+            prior_round_usable = smoke_readiness_valid and (
+                allow_nonready_final_smoke
+                or prior_round < round_number
+            )
+        else:
+            prior_round_usable = (
+                treatment_readiness_valid
+                and manifest.get("automated_treatment_ready") is True
+            )
         freshness_valid = freshness_audit_recomputed(
             rdir,
             questions,
@@ -3695,6 +3968,10 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
             "confirmatory_claim_ready": False,
             "automated_claim_ready": manifest.get("automated_claim_ready"),
             "automated_readiness": prior_readiness,
+            "automated_treatment_ready": manifest.get(
+                "automated_treatment_ready"
+            ),
+            "automated_treatment_readiness": prior_treatment_readiness,
             "human_audit": {"required": True, "status": "not_performed"},
             "freshness": freshness,
             "response_models": response_models,
@@ -3728,10 +4005,14 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
                 or summary.get("round_usage_audit") != round_audit
                 or summary.get("cumulative_usage_audit") != audit
                 or not readiness_valid
-                or manifest.get("automated_claim_ready") is not expected_automated
+                or not prior_round_usable
                 or summary.get("automated_readiness") != prior_readiness
                 or summary.get("automated_claim_ready")
                 != manifest.get("automated_claim_ready")
+                or summary.get("automated_treatment_readiness")
+                != prior_treatment_readiness
+                or summary.get("automated_treatment_ready")
+                != manifest.get("automated_treatment_ready")
                 or summary.get("note_sha256") != manifest.get("note_sha256")
                 or summary.get("attempt_access") != protocol_attempt_access
                 or summary.get("freshness") != freshness
@@ -4327,7 +4608,9 @@ def _write_note(args, sdir: Path, note_text: str, entries: list[dict], *,
                 cumulative_calls: list[dict], round_construction_calls: list[dict],
                 cumulative_construction_calls: list[dict], corpus_commit: str,
                 automated_claim_ready: bool,
-                automated_readiness: dict[str, bool]) -> dict:
+                automated_readiness: dict[str, bool],
+                automated_treatment_ready: bool,
+                automated_treatment_readiness: dict[str, bool]) -> dict:
     notes_dir = sdir / "notes"
     note_sha256, relative = _write_note_bytes(args, sdir, note_text)
     artifacts = _construction_artifacts(sdir, args.round)
@@ -4354,6 +4637,8 @@ def _write_note(args, sdir: Path, note_text: str, entries: list[dict], *,
         "confirmatory_claim_ready": False,
         "automated_claim_ready": automated_claim_ready,
         "automated_readiness": automated_readiness,
+        "automated_treatment_ready": automated_treatment_ready,
+        "automated_treatment_readiness": automated_treatment_readiness,
         "human_audit": {
             "required": True,
             "status": "not_performed",
@@ -4737,21 +5022,21 @@ def _completed_round_is_exact(args) -> bool:
 
 
 def _require_automated_round_ready(args, construction: object) -> None:
-    """Make a finalized non-smoke gate failure a terminal method outcome."""
+    """Require a complete treatment artifact while preserving stricter claims."""
 
     if args.smoke:
         return
     readiness = (
-        construction.get("automated_readiness")
+        construction.get("automated_treatment_readiness")
         if isinstance(construction, dict)
         else None
     )
     if (
         not isinstance(readiness, dict)
-        or not readiness
+        or set(readiness) != SEMANTIC_TREATMENT_READINESS_KEYS
         or any(type(value) is not bool or value is not True
                for value in readiness.values())
-        or construction.get("automated_claim_ready") is not True
+        or construction.get("automated_treatment_ready") is not True
     ):
         failed = sorted(
             key for key, value in readiness.items() if value is not True
@@ -5103,7 +5388,7 @@ def _run_round_locked(args):
         for derivation in artifact.get("derivations", [])
         if derivation.get("status") == "ok"
     ]
-    evidence_safe = bool(successful_derivations) and all(
+    derivation_evidence_safe = all(
         _trajectory_hash_valid(derivation)
         and _react_trajectory_valid(
             derivation.get("trajectory"),
@@ -5114,10 +5399,11 @@ def _run_round_locked(args):
         and derivation.get("reference_support", {}).get("status") == "ok"
         and derivation.get("reference_support", {}).get("supported") is True
         and bool(derivation.get("evidence"))
-        and all(validate_evidence(rt, evidence) == evidence
+        and all(_validate_citation_pass_evidence(rt, evidence) == evidence
                 for evidence in derivation.get("evidence", []))
         for derivation in successful_derivations
     )
+    evidence_safe = bool(successful_derivations) and derivation_evidence_safe
     entry_lineage_safe = all(
         entry.get("origin_item_id") in original_ids
         and entry.get("evidence_class") == "quote-only"
@@ -5183,6 +5469,51 @@ def _run_round_locked(args):
         "response_model_expected": response_models == [MODEL_ID.removeprefix("openai/")],
     }
     automated_claim_ready = all(automated_readiness.values())
+    automated_treatment_readiness = {
+        "non_smoke": not args.smoke,
+        "provenance_complete": manifest["automated_provenance_ready"] is True,
+        "launch_environments_bound": launch_environments_bound,
+        "prior_rounds_treatment_ready": all(
+            prior.get("automated_treatment_ready") is True
+            for prior in prior_manifests
+        ),
+        "question_freshness": (
+            freshness["fresh"] is True and freshness_snapshots_complete
+        ),
+        "quiz_episodes_complete": bool(quiz_episodes)
+        and all(
+            episode.get("status") == "ok"
+            and _trajectory_hash_valid(episode)
+            and _react_trajectory_valid(
+                episode.get("trajectory"),
+                max_iters=QUIZ_MAX_ITERS,
+                require_nonempty=True,
+            )
+            for episode in quiz_episodes
+        ),
+        "training_terminal_complete": bool(train_originals)
+        and all(semantic_training_item_terminal(record) for record in records),
+        "dev_references_terminal_complete": bool(dev_references)
+        and all(
+            semantic_dev_reference_terminal(reference)
+            for reference in dev_references
+        ),
+        "dev_exam_terminal_complete": bool(dev_records)
+        and all(semantic_dev_exam_terminal(record) for record in dev_records),
+        "lineage_clean": entry_lineage_safe,
+        "evidence_safe": derivation_evidence_safe,
+        "usage_complete": automated_readiness["usage_complete"],
+        "adapter_audit_complete": automated_readiness[
+            "adapter_audit_complete"
+        ],
+        "response_model_homogeneous": automated_readiness[
+            "response_model_homogeneous"
+        ],
+        "response_model_expected": automated_readiness[
+            "response_model_expected"
+        ],
+    }
+    automated_treatment_ready = all(automated_treatment_readiness.values())
     note_sha256 = sha256_text(note_text)
     summary = {
         "schema_version": SCHEMA_VERSION,
@@ -5210,6 +5541,8 @@ def _run_round_locked(args):
         "confirmatory_claim_ready": False,
         "automated_claim_ready": automated_claim_ready,
         "automated_readiness": automated_readiness,
+        "automated_treatment_ready": automated_treatment_ready,
+        "automated_treatment_readiness": automated_treatment_readiness,
         "human_audit": {"required": True, "status": "not_performed"},
         "freshness": freshness,
         "response_models": response_models,
@@ -5236,6 +5569,8 @@ def _run_round_locked(args):
         corpus_commit=manifest["corpus_commit"],
         automated_claim_ready=automated_claim_ready,
         automated_readiness=automated_readiness,
+        automated_treatment_ready=automated_treatment_ready,
+        automated_treatment_readiness=automated_treatment_readiness,
     )
     _require_automated_round_ready(args, construction)
     note_path = _validate_construction_artifacts(sdir, construction)
@@ -5278,9 +5613,9 @@ def main():
     _study_dir(args)
     _attempt_access(args)
     if not 1 <= args.round <= SEMANTIC_FINAL_ROUND:
-        p.error("semantic-selfquiz-v3 requires a round from 1 through 4")
+        p.error("semantic-selfquiz-v4 requires a round from 1 through 4")
     if args.chapters != K_CHAPTERS or args.questions != M_QUESTIONS:
-        p.error("semantic-selfquiz-v3 requires --chapters 4 and --questions 5")
+        p.error("semantic-selfquiz-v4 requires --chapters 4 and --questions 5")
     if args.concurrency < 1:
         p.error("concurrency must be positive")
     if args.audit_protocol is not None and args.round != 1:

@@ -15,6 +15,9 @@ from studybench.study_protocol import (
     _DspyAdapterParseFailure,
     _dspy_output_field_contract,
     _replay_dspy_json_parse,
+    semantic_dev_exam_terminal,
+    semantic_dev_reference_terminal,
+    semantic_training_item_terminal,
     DSPY_ADAPTER_NAME,
     DSPY_ADAPTER_POLICY,
     DSPY_SEMANTIC_CHAPTER_SYLLABUS,
@@ -25,11 +28,14 @@ from studybench.study_protocol import (
     REACT_SAMPLING,
     SEMANTIC_NOTE_MANIFEST_KEYS,
     SEMANTIC_READINESS_KEYS,
+    SEMANTIC_TREATMENT_READINESS_KEYS,
     SEMANTIC_SELFQUIZ_ADAPTER,
     SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
+    SEMANTIC_SELFQUIZ_CITATION_POLICY,
     SEMANTIC_SELFQUIZ_METHOD,
     SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
     SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE,
+    SEMANTIC_SELFQUIZ_UNRESOLVED_POLICY,
     STATIC_GRAPH_METHOD,
     STATIC_GRAPH_NOTE_MANIFEST_TYPE,
     STATIC_GRAPH_TASK_MANIFEST_TYPE,
@@ -94,7 +100,7 @@ def semantic_task(*, attempt_access: str = "react-corpus") -> dict:
         ),
     }
     return {
-        "schema_version": 5,
+        "schema_version": 6,
         "manifest_type": SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE,
         "method": SEMANTIC_SELFQUIZ_METHOD,
         "study_id": "study-a",
@@ -114,6 +120,8 @@ def semantic_task(*, attempt_access: str = "react-corpus") -> dict:
             "attempt_access": attempt_access,
             "adapter": SEMANTIC_SELFQUIZ_ADAPTER,
             "adapter_policy": SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
+            "citation_policy": SEMANTIC_SELFQUIZ_CITATION_POLICY,
+            "unresolved_policy": SEMANTIC_SELFQUIZ_UNRESOLVED_POLICY,
             "smoke": False,
             "quiz_max_iters": 15,
             "attempt_protocol": semantic_attempt_protocol(attempt_access),
@@ -353,13 +361,17 @@ class StudyProtocolTests(unittest.TestCase):
         note_bytes = b"fabricated note\n"
         note_hash = sha256_bytes(note_bytes)
         note.update({
-            "schema_version": 5,
+            "schema_version": 6,
             "claim_ready": False,
             "publication_claim_ready": False,
             "confirmatory_claim_ready": False,
             "automated_claim_ready": True,
             "automated_readiness": {
                 key: True for key in SEMANTIC_READINESS_KEYS
+            },
+            "automated_treatment_ready": True,
+            "automated_treatment_readiness": {
+                key: True for key in SEMANTIC_TREATMENT_READINESS_KEYS
             },
             "human_audit": {
                 "required": True,
@@ -383,8 +395,130 @@ class StudyProtocolTests(unittest.TestCase):
             "note_chars": len(note_bytes.decode("utf-8")),
         })
         self.assertEqual(set(note), SEMANTIC_NOTE_MANIFEST_KEYS)
+        for label, mutate in {
+            "unknown treatment gate": lambda value: value[
+                "automated_treatment_readiness"
+            ].update(extra=True),
+            "drifted treatment flag": lambda value: value.update(
+                automated_treatment_ready=False
+            ),
+        }.items():
+            with self.subTest(label=label):
+                invalid = deepcopy(note)
+                mutate(invalid)
+                with self.assertRaisesRegex(StudyProtocolError, "readiness"):
+                    validate_study_note_archive(invalid, dependencies, note_bytes)
         with self.assertRaisesRegex(StudyProtocolError, "aliases"):
             validate_study_note_archive(note, dependencies, note_bytes)
+
+    def test_semantic_v4_terminal_states_do_not_weaken_claim_states(self) -> None:
+        valid_derivation = {
+            "status": "ok",
+            "citation_pass": {"status": "ok"},
+            "reference_support": {"status": "ok"},
+        }
+        abstaining_reference = {
+            "status": "unresolved",
+            "derivations": [
+                valid_derivation,
+                {
+                    "status": "invalid",
+                    "citation_pass": {"status": "invalid"},
+                    "reference_support": None,
+                },
+            ],
+            "reference_consensus": [],
+        }
+        abstaining_train = {
+            **abstaining_reference,
+            "status": "ok",
+            "verdict": "unresolved",
+            "attempt": {"status": "ok"},
+        }
+        self.assertTrue(semantic_training_item_terminal(abstaining_train))
+        attempt_error = deepcopy(abstaining_train)
+        attempt_error["attempt"]["status"] = "error"
+        self.assertFalse(semantic_training_item_terminal(attempt_error))
+        adjudication_error = deepcopy(abstaining_train)
+        adjudication_error["adjudications"] = [{"status": "error"}]
+        self.assertFalse(semantic_training_item_terminal(adjudication_error))
+        distill_error = deepcopy(abstaining_train)
+        distill_error["entry_bounced"] = {
+            "reasons": ["distill_error: timeout"]
+        }
+        self.assertFalse(semantic_training_item_terminal(distill_error))
+        citation_error = deepcopy(abstaining_reference)
+        citation_error["derivations"][1]["citation_pass"]["status"] = "error"
+        self.assertFalse(semantic_dev_reference_terminal(citation_error))
+        self.assertTrue(semantic_dev_reference_terminal(abstaining_reference))
+        self.assertTrue(semantic_dev_exam_terminal({
+            "status": "reference_unresolved",
+            "verdicts": {"with_note": "unresolved", "bare": "unresolved"},
+        }))
+        self.assertTrue(semantic_dev_exam_terminal({
+            "status": "ok",
+            "verdicts": {"with_note": "correct", "bare": "unresolved"},
+            "attempts": {
+                "with_note": {"status": "ok"},
+                "bare": {"status": "ok"},
+            },
+            "adjudications": {
+                "with_note": [{"status": "ok"}],
+                "bare": [{"status": "ok"}],
+            },
+        }))
+        self.assertFalse(semantic_dev_exam_terminal({
+            "status": "ok",
+            "verdicts": {"with_note": "correct", "bare": "unresolved"},
+            "attempts": {
+                "with_note": {"status": "ok"},
+                "bare": {"status": "ok"},
+            },
+            "adjudications": {
+                "with_note": [{"status": "error"}],
+                "bare": [{"status": "ok"}],
+            },
+        }))
+        self.assertFalse(semantic_dev_exam_terminal({
+            "status": "reference_unresolved",
+            "verdicts": {"with_note": "correct", "bare": "unresolved"},
+        }))
+
+    def test_semantic_v4_readiness_schemas_are_exact(self) -> None:
+        self.assertEqual(SEMANTIC_READINESS_KEYS, frozenset({
+            "non_smoke",
+            "provenance_complete",
+            "launch_environments_bound",
+            "prior_rounds_automated_ready",
+            "question_freshness",
+            "quiz_episodes_complete",
+            "training_complete",
+            "dev_references_complete",
+            "dev_exam_complete",
+            "lineage_clean",
+            "evidence_safe",
+            "usage_complete",
+            "adapter_audit_complete",
+            "response_model_homogeneous",
+            "response_model_expected",
+        }))
+        self.assertEqual(SEMANTIC_TREATMENT_READINESS_KEYS, frozenset({
+            "non_smoke",
+            "provenance_complete",
+            "launch_environments_bound",
+            "prior_rounds_treatment_ready",
+            "question_freshness",
+            "quiz_episodes_complete",
+            "training_terminal_complete",
+            "dev_references_terminal_complete",
+            "dev_exam_terminal_complete",
+            "lineage_clean",
+            "evidence_safe",
+            "usage_complete",
+            "adapter_audit_complete",
+            "response_model_homogeneous",
+            "response_model_expected",
+        }))
 
     def test_experiment_freezes_the_executable_openbook_attempt_hash(self) -> None:
         digest = sha256_json(openbook_attempt_protocol())
@@ -431,10 +565,24 @@ class StudyProtocolTests(unittest.TestCase):
     def test_method_schema_and_attempt_drift_fail_closed(self) -> None:
         task = semantic_task()
         note, _ = note_for_task(task)
+        self.assertEqual(SEMANTIC_SELFQUIZ_METHOD, "semantic-selfquiz-v4")
+        self.assertEqual(
+            SEMANTIC_SELFQUIZ_CITATION_POLICY,
+            "uniform-answer-frozen-exact-line-pass-v1",
+        )
+        self.assertEqual(
+            SEMANTIC_SELFQUIZ_UNRESOLVED_POLICY,
+            "abstain-no-correction-continue-v1",
+        )
         method_drift = deepcopy(task)
-        method_drift["method"] = "semantic-selfquiz-v2"
+        method_drift["method"] = "semantic-selfquiz-v3"
         with self.assertRaises(StudyProtocolError):
             derive_protocol_summary(method_drift)
+
+        version_drift = deepcopy(task)
+        version_drift["schema_version"] = 5
+        with self.assertRaisesRegex(StudyProtocolError, "method contract"):
+            derive_protocol_summary(version_drift)
 
         schema_drift = semantic_task()
         schema_drift["config"]["focus_chapter"] = "dspy/adapters"
@@ -443,8 +591,17 @@ class StudyProtocolTests(unittest.TestCase):
 
         attempt_drift = deepcopy(task)
         attempt_drift["config"]["attempt_protocol"]["max_iters"] = 4
-        with self.assertRaisesRegex(StudyProtocolError, "attempt-access contract"):
+        with self.assertRaisesRegex(StudyProtocolError, "method contract"):
             derive_protocol_summary(attempt_drift)
+
+        for field in ("citation_policy", "unresolved_policy"):
+            with self.subTest(field=field):
+                policy_drift = deepcopy(task)
+                policy_drift["config"][field] += "-drift"
+                with self.assertRaisesRegex(
+                    StudyProtocolError, "method contract"
+                ):
+                    derive_protocol_summary(policy_drift)
 
     def test_semantic_and_graph_have_distinct_report_identity(self) -> None:
         semantic_note, _ = note_for_task(semantic_task())

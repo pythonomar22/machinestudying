@@ -28,12 +28,18 @@ from .tools import DSPY_READ_MAX_LINES, dspy_tool_contract
 
 
 PROTOCOL_SUMMARY_SCHEMA_VERSION = 1
-SEMANTIC_SELFQUIZ_METHOD = "semantic-selfquiz-v3"
+SEMANTIC_SELFQUIZ_METHOD = "semantic-selfquiz-v4"
 SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE = "semantic-selfquiz-study-task"
 SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE = "semantic-selfquiz-note"
 SEMANTIC_SELFQUIZ_ADAPTER = "studybench.selfquiz.SemanticSelfquizAdapter"
 SEMANTIC_SELFQUIZ_ADAPTER_POLICY = (
     "chat-primary-strict-json-schema-parse-or-tool-contract-repair-v1"
+)
+SEMANTIC_SELFQUIZ_CITATION_POLICY = (
+    "uniform-answer-frozen-exact-line-pass-v1"
+)
+SEMANTIC_SELFQUIZ_UNRESOLVED_POLICY = (
+    "abstain-no-correction-continue-v1"
 )
 SEMANTIC_FINAL_ROUND = 4
 DSPY_SEMANTIC_CHAPTER_SYLLABUS = (
@@ -166,6 +172,8 @@ _SEMANTIC_CONFIG_KEYS = frozenset({
     "attempt_access",
     "adapter",
     "adapter_policy",
+    "citation_policy",
+    "unresolved_policy",
     "smoke",
     "quiz_max_iters",
     "attempt_protocol",
@@ -239,6 +247,8 @@ SEMANTIC_NOTE_MANIFEST_KEYS = frozenset({
     "confirmatory_claim_ready",
     "automated_claim_ready",
     "automated_readiness",
+    "automated_treatment_ready",
+    "automated_treatment_readiness",
     "human_audit",
     "note_sha256",
     "note_path",
@@ -268,6 +278,23 @@ SEMANTIC_READINESS_KEYS = frozenset({
     "training_complete",
     "dev_references_complete",
     "dev_exam_complete",
+    "lineage_clean",
+    "evidence_safe",
+    "usage_complete",
+    "adapter_audit_complete",
+    "response_model_homogeneous",
+    "response_model_expected",
+})
+SEMANTIC_TREATMENT_READINESS_KEYS = frozenset({
+    "non_smoke",
+    "provenance_complete",
+    "launch_environments_bound",
+    "prior_rounds_treatment_ready",
+    "question_freshness",
+    "quiz_episodes_complete",
+    "training_terminal_complete",
+    "dev_references_terminal_complete",
+    "dev_exam_terminal_complete",
     "lineage_clean",
     "evidence_safe",
     "usage_complete",
@@ -1139,17 +1166,21 @@ def derive_protocol_summary(
             1 if config.get("smoke") is True else min(4, len(expected_syllabus))
         )
         if (
-            manifest.get("schema_version") != 5
+            manifest.get("schema_version") != 6
             or not _same_json(
                 config.get("attempt_protocol"), expected_attempt_protocol
             )
             or config.get("adapter") != SEMANTIC_SELFQUIZ_ADAPTER
             or config.get("adapter_policy") != SEMANTIC_SELFQUIZ_ADAPTER_POLICY
+            or config.get("citation_policy")
+            != SEMANTIC_SELFQUIZ_CITATION_POLICY
+            or config.get("unresolved_policy")
+            != SEMANTIC_SELFQUIZ_UNRESOLVED_POLICY
             or manifest["server_transport"].get("assignment")
             != "stable_seed(master_seed, stochastic_namespace, server) modulo server_count"
         ):
             raise StudyProtocolError(
-                "semantic task attempt-access contract is invalid"
+                "semantic task method contract is invalid"
             )
         focus = None
         semantic_integer_fields = (
@@ -1572,6 +1603,189 @@ def _snapshot_path(record: object) -> str | None:
         return None
 
 
+def _semantic_checks_completed(value: object) -> bool:
+    return isinstance(value, list) and all(
+        isinstance(check, Mapping) and check.get("status") == "ok"
+        for check in value
+    )
+
+
+def _semantic_reference_phases_completed(record: Mapping[str, Any]) -> bool:
+    """Reject hidden provider errors while allowing evidentiary abstentions."""
+
+    derivations = record.get("derivations")
+    checks = record.get("reference_consensus")
+    if not isinstance(derivations, list) or not derivations \
+            or not _semantic_checks_completed(checks):
+        return False
+    for derivation in derivations:
+        if not isinstance(derivation, Mapping) \
+                or derivation.get("status") not in {"ok", "invalid"}:
+            return False
+        citation = derivation.get("citation_pass")
+        support = derivation.get("reference_support")
+        if derivation["status"] == "ok" and (
+            not isinstance(citation, Mapping)
+            or citation.get("status") != "ok"
+            or not isinstance(support, Mapping)
+            or support.get("status") != "ok"
+        ):
+            return False
+        if derivation["status"] == "invalid":
+            if isinstance(citation, Mapping) and citation.get("status") == "error":
+                return False
+            if isinstance(support, Mapping) and support.get("status") == "error":
+                return False
+    return True
+
+
+def semantic_training_item_terminal(record: object) -> bool:
+    """Return whether one train/retest item reached an error-free v4 endpoint."""
+
+    if (
+        not isinstance(record, Mapping)
+        or record.get("status") != "ok"
+        or record.get("verdict")
+        not in {"correct", "partial", "wrong", "unresolved"}
+        or not isinstance(record.get("attempt"), Mapping)
+        or record["attempt"].get("status") != "ok"
+        or not _semantic_reference_phases_completed(record)
+    ):
+        return False
+    adjudications = record.get("adjudications")
+    if adjudications is not None and not _semantic_checks_completed(adjudications):
+        return False
+    bounced = record.get("entry_bounced")
+    if isinstance(bounced, Mapping):
+        reasons = bounced.get("reasons")
+        support_checks = bounced.get("support_checks")
+        if (
+            not isinstance(reasons, list)
+            or any(
+                isinstance(reason, str) and reason.startswith("distill_error:")
+                for reason in reasons
+            )
+            or (
+                support_checks is not None
+                and not _semantic_checks_completed(support_checks)
+            )
+        ):
+            return False
+    return True
+
+
+def semantic_dev_reference_terminal(record: object) -> bool:
+    """Accept a resolved/error-free abstaining blind dev reference."""
+
+    return (
+        isinstance(record, Mapping)
+        and record.get("status") in {"ok", "unresolved"}
+        and _semantic_reference_phases_completed(record)
+    )
+
+
+def semantic_dev_exam_terminal(record: object) -> bool:
+    """Return whether one paired dev exam resolved or inherited an abstention."""
+
+    if not isinstance(record, Mapping):
+        return False
+    verdicts = record.get("verdicts")
+    if not isinstance(verdicts, Mapping) or set(verdicts) != {"with_note", "bare"}:
+        return False
+    status = record.get("status")
+    if status == "reference_unresolved":
+        return verdicts == {"with_note": "unresolved", "bare": "unresolved"}
+    attempts = record.get("attempts")
+    adjudications = record.get("adjudications")
+    return (
+        status == "ok"
+        and set(verdicts.values())
+        <= {"correct", "partial", "wrong", "unresolved"}
+        and isinstance(attempts, Mapping)
+        and set(attempts) == {"with_note", "bare"}
+        and all(
+            isinstance(attempt, Mapping) and attempt.get("status") == "ok"
+            for attempt in attempts.values()
+        )
+        and isinstance(adjudications, Mapping)
+        and set(adjudications) == {"with_note", "bare"}
+        and all(
+            _semantic_checks_completed(checks)
+            for checks in adjudications.values()
+        )
+    )
+
+
+def semantic_adapter_audit_complete(records: list[dict[str, Any]]) -> bool:
+    """Reconstruct the semantic adapter gate without importing its runtime."""
+
+    grouped: dict[tuple[object, ...], list[Mapping[str, Any]]] = {}
+    for record in records:
+        audit = record.get("adapter_audit") if isinstance(record, Mapping) else None
+        if not isinstance(audit, Mapping):
+            return False
+        response_format = audit.get("response_format")
+        if (
+            audit.get("schema_version") != 1
+            or audit.get("policy") != SEMANTIC_SELFQUIZ_ADAPTER_POLICY
+            or audit.get("mode")
+            not in {"chat-primary", "strict-json-schema-repair"}
+            or audit.get("outcome") not in {"accepted", "rejected", "error"}
+            or not isinstance(audit.get("output_fields"), list)
+            or not audit["output_fields"]
+            or not isinstance(audit.get("finish_reasons"), list)
+            or not audit["finish_reasons"]
+            or any(reason != "stop" for reason in audit["finish_reasons"])
+            or audit.get("response_format_sha256")
+            != (sha256_json(response_format) if response_format is not None else None)
+            or audit.get("provider_outputs_sha256") != record.get("outputs_sha256")
+            or sha256_json(audit.get("provider_outputs"))
+            != record.get("outputs_sha256")
+        ):
+            return False
+        if audit["mode"] == "chat-primary" and response_format is not None:
+            return False
+        if audit["mode"] == "strict-json-schema-repair" and (
+            not isinstance(response_format, Mapping)
+            or response_format.get("type") != "json_schema"
+        ):
+            return False
+        if audit["outcome"] == "accepted":
+            if not isinstance(audit.get("selected_outputs_sha256"), str):
+                return False
+        elif not isinstance(audit.get("error_sha256"), str):
+            return False
+        key = (
+            record.get("owner_id"),
+            record.get("phase"),
+            record.get("seed"),
+            audit.get("logical_call_start"),
+        )
+        grouped.setdefault(key, []).append(audit)
+    for audits in grouped.values():
+        if len(audits) == 1:
+            audit = audits[0]
+            if audit["mode"] != "chat-primary" \
+                    or audit["outcome"] not in {"accepted", "error"}:
+                return False
+            continue
+        if len(audits) != 2:
+            return False
+        primary = [audit for audit in audits if audit["mode"] == "chat-primary"]
+        repair = [
+            audit for audit in audits
+            if audit["mode"] == "strict-json-schema-repair"
+        ]
+        if (
+            len(primary) != 1
+            or len(repair) != 1
+            or primary[0]["outcome"] != "rejected"
+            or repair[0]["outcome"] not in {"accepted", "error"}
+        ):
+            return False
+    return bool(records)
+
+
 def _validate_archive_envelope(
     note_manifest: Mapping[str, Any],
     construction_dependencies: Mapping[str, bytes],
@@ -1655,12 +1869,25 @@ def _validate_archive_envelope(
     if type(smoke) is not bool or smoke and not allow_smoke:
         raise StudyProtocolError("smoke study notes are not accepted by this consumer")
     readiness = manifest.get("automated_readiness")
+    treatment_readiness = manifest.get("automated_treatment_readiness")
+    treatment_contract_valid = (
+        manifest_type != SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE
+        or (
+            isinstance(treatment_readiness, dict)
+            and set(treatment_readiness) == SEMANTIC_TREATMENT_READINESS_KEYS
+            and all(type(value) is bool for value in treatment_readiness.values())
+            and treatment_readiness.get("non_smoke") is (not smoke)
+            and manifest.get("automated_treatment_ready")
+            is all(treatment_readiness.values())
+        )
+    )
     if (
         not isinstance(readiness, dict)
         or set(readiness) != expected_readiness_keys
         or any(type(value) is not bool for value in readiness.values())
         or readiness.get("non_smoke") is not (not smoke)
         or manifest.get("automated_claim_ready") is not all(readiness.values())
+        or not treatment_contract_valid
         or manifest.get("claim_ready") is not False
         or manifest.get("publication_claim_ready") is not False
         or manifest.get("confirmatory_claim_ready") is not False
@@ -1669,7 +1896,7 @@ def _validate_archive_envelope(
         or manifest.get("corpus_commit") != task.get("corpus_commit")
     ):
         raise StudyProtocolError("study note readiness or identity contract is invalid")
-    expected_schema = 5 if manifest_type == SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE else 1
+    expected_schema = 6 if manifest_type == SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE else 1
     expected_human = (
         {
             "required": True,
@@ -1875,8 +2102,7 @@ def _validate_semantic_archive(
             snapshot = _snapshot_path(record.get("environment_snapshot"))
             if (
                 snapshot is None
-                or record.get("status") != "ok"
-                or set(record.get("verdicts", {})) != {"with_note", "bare"}
+                or not semantic_dev_exam_terminal(record)
             ):
                 raise StudyProtocolError("semantic dev exam record is incomplete")
             expected.add(snapshot)
@@ -1976,7 +2202,10 @@ def _validate_semantic_archive(
     for reference_id in expected_reference_ids:
         path = f"dev-references/{reference_id}.json"
         reference = _archive_json(dependencies, path, label="semantic dev reference")
-        if reference.get("reference_id") != reference_id or reference.get("status") != "ok":
+        if (
+            reference.get("reference_id") != reference_id
+            or not semantic_dev_reference_terminal(reference)
+        ):
             raise StudyProtocolError("semantic dev reference is incomplete")
         snapshot = _snapshot_path(reference.get("environment_snapshot"))
         if snapshot is None:
@@ -1986,13 +2215,29 @@ def _validate_semantic_archive(
 
     prior_hash = sha256_text("")
     for index, prior in enumerate(prior_manifests, 1):
+        prior_readiness = prior.get("automated_readiness")
+        prior_treatment_readiness = prior.get("automated_treatment_readiness")
         if (
             set(prior) != SEMANTIC_NOTE_MANIFEST_KEYS
+            or prior.get("schema_version") != 6
+            or prior.get("manifest_type") != SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE
+            or prior.get("method") != SEMANTIC_SELFQUIZ_METHOD
             or prior.get("round") != index
             or prior.get("input_note_sha256") != prior_hash
-            or prior.get("automated_claim_ready") is not True
-            or set(prior.get("automated_readiness", {})) != SEMANTIC_READINESS_KEYS
-            or not all(prior["automated_readiness"].values())
+            or not isinstance(prior_readiness, dict)
+            or set(prior_readiness) != SEMANTIC_READINESS_KEYS
+            or any(type(value) is not bool for value in prior_readiness.values())
+            or prior.get("automated_claim_ready")
+            is not all(prior_readiness.values())
+            or not isinstance(prior_treatment_readiness, dict)
+            or set(prior_treatment_readiness)
+            != SEMANTIC_TREATMENT_READINESS_KEYS
+            or any(
+                type(value) is not bool
+                for value in prior_treatment_readiness.values()
+            )
+            or prior.get("automated_treatment_ready") is not True
+            or not all(prior_treatment_readiness.values())
         ):
             raise StudyProtocolError("prior semantic note readiness chain is invalid")
         prior_hash = prior["note_sha256"]
@@ -2047,6 +2292,20 @@ def _validate_semantic_archive(
         if isinstance(call.get("response_model"), str) and call.get("response_model")
     })
     expected_response_model = str(task["model"]).removeprefix("openai/")
+    training_records_present = bool([
+        record
+        for record in current_items
+        if record.get("kind") == "quiz" and record.get("split") == "train"
+    ])
+    derivation_evidence_safe = all(
+        derivation.get("evidence_class") == "quote-only"
+        and bool(derivation.get("evidence"))
+        and isinstance(derivation.get("reference_support"), dict)
+        and derivation["reference_support"].get("status") == "ok"
+        and derivation["reference_support"].get("supported") is True
+        for derivation in successful_derivations
+    )
+    adapter_audit_complete = semantic_adapter_audit_complete(cumulative_calls)
     recomputed_readiness = {
         "non_smoke": not smoke,
         "provenance_complete": task.get("automated_provenance_ready") is True,
@@ -2062,10 +2321,7 @@ def _validate_semantic_archive(
             episode.get("status") == "ok" and bool(episode.get("trajectory"))
             for episode in current_episodes
         ),
-        "training_complete": bool([
-            record for record in current_items
-            if record.get("kind") == "quiz" and record.get("split") == "train"
-        ]) and all(
+        "training_complete": training_records_present and all(
             record.get("status") == "ok"
             and record.get("verdict") in {"correct", "partial", "wrong"}
             for record in current_items
@@ -2080,20 +2336,47 @@ def _validate_semantic_archive(
             for record in current_devs
         ),
         "lineage_clean": manifest["entries"] == reconstructed_entries,
-        "evidence_safe": bool(successful_derivations) and all(
-            derivation.get("evidence_class") == "quote-only"
-            and bool(derivation.get("evidence"))
-            and isinstance(derivation.get("reference_support"), dict)
-            and derivation["reference_support"].get("status") == "ok"
-            and derivation["reference_support"].get("supported") is True
-            for derivation in successful_derivations
-        ),
+        "evidence_safe": bool(successful_derivations) and derivation_evidence_safe,
         "usage_complete": _usage_totals(cumulative_calls).get("status") == "complete",
+        "adapter_audit_complete": adapter_audit_complete,
         "response_model_homogeneous": len(calls_response_models) == 1,
         "response_model_expected": calls_response_models == [expected_response_model],
     }
     if manifest["automated_readiness"] != recomputed_readiness:
         raise StudyProtocolError("semantic automated readiness was not reconstructed")
+    recomputed_treatment_readiness = {
+        "non_smoke": not smoke,
+        "provenance_complete": task.get("automated_provenance_ready") is True,
+        "launch_environments_bound": bool(all_environment_paths),
+        "prior_rounds_treatment_ready": all(
+            prior.get("automated_treatment_ready") is True
+            for prior in prior_manifests
+        ),
+        "question_freshness": (
+            current_freshness.get("fresh") is True
+            and current_freshness.get("audit_complete") is True
+        ),
+        "quiz_episodes_complete": bool(current_episodes) and all(
+            episode.get("status") == "ok" and bool(episode.get("trajectory"))
+            for episode in current_episodes
+        ),
+        "training_terminal_complete": training_records_present
+        and all(semantic_training_item_terminal(record) for record in current_items),
+        "dev_references_terminal_complete": bool(current_refs)
+        and all(semantic_dev_reference_terminal(record) for record in current_refs),
+        "dev_exam_terminal_complete": bool(current_devs)
+        and all(semantic_dev_exam_terminal(record) for record in current_devs),
+        "lineage_clean": manifest["entries"] == reconstructed_entries,
+        "evidence_safe": derivation_evidence_safe,
+        "usage_complete": _usage_totals(cumulative_calls).get("status") == "complete",
+        "adapter_audit_complete": adapter_audit_complete,
+        "response_model_homogeneous": len(calls_response_models) == 1,
+        "response_model_expected": calls_response_models == [expected_response_model],
+    }
+    if manifest["automated_treatment_readiness"] != recomputed_treatment_readiness:
+        raise StudyProtocolError(
+            "semantic automated treatment readiness was not reconstructed"
+        )
     round_calls = _archive_jsonl(
         dependencies, f"r{round_number}/usage.jsonl", label="semantic final usage"
     )
@@ -2118,8 +2401,14 @@ def _validate_semantic_archive(
         or manifest.get("cumulative_construction_usage_by_phase")
         != _usage_by_phase(cumulative_construction_calls)
         or current_summary.get("note_sha256") != manifest["note_sha256"]
+        or current_summary.get("automated_claim_ready")
+        != manifest["automated_claim_ready"]
         or current_summary.get("automated_readiness")
         != manifest["automated_readiness"]
+        or current_summary.get("automated_treatment_ready")
+        != manifest["automated_treatment_ready"]
+        or current_summary.get("automated_treatment_readiness")
+        != manifest["automated_treatment_readiness"]
     ):
         raise StudyProtocolError("semantic note usage or summary contract drifted")
     if set(dependencies) != expected:

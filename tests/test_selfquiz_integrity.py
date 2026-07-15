@@ -30,14 +30,20 @@ from studybench.study_protocol import (
     REACT_SAMPLING,
     SEMANTIC_SELFQUIZ_ADAPTER,
     SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
+    SEMANTIC_SELFQUIZ_CITATION_POLICY,
     SEMANTIC_SELFQUIZ_METHOD,
+    SEMANTIC_SELFQUIZ_UNRESOLVED_POLICY,
     StudyProtocolError,
 )
 from studybench.selfquiz import (
     ATTEMPT_MAX_ITERS,
     SCHEMA_VERSION,
     AttemptSig,
+    CitationEvidence,
+    CitationSig,
+    DeriveSig,
     QuizSig,
+    ReferenceSupportSig,
     SemanticSelfquizAdapter,
     _attempt,
     _attempt_protocol,
@@ -61,6 +67,7 @@ from studybench.selfquiz import (
     _prepare_questions,
     _question_record_error,
     _trajectory_hash_valid,
+    _validate_citation_pass_evidence,
     _validate_attempt_record,
     _validate_artifact_environment,
     _validate_dev_exam,
@@ -182,6 +189,8 @@ def semantic_task_manifest(
             "attempt_access": attempt_access,
             "adapter": SEMANTIC_SELFQUIZ_ADAPTER,
             "adapter_policy": SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
+            "citation_policy": SEMANTIC_SELFQUIZ_CITATION_POLICY,
+            "unresolved_policy": SEMANTIC_SELFQUIZ_UNRESOLVED_POLICY,
             "smoke": smoke,
             "quiz_max_iters": 15,
             "attempt_protocol": _attempt_protocol(attempt_access),
@@ -248,7 +257,9 @@ def dev_reference_fixture(item: dict, *, study_id: str = "study-a",
     derivations, calls = [], []
     for index in range(2):
         seed = stable_seed(master_seed, reference_content_id, "derive", index)
+        citation_seed = stable_seed(seed, "citation-pass")
         support_seed = stable_seed(seed, "reference-support")
+        answer = f"answer {index}"
         trajectory = {
             "thought_0": "the evidence is sufficient",
             "tool_name_0": "finish",
@@ -261,12 +272,23 @@ def dev_reference_fixture(item: dict, *, study_id: str = "study-a",
             ),
             "seed": seed,
             "status": "ok",
-            "answer": f"answer {index}",
+            "answer": answer,
             "raw_evidence": [evidence],
             "evidence": [evidence],
             "rejected_evidence": [],
             "trajectory": trajectory,
             "trajectory_sha256": sha256_json(trajectory),
+            "citation_pass": {
+                "status": "ok",
+                "seed": citation_seed,
+                "frozen_answer_sha256": sha256_text(answer),
+                "raw_evidence": [evidence],
+                "accepted_evidence": [evidence],
+                "rejected_evidence": [],
+                "trajectory": trajectory,
+                "trajectory_sha256": sha256_json(trajectory),
+                "error": None,
+            },
             "reference_support": {
                 "status": "ok", "seed": support_seed,
                 "supported": True, "rationale": "supported",
@@ -274,6 +296,7 @@ def dev_reference_fixture(item: dict, *, study_id: str = "study-a",
             "evidence_class": "quote-only",
         })
         calls += model_calls(owner_id, f"derive-{index}", seed)
+        calls += model_calls(owner_id, f"citation-pass-{index}", citation_seed)
         calls += model_calls(owner_id, f"reference-support-{index}", support_seed)
     checks = []
     for left, right, direction in (
@@ -419,7 +442,9 @@ def human_audit_fixture(args, *, protocol_extensions=None):
         args, sdir, "exact note", [], input_note_sha256="input",
         round_calls=[], cumulative_calls=[], round_construction_calls=[],
         cumulative_construction_calls=[], corpus_commit="commit",
-        automated_claim_ready=True, automated_readiness={"complete": True})
+        automated_claim_ready=True, automated_readiness={"complete": True},
+        automated_treatment_ready=True,
+        automated_treatment_readiness={"complete": True})
     construction = sdir / "notes" / f"note-r{args.round}.manifest.json"
     construction_record = json.loads(construction.read_text(encoding="utf-8"))
     audit = {
@@ -505,6 +530,35 @@ class CitationIntegrityTests(unittest.TestCase):
             self.rt, {"file": "pkg/a.py", "line": 2, "quote": fenced})["line"], 2)
         self.assertEqual(validate_evidence(
             self.rt, {"file": "pkg/a.py", "line": 2, "quote": quoted})["line"], 2)
+
+    def test_citation_pass_schema_and_gate_require_one_exact_physical_line(self):
+        self.assertEqual(
+            _validate_citation_pass_evidence(
+                self.rt,
+                CitationEvidence(file="pkg/a.py", line=3, quote="return value"),
+            ),
+            {"file": "pkg/a.py", "line": 3, "quote": "return value"},
+        )
+        for invalid in (
+            {"file": "pkg/a.py", "line": 1, "quote": "return value"},
+            {"file": "pkg/a.py", "line": 3, "quote": "`return value`"},
+            {"file": "pkg/a.py", "line": 3, "quote": " return value "},
+            {"file": "pkg/a.py", "line": 3, "quote": "return value\n"},
+            {"file": "pkg/a.py", "line": 3, "quote": "return value\r"},
+        ):
+            with self.subTest(invalid=invalid):
+                self.assertIsNone(_validate_citation_pass_evidence(self.rt, invalid))
+        for invalid_quote in ("", "return value\nsecond line", "return value\rsecond"):
+            with self.subTest(invalid_quote=invalid_quote):
+                with self.assertRaises(pydantic.ValidationError):
+                    CitationEvidence(file="pkg/a.py", line=3, quote=invalid_quote)
+        multiline_primary = (
+            '[[ ## evidence ## ]]\n'
+            '[{"file":"pkg/a.py","line":3,"quote":"return value\\nsecond"}]\n'
+            '[[ ## completed ## ]]'
+        )
+        with self.assertRaises(AdapterParseError):
+            SemanticSelfquizAdapter().parse(CitationSig, multiline_primary)
 
 
 class SplitLineageTests(unittest.TestCase):
@@ -825,6 +879,8 @@ class DeterminismAndArtifactTests(unittest.TestCase):
                 cumulative_construction_calls=[], corpus_commit="commit",
                 automated_claim_ready=False,
                 automated_readiness={"complete": False},
+                automated_treatment_ready=False,
+                automated_treatment_readiness={"complete": False},
             )
             with patch(
                 "studybench.selfquiz._write_task_manifest",
@@ -865,7 +921,9 @@ class DeterminismAndArtifactTests(unittest.TestCase):
                 round_calls=calls, cumulative_calls=calls,
                 round_construction_calls=[], cumulative_construction_calls=[],
                 corpus_commit="commit", automated_claim_ready=True,
-                automated_readiness={"complete": True})
+                automated_readiness={"complete": True},
+                automated_treatment_ready=True,
+                automated_treatment_readiness={"complete": True})
             self.assertEqual(manifest["study_id"], "replication-01")
             self.assertEqual(manifest["task"], "dspy")
             self.assertEqual(manifest["corpus_commit"], "commit")
@@ -884,7 +942,9 @@ class DeterminismAndArtifactTests(unittest.TestCase):
                             cumulative_calls=calls, round_construction_calls=[],
                             cumulative_construction_calls=[], corpus_commit="commit",
                             automated_claim_ready=True,
-                            automated_readiness={"complete": True})
+                            automated_readiness={"complete": True},
+                            automated_treatment_ready=True,
+                            automated_treatment_readiness={"complete": True})
 
     def test_task_manifest_binds_server_transport_retries_and_concurrency(self):
         args = SimpleNamespace(
@@ -1711,6 +1771,100 @@ class TrajectoryAndUsageTests(unittest.TestCase):
                         candidate, seed=11, label="test attempt"
                     )
 
+    def test_derivation_freezes_answer_before_uniform_independent_citation_pass(self):
+        trajectory = {
+            "thought_0": "done",
+            "tool_name_0": "finish",
+            "tool_args_0": {},
+            "observation_0": "Completed.",
+        }
+        derivation_prediction = SimpleNamespace(
+            answer="The value is returned.",
+            evidence=[Evidence(
+                file="pkg/a.py", line=2, quote="value = 1\nreturn value")],
+            trajectory=trajectory,
+        )
+        citation_prediction = SimpleNamespace(
+            evidence=[
+                CitationEvidence(file="pkg/a.py", line=3, quote="return value"),
+                CitationEvidence(file="pkg/a.py", line=1, quote="return value"),
+            ],
+            trajectory=trajectory,
+        )
+        react_invocations = []
+        support_inputs = []
+
+        def fake_react(signature, *, tools, max_iters):
+            def invoke(**kwargs):
+                react_invocations.append((signature, tuple(tools), max_iters, kwargs))
+                return derivation_prediction if signature is DeriveSig \
+                    else citation_prediction
+            return invoke
+
+        def fake_predict(signature):
+            self.assertIs(signature, ReferenceSupportSig)
+
+            def invoke(**kwargs):
+                support_inputs.append(kwargs)
+                return SimpleNamespace(supported=True, rationale="exact")
+            return invoke
+
+        item = {
+            "question": "What is returned?",
+            "_rt": FakeRepoTools(),
+            "attempt": "must not leak",
+            "note": "must not leak",
+            "writer_sketch": "must not leak",
+            "support_verdict": "must not leak",
+            "sibling_derivation": "must not leak",
+        }
+        lms = [SimpleNamespace(history=[]) for _ in range(3)]
+        with patch(
+            "studybench.selfquiz.fresh_lm", side_effect=lms,
+        ) as fresh, patch(
+            "studybench.selfquiz.dspy.context",
+            side_effect=lambda **_kwargs: nullcontext(),
+        ), patch(
+            "studybench.selfquiz.dspy.ReAct", side_effect=fake_react,
+        ), patch(
+            "studybench.selfquiz.dspy.Predict", side_effect=fake_predict,
+        ):
+            result, _calls = _derive(
+                item, repository_tools(), "unused",
+                seed=11, owner_id="owner", index=0,
+            )
+
+        self.assertEqual([call[0] for call in react_invocations], [DeriveSig, CitationSig])
+        self.assertEqual(
+            react_invocations[1][3],
+            {"question": item["question"], "frozen_answer": result["answer"]},
+        )
+        self.assertEqual(react_invocations[0][1], react_invocations[1][1])
+        self.assertEqual(
+            [call.args[1] for call in fresh.call_args_list],
+            [11, stable_seed(11, "citation-pass"),
+             stable_seed(11, "reference-support")],
+        )
+        self.assertEqual(
+            result["raw_evidence"],
+            [{"file": "pkg/a.py", "line": 2,
+              "quote": "value = 1\nreturn value"}],
+        )
+        self.assertEqual(
+            result["evidence"],
+            [{"file": "pkg/a.py", "line": 3, "quote": "return value"}],
+        )
+        self.assertEqual(
+            result["citation_pass"]["rejected_evidence"],
+            [{"file": "pkg/a.py", "line": 1, "quote": "return value"}],
+        )
+        self.assertEqual(
+            result["citation_pass"]["frozen_answer_sha256"],
+            sha256_text(result["answer"]),
+        )
+        self.assertEqual(
+            json.loads(support_inputs[0]["evidence"]), result["evidence"])
+
     def test_reference_support_rejects_truthy_non_boolean_outputs(self):
         derivation_prediction = SimpleNamespace(
             answer="The value is returned.",
@@ -1721,7 +1875,7 @@ class TrajectoryAndUsageTests(unittest.TestCase):
         for malformed in ("false", 1):
             with self.subTest(malformed=malformed), patch(
                 "studybench.selfquiz.fresh_lm",
-                side_effect=[SimpleNamespace(history=[]), SimpleNamespace(history=[])],
+                side_effect=[SimpleNamespace(history=[]) for _ in range(3)],
             ), patch(
                 "studybench.selfquiz.dspy.context",
                 side_effect=lambda **_kwargs: nullcontext(),
@@ -1833,12 +1987,20 @@ class TrajectoryAndUsageTests(unittest.TestCase):
         self.assertEqual(result, [{"answer": "repaired"}])
         records = usage_records(lm, phase="attempt", owner_id="owner", seed=1)
         self.assertTrue(adapter_audit_complete(records))
+        self.assertTrue(adapter_audit_complete(list(reversed(records))))
         self.assertEqual(
             [record["adapter_audit"]["outcome"] for record in records],
             ["rejected", "accepted"],
         )
         self.assertEqual(records[0]["adapter_audit"]["provider_outputs"],
                          ["bad shape"])
+        duplicate_primary = json.loads(json.dumps(records))
+        duplicate_primary[1]["adapter_audit"].update(
+            mode="chat-primary",
+            response_format=None,
+            response_format_sha256=None,
+        )
+        self.assertFalse(adapter_audit_complete(duplicate_primary))
 
         control = dspy.ReAct(QuizSig, tools=[], max_iters=1).react.signature
         malformed = (
@@ -1961,6 +2123,37 @@ class TrajectoryAndUsageTests(unittest.TestCase):
                         master_seed=7,
                         rt=FakeRepoTools(),
                     )
+
+    def test_dev_reference_binds_frozen_answer_citations_and_fixed_call_phase(self):
+        item = quiz_item("dev", split="dev")
+        record = dev_reference_fixture(item)
+
+        tampered_hash = json.loads(json.dumps(record))
+        tampered_hash["derivations"][0]["citation_pass"][
+            "frozen_answer_sha256"] = sha256_text("different answer")
+        with self.assertRaisesRegex(SystemExit, "drifted citation pass"):
+            _validate_dev_reference(
+                item, tampered_hash, study_id="study-a", task="dspy",
+                master_seed=7, rt=FakeRepoTools())
+
+        tampered_evidence = json.loads(json.dumps(record))
+        tampered_evidence["derivations"][0]["citation_pass"][
+            "raw_evidence"][0]["line"] = 1
+        with self.assertRaisesRegex(SystemExit, "drifted citation evidence"):
+            _validate_dev_reference(
+                item, tampered_evidence, study_id="study-a", task="dspy",
+                master_seed=7, rt=FakeRepoTools())
+
+        missing_phase = json.loads(json.dumps(record))
+        missing_phase["calls"] = [
+            call for call in missing_phase["calls"]
+            if call["phase"] != "citation-pass-0"
+        ]
+        missing_phase["usage"] = usage_totals(missing_phase["calls"])
+        with self.assertRaisesRegex(SystemExit, "missing calls for phase citation-pass-0"):
+            _validate_dev_reference(
+                item, missing_phase, study_id="study-a", task="dspy",
+                master_seed=7, rt=FakeRepoTools())
 
     def test_dev_arms_share_signature_seed_and_fixed_reference(self):
         item = quiz_item("dev", split="dev")

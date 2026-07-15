@@ -2098,6 +2098,9 @@ def _load_note(
             manifest_type = construction.get("manifest_type")
             if claim_ready is False:
                 readiness = construction.get("automated_readiness")
+                treatment_readiness = construction.get(
+                    "automated_treatment_readiness"
+                )
                 inventory = construction.get("construction_artifacts")
                 construction_inventory_sha256 = construction.get(
                     "construction_artifacts_sha256")
@@ -2118,6 +2121,20 @@ def _load_note(
                     and construction.get("automated_claim_ready") is True
                     and all(readiness.values())
                 )
+                treatment_readiness_shape_valid = (
+                    isinstance(treatment_readiness, dict)
+                    and bool(treatment_readiness)
+                    and all(
+                        type(value) is bool
+                        for value in treatment_readiness.values()
+                    )
+                )
+                treatment_automated_gate = (
+                    manifest_type == SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE
+                    and treatment_readiness_shape_valid
+                    and construction.get("automated_treatment_ready") is True
+                    and all(treatment_readiness.values())
+                )
                 smoke_automated_gate = (
                     allow_smoke
                     and readiness_shape_valid
@@ -2127,7 +2144,11 @@ def _load_note(
                 if (type(construction.get("schema_version")) is not int
                         or construction["schema_version"] <= 0
                         or contradictory_readiness
-                        or not (full_automated_gate or smoke_automated_gate)
+                        or not (
+                            full_automated_gate
+                            or treatment_automated_gate
+                            or smoke_automated_gate
+                        )
                         or not isinstance(inventory, dict) or not inventory
                         or not isinstance(construction_inventory_sha256, str)
                         or not re.fullmatch(
@@ -2252,6 +2273,8 @@ def _load_note(
                           "note_path", "entry_ids", "entries", "usage",
                           "method", "protocol_summary",
                           "automated_claim_ready", "automated_readiness",
+                          "automated_treatment_ready",
+                          "automated_treatment_readiness",
                           "construction_artifacts", "construction_artifacts_sha256")
                 if (not isinstance(base, dict) or base.get("claim_ready") is not False
                         or base.get("automated_claim_ready") is not True
