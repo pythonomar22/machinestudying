@@ -1516,3 +1516,85 @@ evaluation episodes still validate unchanged—baseline 60 `ok`; cheatsheet 59
 `ok` plus the original one `no_answer`—as do both historical 51-call forced
 studies. The correction therefore improves future auditability without
 changing this experiment's candidate population, raw Qwen labels, or scores.
+
+## Executed GPT-5.4 grader-protocol sensitivity screen
+
+The same immutable `h` answer population was subsequently judged through the
+OpenAI API by requested model `gpt-5.4`. This was a post-hoc reconstruction of
+the paper-style grading protocol, not a new generation run and not a rescue of
+the failed local-Qwen qualification. It used the complete candidate answer and
+the complete cited evidence files, binary `0/1` decisions with a concise
+rationale for every claim, high reasoning effort, and harness-computed lenient
+weighted sums. The paper and Jacob correspondence do not author-confirm the
+reasoning-effort setting, so that setting remains a repository convention.
+Strict/compile scoring was not reconstructed and no such number is reported.
+
+The intent was sealed before API contact from clean, pushed source commit
+`0668af0c290b1720191896b80747533c790cb62b`. Exactly 119 requests were planned
+and accepted: one for every answered cell, with no retry, repair, answer
+rewrite, rejection, or missing result. The treatment `k20f/r1` generation
+`no_answer` was assigned zero without judge contact. All accepted responses
+reported model revision `gpt-5.4-2026-03-05`; the API returned no system
+fingerprint for any response, which prevents a stronger revision-identity
+attestation. Usage was 2,555,957 prompt tokens and 179,499 completion tokens,
+2,735,456 total.
+
+The resulting lenient scores, compared on the exact same candidates with the
+earlier raw-Qwen screen, are:
+
+| Judge protocol | no-note baseline WAUC | forced-50 cheatsheet WAUC | treatment − baseline |
+|---|---:|---:|---:|
+| raw local Qwen, unqualified | 2.9789883944107114 | 4.840131429288812 | +1.8611430348781006 |
+| GPT-5.4, whole evidence and rationales | 5.220664728639385 | 18.06684522893066 | +12.846180500291275 |
+
+The GPT budget-level means were:
+
+| Arm | direct | k5 | k20 | k20f |
+|---|---:|---:|---:|---:|
+| no-note baseline | 3.0000 | 7.0667 | 4.0000 | 13.2667 |
+| forced-50 cheatsheet | 10.4667 | 26.2000 | 26.0000 | 31.6667 |
+
+The paired two-stage bootstrap treatment-minus-baseline WAUC had mean
+`14.164414782150999` and descriptive 95% interval
+`[2.079300857666322, 28.994024046662588]`. This interval covers only the five
+questions and shared rollout resampling. It omits judge-systematic error,
+adaptive dataset reuse, question-selection uncertainty, and benchmark
+generalization, so it is not a confirmatory confidence interval.
+
+Manual inspection found that GPT corrected conspicuous Qwen errors, including
+rejecting the baseline game answer's manual `if/elif` dispatch as evidence of
+DSPy structured tool calling and rejecting a treatment answer that selected
+`JSONAdapter` while the question required `ChatAdapter`. Across all 619 claim
+labels, GPT agreed with the earlier blinded first-pass agent-assisted review on
+594 (95.96%): 304/312 baseline labels and 290/307 treatment labels. That review
+is sensitivity evidence, not human ground truth.
+
+GPT also made material contestable decisions. It gave a baseline game answer
+full credit despite a likely `thought`/`reasoning` field mismatch, and it
+repeatedly credited treatment adapter answers for selecting `JSONAdapter` even
+when malformed or untyped signatures made the proposed structured tool path
+non-runnable. Relative to the first-pass review, GPT-only positive
+disagreements carried 87 rubric-weight points in baseline but 315 in treatment.
+That differential overcredit can directly inflate the apparent treatment gap.
+
+The honest interpretation is therefore a **promising diagnostic sensitivity
+result, not a robust research finding**. On this adaptive, public, single-topic
+five-question development slice, the paper-style GPT reconstruction scores the
+cheatsheet candidates substantially above the baseline candidates and is much
+more consistent with the blinded agent audit than the unqualified Qwen judge.
+The small reused population, fixed arm order, judge sensitivity, and remaining
+rubric disputes do not support a claim that the studying method improves
+held-out DSPy expertise.
+
+### Frozen GPT-screen artifacts
+
+| Artifact | SHA-256 |
+|---|---|
+| `gpt-judge-screens/smalldspy-base-cheatsheet-gpt54-whole-high-20260714a/intent.json` | `eadbf478cd1cfc46bf42e6a01913df03c12df9364b06c0db1ad3c9b0129634d9` |
+| `gpt-judge-screens/smalldspy-base-cheatsheet-gpt54-whole-high-20260714a/raw-audit.json` | `104e77e3a2570af8e893ec465a0a8751cf1d7debb7447ffecfb33dd56d3f2406` |
+| `gpt-judge-screens/smalldspy-base-cheatsheet-gpt54-whole-high-20260714a/result.json` | `244ed2b985e8f00440811a4db35a311ae4fe0e8c4b3d47a996eb0466af5dc92d` |
+
+The artifacts declare `claim_ready=false`, `diagnostic_only=true`, and
+`paper_comparison_allowed=false`. The comparison is grader-protocol
+sensitivity, not a model-only judge ablation: model, evidence presentation,
+prompt, rationale elicitation, and reasoning policy all differ from raw Qwen.
