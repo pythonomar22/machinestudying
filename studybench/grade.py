@@ -34,7 +34,7 @@ from typing import Any, Callable
 
 from openai import AsyncOpenAI
 
-from . import provenance, sandbox
+from . import environment_inventory, provenance, sandbox
 from .dataset import CORPORA, ROOT, load_questions, read_pinned_code_bytes
 from .env import load_private_env
 from .human_audit import (
@@ -1666,6 +1666,9 @@ def grade_spec_sha256(corpus, row: dict, judge_model: str,
     specification = {
         "grade_schema_version": GRADE_SCHEMA_VERSION,
         "grader_source": {
+            "studybench/environment_inventory.py": file_sha256(
+                Path(environment_inventory.__file__).resolve()
+            ),
             "studybench/grade.py": file_sha256(Path(__file__).resolve()),
             "studybench/provenance.py": file_sha256(
                 Path(provenance.__file__).resolve()

@@ -212,7 +212,7 @@ import sys
 
 sys.path.insert(0, sys.argv[2])
 from studybench.integrity import canonical_json_bytes
-from studybench.provenance import installed_distribution_inventory
+from studybench.environment_inventory import installed_distribution_inventory
 
 destination = Path(sys.argv[1])
 payload = canonical_json_bytes(installed_distribution_inventory())

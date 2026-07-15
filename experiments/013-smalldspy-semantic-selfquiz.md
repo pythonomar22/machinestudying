@@ -52,7 +52,7 @@ adjudication, and distillation remain a central limitation.
 
 | Object | Identifier |
 |---|---|
-| construction smoke | `smoke-smalldspy-semantic-react-20260714b` |
+| construction smoke | `smoke-smalldspy-semantic-react-20260714c` |
 | full four-round study | `smalldspy-semantic-react-r4-20260714a` |
 | treatment evaluation | `smalldspy-local-selfquiz-20260714a` |
 | paired evaluation seed group | `smalldspy-local-cheatsheet-screen-20260713` |
@@ -88,5 +88,16 @@ failed to open `scripts/run_args.sh` and exited before setup, model-server
 launch, provider contact, or study-artifact creation. The identity, launcher
 prefix, and port base are retired. Smoke `b` adds only an explicit Slurm
 working directory and fresh infrastructure identifiers.
+
+Smoke `b` was attempted once from source commit `102fd73`. It stopped before
+model-server launch, provider contact, or study-artifact creation because the
+isolated vLLM environment-inventory writer imported the full
+`studybench.provenance` module. That transitively imported `json_repair`, which
+is correctly absent from the exact vLLM server lock. Only the GPU inventory was
+written. The `b` identity, launcher prefix, and port base are retired. The
+installed-distribution byte-inventory implementation is now dependency-light
+and shared by the main provenance module and isolated server setup; no package,
+model, prompt, sampling, seed, or study-method contract changed. Smoke `c` uses
+fresh identifiers.
 
 No semantic study outcome has yet been produced.
