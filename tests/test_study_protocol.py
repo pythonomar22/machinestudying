@@ -25,6 +25,8 @@ from studybench.study_protocol import (
     REACT_SAMPLING,
     SEMANTIC_NOTE_MANIFEST_KEYS,
     SEMANTIC_READINESS_KEYS,
+    SEMANTIC_SELFQUIZ_ADAPTER,
+    SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
     SEMANTIC_SELFQUIZ_METHOD,
     SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
     SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE,
@@ -92,7 +94,7 @@ def semantic_task(*, attempt_access: str = "react-corpus") -> dict:
         ),
     }
     return {
-        "schema_version": 4,
+        "schema_version": 5,
         "manifest_type": SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE,
         "method": SEMANTIC_SELFQUIZ_METHOD,
         "study_id": "study-a",
@@ -110,6 +112,8 @@ def semantic_task(*, attempt_access: str = "react-corpus") -> dict:
             "final_round": 4,
             "questions_per_chapter": 5,
             "attempt_access": attempt_access,
+            "adapter": SEMANTIC_SELFQUIZ_ADAPTER,
+            "adapter_policy": SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
             "smoke": False,
             "quiz_max_iters": 15,
             "attempt_protocol": semantic_attempt_protocol(attempt_access),
@@ -349,7 +353,7 @@ class StudyProtocolTests(unittest.TestCase):
         note_bytes = b"fabricated note\n"
         note_hash = sha256_bytes(note_bytes)
         note.update({
-            "schema_version": 4,
+            "schema_version": 5,
             "claim_ready": False,
             "publication_claim_ready": False,
             "confirmatory_claim_ready": False,
@@ -428,7 +432,7 @@ class StudyProtocolTests(unittest.TestCase):
         task = semantic_task()
         note, _ = note_for_task(task)
         method_drift = deepcopy(task)
-        method_drift["method"] = "semantic-selfquiz-v3"
+        method_drift["method"] = "semantic-selfquiz-v2"
         with self.assertRaises(StudyProtocolError):
             derive_protocol_summary(method_drift)
 

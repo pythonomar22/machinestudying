@@ -28,9 +28,13 @@ from .tools import DSPY_READ_MAX_LINES, dspy_tool_contract
 
 
 PROTOCOL_SUMMARY_SCHEMA_VERSION = 1
-SEMANTIC_SELFQUIZ_METHOD = "semantic-selfquiz-v2"
+SEMANTIC_SELFQUIZ_METHOD = "semantic-selfquiz-v3"
 SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE = "semantic-selfquiz-study-task"
 SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE = "semantic-selfquiz-note"
+SEMANTIC_SELFQUIZ_ADAPTER = "studybench.selfquiz.SemanticSelfquizAdapter"
+SEMANTIC_SELFQUIZ_ADAPTER_POLICY = (
+    "chat-primary-strict-json-schema-parse-or-tool-contract-repair-v1"
+)
 SEMANTIC_FINAL_ROUND = 4
 DSPY_SEMANTIC_CHAPTER_SYLLABUS = (
     "dspy/teleprompt",
@@ -160,6 +164,8 @@ _SEMANTIC_CONFIG_KEYS = frozenset({
     "final_round",
     "questions_per_chapter",
     "attempt_access",
+    "adapter",
+    "adapter_policy",
     "smoke",
     "quiz_max_iters",
     "attempt_protocol",
@@ -265,6 +271,7 @@ SEMANTIC_READINESS_KEYS = frozenset({
     "lineage_clean",
     "evidence_safe",
     "usage_complete",
+    "adapter_audit_complete",
     "response_model_homogeneous",
     "response_model_expected",
 })
@@ -359,6 +366,7 @@ def semantic_attempt_protocol(attempt_access: str) -> dict[str, Any]:
         label=f"{attempt_access} semantic attempt protocol",
     )
     assert isinstance(value, dict)
+    value["adapter"] = SEMANTIC_SELFQUIZ_ADAPTER
     return value
 
 
@@ -1131,10 +1139,12 @@ def derive_protocol_summary(
             1 if config.get("smoke") is True else min(4, len(expected_syllabus))
         )
         if (
-            manifest.get("schema_version") != 4
+            manifest.get("schema_version") != 5
             or not _same_json(
                 config.get("attempt_protocol"), expected_attempt_protocol
             )
+            or config.get("adapter") != SEMANTIC_SELFQUIZ_ADAPTER
+            or config.get("adapter_policy") != SEMANTIC_SELFQUIZ_ADAPTER_POLICY
             or manifest["server_transport"].get("assignment")
             != "stable_seed(master_seed, stochastic_namespace, server) modulo server_count"
         ):
@@ -1659,7 +1669,7 @@ def _validate_archive_envelope(
         or manifest.get("corpus_commit") != task.get("corpus_commit")
     ):
         raise StudyProtocolError("study note readiness or identity contract is invalid")
-    expected_schema = 4 if manifest_type == SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE else 1
+    expected_schema = 5 if manifest_type == SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE else 1
     expected_human = (
         {
             "required": True,

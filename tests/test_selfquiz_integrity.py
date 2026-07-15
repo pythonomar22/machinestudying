@@ -6,7 +6,9 @@ import unittest
 from unittest.mock import patch
 from types import SimpleNamespace
 
+import dspy
 import pydantic
+from dspy.utils.exceptions import AdapterParseError
 
 from studybench.integrity import (
     canonical_json_bytes,
@@ -26,12 +28,17 @@ from studybench.dataset import CORPORA
 from studybench.study_protocol import (
     DSPY_SEMANTIC_CHAPTER_SYLLABUS,
     REACT_SAMPLING,
+    SEMANTIC_SELFQUIZ_ADAPTER,
+    SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
+    SEMANTIC_SELFQUIZ_METHOD,
     StudyProtocolError,
 )
 from studybench.selfquiz import (
     ATTEMPT_MAX_ITERS,
     SCHEMA_VERSION,
     AttemptSig,
+    QuizSig,
+    SemanticSelfquizAdapter,
     _attempt,
     _attempt_protocol,
     _curriculum_id,
@@ -76,6 +83,7 @@ from studybench.selfquiz import (
     run_round,
     serialize_trajectory,
     usage_by_phase,
+    adapter_audit_complete,
     usage_ledger_audit,
     usage_records,
     usage_totals,
@@ -136,7 +144,7 @@ def semantic_task_manifest(
     return {
         "schema_version": SCHEMA_VERSION,
         "manifest_type": "semantic-selfquiz-study-task",
-        "method": "semantic-selfquiz-v2",
+        "method": SEMANTIC_SELFQUIZ_METHOD,
         "study_id": args.study_id,
         "task": args.task,
         "master_seed": getattr(args, "seed", 7),
@@ -172,6 +180,8 @@ def semantic_task_manifest(
             "final_round": 4,
             "questions_per_chapter": 3 if smoke else getattr(args, "questions", 5),
             "attempt_access": attempt_access,
+            "adapter": SEMANTIC_SELFQUIZ_ADAPTER,
+            "adapter_policy": SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
             "smoke": smoke,
             "quiz_max_iters": 15,
             "attempt_protocol": _attempt_protocol(attempt_access),
@@ -900,7 +910,7 @@ class DeterminismAndArtifactTests(unittest.TestCase):
                 ["http://localhost:8100/v1", "http://127.0.0.1:8101/v1"],
             )
         self.assertEqual(manifest["server_transport"]["server_count"], 2)
-        self.assertEqual(manifest["method"], "semantic-selfquiz-v2")
+        self.assertEqual(manifest["method"], SEMANTIC_SELFQUIZ_METHOD)
         self.assertEqual(manifest["server_transport"]["scope"], "loopback")
         self.assertEqual(manifest["config"]["concurrency"], 11)
         self.assertEqual(manifest["config"]["provider_retries"], 0)
@@ -1780,6 +1790,75 @@ class TrajectoryAndUsageTests(unittest.TestCase):
             [{"role": "user", "content": "one"}]))
         self.assertNotEqual(records[0]["call_id"], records[1]["call_id"])
         self.assertEqual(usage_by_phase(records)["quiz"]["calls"], 2)
+
+    def test_semantic_adapter_repair_is_strict_auditable_and_fail_closed(self):
+        class FakeLM:
+            supports_function_calling = False
+
+            def __init__(self, outputs, finish_reasons=None):
+                self._outputs = iter(outputs)
+                self._finish_reasons = iter(
+                    finish_reasons or ["stop"] * len(outputs)
+                )
+                self.history = []
+
+            def __call__(self, *, messages, **kwargs):
+                output = next(self._outputs)
+                response = SimpleNamespace(
+                    id=f"response-{len(self.history)}",
+                    model="Qwen/Qwen3.5-9B",
+                    system_fingerprint="fp",
+                    choices=[SimpleNamespace(
+                        finish_reason=next(self._finish_reasons)
+                    )],
+                )
+                self.history.append({
+                    "messages": messages,
+                    "kwargs": kwargs,
+                    "response": response,
+                    "response_model": response.model,
+                    "outputs": [output],
+                    "usage": {
+                        "prompt_tokens": 1,
+                        "completion_tokens": 1,
+                        "total_tokens": 2,
+                    },
+                })
+                return [output]
+
+        lm = FakeLM(["bad shape", '{"answer":"repaired"}'])
+        result = SemanticSelfquizAdapter()(
+            lm, {}, AttemptSig, [], {"note": "", "question": "q"}
+        )
+        self.assertEqual(result, [{"answer": "repaired"}])
+        records = usage_records(lm, phase="attempt", owner_id="owner", seed=1)
+        self.assertTrue(adapter_audit_complete(records))
+        self.assertEqual(
+            [record["adapter_audit"]["outcome"] for record in records],
+            ["rejected", "accepted"],
+        )
+        self.assertEqual(records[0]["adapter_audit"]["provider_outputs"],
+                         ["bad shape"])
+
+        control = dspy.ReAct(QuizSig, tools=[], max_iters=1).react.signature
+        malformed = (
+            '{"next_thought":"x","next_tool_name":"finish",'
+            '"next_tool_args":{"bogus":1},"extra":"x"'
+        )
+        lm = FakeLM(["bad shape", malformed])
+        with self.assertRaises(AdapterParseError):
+            SemanticSelfquizAdapter()(
+                lm, {}, control, [],
+                {"chapter": "x", "num_questions": 1, "trajectory": ""},
+            )
+
+        primary = "[[ ## answer ## ]]\nok\n[[ ## completed ## ]]"
+        lm = FakeLM([primary, '{"answer":"must not be used"}'], ["length", "stop"])
+        with self.assertRaisesRegex(RuntimeError, "finish cleanly"):
+            SemanticSelfquizAdapter()(
+                lm, {}, AttemptSig, [], {"note": "", "question": "q"}
+            )
+        self.assertEqual(len(lm.history), 1)
 
     def test_usage_audit_rejects_missing_duplicate_or_unreported_calls(self):
         lm = SimpleNamespace(history=[{

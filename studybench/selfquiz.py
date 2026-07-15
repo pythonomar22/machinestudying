@@ -50,6 +50,10 @@ from typing import Any, Literal
 
 import dspy
 import pydantic
+from dspy.adapters.base import Adapter
+from dspy.adapters.json_adapter import JSONAdapter
+from dspy.adapters.utils import parse_value
+from dspy.utils.exceptions import AdapterParseError
 
 from .dataset import CORPORA, ROOT
 from .integrity import (
@@ -96,10 +100,13 @@ from .react import (
 from .study_protocol import (
     SEMANTIC_ATTEMPT_ACCESS_MODES,
     SEMANTIC_FINAL_ROUND,
+    SEMANTIC_SELFQUIZ_ADAPTER,
+    SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
     SEMANTIC_SELFQUIZ_METHOD,
     SEMANTIC_SELFQUIZ_NOTE_MANIFEST_TYPE,
     SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE,
     StudyProtocolError,
+    DSPY_REPOSITORY_TOOL_CONTRACT,
     derive_protocol_summary,
     semantic_chapter_syllabus,
     semantic_attempt_protocol,
@@ -117,7 +124,7 @@ DERIVE_MAX_ITERS = 15
 DEDUP_JACCARD = 0.5
 FRESHNESS_NEAR_JACCARD = 0.8
 MAX_FRESHNESS_NEAR_RATE = 0.1
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 TRAIN_ENSEMBLE = 2
 DEV_ENSEMBLE = 2
 ATTEMPT_TOOL_NAMES = ("grep", "glob", "read_file")
@@ -1030,6 +1037,354 @@ def _validate_attempt_record(
 
 # ---------------------------------------------------------------- LM plumbing
 
+_REACT_CONTROL_OUTPUTS = (
+    "next_thought",
+    "next_tool_name",
+    "next_tool_args",
+)
+_ADAPTER_AUDIT_SCHEMA_VERSION = 1
+
+
+def _closed_json_schema(node: object) -> None:
+    """Make a Pydantic schema deterministic and closed for constrained repair."""
+
+    if isinstance(node, dict):
+        node.pop("default", None)
+        node.pop("title", None)
+        properties = node.get("properties")
+        if isinstance(properties, dict):
+            node["required"] = list(properties)
+            node["additionalProperties"] = False
+        for value in node.values():
+            _closed_json_schema(value)
+    elif isinstance(node, list):
+        for value in node:
+            _closed_json_schema(value)
+
+
+def _react_control_schema() -> dict[str, object]:
+    branches: list[dict[str, object]] = []
+    tools = DSPY_REPOSITORY_TOOL_CONTRACT.get("tools")
+    if not isinstance(tools, list):
+        raise RuntimeError("repository tool contract has no tool list")
+    for tool in [*tools, {"name": ATTEMPT_FINISH_NAME, "args": {}}]:
+        name = tool.get("name")
+        args = tool.get("args")
+        if not isinstance(name, str) or not isinstance(args, dict):
+            raise RuntimeError("repository tool contract is malformed")
+        properties: dict[str, object] = {}
+        required: list[str] = []
+        for arg_name, arg_contract in args.items():
+            if not isinstance(arg_name, str) or not isinstance(arg_contract, dict):
+                raise RuntimeError("repository tool argument contract is malformed")
+            arg_type = arg_contract.get("type")
+            if arg_type not in {"string", "integer"}:
+                raise RuntimeError("repository tool argument type is unsupported")
+            properties[arg_name] = {"type": arg_type}
+            if "default" not in arg_contract:
+                required.append(arg_name)
+        branches.append({
+            "type": "object",
+            "properties": {
+                "next_thought": {"type": "string"},
+                "next_tool_name": {"const": name},
+                "next_tool_args": {
+                    "type": "object",
+                    "properties": properties,
+                    "required": required,
+                    "additionalProperties": False,
+                },
+            },
+            "required": list(_REACT_CONTROL_OUTPUTS),
+            "additionalProperties": False,
+        })
+    return {"oneOf": branches}
+
+
+def _signature_json_schema(signature: type[dspy.Signature]) -> tuple[str, dict]:
+    if tuple(signature.output_fields) == _REACT_CONTROL_OUTPUTS:
+        return "DSPyReActControl", _react_control_schema()
+    fields = {
+        name: (field.annotation, ...)
+        for name, field in signature.output_fields.items()
+    }
+    model = pydantic.create_model("DSPyProgramOutputs", **fields)
+    schema = model.model_json_schema()
+    _closed_json_schema(schema)
+    return "DSPyProgramOutputs", schema
+
+
+def _strict_response_format(signature: type[dspy.Signature]) -> dict:
+    name, schema = _signature_json_schema(signature)
+    return {
+        "type": "json_schema",
+        "json_schema": {"name": name, "strict": True, "schema": schema},
+    }
+
+
+def _valid_react_action(fields: dict[str, Any]) -> bool:
+    name = fields.get("next_tool_name")
+    args = fields.get("next_tool_args")
+    if not isinstance(name, str) or not isinstance(args, dict):
+        return False
+    if name == ATTEMPT_FINISH_NAME:
+        return args == ATTEMPT_FINISH_ARGS
+    tools = DSPY_REPOSITORY_TOOL_CONTRACT["tools"]
+    tool = next((item for item in tools if item["name"] == name), None)
+    if tool is None or set(args) - set(tool["args"]):
+        return False
+    for arg_name, contract in tool["args"].items():
+        if "default" not in contract and arg_name not in args:
+            return False
+        if arg_name not in args:
+            continue
+        expected_type = str if contract["type"] == "string" else int
+        if type(args[arg_name]) is not expected_type:
+            return False
+    return True
+
+
+def _response_value(response: object, field: str) -> object:
+    return response.get(field) if isinstance(response, dict) \
+        else getattr(response, field, None)
+
+
+def _latest_finish_reasons(lm: dspy.LM) -> list[str]:
+    if not getattr(lm, "history", None):
+        raise RuntimeError("provider response history is unavailable")
+    response = lm.history[-1].get("response")
+    choices = _response_value(response, "choices")
+    if not isinstance(choices, list) or not choices:
+        raise RuntimeError("provider response has no auditable choices")
+    reasons = [_response_value(choice, "finish_reason") for choice in choices]
+    if any(not isinstance(reason, str) or not reason for reason in reasons):
+        raise RuntimeError("provider response has no auditable finish reason")
+    return reasons
+
+
+def _require_stop_finish(lm: dspy.LM) -> None:
+    reasons = _latest_finish_reasons(lm)
+    if any(reason != "stop" for reason in reasons):
+        raise RuntimeError(
+            "provider response did not finish cleanly: " + ", ".join(reasons)
+        )
+
+
+def _tag_adapter_history(
+    lm: dspy.LM,
+    *,
+    start: int,
+    logical_start: int | None = None,
+    mode: str,
+    outcome: str,
+    signature: type[dspy.Signature],
+    result: object = None,
+    error: BaseException | None = None,
+) -> None:
+    response_format = (
+        _strict_response_format(signature)
+        if mode == "strict-json-schema-repair"
+        else None
+    )
+    finish_reasons: list[str] = []
+    if len(lm.history) > start:
+        try:
+            finish_reasons = _latest_finish_reasons(lm)
+        except RuntimeError:
+            finish_reasons = []
+    audit = {
+        "schema_version": _ADAPTER_AUDIT_SCHEMA_VERSION,
+        "policy": SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
+        "logical_call_start": start if logical_start is None else logical_start,
+        "mode": mode,
+        "outcome": outcome,
+        "output_fields": list(signature.output_fields),
+        "response_format": response_format,
+        "response_format_sha256": (
+            sha256_json(response_format) if response_format is not None else None
+        ),
+        "finish_reasons": finish_reasons,
+        "selected_outputs_sha256": (
+            sha256_json(_jsonable(result)) if result is not None else None
+        ),
+        "error_type": type(error).__name__ if error is not None else None,
+        "error_sha256": sha256_text(str(error)) if error is not None else None,
+    }
+    for history in lm.history[start:]:
+        provider_outputs = _jsonable(history.get("outputs"))
+        history["studybench_adapter_audit"] = {
+            **audit,
+            "provider_outputs": provider_outputs,
+            "provider_outputs_sha256": sha256_json(provider_outputs),
+        }
+
+
+class StrictJSONSchemaAdapter(JSONAdapter):
+    """JSON-formatted, grammar-constrained repair for one failed parse."""
+
+    def __call__(self, lm, lm_kwargs, signature, demos, inputs):
+        kwargs = {**lm_kwargs, "response_format": _strict_response_format(signature)}
+        return Adapter.__call__(self, lm, kwargs, signature, demos, inputs)
+
+    async def acall(self, lm, lm_kwargs, signature, demos, inputs):
+        kwargs = {**lm_kwargs, "response_format": _strict_response_format(signature)}
+        return await Adapter.acall(self, lm, kwargs, signature, demos, inputs)
+
+    def _call_postprocess(
+        self, processed_signature, original_signature, outputs, lm, lm_kwargs
+    ):
+        _require_stop_finish(lm)
+        return Adapter._call_postprocess(
+            self, processed_signature, original_signature, outputs, lm, lm_kwargs
+        )
+
+    def parse(self, signature, completion):
+        try:
+            raw = strict_json_loads(completion, label="strict adapter response")
+        except ValueError as error:
+            raise AdapterParseError(
+                adapter_name=type(self).__name__,
+                signature=signature,
+                lm_response=completion,
+                message=str(error),
+            ) from error
+        if not isinstance(raw, dict) or set(raw) != set(signature.output_fields):
+            raise AdapterParseError(
+                adapter_name=type(self).__name__,
+                signature=signature,
+                lm_response=completion,
+                parsed_result=raw if isinstance(raw, dict) else None,
+                message="Strict response fields differ from the signature.",
+            )
+        fields = {}
+        try:
+            for name, field in signature.output_fields.items():
+                fields[name] = parse_value(raw[name], field.annotation)
+        except Exception as error:
+            raise AdapterParseError(
+                adapter_name=type(self).__name__,
+                signature=signature,
+                lm_response=completion,
+                parsed_result=fields,
+                message=f"Strict response value failed type validation: {error}",
+            ) from error
+        if (tuple(signature.output_fields) == _REACT_CONTROL_OUTPUTS
+                and not _valid_react_action(fields)):
+            raise AdapterParseError(
+                adapter_name=type(self).__name__,
+                signature=signature,
+                lm_response=completion,
+                parsed_result=fields,
+                message="Strict ReAct action violates the frozen tool contract.",
+            )
+        return fields
+
+
+class SemanticSelfquizAdapter(dspy.ChatAdapter):
+    """Keep ChatAdapter primary; strictly repair only parse/contract failures."""
+
+    def parse(self, signature, completion):
+        fields = super().parse(signature, completion)
+        if (tuple(signature.output_fields) == _REACT_CONTROL_OUTPUTS
+                and not _valid_react_action(fields)):
+            raise AdapterParseError(
+                adapter_name=type(self).__name__,
+                signature=signature,
+                lm_response=completion,
+                parsed_result=fields,
+                message="Parsed ReAct action violates the frozen tool contract.",
+            )
+        return fields
+
+    def __call__(self, lm, lm_kwargs, signature, demos, inputs):
+        start = len(lm.history)
+        try:
+            result = Adapter.__call__(self, lm, lm_kwargs, signature, demos, inputs)
+        except AdapterParseError as error:
+            _tag_adapter_history(
+                lm, start=start, mode="chat-primary", outcome="rejected",
+                signature=signature, error=error,
+            )
+            repair_start = len(lm.history)
+            try:
+                result = StrictJSONSchemaAdapter()(
+                    lm, lm_kwargs, signature, demos, inputs
+                )
+            except Exception as repair_error:
+                _tag_adapter_history(
+                    lm, start=repair_start, logical_start=start,
+                    mode="strict-json-schema-repair",
+                    outcome="error", signature=signature, error=repair_error,
+                )
+                raise
+            _tag_adapter_history(
+                lm, start=repair_start, logical_start=start,
+                mode="strict-json-schema-repair",
+                outcome="accepted", signature=signature, result=result,
+            )
+            return result
+        except Exception as error:
+            _tag_adapter_history(
+                lm, start=start, mode="chat-primary", outcome="error",
+                signature=signature, error=error,
+            )
+            raise
+        _tag_adapter_history(
+            lm, start=start, mode="chat-primary", outcome="accepted",
+            signature=signature, result=result,
+        )
+        return result
+
+    async def acall(self, lm, lm_kwargs, signature, demos, inputs):
+        start = len(lm.history)
+        try:
+            result = await Adapter.acall(
+                self, lm, lm_kwargs, signature, demos, inputs
+            )
+        except AdapterParseError as error:
+            _tag_adapter_history(
+                lm, start=start, mode="chat-primary", outcome="rejected",
+                signature=signature, error=error,
+            )
+            repair_start = len(lm.history)
+            try:
+                result = await StrictJSONSchemaAdapter().acall(
+                    lm, lm_kwargs, signature, demos, inputs
+                )
+            except Exception as repair_error:
+                _tag_adapter_history(
+                    lm, start=repair_start, logical_start=start,
+                    mode="strict-json-schema-repair",
+                    outcome="error", signature=signature, error=repair_error,
+                )
+                raise
+            _tag_adapter_history(
+                lm, start=repair_start, logical_start=start,
+                mode="strict-json-schema-repair",
+                outcome="accepted", signature=signature, result=result,
+            )
+            return result
+        except Exception as error:
+            _tag_adapter_history(
+                lm, start=start, mode="chat-primary", outcome="error",
+                signature=signature, error=error,
+            )
+            raise
+        _tag_adapter_history(
+            lm, start=start, mode="chat-primary", outcome="accepted",
+            signature=signature, result=result,
+        )
+        return result
+
+    def _call_postprocess(
+        self, processed_signature, original_signature, outputs, lm, lm_kwargs
+    ):
+        _require_stop_finish(lm)
+        return Adapter._call_postprocess(
+            self, processed_signature, original_signature, outputs, lm, lm_kwargs
+        )
+
+
 def fresh_lm(base_url: str, seed: int) -> dspy.LM:
     api_key = os.environ.get("SB_VLLM_API_KEY")
     if not api_key:
@@ -1045,10 +1400,6 @@ def _server_url(urls: list[str], master_seed: int, stochastic_namespace: str) ->
     return urls[
         stable_seed(master_seed, stochastic_namespace, "server") % len(urls)
     ]
-
-
-def _response_value(response: object, field: str) -> object:
-    return response.get(field) if isinstance(response, dict) else getattr(response, field, None)
 
 
 def usage_records(lm: dspy.LM, *, phase: str, owner_id: str, seed: int) -> list[dict]:
@@ -1087,8 +1438,70 @@ def usage_records(lm: dspy.LM, *, phase: str, owner_id: str, seed: int) -> list[
             "total_tokens": prompt + completion if usage_reported else None,
             "usage_reported": usage_reported,
             "provider_usage": raw,
+            "adapter_audit": _jsonable(history.get("studybench_adapter_audit")),
         })
     return records
+
+
+def adapter_audit_complete(records: list[dict]) -> bool:
+    """Require every provider call to bind its adapter path and finish state."""
+
+    grouped: dict[tuple[object, ...], list[dict]] = defaultdict(list)
+    for record in records:
+        audit = record.get("adapter_audit") if isinstance(record, dict) else None
+        if not isinstance(audit, dict):
+            return False
+        response_format = audit.get("response_format")
+        if (
+            audit.get("schema_version") != _ADAPTER_AUDIT_SCHEMA_VERSION
+            or audit.get("policy") != SEMANTIC_SELFQUIZ_ADAPTER_POLICY
+            or audit.get("mode") not in {
+                "chat-primary", "strict-json-schema-repair"
+            }
+            or audit.get("outcome") not in {"accepted", "rejected", "error"}
+            or not isinstance(audit.get("output_fields"), list)
+            or not audit["output_fields"]
+            or not isinstance(audit.get("finish_reasons"), list)
+            or not audit["finish_reasons"]
+            or any(reason != "stop" for reason in audit["finish_reasons"])
+            or (
+                audit.get("response_format_sha256")
+                != (sha256_json(response_format) if response_format is not None else None)
+            )
+            or audit.get("provider_outputs_sha256")
+            != record.get("outputs_sha256")
+            or sha256_json(audit.get("provider_outputs"))
+            != record.get("outputs_sha256")
+        ):
+            return False
+        if audit["mode"] == "chat-primary" and response_format is not None:
+            return False
+        if audit["mode"] == "strict-json-schema-repair" and (
+            not isinstance(response_format, dict)
+            or response_format.get("type") != "json_schema"
+        ):
+            return False
+        if audit["outcome"] == "accepted":
+            if not isinstance(audit.get("selected_outputs_sha256"), str):
+                return False
+        elif not isinstance(audit.get("error_sha256"), str):
+            return False
+        grouped[(
+            record.get("owner_id"), record.get("phase"), record.get("seed"),
+            audit.get("logical_call_start"),
+        )].append(audit)
+    for audits in grouped.values():
+        modes = [audit["mode"] for audit in audits]
+        outcomes = [audit["outcome"] for audit in audits]
+        if modes == ["chat-primary"] and outcomes not in (["accepted"], ["error"]):
+            return False
+        if modes == ["chat-primary", "strict-json-schema-repair"] and (
+            outcomes[0] != "rejected" or outcomes[1] not in {"accepted", "error"}
+        ):
+            return False
+        if len(modes) not in {1, 2}:
+            return False
+    return bool(records)
 
 
 def usage_totals(records: list[dict]) -> dict[str, object]:
@@ -1243,7 +1656,7 @@ def run_quiz(chapter: str, tools_fns, url: str, n: int, *, seed: int,
                "seed_namespace": seed_namespace,
                "status": "ok", "questions": [], "trajectory": {}}
     try:
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        with dspy.context(lm=lm, adapter=SemanticSelfquizAdapter()):
             pred = dspy.ReAct(QuizSig, tools=list(tools_fns), max_iters=QUIZ_MAX_ITERS)(
                 chapter=chapter, num_questions=n)
         episode["questions"] = [question.model_dump() for question in pred.questions]
@@ -1288,7 +1701,7 @@ def _attempt(
         "trajectory": {},
     }
     try:
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        with dspy.context(lm=lm, adapter=SemanticSelfquizAdapter()):
             if attempt_access == "react-corpus":
                 pred = dspy.ReAct(
                     AttemptSig,
@@ -1317,7 +1730,7 @@ def _adjudicate(question: str, reference: dict, attempt: str, url: str, *,
     lm = fresh_lm(url, seed)
     result = {"status": "ok", "seed": seed, "verdict": "unresolved", "delta": ""}
     try:
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        with dspy.context(lm=lm, adapter=SemanticSelfquizAdapter()):
             pred = dspy.Predict(AdjudicateSig)(
                 question=question,
                 reference_answer=reference["answer"],
@@ -1350,7 +1763,7 @@ def _derive(item: dict, tools_fns, url: str, *, seed: int,
         "evidence_class": "quote-only",
     }
     try:
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        with dspy.context(lm=lm, adapter=SemanticSelfquizAdapter()):
             pred = dspy.ReAct(
                 DeriveSig,
                 tools=list(tools_fns),
@@ -1379,7 +1792,7 @@ def _derive(item: dict, tools_fns, url: str, *, seed: int,
         support = {"status": "ok", "seed": support_seed, "supported": False,
                    "rationale": ""}
         try:
-            with dspy.context(lm=support_lm, adapter=dspy.ChatAdapter()):
+            with dspy.context(lm=support_lm, adapter=SemanticSelfquizAdapter()):
                 pred = dspy.Predict(ReferenceSupportSig)(
                     question=item["question"], answer=result["answer"],
                     evidence=json.dumps(result["evidence"], sort_keys=True))
@@ -1467,7 +1880,7 @@ def _distill(item: dict, attempt: str, references: list[dict], url: str, *,
     raw: dict = {}
     error = None
     try:
-        with dspy.context(lm=lm, adapter=dspy.ChatAdapter()):
+        with dspy.context(lm=lm, adapter=SemanticSelfquizAdapter()):
             pred = dspy.Predict(DistillSig)(
                 question=item["question"], attempt=attempt,
                 reference_answer=reference["answer"],
@@ -2053,7 +2466,7 @@ def _write_task_manifest(
         or args.concurrency < 1
     ):
         raise SystemExit(
-            "semantic-selfquiz-v2 requires a supported DSPy task, rounds 1-4, "
+            "semantic-selfquiz-v3 requires a supported DSPy task, rounds 1-4, "
             "4 maximum chapters, and 5 questions per chapter"
         )
     try:
@@ -2196,6 +2609,8 @@ def _write_task_manifest(
             "final_round": SEMANTIC_FINAL_ROUND,
             "questions_per_chapter": 3 if args.smoke else M_QUESTIONS,
             "attempt_access": _attempt_access(args),
+            "adapter": SEMANTIC_SELFQUIZ_ADAPTER,
+            "adapter_policy": SEMANTIC_SELFQUIZ_ADAPTER_POLICY,
             "smoke": args.smoke,
             "quiz_max_iters": QUIZ_MAX_ITERS,
             "attempt_protocol": _attempt_protocol(_attempt_access(args)),
@@ -4389,6 +4804,7 @@ def _run_round_locked(args):
                 "claim-ready self-study requires loopback endpoints matching SB_NSERVE"
             ) from error
     tools_fns = make_tools(rt)
+    runtime_dspy_tool_contract(tools_fns)
 
     if not chaps:
         raise SystemExit(f"{args.task} has no study chapters")
@@ -4762,6 +5178,7 @@ def _run_round_locked(args):
                            and cumulative_usage_audit["complete"]
                            and artifact_usage_consistent(
                                quiz_episodes + records + dev_references + dev_records)),
+        "adapter_audit_complete": adapter_audit_complete(cumulative_calls),
         "response_model_homogeneous": len(response_models) == 1,
         "response_model_expected": response_models == [MODEL_ID.removeprefix("openai/")],
     }
@@ -4861,9 +5278,9 @@ def main():
     _study_dir(args)
     _attempt_access(args)
     if not 1 <= args.round <= SEMANTIC_FINAL_ROUND:
-        p.error("semantic-selfquiz-v2 requires a round from 1 through 4")
+        p.error("semantic-selfquiz-v3 requires a round from 1 through 4")
     if args.chapters != K_CHAPTERS or args.questions != M_QUESTIONS:
-        p.error("semantic-selfquiz-v2 requires --chapters 4 and --questions 5")
+        p.error("semantic-selfquiz-v3 requires --chapters 4 and --questions 5")
     if args.concurrency < 1:
         p.error("concurrency must be positive")
     if args.audit_protocol is not None and args.round != 1:
