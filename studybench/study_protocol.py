@@ -2068,7 +2068,7 @@ def _validate_semantic_archive(
                 raise StudyProtocolError("semantic training item aggregate drifted")
             expected.add(path)
             snapshot = _snapshot_path(record.get("environment_snapshot"))
-            if snapshot is None or record.get("status") != "ok":
+            if snapshot is None or not semantic_training_item_terminal(record):
                 raise StudyProtocolError("semantic training item is incomplete")
             expected.add(snapshot)
             all_environment_paths.add(snapshot)
