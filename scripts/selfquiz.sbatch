@@ -15,6 +15,7 @@ SMOKE=${SB_SMOKE:-0}
 DEBUG=${SB_DEBUG:-$SMOKE}
 STUDY_ID=${SB_STUDY_ID:?set a unique SB_STUDY_ID}
 STUDY_SEED=${SB_STUDY_SEED:?set SB_STUDY_SEED explicitly}
+TASK=${SB_TASK:-dspy}
 AUDIT_PROTOCOL=${SB_AUDIT_PROTOCOL:-}
 ATTEMPT_ACCESS=${SB_ATTEMPT_ACCESS:-react-corpus}
 
@@ -22,6 +23,8 @@ validate_bool SB_SMOKE "$SMOKE"
 validate_bool SB_DEBUG "$DEBUG"
 validate_id SB_STUDY_ID "$STUDY_ID"
 validate_seed SB_STUDY_SEED "$STUDY_SEED"
+[[ "$TASK" = dspy || "$TASK" = smalldspy ]] \
+    || fail_arg "SB_TASK must be dspy or smalldspy"
 [[ "$ATTEMPT_ACCESS" = closed-book || "$ATTEMPT_ACCESS" = react-corpus ]] \
     || fail_arg "SB_ATTEMPT_ACCESS must be closed-book or react-corpus"
 if [ -n "$AUDIT_PROTOCOL" ]; then
@@ -49,7 +52,7 @@ source scripts/serve_and_wait.sh
 rounds=(1 2 3 4)
 [ "$SMOKE" = 0 ] || rounds=(1)
 for round in "${rounds[@]}"; do
-    flags=(--task dspy --round "$round" --study-id "$STUDY_ID" \
+    flags=(--task "$TASK" --round "$round" --study-id "$STUDY_ID" \
         --seed "$STUDY_SEED" --chapters 4 --questions 5 \
         --attempt-access "$ATTEMPT_ACCESS")
     [ "$SMOKE" = 0 ] || flags+=(--smoke)
@@ -60,4 +63,4 @@ for round in "${rounds[@]}"; do
     .venv-dspy/bin/python -m studybench.selfquiz \
         --base-urls "$BASE_URLS" --concurrency "$((4 * SB_NGPU))" "${flags[@]}"
 done
-echo "semantic selfquiz construction complete for study $STUDY_ID"
+echo "semantic selfquiz construction complete for study $STUDY_ID task $TASK"

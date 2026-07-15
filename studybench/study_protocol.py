@@ -49,6 +49,11 @@ DSPY_SEMANTIC_CHAPTER_SYLLABUS = (
     "dspy",
     "dspy/experimental",
 )
+SMALLDSPY_SEMANTIC_CHAPTER_SYLLABUS = (
+    "dspy/adapters",
+    "dspy/predict",
+    "dspy/primitives",
+)
 STATIC_GRAPH_METHOD = "deterministic-static-call-neighborhood"
 STATIC_GRAPH_TASK_MANIFEST_TYPE = "deterministic-static-graph-study-task"
 STATIC_GRAPH_NOTE_MANIFEST_TYPE = "deterministic-static-graph-note"
@@ -105,6 +110,17 @@ REACT_SAMPLING = {
 }
 DSPY_REPOSITORY_TOOL_CONTRACT = dspy_tool_contract(DSPY_READ_MAX_LINES)
 SEMANTIC_ATTEMPT_ACCESS_MODES = ("closed-book", "react-corpus")
+
+
+def semantic_chapter_syllabus(task: str) -> tuple[str, ...]:
+    """Return the frozen production-chapter syllabus for a semantic task."""
+
+    if task == "dspy":
+        return DSPY_SEMANTIC_CHAPTER_SYLLABUS
+    if task == "smalldspy":
+        return SMALLDSPY_SEMANTIC_CHAPTER_SYLLABUS
+    raise ValueError(f"semantic selfquiz does not support task {task!r}")
+
 
 _SHA256_LENGTH = 64
 _PROTOCOL_SUMMARY_KEYS = frozenset({
@@ -1106,9 +1122,16 @@ def derive_protocol_summary(
             expected_attempt_protocol = semantic_attempt_protocol(attempt_access)
         except ValueError as error:
             raise StudyProtocolError(str(error)) from error
+        task = manifest.get("task")
+        try:
+            expected_syllabus = semantic_chapter_syllabus(task)
+        except ValueError as error:
+            raise StudyProtocolError(str(error)) from error
+        expected_chapters_per_round = (
+            1 if config.get("smoke") is True else min(4, len(expected_syllabus))
+        )
         if (
             manifest.get("schema_version") != 4
-            or manifest.get("task") != "dspy"
             or not _same_json(
                 config.get("attempt_protocol"), expected_attempt_protocol
             )
@@ -1142,14 +1165,14 @@ def derive_protocol_summary(
             or (
                 not config["smoke"]
                 and (
-                    config["chapters_per_round"] != 4
+                    config["chapters_per_round"] != expected_chapters_per_round
                     or config["questions_per_chapter"] != 5
                 )
             )
             or config["quiz_max_iters"] != 15
             or config["final_round"] != SEMANTIC_FINAL_ROUND
             or config.get("chapter_syllabus")
-            != list(DSPY_SEMANTIC_CHAPTER_SYLLABUS)
+            != list(expected_syllabus)
             or config["derive_max_iters"] != 15
             or config["train_ensemble"] != 2
             or config["dev_ensemble"] != 2

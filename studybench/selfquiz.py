@@ -29,9 +29,9 @@ study-selfquiz/studies/{study_id}/{task}/r{r}/, and the
 note is the markdown rendering of the admitted entries plus a code-generated
 repo map. Every provider-reported prompt, generated, and total token count is
 recorded by phase and stays off the eval token axis.
-This version is deliberately DSPy-only and binds the complete pinned corpus,
-source, runtime, server topology, and method contract. It does not expose a
-generated-code execution tool. Construction
+This version is deliberately limited to the pinned DSPy-family tasks and binds
+the complete configured corpus, source, runtime, server topology, and method
+contract. It does not expose a generated-code execution tool. Construction
 does not invoke the external StudyBench evaluator or grader. Historical results
 from a different ATTEMPT or judge protocol are context, not a causal control.
 """
@@ -94,7 +94,6 @@ from .react import (
     runtime_dspy_tool_contract,
 )
 from .study_protocol import (
-    DSPY_SEMANTIC_CHAPTER_SYLLABUS,
     SEMANTIC_ATTEMPT_ACCESS_MODES,
     SEMANTIC_FINAL_ROUND,
     SEMANTIC_SELFQUIZ_METHOD,
@@ -102,6 +101,7 @@ from .study_protocol import (
     SEMANTIC_SELFQUIZ_TASK_MANIFEST_TYPE,
     StudyProtocolError,
     derive_protocol_summary,
+    semantic_chapter_syllabus,
     semantic_attempt_protocol,
     validate_construction_protocol,
     validate_study_note_archive,
@@ -444,6 +444,7 @@ def freshness_audit(records: list[dict], *, task: str, study_dir: Path,
     }
     paths: set[Path] = set()
     discovery_errors = []
+    comparison_tasks = (task, "dspy") if task == "smalldspy" else (task,)
     for study_root in root.glob("study-selfquiz*"):
         if not study_root.is_dir():
             continue
@@ -453,8 +454,13 @@ def freshness_audit(records: list[dict], *, task: str, study_dir: Path,
                 "error": "freshness study root must not be a symlink",
             })
             continue
-        paths.update(study_root.glob(f"{task}/r*/questions.jsonl"))
-        paths.update(study_root.glob(f"studies/*/{task}/r*/questions.jsonl"))
+        for comparison_task in comparison_tasks:
+            paths.update(study_root.glob(
+                f"{comparison_task}/r*/questions.jsonl"
+            ))
+            paths.update(study_root.glob(
+                f"studies/*/{comparison_task}/r*/questions.jsonl"
+            ))
     current_path = None
     round_identity_complete = len(current_rounds) == 1 and all(
         record.get("round") in current_rounds for record in current)
@@ -2039,7 +2045,7 @@ def _write_task_manifest(
     """Create/validate the stable study contract and snapshot this launch."""
 
     if (
-        args.task != "dspy"
+        args.task not in {"dspy", "smalldspy"}
         or type(args.round) is not int
         or not 1 <= args.round <= SEMANTIC_FINAL_ROUND
         or args.chapters != K_CHAPTERS
@@ -2047,8 +2053,8 @@ def _write_task_manifest(
         or args.concurrency < 1
     ):
         raise SystemExit(
-            "semantic-selfquiz-v2 requires DSPy rounds 1-4 with 4 chapters "
-            "and 5 questions per chapter"
+            "semantic-selfquiz-v2 requires a supported DSPy task, rounds 1-4, "
+            "4 maximum chapters, and 5 questions per chapter"
         )
     try:
         corpus_info = corpus_record(corpus)
@@ -2182,8 +2188,11 @@ def _write_task_manifest(
         "automated_provenance_ready": all(provenance_readiness.values()),
         "human_audit_protocol": audit_protocol,
         "config": {
-            "chapter_syllabus": list(DSPY_SEMANTIC_CHAPTER_SYLLABUS),
-            "chapters_per_round": 1 if args.smoke else K_CHAPTERS,
+            "chapter_syllabus": list(semantic_chapter_syllabus(args.task)),
+            "chapters_per_round": (
+                1 if args.smoke
+                else min(K_CHAPTERS, len(semantic_chapter_syllabus(args.task)))
+            ),
             "final_round": SEMANTIC_FINAL_ROUND,
             "questions_per_chapter": 3 if args.smoke else M_QUESTIONS,
             "attempt_access": _attempt_access(args),
@@ -2993,6 +3002,8 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
         raise SystemExit(f"cannot validate prior-round task protocol: {error}") from error
     syllabus = chapters(rt)
     if (not _json_identity_equal(task_manifest.get("schema_version"), SCHEMA_VERSION)
+            or task_manifest.get("study_id") != study_id
+            or task_manifest.get("task") != task
             or type(master_seed) is not int
             or type(protocol_questions) is not int or protocol_questions < 2
             or type(protocol_smoke) is not bool
@@ -3001,7 +3012,8 @@ def _load_prior_rounds(sdir: Path, round_number: int, *, study_id: str, task: st
             or not _attempt_protocol_is_exact(
                 protocol_attempt, attempt_access=protocol_attempt_access
             )
-            or tuple(syllabus) != DSPY_SEMANTIC_CHAPTER_SYLLABUS):
+            or task_config.get("chapter_syllabus") != syllabus
+            or tuple(syllabus) != semantic_chapter_syllabus(task)):
         raise SystemExit("cannot validate prior-round task protocol: invalid config")
     chapters_per_round = min(protocol_chapters, len(syllabus))
     for prior_round in range(1, round_number):
@@ -3471,7 +3483,7 @@ def validate_bundled_semantic_archive(
 
             rt = RepoTools(CORPORA[task], read_max_lines=READ_MAX_LINES)
             syllabus = chapters(rt)
-            if tuple(syllabus) != DSPY_SEMANTIC_CHAPTER_SYLLABUS:
+            if tuple(syllabus) != semantic_chapter_syllabus(task):
                 raise ValueError("pinned semantic chapter syllabus drifted")
             _, _, _, manifests = _load_prior_rounds(
                 sdir,
@@ -4363,8 +4375,8 @@ def _run_round_locked(args):
     # immutable task manifest can be created.
     rt = RepoTools(corpus, read_max_lines=READ_MAX_LINES)
     chaps = chapters(rt)
-    if tuple(chaps) != DSPY_SEMANTIC_CHAPTER_SYLLABUS:
-        raise SystemExit("the pinned DSPy semantic chapter syllabus has drifted")
+    if tuple(chaps) != semantic_chapter_syllabus(args.task):
+        raise SystemExit("the pinned semantic chapter syllabus has drifted")
     manifest, launch_environment = _write_task_manifest(args, corpus, sdir, urls)
     if not args.smoke:
         try:
@@ -4816,7 +4828,7 @@ def _run_round_locked(args):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--task", required=True, choices=["dspy"])
+    p.add_argument("--task", required=True, choices=["dspy", "smalldspy"])
     p.add_argument("--round", type=int, required=True)
     p.add_argument("--study-id", required=True,
                    help="immutable namespace for one study replication")
