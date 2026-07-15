@@ -52,7 +52,7 @@ adjudication, and distillation remain a central limitation.
 
 | Object | Identifier |
 |---|---|
-| construction smoke | `smoke-smalldspy-semantic-react-20260714a` |
+| construction smoke | `smoke-smalldspy-semantic-react-20260714b` |
 | full four-round study | `smalldspy-semantic-react-r4-20260714a` |
 | treatment evaluation | `smalldspy-local-selfquiz-20260714a` |
 | paired evaluation seed group | `smalldspy-local-cheatsheet-screen-20260713` |
@@ -81,4 +81,12 @@ score change cannot establish a robust studying-method effect.
 
 ## Execution log and results
 
-Pending.
+The initial smoke identity `smoke-smalldspy-semantic-react-20260714a` was
+attempted once from source commit `dffd9ed`. Slurm restored the parent
+interactive allocation's `/sailhome/omarah` working directory, so the shell
+failed to open `scripts/run_args.sh` and exited before setup, model-server
+launch, provider contact, or study-artifact creation. The identity, launcher
+prefix, and port base are retired. Smoke `b` adds only an explicit Slurm
+working directory and fresh infrastructure identifiers.
+
+No semantic study outcome has yet been produced.
