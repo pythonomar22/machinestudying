@@ -2,12 +2,10 @@
 name = "studybench-repro"
 version = "0.1.0"
 description = "Replication of the Machine Studying base baselines (Study-DSPy, Study-OpenClaw)"
-requires-python = ">=3.13"
+requires-python = ">=3.12"
 dependencies = [
     "openai>=1.90",
-    "regex>=2026.6.28",
-    "tree-sitter>=0.23",
-    "tree-sitter-typescript>=0.23",
+    "regex==2026.6.28",
 ]
 
 [tool.setuptools]
