@@ -20,10 +20,18 @@ for command in git uv; do
 done
 
 ensure_corpus() {
-    local path=$1 url=$2 commit=$3 name=$4 head dirty
+    local path=$1 url=$2 commit=$3 name=$4 head dirty sparse observed expected
+    shift 4
     if [ ! -e "$path" ]; then
-        git clone "$url" "$path"
-        git -C "$path" checkout --detach "$commit"
+        if [ "$#" -eq 0 ]; then
+            git clone "$url" "$path"
+            git -C "$path" checkout --detach "$commit"
+        else
+            git clone --filter=blob:none --no-checkout "$url" "$path"
+            git -C "$path" sparse-checkout init --cone
+            git -C "$path" sparse-checkout set -- "$@"
+            git -C "$path" checkout --detach "$commit"
+        fi
     fi
     [ -d "$path/.git" ] || die "$name is not a Git checkout: $path"
     head=$(git -C "$path" rev-parse HEAD)
@@ -31,6 +39,14 @@ ensure_corpus() {
         || die "$name is at $head, expected $commit; refusing to change it"
     dirty=$(git -C "$path" status --porcelain=v1 --untracked-files=all)
     [ -z "$dirty" ] || die "$name is dirty; refusing to change it"
+    if [ "$#" -gt 0 ]; then
+        sparse=$(git -C "$path" config --bool core.sparseCheckout || true)
+        [ "$sparse" = true ] || die "$name is not a sparse checkout"
+        observed=$(git -C "$path" sparse-checkout list | LC_ALL=C sort)
+        expected=$(printf '%s\n' "$@" | LC_ALL=C sort)
+        [ "$observed" = "$expected" ] \
+            || die "$name sparse roots differ from the pinned experiment scope"
+    fi
 }
 
 ensure_venv() {
@@ -48,7 +64,8 @@ ensure_venv() {
 }
 
 mkdir -p corpora logs/slurm
-ensure_corpus corpora/smalldspy "$DSPY_URL" "$DSPY_COMMIT" SmallDSPy
+ensure_corpus corpora/smalldspy "$DSPY_URL" "$DSPY_COMMIT" SmallDSPy \
+    dspy/adapters dspy/predict dspy/primitives tests/predict
 ensure_corpus corpora/dspy-runtime "$DSPY_URL" "$DSPY_COMMIT" "DSPy runtime"
 
 ensure_venv .venv "$PYTHON" root

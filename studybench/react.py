@@ -340,7 +340,9 @@ def _study(args, corpus, tools, url: str, root: Path, config: dict) -> tuple[str
     }
     if _valid_episode(episode_path, identity, iterations):
         episode = read_json(episode_path)
-        if not note_path.exists() or note_path.read_text(encoding="utf-8") != episode["answer"]:
+        if not note_path.exists():
+            write_text(note_path, episode["answer"])
+        elif note_path.read_text(encoding="utf-8") != episode["answer"]:
             raise SystemExit(f"study note does not match its episode: {note_path}")
     else:
         episode = run_episode(
@@ -401,7 +403,14 @@ def main() -> None:
     source_commit, source_dirty = _source_state(args.smoke)
     corpus = CORPORA[args.task]
     verify_corpus(corpus)
-    repository_tools = make_tools(RepoTools(corpus))
+    repository = RepoTools(corpus)
+    repository_tools = make_tools(repository)
+    tool_config = {
+        **TOOL_CONFIG,
+        "corpus_roots": list(corpus.roots),
+        "corpus_file_count": len(repository.files),
+        "corpus_snapshot_sha256": repository.snapshot_sha256,
+    }
     run_root = ROOT / "runs" / args.run_id / args.task
     runtime = {
         "python": platform.python_version(),
@@ -427,16 +436,17 @@ def main() -> None:
     note, study = "", None
     if args.condition == "cheatsheet":
         study_config = {
-            "schema_version": 1,
+            "schema_version": 2,
             "source_commit": source_commit,
             "source_dirty": source_dirty,
             "corpus_commit": corpus.commit,
+            "corpus_display": corpus.display,
             "model": MODEL,
             "model_revision": MODEL_REVISION,
             "harness": "dspy.ReAct",
             "runtime": runtime,
             "sampling": SAMPLING,
-            "tools": TOOL_CONFIG,
+            "tools": tool_config,
             "debug": args.debug,
         }
         note, study = _study(
@@ -446,7 +456,7 @@ def main() -> None:
     questions = list(load_questions(args.task))[: args.limit or None]
     prefix = NOTE_PREFIX.format(library=corpus.display, note=note) if note else ""
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "run_id": args.run_id,
         "task": args.task,
         "condition": args.condition,
@@ -455,13 +465,16 @@ def main() -> None:
         "source_commit": source_commit,
         "source_dirty": source_dirty,
         "corpus_commit": corpus.commit,
+        "corpus_display": corpus.display,
+        "corpus_file_count": len(repository.files),
+        "corpus_snapshot_sha256": repository.snapshot_sha256,
         "dataset_sha256": corpus.dataset_sha256,
         "model": MODEL,
         "model_revision": MODEL_REVISION,
         "harness": "dspy.ReAct",
         "runtime": runtime,
         "sampling": SAMPLING,
-        "tools": TOOL_CONFIG,
+        "tools": tool_config,
         "budgets": budgets,
         "rollouts": args.rollouts,
         "master_seed": args.seed,

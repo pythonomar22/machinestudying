@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 import regex
 
+from .artifacts import sha256_json
 from .dataset import Corpus, read_corpus_file, verify_corpus
 
 GREP_MAX_MATCHES = 50
@@ -86,6 +87,20 @@ class RepoTools:
             loaded = pool.map(load, relatives)
         self.text = dict(item for item in loaded if item is not None)
         self.files = tuple(self.text)
+        self.snapshot_sha256 = sha256_json(
+            [[path, self.text[path]] for path in self.files]
+        )
+        if (
+            corpus.file_count is not None
+            and (
+                len(self.files) != corpus.file_count
+                or self.snapshot_sha256 != corpus.snapshot_sha256
+            )
+        ):
+            raise ValueError(
+                f"{corpus.display} corpus snapshot does not match the pinned "
+                f"{corpus.file_count}-file scope"
+            )
         self._line_starts = {
             path: [0, *(match.end() for match in re.finditer("\n", text))]
             for path, text in self.text.items()

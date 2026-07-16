@@ -5,7 +5,9 @@
 #SBATCH --account=matx
 #SBATCH --partition=matx
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=4
+#SBATCH --gpus-per-node=l40s:4
+#SBATCH --cpus-per-gpu=8
+#SBATCH --mem=256G
 #SBATCH --time=06:00:00
 #SBATCH --output=logs/slurm/%x-%j.out
 #SBATCH --error=logs/slurm/%x-%j.out
@@ -69,13 +71,13 @@ mapfile -t JUDGE_INFO < <(.venv/bin/python - "$JUDGE" <<'PY'
 import json
 import sys
 
-from studybench.grade import JUDGES
+from studybench.grade import JUDGES, LOCAL_CONTRACTS
 
 try:
     judge = JUDGES[sys.argv[1]]
 except KeyError:
     raise SystemExit(f"unknown local judge profile: {sys.argv[1]}")
-if judge["contract"] != "local":
+if judge["contract"] not in LOCAL_CONTRACTS:
     raise SystemExit(f"judge profile is not local: {sys.argv[1]}")
 runtime = judge["runtime"]
 for value in (
@@ -129,11 +131,6 @@ export no_proxy=$NO_PROXY
 PIDS=()
 URLS=()
 LOGS=()
-PREEXISTING_GRADE_ROOTS=()
-for target in "${TARGETS[@]}"; do
-    grade_root="grades/${target%%/*}/$GRADE_ID/${target#*/}"
-    [ ! -d "$grade_root" ] || PREEXISTING_GRADE_ROOTS+=("$grade_root")
-done
 cleanup() {
     local status=$?
     trap - EXIT INT TERM
@@ -156,19 +153,6 @@ cleanup() {
         kill -KILL -- "-$pid" 2>/dev/null || true
         wait "$pid" 2>/dev/null || true
     done
-    if [ "$status" -ne 0 ]; then
-        for target in "${TARGETS[@]}"; do
-            grade_root="grades/${target%%/*}/$GRADE_ID/${target#*/}"
-            preexisting=0
-            for existing in "${PREEXISTING_GRADE_ROOTS[@]}"; do
-                [ "$existing" != "$grade_root" ] || preexisting=1
-            done
-            if [ "$preexisting" = 0 ] && [ -d "$grade_root" ]; then
-                find "$grade_root" -type f -delete
-                find "$grade_root" -depth -type d -empty -delete
-            fi
-        done
-    fi
     exit "$status"
 }
 trap cleanup EXIT

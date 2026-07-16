@@ -1,15 +1,19 @@
 # StudyBench baseline and cheatsheet evaluation
 
-This repository does one thing: reproduce the two Qwen3.5-9B conditions from
-Table 1 of the Machine Studying paper on Study-DSPy and Study-OpenClaw:
+This repository implements the two Qwen3.5-9B conditions from Table 1 of the
+Machine Studying paper:
 
 - `baseline`: no study phase;
 - `cheatsheet`: 50 forced DSPy ReAct study iterations, followed by evaluation
   with the resulting note prepended to every held-out question.
 
-Both conditions use the same model, repositories, tools, inference budgets,
-sampling settings, questions, rollouts, and deterministic evaluation seeds.
-Study tokens are recorded but excluded from the evaluation token axis.
+The runnable workflows intentionally target only **SmallDSPy**, our
+five-question subset in `data/smalldspy.jsonl` with its scoped corpus in
+`corpora/smalldspy`. **DSPy** without “Small” refers to the distinct, full
+30-question Study-DSPy benchmark. Both SmallDSPy conditions use the same model,
+corpus, tools, inference budgets, questions, rollouts, and deterministic
+evaluation seeds. Study tokens are recorded but excluded from the evaluation
+token axis.
 
 ## Paper targets
 
@@ -28,6 +32,8 @@ Each point averages three rollouts over all 30 DSPy or 20 OpenClaw questions.
   locked grading, DSPy, and vLLM environments with `uv`.
 - `scripts/nostudying.sbatch` uses all four allocated L40S GPUs to run the
   no-studying baseline on `data/smalldspy.jsonl` against `corpora/smalldspy`.
+- `scripts/cheatsheet.sbatch` studies the same pinned corpus for 50 forced
+  ReAct iterations, saves the note, and runs the identical held-out evaluation.
 - `scripts/grading.sbatch` uses all four allocated L40S GPUs to grade one
   completed run with the pinned local Qwen judge.
 
@@ -61,6 +67,10 @@ a result.
 SB_RUN_ID=smoke-base SB_SEED=20260715 \
 SB_BUDGETS=direct SB_ROLLOUTS=1 \
 SB_SMOKE=1 SB_LIMIT=1 sbatch scripts/nostudying.sbatch
+
+SB_RUN_ID=smoke-cheat SB_SEED=20260715 \
+SB_BUDGETS=direct SB_ROLLOUTS=1 \
+SB_SMOKE=1 SB_LIMIT=1 sbatch scripts/cheatsheet.sbatch
 ```
 
 Inspect `logs/slurm/` and `logs/vllm-<job>-*.log` after startup and while the
@@ -75,12 +85,15 @@ same seed for the two conditions and run them on the same GPU class:
 ```bash
 SB_RUN_ID=smalldspy-nostudy-20260715 SB_SEED=20260715 \
 sbatch scripts/nostudying.sbatch
+
+SB_RUN_ID=smalldspy-cheatsheet-20260716 SB_SEED=20260715 \
+sbatch scripts/cheatsheet.sbatch
 ```
 
-The cheatsheet job studies each repository before loading its StudyBench
-questions. It saves the complete study trajectory and exact note under
-`runs/table1-cheat/<task>/`; evaluation still has access to the same three
-repository tools.
+The cheatsheet job studies the repository before loading its StudyBench
+questions. It saves the complete trajectory as `study.json` and the exact note
+as `cheatsheet.md` beside `run.json`; evaluation still has access to the same
+three repository tools.
 
 ## Grade and report
 
@@ -91,11 +104,12 @@ grading, so they are deliberately absent here. GPT-5.4 and Fugu share the paper
 prompt, whole-file evidence, validation, and artifact format:
 
 ```bash
-export OPENAI_API_KEY=...
-uv run --frozen python -m studybench.grade runs/table1-base --judge gpt
+set -a; source .env; set +a; uv run --frozen python -m studybench.grade \
+  runs/smalldspy-cheatsheet-20260716 --judge gpt
 
 export SAKANA_API_KEY=...
-uv run --frozen python -m studybench.grade runs/table1-base --judge fugu
+uv run --frozen python -m studybench.grade \
+  runs/smalldspy-cheatsheet-20260716 --judge fugu
 ```
 
 For offline diagnostic grading, launch the pinned Qwen3.5-9B judge on two TP=2
@@ -103,7 +117,8 @@ replicas. Thinking is enabled with a hard 10,000-token reasoning budget and a
 five-minute timeout per request:
 
 ```bash
-sbatch scripts/grading.sbatch runs/smalldspy-nostudy-20260715
+SB_JUDGE=local10k \
+sbatch scripts/grading.sbatch runs/smalldspy-cheatsheet-20260716
 ```
 
 Grades and the per-run report are written under
@@ -146,7 +161,7 @@ measurements and their limitations.
 data/          StudyBench questions, rubrics, and evidence
 docs/          paper, author correspondence, and concise result record
 experiments/   reproducible experiment records and interpretations
-scripts/       setup.sh, nostudying.sbatch, grading.sbatch, and the vLLM lock
+scripts/       setup, baseline, cheatsheet, grading, and the vLLM lock
 studybench/    study/rollout, repository tools, grading, and reporting
 ```
 

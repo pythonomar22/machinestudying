@@ -105,7 +105,7 @@ JUDGES = {
         "max_tokens": 65536,
         "thinking_token_budget": 10000,
         "thinking": "enabled",
-        "contract": "local",
+        "contract": "local-forced",
         "timeout_seconds": 300,
         "runtime": {
             "vllm": "0.24.0",
@@ -161,6 +161,14 @@ PROMPT = """You are grading one model answer for a private {library} expert QA b
 
 Return JSON that matches the schema exactly."""
 
+LOCAL_FORCED_PROMPT = PROMPT.replace(
+    "- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely "
+    "insufficient to judge the answer confidently.",
+    "- The rubric and evidence bundle are complete. Always issue the best-supported "
+    "binary verdict and set `needs_regrade` to `false`; do not abstain because an "
+    "answer is ambiguous, contradictory, incomplete, or incorrect.",
+)
+
 PAPER_OUTPUT_RULES = """- Score every rubric claim exactly once.
 - `question_score` must equal the weighted sum of the claim scores."""
 
@@ -169,11 +177,21 @@ LOCAL_OUTPUT_RULES = """- Return a `claims` object keyed by the rubric claim IDs
 - For each claim ID, return its binary `score` and concise `rationale`.
 - Do not output `question_score`; the harness computes the weighted sum."""
 
+LOCAL_CONTRACTS = {"local", "local-forced"}
+
+
+def contract_prompt(contract: str) -> str:
+    if contract in {"paper", "local"}:
+        return PROMPT
+    if contract == "local-forced":
+        return LOCAL_FORCED_PROMPT
+    raise ValueError(f"unknown grader contract: {contract}")
+
 
 def contract_output_rules(contract: str) -> str:
     if contract == "paper":
         return PAPER_OUTPUT_RULES
-    if contract == "local":
+    if contract in LOCAL_CONTRACTS:
         return LOCAL_OUTPUT_RULES
     raise ValueError(f"unknown grader contract: {contract}")
 
@@ -212,13 +230,36 @@ def load_run(run_id: str, task: str) -> tuple[dict, dict[str, dict], dict[tuple,
     root = ROOT / "runs" / run_id / task
     manifest = read_json(root / "run.json")
     if (
-        manifest.get("run_id") != run_id
+        manifest.get("schema_version") not in {1, 2}
+        or manifest.get("run_id") != run_id
         or manifest.get("task") != task
         or manifest.get("corpus_commit") != CORPORA[task].commit
         or manifest.get("dataset_sha256") != CORPORA[task].dataset_sha256
         or manifest.get("condition") not in {"baseline", "cheatsheet"}
     ):
         raise ValueError(f"invalid run manifest: {root / 'run.json'}")
+    corpus = CORPORA[task]
+    recorded_snapshot = (
+        manifest.get("corpus_file_count"),
+        manifest.get("corpus_snapshot_sha256"),
+    )
+    expected_snapshot = (corpus.file_count, corpus.snapshot_sha256)
+    if manifest["schema_version"] == 1:
+        valid_snapshot = recorded_snapshot == (None, None)
+    elif corpus.file_count is None:
+        count, snapshot = recorded_snapshot
+        valid_snapshot = (
+            type(count) is int
+            and count > 0
+            and isinstance(snapshot, str)
+            and re.fullmatch(r"[0-9a-f]{64}", snapshot) is not None
+        )
+    else:
+        valid_snapshot = recorded_snapshot == expected_snapshot
+    if not valid_snapshot:
+        raise ValueError(f"invalid corpus snapshot in run manifest: {root / 'run.json'}")
+    if manifest["schema_version"] == 2 and manifest.get("corpus_display") != corpus.display:
+        raise ValueError(f"invalid corpus display in run manifest: {root / 'run.json'}")
     all_rows = {row["id"]: row for row in load_questions(task)}
     qids = manifest.get("question_ids")
     budgets = manifest.get("budgets")
@@ -264,6 +305,38 @@ def load_run(run_id: str, task: str) -> tuple[dict, dict[str, dict], dict[tuple,
             or manifest.get("note_prefix_sha256") != sha256_text(note_prefix)
         ):
             raise ValueError(f"cheatsheet does not match run manifest: {note_path}")
+        if manifest["schema_version"] == 2:
+            study_path = root / "study.json"
+            study = read_json(study_path)
+            expected_iterations = 2 if manifest.get("smoke") else 50
+            expected_study = {
+                "iterations": expected_iterations,
+                "seed": stable_seed(manifest["master_seed"], "study", task),
+                "episode_sha256": sha256_json(study),
+                "generated_tokens": study.get("gen_tokens"),
+                "repository_tool_calls": study.get("repository_tool_calls"),
+                "finish_catches": study.get("finish_catches"),
+            }
+            if (
+                manifest.get("study") != expected_study
+                or study.get("task") != task
+                or study.get("qid") != "cheatsheet"
+                or study.get("condition") != "cheatsheet"
+                or study.get("budget") != "study"
+                or study.get("rollout") != 0
+                or study.get("seed") != expected_study["seed"]
+                or study.get("model") != manifest["model"]
+                or study.get("model_revision") != manifest["model_revision"]
+                or study.get("status") != "ok"
+                or study.get("react_iterations") != expected_iterations
+                or study.get("answer") != note
+            ):
+                raise ValueError(f"invalid cheatsheet study artifact: {study_path}")
+    elif manifest["schema_version"] == 2 and any(
+        manifest.get(field) is not None
+        for field in ("note_sha256", "note_prefix_sha256", "study")
+    ):
+        raise ValueError(f"baseline run has cheatsheet metadata: {root / 'run.json'}")
     episodes = {}
     for budget in budgets:
         for rollout in range(rollouts):
@@ -315,7 +388,7 @@ def build_prompt(task: str, row: dict, answer: str, contract: str = "paper") -> 
         f"### {relative}\n{numbered_file(task, relative)}"
         for relative in dict.fromkeys(span["path"] for span in row["evidence"])
     ]
-    return PROMPT.format(
+    return contract_prompt(contract).format(
         library=corpus.display,
         output_rules=contract_output_rules(contract),
         qid=row["id"],
@@ -353,7 +426,7 @@ def response_schema(row: dict, contract: str = "paper") -> dict:
             "needs_regrade": {"type": "boolean"},
         }
         required = ["claims", "question_score", "needs_regrade"]
-    elif contract == "local":
+    elif contract in LOCAL_CONTRACTS:
         claim = {
             "type": "object",
             "properties": {
@@ -370,7 +443,11 @@ def response_schema(row: dict, contract: str = "paper") -> dict:
                 "required": claim_ids,
                 "additionalProperties": False,
             },
-            "needs_regrade": {"type": "boolean"},
+            "needs_regrade": (
+                {"type": "boolean", "enum": [False]}
+                if contract == "local-forced"
+                else {"type": "boolean"}
+            ),
         }
         required = ["claims", "needs_regrade"]
     else:
@@ -430,14 +507,14 @@ def score_verdict(
 ) -> tuple[list[dict], int, int | float | None]:
     if contract == "paper":
         expected_fields = {"claims", "question_score", "needs_regrade"}
-    elif contract == "local":
+    elif contract in LOCAL_CONTRACTS:
         expected_fields = {"claims", "needs_regrade"}
     else:
         raise ValueError(f"unknown grader contract: {contract}")
     if not isinstance(verdict, dict) or set(verdict) != expected_fields:
         raise ValueError("judge verdict has missing or unexpected fields")
     raw_claims = verdict["claims"]
-    if contract == "local":
+    if contract in LOCAL_CONTRACTS:
         if not isinstance(raw_claims, dict):
             raise ValueError("judge returned no claims")
         normalized = []
@@ -462,7 +539,7 @@ def score_verdict(
 def grader_contract_sha256(contract: str) -> str:
     return sha256_json(
         {
-            "prompt": PROMPT,
+            "prompt": contract_prompt(contract),
             "output_rules": contract_output_rules(contract),
             "response_schema": f"{contract}-1",
             "claim_scores": [0, 1],
@@ -586,7 +663,7 @@ def judge_config(provider: str, grade_id: str, replicas: int) -> dict:
         raise ValueError("invalid judge configuration")
     profile = JUDGES[provider]
     runtime = profile["runtime"]
-    if profile["contract"] == "local":
+    if profile["contract"] in LOCAL_CONTRACTS:
         runtime = {
             **runtime,
             "dependency_lock_sha256": sha256_text(
@@ -651,10 +728,10 @@ def response_record(response) -> dict:
 def validate_response(raw: dict, profile: dict) -> str:
     if raw["finish_reason"] != "stop":
         raise ValueError(f"judge finish_reason={raw['finish_reason']!r}")
-    if profile["contract"] == "local" and raw["model"] != profile["model"]:
+    if profile["contract"] in LOCAL_CONTRACTS and raw["model"] != profile["model"]:
         raise ValueError(f"local judge returned model {raw['model']!r}")
     usage = raw["usage"]
-    if profile["contract"] == "local":
+    if profile["contract"] in LOCAL_CONTRACTS:
         if not isinstance(usage, dict) or any(
             type(usage.get(field)) is not int or usage[field] < 0
             for field in ("prompt_tokens", "completion_tokens", "total_tokens")
@@ -773,6 +850,7 @@ async def grade_task(args, profile: dict, base_urls: list[str], run_id: str, tas
     manifest_path = output / "grade.json"
     if manifest_path.exists() and read_json(manifest_path) != grade_manifest:
         raise ValueError(f"grade configuration changed: {manifest_path}")
+    (output / "report.json").unlink(missing_ok=True)
 
     expected_paths = {artifact_path(output, *key) for key in episodes}
     episode_root = output / "episodes"
@@ -816,6 +894,7 @@ async def grade_task(args, profile: dict, base_urls: list[str], run_id: str, tas
     semaphores = [
         asyncio.Semaphore(per_server_concurrency) for _ in clients
     ]
+    write_json(manifest_path, grade_manifest)
 
     async def one(key, episode, path):
         budget, rollout, qid = key
@@ -903,10 +982,11 @@ async def grade_task(args, profile: dict, base_urls: list[str], run_id: str, tas
             "lenient": score,
         }
         validate_grade(row, episode, grade_record, grade_manifest)
+        write_json(path, grade_record)
         log.info("%s/r%d/%s lenient=%d", budget, rollout, qid, score)
         if args.debug:
             log.debug("%s", json.dumps(raw_response, ensure_ascii=False, indent=2))
-        return path, grade_record
+        return path
 
     try:
         results = await asyncio.gather(
@@ -920,9 +1000,6 @@ async def grade_task(args, profile: dict, base_urls: list[str], run_id: str, tas
         raise ValueError(
             f"grading failed for {len(failures)}/{len(selected)} episodes: {failures[0]}"
         ) from failures[0]
-    write_json(manifest_path, grade_manifest)
-    for path, grade_record in results:
-        write_json(path, grade_record)
 
     if len(selected) < len(pending):
         log.info("smoke grade complete; %d grades remain", len(pending) - len(selected))
@@ -932,7 +1009,7 @@ async def grade_task(args, profile: dict, base_urls: list[str], run_id: str, tas
 
 async def grade(args) -> None:
     profile = JUDGES[args.judge]
-    if profile["contract"] == "local":
+    if profile["contract"] in LOCAL_CONTRACTS:
         base_urls = [url.strip() for url in (args.base_urls or "").split(",") if url.strip()]
         if not base_urls or any(
             not re.fullmatch(r"http://(?:127\.0\.0\.1|localhost):[0-9]+/v1", url)
@@ -941,7 +1018,7 @@ async def grade(args) -> None:
             raise ValueError("--base-urls must contain local loopback vLLM endpoints")
     else:
         if args.base_urls:
-            raise ValueError("--base-urls is only valid with --judge local")
+            raise ValueError("--base-urls is only valid with a local judge")
         base_urls = [profile["endpoint"]]
     args.grade_id = args.grade_id or profile["grade_id"]
     if not SAFE_ID.fullmatch(args.grade_id):

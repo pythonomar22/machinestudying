@@ -27,6 +27,9 @@ COMPATIBLE = (
     "debug",
     "source_commit",
     "corpus_commit",
+    "corpus_display",
+    "corpus_file_count",
+    "corpus_snapshot_sha256",
     "dataset_sha256",
     "model",
     "model_revision",
@@ -82,7 +85,7 @@ def aggregate(grades: dict) -> tuple[list[tuple[float, float]], float]:
 def check_pair(base, cheat, base_episodes, cheat_episodes) -> None:
     if base["condition"] != "baseline" or cheat["condition"] != "cheatsheet":
         raise ValueError("--baseline-run and --cheatsheet-run have the wrong conditions")
-    different = [field for field in COMPATIBLE if base[field] != cheat[field]]
+    different = [field for field in COMPATIBLE if base.get(field) != cheat.get(field)]
     if different:
         raise ValueError("paired runs differ in: " + ", ".join(different))
     if set(base_episodes) != set(cheat_episodes):

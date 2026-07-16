@@ -25,6 +25,8 @@ class Corpus:
     commit: str
     dataset_sha256: str
     question_count: int
+    file_count: int | None = None
+    snapshot_sha256: str | None = None
 
 
 CORPORA = {
@@ -36,6 +38,8 @@ CORPORA = {
         "9cdb0aac28b2a04b064e40697ccd301872cf6a43",
         "b152153a9ec159dc99f89d9a1ca085a88d04be818b348e58cebf620513b2c75d",
         5,
+        66,
+        "edfd5e412afa87ff13e24c1515157c71199fa3e92c1a95e06bde4372ff450b5a",
     ),
     "dspy": Corpus(
         "dspy",

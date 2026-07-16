@@ -1,12 +1,15 @@
 #!/bin/bash
-# Run the no-studying Qwen3.5-9B baseline on the held-out SmallDSPy questions.
+# Run SmallDSPy evaluation with Qwen3.5-9B. The default condition is baseline;
+# scripts/cheatsheet.sbatch reuses this exact launcher with study enabled.
 # Example:
 #   SB_RUN_ID=smalldspy-base SB_SEED=0 sbatch scripts/nostudying.sbatch
 #SBATCH --job-name=studybench-eval
 #SBATCH --account=matx
 #SBATCH --partition=matx
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=4
+#SBATCH --gpus-per-node=l40s:4
+#SBATCH --cpus-per-gpu=8
+#SBATCH --mem=256G
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/slurm/%x-%j.out
 #SBATCH --error=logs/slurm/%x-%j.out
@@ -16,6 +19,7 @@ cd "${SLURM_SUBMIT_DIR:?submit this job with sbatch}"
 
 RUN_ID=${SB_RUN_ID:?set SB_RUN_ID}
 SEED=${SB_SEED:?set SB_SEED}
+CONDITION=${SB_CONDITION:-baseline}
 BUDGETS=${SB_BUDGETS:-direct,k5,k20,k20f}
 ROLLOUTS=${SB_ROLLOUTS:-3}
 LIMIT=${SB_LIMIT:-0}
@@ -30,6 +34,8 @@ die() {
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$ ]] \
     || die "SB_RUN_ID must contain only letters, digits, '-' and '_'"
 [[ "$SEED" =~ ^-?[0-9]+$ ]] || die "SB_SEED must be an integer"
+[[ "$CONDITION" = baseline || "$CONDITION" = cheatsheet ]] \
+    || die "SB_CONDITION must be baseline or cheatsheet"
 [[ "$ROLLOUTS" =~ ^[1-9][0-9]*$ ]] || die "ROLLOUTS must be positive"
 [[ "$LIMIT" =~ ^[0-9]+$ ]] || die "LIMIT must be non-negative"
 [[ "$SMOKE" = 0 || "$SMOKE" = 1 ]] || die "SMOKE must be 0 or 1"
@@ -50,7 +56,7 @@ command -v setsid >/dev/null || die "setsid is required"
 [ -x .venv-dspy/bin/python ] || die "run scripts/setup.sh first"
 [ -x .venv-vllm/bin/vllm ] || die "run scripts/setup.sh first"
 : "${CUDA_VISIBLE_DEVICES:?Slurm did not expose the allocated GPUs}"
-: "${SLURM_JOB_ID:?nostudying.sbatch must run inside Slurm}"
+: "${SLURM_JOB_ID:?evaluation must run inside Slurm}"
 CUDA_HOME=${CUDA_HOME:-/usr/local/cuda-12.8}
 [ -x "$CUDA_HOME/bin/nvcc" ] || die "nvcc not found under CUDA_HOME=$CUDA_HOME"
 export CUDA_HOME
@@ -99,6 +105,17 @@ cleanup() {
     local status=$?
     trap - EXIT INT TERM
     for pid in "${PIDS[@]}"; do
+        kill -TERM "$pid" 2>/dev/null || true
+    done
+    for _ in $(seq 1 30); do
+        alive=0
+        for pid in "${PIDS[@]}"; do
+            kill -0 "$pid" 2>/dev/null && alive=1
+        done
+        [ "$alive" = 1 ] || break
+        sleep 1
+    done
+    for pid in "${PIDS[@]}"; do
         kill -TERM -- "-$pid" 2>/dev/null || true
     done
     sleep 2
@@ -113,6 +130,7 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 mkdir -p logs
+LOG_TAG="${SLURM_JOB_ID}-$(date -u +%Y%m%dT%H%M%SZ)-$$"
 servers_alive() {
     local pid
     for pid in "${PIDS[@]}"; do
@@ -123,7 +141,7 @@ servers_alive() {
 for ((i = 0; i < NSERVE; i++)); do
     devices=$(IFS=,; printf '%s' "${GPUS[*]:$((i * TP)):$TP}")
     port=$((PORT_BASE + i))
-    log="logs/vllm-${SLURM_JOB_ID}-${i}.log"
+    log="logs/vllm-${LOG_TAG}-${i}.log"
     setsid env CUDA_VISIBLE_DEVICES="$devices" \
         VLLM_API_KEY="$SB_VLLM_API_KEY" \
         .venv-vllm/bin/vllm serve "$MODEL" \
@@ -163,7 +181,7 @@ echo "vLLM ready: $BASE_URLS"
 
 args=(
     --task smalldspy
-    --condition baseline
+    --condition "$CONDITION"
     --run-id "$RUN_ID"
     --seed "$SEED"
     --budgets "$BUDGETS"
@@ -178,4 +196,4 @@ servers_alive || die "a vLLM server crashed before evaluation"
 .venv-dspy/bin/python -m studybench.react "${args[@]}"
 servers_alive || die "a vLLM server crashed during evaluation"
 
-echo "no-studying evaluation complete: runs/$RUN_ID/smalldspy"
+echo "$CONDITION evaluation complete: runs/$RUN_ID/smalldspy"
