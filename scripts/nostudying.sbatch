@@ -3,6 +3,7 @@
 # Example:
 #   SB_RUN_ID=smalldspy-base SB_SEED=0 sbatch scripts/nostudying.sbatch
 #SBATCH --job-name=studybench-eval
+#SBATCH --account=matx
 #SBATCH --partition=matx
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=8
