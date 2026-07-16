@@ -5,7 +5,7 @@
 #SBATCH --job-name=studybench-eval
 #SBATCH --partition=matx
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=6
+#SBATCH --gpus-per-node=8
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/slurm/%x-%j.out
 #SBATCH --error=logs/slurm/%x-%j.out
@@ -49,20 +49,20 @@ command -v setsid >/dev/null || die "setsid is required"
 [ -x .venv-dspy/bin/python ] || die "run scripts/setup.sh first"
 [ -x .venv-vllm/bin/vllm ] || die "run scripts/setup.sh first"
 : "${CUDA_VISIBLE_DEVICES:?Slurm did not expose the allocated GPUs}"
-: "${SLURM_JOB_ID:?eval.sbatch must run inside Slurm}"
+: "${SLURM_JOB_ID:?nostudying.sbatch must run inside Slurm}"
 CUDA_HOME=${CUDA_HOME:-/usr/local/cuda-12.8}
 [ -x "$CUDA_HOME/bin/nvcc" ] || die "nvcc not found under CUDA_HOME=$CUDA_HOME"
 export CUDA_HOME
 export PATH="$PWD/.venv-vllm/bin:$CUDA_HOME/bin:$PATH"
 IFS=',' read -r -a GPUS <<< "$CUDA_VISIBLE_DEVICES"
-[ "${#GPUS[@]}" -eq 6 ] || die "expected six allocated GPUs"
+[ "${#GPUS[@]}" -eq 8 ] || die "expected eight allocated GPUs"
 
 GPU_INFO=$(.venv-vllm/bin/python - <<'PY'
 import torch
 
 count = torch.cuda.device_count()
-if count != 6:
-    raise SystemExit(f"expected 6 CUDA devices, found {count}")
+if count != 8:
+    raise SystemExit(f"expected 8 CUDA devices, found {count}")
 print(min(torch.cuda.get_device_properties(i).total_memory for i in range(count)) // 2**20)
 print(", ".join(torch.cuda.get_device_name(i) for i in range(count)))
 PY
@@ -71,7 +71,7 @@ MIN_MEMORY=${GPU_INFO%%$'\n'*}
 GPU_NAMES=${GPU_INFO#*$'\n'}
 [[ "$MIN_MEMORY" =~ ^[1-9][0-9]*$ ]] || die "could not inspect GPU memory"
 TP=$((MIN_MEMORY >= 70000 ? 1 : 2))
-NSERVE=$((6 / TP))
+NSERVE=$((8 / TP))
 echo "GPUs: $GPU_NAMES; minimum ${MIN_MEMORY} MiB; TP=$TP; servers=$NSERVE"
 
 MODEL=Qwen/Qwen3.5-9B
@@ -81,7 +81,7 @@ export SB_VLLM_API_KEY
 SB_VLLM_API_KEY=$(.venv-vllm/bin/python -c \
     'import secrets; print(secrets.token_urlsafe(48))')
 export VLLM_API_KEY=$SB_VLLM_API_KEY
-export SB_NSERVE=$NSERVE SB_NGPU=6 SB_TP_EFFECTIVE=$TP
+export SB_NSERVE=$NSERVE SB_NGPU=8 SB_TP_EFFECTIVE=$TP
 export SB_MODEL_ID=$MODEL SB_MODEL_REVISION=$REVISION SB_VLLM_VERSION=0.24.0
 export SB_GPU_NAMES="$GPU_NAMES" SB_GPU_MEMORY_MIB=$MIN_MEMORY
 export NO_PROXY=127.0.0.1,localhost

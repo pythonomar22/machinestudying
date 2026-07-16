@@ -26,8 +26,8 @@ Each point averages three rollouts over all 30 DSPy or 20 OpenClaw questions.
 
 - `scripts/setup.sh` clones the two exact source snapshots and creates the
   locked grading, DSPy, and vLLM environments with `uv`.
-- `scripts/eval.sbatch` starts local vLLM servers on the allocated H100 or L40S
-  GPUs, performs the selected condition's study phase, and runs the evaluation.
+- `scripts/nostudying.sbatch` uses all eight allocated L40S GPUs to run the
+  no-studying baseline on `data/smalldspy.jsonl` against `corpora/smalldspy`.
 
 Everything else is Python for the three actual stages: study/rollout, grade,
 and report.
@@ -56,13 +56,9 @@ study iterations rather than 50, so it tests plumbing without pretending to be
 a result.
 
 ```bash
-SB_RUN_ID=smoke-base SB_CONDITION=baseline SB_SEED=20260715 \
-SB_TASKS=dspy SB_BUDGETS=direct SB_ROLLOUTS=1 \
-SB_SMOKE=1 SB_LIMIT=1 sbatch scripts/eval.sbatch
-
-SB_RUN_ID=smoke-cheat SB_CONDITION=cheatsheet SB_SEED=20260715 \
-SB_TASKS=dspy SB_BUDGETS=direct SB_ROLLOUTS=1 \
-SB_SMOKE=1 SB_LIMIT=1 sbatch scripts/eval.sbatch
+SB_RUN_ID=smoke-base SB_SEED=20260715 \
+SB_BUDGETS=direct SB_ROLLOUTS=1 \
+SB_SMOKE=1 SB_LIMIT=1 sbatch scripts/nostudying.sbatch
 ```
 
 Inspect `logs/slurm/` and `logs/vllm-<job>-*.log` after startup and while the
@@ -75,11 +71,8 @@ Commit the reviewed code first. Full runs refuse a dirty working tree. Use the
 same seed for the two conditions and run them on the same GPU class:
 
 ```bash
-SB_RUN_ID=table1-base SB_CONDITION=baseline SB_SEED=20260715 \
-sbatch scripts/eval.sbatch
-
-SB_RUN_ID=table1-cheat SB_CONDITION=cheatsheet SB_SEED=20260715 \
-sbatch scripts/eval.sbatch
+SB_RUN_ID=smalldspy-nostudy-20260715 SB_SEED=20260715 \
+sbatch scripts/nostudying.sbatch
 ```
 
 The cheatsheet job studies each repository before loading its StudyBench
@@ -136,7 +129,7 @@ measurements and their limitations.
 ```text
 data/          StudyBench questions, rubrics, and evidence
 docs/          paper, author correspondence, and concise result record
-scripts/       setup.sh, eval.sbatch, and the vLLM dependency lock
+scripts/       setup.sh, nostudying.sbatch, and the vLLM dependency lock
 studybench/    study/rollout, repository tools, grading, and reporting
 ```
 

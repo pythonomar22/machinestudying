@@ -8,8 +8,6 @@ export UV_LINK_MODE=copy
 
 DSPY_URL=https://github.com/stanfordnlp/dspy
 DSPY_COMMIT=9cdb0aac28b2a04b064e40697ccd301872cf6a43
-OPENCLAW_URL=https://github.com/openclaw/openclaw
-OPENCLAW_COMMIT=da228660306b55a9cce3b973946f3aacfc515848
 PYTHON=3.12.11
 
 die() {
@@ -51,8 +49,6 @@ ensure_venv() {
 
 mkdir -p corpora logs/slurm
 ensure_corpus corpora/smalldspy "$DSPY_URL" "$DSPY_COMMIT" SmallDSPy
-ensure_corpus corpora/dspy "$DSPY_URL" "$DSPY_COMMIT" DSPy
-ensure_corpus corpora/openclaw "$OPENCLAW_URL" "$OPENCLAW_COMMIT" OpenClaw
 
 ensure_venv .venv "$PYTHON" root
 UV_PROJECT_ENVIRONMENT="$ROOT/.venv" \
