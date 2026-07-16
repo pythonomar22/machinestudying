@@ -49,6 +49,7 @@ ensure_venv() {
 
 mkdir -p corpora logs/slurm
 ensure_corpus corpora/smalldspy "$DSPY_URL" "$DSPY_COMMIT" SmallDSPy
+ensure_corpus corpora/dspy-runtime "$DSPY_URL" "$DSPY_COMMIT" "DSPy runtime"
 
 ensure_venv .venv "$PYTHON" root
 UV_PROJECT_ENVIRONMENT="$ROOT/.venv" \
@@ -56,7 +57,7 @@ UV_PROJECT_ENVIRONMENT="$ROOT/.venv" \
 
 ensure_venv .venv-dspy "$PYTHON" DSPy
 UV_PROJECT_ENVIRONMENT="$ROOT/.venv-dspy" \
-    uv sync --project "$ROOT/corpora/smalldspy" --frozen --no-dev \
+    uv sync --project "$ROOT/corpora/dspy-runtime" --frozen --no-dev \
     --python "$PYTHON"
 uv pip install --python .venv-dspy/bin/python --no-deps 'regex==2026.6.28'
 
