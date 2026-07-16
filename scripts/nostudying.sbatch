@@ -6,7 +6,7 @@
 #SBATCH --account=matx
 #SBATCH --partition=matx
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=8
+#SBATCH --gpus-per-node=6
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/slurm/%x-%j.out
 #SBATCH --error=logs/slurm/%x-%j.out
@@ -57,7 +57,7 @@ export CUDA_HOME
 export PATH="$PWD/.venv-vllm/bin:$CUDA_HOME/bin:$PATH"
 IFS=',' read -r -a GPUS <<< "$CUDA_VISIBLE_DEVICES"
 NGPU=${#GPUS[@]}
-[ "$NGPU" -gt 0 ] || die "no GPUs are visible"
+[ "$NGPU" -eq 6 ] || die "expected six visible GPUs"
 export SB_EXPECTED_NGPU=$NGPU
 
 GPU_INFO=$(.venv-vllm/bin/python - <<'PY'
@@ -75,8 +75,7 @@ PY
 MIN_MEMORY=${GPU_INFO%%$'\n'*}
 GPU_NAMES=${GPU_INFO#*$'\n'}
 [[ "$MIN_MEMORY" =~ ^[1-9][0-9]*$ ]] || die "could not inspect GPU memory"
-TP=$((MIN_MEMORY >= 70000 ? 1 : 2))
-((NGPU % TP == 0)) || die "$NGPU visible GPUs cannot be evenly divided into TP=$TP servers"
+TP=3
 NSERVE=$((NGPU / TP))
 echo "GPUs: $GPU_NAMES; minimum ${MIN_MEMORY} MiB; TP=$TP; servers=$NSERVE"
 
