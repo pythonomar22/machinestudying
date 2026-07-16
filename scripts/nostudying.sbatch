@@ -75,7 +75,7 @@ PY
 MIN_MEMORY=${GPU_INFO%%$'\n'*}
 GPU_NAMES=${GPU_INFO#*$'\n'}
 [[ "$MIN_MEMORY" =~ ^[1-9][0-9]*$ ]] || die "could not inspect GPU memory"
-TP=3
+TP=2
 NSERVE=$((NGPU / TP))
 echo "GPUs: $GPU_NAMES; minimum ${MIN_MEMORY} MiB; TP=$TP; servers=$NSERVE"
 
