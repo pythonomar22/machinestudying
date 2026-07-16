@@ -113,6 +113,13 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 mkdir -p logs
+servers_alive() {
+    local pid
+    for pid in "${PIDS[@]}"; do
+        kill -0 "$pid" 2>/dev/null || return 1
+    done
+}
+
 for ((i = 0; i < NSERVE; i++)); do
     devices=$(IFS=,; printf '%s' "${GPUS[*]:$((i * TP)):$TP}")
     port=$((PORT_BASE + i))
@@ -130,16 +137,6 @@ for ((i = 0; i < NSERVE; i++)); do
     PIDS+=("$!")
     URLS+=("http://127.0.0.1:$port/v1")
     LOGS+=("$log")
-done
-
-servers_alive() {
-    local pid
-    for pid in "${PIDS[@]}"; do
-        kill -0 "$pid" 2>/dev/null || return 1
-    done
-}
-
-for ((i = 0; i < NSERVE; i++)); do
     ready=0
     for _ in $(seq 1 360); do
         if ! servers_alive; then
