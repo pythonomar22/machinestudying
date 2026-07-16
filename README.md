@@ -99,7 +99,7 @@ uv run --frozen python -m studybench.grade runs/table1-base --judge fugu
 ```
 
 For offline diagnostic grading, launch the pinned Qwen3.5-9B judge on two TP=2
-replicas. Thinking is enabled with a hard 4,000-token reasoning budget and a
+replicas. Thinking is enabled with a hard 10,000-token reasoning budget and a
 five-minute timeout per request:
 
 ```bash

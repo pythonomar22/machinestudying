@@ -93,6 +93,34 @@ JUDGES = {
             },
         },
     },
+    "local10k": {
+        "model": LOCAL_JUDGE,
+        "revision": LOCAL_JUDGE_REVISION,
+        "endpoint": "local-vllm-0.24.0-tp2-xgrammar-compact",
+        "key_env": "OPENAI_API_KEY",
+        "grade_id": "qwen35-9b-thinking10k-local",
+        "tier": "diagnostic-local-proxy",
+        "temperature": 0,
+        "seed": 0,
+        "max_tokens": 65536,
+        "thinking_token_budget": 10000,
+        "thinking": "enabled",
+        "contract": "local",
+        "timeout_seconds": 300,
+        "runtime": {
+            "vllm": "0.24.0",
+            "model_runner": "v1",
+            "tensor_parallel": 2,
+            "max_model_len": 262144,
+            "max_num_seqs": 1,
+            "reasoning_parser": "qwen3",
+            "structured_outputs": {
+                "backend": "xgrammar",
+                "disable_any_whitespace": True,
+                "enable_in_reasoning": False,
+            },
+        },
+    },
 }
 
 PROMPT = """You are grading one model answer for a private {library} expert QA benchmark.
@@ -558,7 +586,7 @@ def judge_config(provider: str, grade_id: str, replicas: int) -> dict:
         raise ValueError("invalid judge configuration")
     profile = JUDGES[provider]
     runtime = profile["runtime"]
-    if provider == "local":
+    if profile["contract"] == "local":
         runtime = {
             **runtime,
             "dependency_lock_sha256": sha256_text(
@@ -904,7 +932,7 @@ async def grade_task(args, profile: dict, base_urls: list[str], run_id: str, tas
 
 async def grade(args) -> None:
     profile = JUDGES[args.judge]
-    if args.judge == "local":
+    if profile["contract"] == "local":
         base_urls = [url.strip() for url in (args.base_urls or "").split(",") if url.strip()]
         if not base_urls or any(
             not re.fullmatch(r"http://(?:127\.0\.0\.1|localhost):[0-9]+/v1", url)

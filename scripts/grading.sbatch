@@ -14,7 +14,7 @@ set -euo pipefail
 cd "${SLURM_SUBMIT_DIR:?submit this job from the repository with sbatch}"
 
 RUN_PATH=${1:?usage: sbatch scripts/grading.sbatch runs/RUN_ID}
-GRADE_ID=${SB_GRADE_ID:-qwen35-9b-thinking-local}
+JUDGE=${SB_JUDGE:-local10k}
 DEBUG=${SB_DEBUG:-0}
 
 die() {
@@ -22,8 +22,8 @@ die() {
     exit 1
 }
 
-[[ "$GRADE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$ ]] \
-    || die "SB_GRADE_ID must contain only letters, digits, '-' and '_'"
+[[ "$JUDGE" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$ ]] \
+    || die "SB_JUDGE must contain only letters, digits, '-' and '_'"
 [[ "$DEBUG" = 0 || "$DEBUG" = 1 ]] || die "SB_DEBUG must be 0 or 1"
 command -v curl >/dev/null || die "curl is required"
 command -v setsid >/dev/null || die "setsid is required"
@@ -65,14 +65,21 @@ print(", ".join(torch.cuda.get_device_name(i) for i in range(count)))
 PY
 )
 
-mapfile -t JUDGE_INFO < <(.venv/bin/python - <<'PY'
+mapfile -t JUDGE_INFO < <(.venv/bin/python - "$JUDGE" <<'PY'
 import json
+import sys
 
 from studybench.grade import JUDGES
 
-judge = JUDGES["local"]
+try:
+    judge = JUDGES[sys.argv[1]]
+except KeyError:
+    raise SystemExit(f"unknown local judge profile: {sys.argv[1]}")
+if judge["contract"] != "local":
+    raise SystemExit(f"judge profile is not local: {sys.argv[1]}")
 runtime = judge["runtime"]
 for value in (
+    judge["grade_id"],
     judge["model"],
     judge["revision"],
     runtime["vllm"],
@@ -86,16 +93,19 @@ for value in (
     print(value)
 PY
 )
-[ "${#JUDGE_INFO[@]}" -eq 9 ] || die "could not read local judge configuration"
-MODEL=${JUDGE_INFO[0]}
-REVISION=${JUDGE_INFO[1]}
-VLLM_VERSION=${JUDGE_INFO[2]}
-MODEL_RUNNER=${JUDGE_INFO[3]}
-TP=${JUDGE_INFO[4]}
-MAX_MODEL_LEN=${JUDGE_INFO[5]}
-MAX_NUM_SEQS=${JUDGE_INFO[6]}
-REASONING_PARSER=${JUDGE_INFO[7]}
-STRUCTURED_OUTPUTS=${JUDGE_INFO[8]}
+[ "${#JUDGE_INFO[@]}" -eq 10 ] || die "could not read local judge configuration"
+GRADE_ID=${SB_GRADE_ID:-${JUDGE_INFO[0]}}
+[[ "$GRADE_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$ ]] \
+    || die "SB_GRADE_ID must contain only letters, digits, '-' and '_'"
+MODEL=${JUDGE_INFO[1]}
+REVISION=${JUDGE_INFO[2]}
+VLLM_VERSION=${JUDGE_INFO[3]}
+MODEL_RUNNER=${JUDGE_INFO[4]}
+TP=${JUDGE_INFO[5]}
+MAX_MODEL_LEN=${JUDGE_INFO[6]}
+MAX_NUM_SEQS=${JUDGE_INFO[7]}
+REASONING_PARSER=${JUDGE_INFO[8]}
+STRUCTURED_OUTPUTS=${JUDGE_INFO[9]}
 [ "$MODEL_RUNNER" = v1 ] || die "unsupported vLLM model runner: $MODEL_RUNNER"
 [ "$((NGPU % TP))" -eq 0 ] || die "$NGPU GPUs cannot be split into TP=$TP replicas"
 NSERVE=$((NGPU / TP))
@@ -221,7 +231,7 @@ echo "local Qwen judge ready: $BASE_URLS"
 
 args=(
     "$RUN_PATH"
-    --judge local
+    --judge "$JUDGE"
     --grade-id "$GRADE_ID"
     --base-urls "$BASE_URLS"
     --concurrency "$CONCURRENCY"
