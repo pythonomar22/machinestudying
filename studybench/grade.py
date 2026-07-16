@@ -527,12 +527,12 @@ def score_verdict(
     if verdict.get("needs_regrade") is not False:
         raise ValueError("judge requested regrading")
     question_score = verdict.get("question_score")
+    # Claim weights are authoritative; retain the provider's total for audit.
     if contract == "paper" and (
         isinstance(question_score, bool)
         or not isinstance(question_score, (int, float))
-        or question_score != score
     ):
-        raise ValueError("judge returned inconsistent arithmetic")
+        raise ValueError("judge returned a non-numeric question score")
     return claims, score, question_score
 
 
@@ -948,6 +948,16 @@ async def grade_task(args, profile: dict, base_urls: list[str], run_id: str, tas
                 claims, score, question_score = score_verdict(
                     row, verdict, profile["contract"]
                 )
+                if profile["contract"] == "paper" and question_score != score:
+                    log.warning(
+                        "%s/r%d/%s judge question_score=%s but claim-weighted "
+                        "score=%d; preserving the raw value and using the claim sum",
+                        budget,
+                        rollout,
+                        qid,
+                        question_score,
+                        score,
+                    )
             except (json.JSONDecodeError, ValueError) as error:
                 raise ValueError(
                     f"invalid judge verdict: {budget}/r{rollout}/{qid}: {error}"

@@ -99,9 +99,11 @@ three repository tools.
 
 Table 1 uses lenient grading. Following Jacob Li's clarification, every rubric
 claim is binary (`0` or `1`) and the question score is the pure weighted claim
-sum. The compilation and core-conjunctive zero gates apply only to strict
-grading, so they are deliberately absent here. GPT-5.4 and Fugu share the paper
-prompt, whole-file evidence, validation, and artifact format:
+sum. The harness recomputes that sum from the claim scores and preserves the
+judge's redundant `question_score` only as raw diagnostic metadata. The
+compilation and core-conjunctive zero gates apply only to strict grading, so
+they are deliberately absent here. GPT-5.4 and Fugu share the paper prompt,
+whole-file evidence, validation, and artifact format:
 
 ```bash
 set -a; source .env; set +a; uv run --frozen python -m studybench.grade \
