@@ -17,7 +17,7 @@ import dspy
 from dspy.predict.react import _fmt_exc
 
 from .artifacts import read_json, sha256_json, sha256_text, stable_seed, write_json, write_text
-from .dataset import CORPORA, ROOT, load_questions, verify_corpus
+from .dataset import CORPORA, NOTE_PREFIX, ROOT, load_questions, verify_corpus
 from .tools import (
     GLOB_MAX_PATHS,
     GREP_MAX_MATCHES,
@@ -48,8 +48,6 @@ TOOL_CONFIG = {
     "glob_max_paths": GLOB_MAX_PATHS,
     "observation_max_chars": OBSERVATION_MAX_CHARS,
 }
-NOTE_PREFIX = "Reference notes on {library} from your prior study of its repository:\n\n{note}\n\n---\n\n"
-
 log = logging.getLogger("studybench.react")
 
 

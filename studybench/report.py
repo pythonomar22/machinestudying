@@ -7,9 +7,14 @@ from statistics import fmean
 
 from .artifacts import read_json
 from .dataset import CORPORA, ROOT, load_questions
-from .grade import artifact_path, expected_grade_manifest, load_run, validate_grade
-
-BUDGETS = ("direct", "k5", "k20", "k20f")
+from .grade import (
+    BUDGETS,
+    artifact_path,
+    load_run,
+    validate_grade,
+    validate_grade_manifest,
+    weighted_auc,
+)
 
 PAPER = {
     ("dspy", "baseline"): ([3.3, 8.6, 9.6, 29.4], [4.1, 7.9, 8.6, 34.6], 6.49),
@@ -36,29 +41,16 @@ COMPATIBLE = (
 )
 
 
-def weighted_auc(points: list[tuple[float, float]]) -> float:
-    """Appendix C: a 3k anchor and best-so-far accuracy over generated tokens."""
-
-    ordered = sorted(points)
-    if len(ordered) != 4 or any(tokens <= 0 for tokens, _ in ordered):
-        raise ValueError("expertise requires four positive-token budget points")
-    area = best = 0.0
-    for index, (tokens, accuracy) in enumerate(ordered):
-        best = max(best, accuracy)
-        weight = min(3000 / tokens, 1.0)
-        next_weight = (
-            min(3000 / ordered[index + 1][0], 1.0) if index + 1 < len(ordered) else 0.0
-        )
-        area += (weight - next_weight) * best
-    return area
-
-
-def load_grades(run_id: str, task: str):
+def load_grades(run_id: str, task: str, grade_id: str):
     manifest, rows, episodes = load_run(run_id, task)
-    root = ROOT / "grades" / run_id / task
+    root = ROOT / "grades" / run_id / grade_id / task
     grade_manifest = read_json(root / "grade.json")
-    if grade_manifest != expected_grade_manifest(manifest):
-        raise ValueError(f"grade manifest does not match run: {run_id}/{task}")
+    try:
+        validate_grade_manifest(manifest, grade_manifest, grade_id)
+    except ValueError as error:
+        raise ValueError(
+            f"grade manifest does not match run: {run_id}/{task}"
+        ) from error
     expected = {artifact_path(root, *key) for key in episodes}
     actual = set((root / "episodes").rglob("*.json")) if (root / "episodes").exists() else set()
     if actual != expected:
@@ -69,9 +61,9 @@ def load_grades(run_id: str, task: str):
     grades = {}
     for key, episode in episodes.items():
         grade = read_json(artifact_path(root, *key))
-        validate_grade(rows[key[2]], episode, grade)
+        validate_grade(rows[key[2]], episode, grade, grade_manifest)
         grades[key] = grade
-    return manifest, episodes, grades
+    return manifest, episodes, grades, grade_manifest
 
 
 def aggregate(grades: dict) -> tuple[list[tuple[float, float]], float]:
@@ -105,10 +97,24 @@ def print_row(label: str, points, wauc: float) -> None:
     print(f"{label:22}  {cells}  {wauc:6.2f}")
 
 
-def report(base_id: str, cheat_id: str) -> None:
-    for task, corpus in CORPORA.items():
-        base, base_episodes, base_grades = load_grades(base_id, task)
-        cheat, cheat_episodes, cheat_grades = load_grades(cheat_id, task)
+def report(base_id: str, cheat_id: str, grade_id: str) -> None:
+    for task in ("dspy", "openclaw"):
+        corpus = CORPORA[task]
+        base, base_episodes, base_grades, base_grade_manifest = load_grades(
+            base_id, task, grade_id
+        )
+        cheat, cheat_episodes, cheat_grades, cheat_grade_manifest = load_grades(
+            cheat_id, task, grade_id
+        )
+        if (
+            base_grade_manifest["judge"] != cheat_grade_manifest["judge"]
+            or base_grade_manifest["judge"]["provider"] != "gpt"
+            or base_grade_manifest["judge"]["tier"] != "paper"
+            or base_grade_manifest["judge"]["contract"] != "paper"
+        ):
+            raise ValueError(
+                "paper comparison requires matching GPT-5.4 grade configurations"
+            )
         if (
             base["smoke"] is not False
             or base["rollouts"] != 3
@@ -133,9 +139,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--baseline-run", required=True)
     parser.add_argument("--cheatsheet-run", required=True)
+    parser.add_argument("--grade-id", default="gpt-5-4")
     args = parser.parse_args()
     try:
-        report(args.baseline_run, args.cheatsheet_run)
+        report(args.baseline_run, args.cheatsheet_run, args.grade_id)
     except (OSError, ValueError) as error:
         raise SystemExit(f"report error: {error}") from error
 

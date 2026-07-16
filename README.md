@@ -22,12 +22,14 @@ Each expertise value is computed from four points: direct, voluntary ReAct with
 at most 5 or 20 iterations, and exactly 20 ReAct iterations with no early exit.
 Each point averages three rollouts over all 30 DSPy or 20 OpenClaw questions.
 
-## The two scripts
+## Scripts
 
 - `scripts/setup.sh` clones the two exact source snapshots and creates the
   locked grading, DSPy, and vLLM environments with `uv`.
 - `scripts/nostudying.sbatch` uses all four allocated L40S GPUs to run the
   no-studying baseline on `data/smalldspy.jsonl` against `corpora/smalldspy`.
+- `scripts/grading.sbatch` uses all four allocated L40S GPUs to grade one
+  completed run with the pinned local Qwen judge.
 
 Everything else is Python for the three actual stages: study/rollout, grade,
 and report.
@@ -85,17 +87,31 @@ repository tools.
 Table 1 uses lenient grading. Following Jacob Li's clarification, every rubric
 claim is binary (`0` or `1`) and the question score is the pure weighted claim
 sum. The compilation and core-conjunctive zero gates apply only to strict
-grading, so they are deliberately absent here. Grading uses GPT-5.4 and the
-whole evidence files from the pinned repositories.
+grading, so they are deliberately absent here. GPT-5.4 and Fugu share the paper
+prompt, whole-file evidence, validation, and artifact format:
 
 ```bash
 export OPENAI_API_KEY=...
-for run in table1-base table1-cheat; do
-  for task in dspy openclaw; do
-    uv run --frozen python -m studybench.grade --run-id "$run" --task "$task"
-  done
-done
+uv run --frozen python -m studybench.grade runs/table1-base --judge gpt
 
+export SAKANA_API_KEY=...
+uv run --frozen python -m studybench.grade runs/table1-base --judge fugu
+```
+
+For offline diagnostic grading, launch the pinned Qwen3.5-9B judge on two TP=2
+replicas. Thinking is enabled with a hard 4,000-token reasoning budget and a
+five-minute timeout per request:
+
+```bash
+sbatch scripts/grading.sbatch runs/smalldspy-nostudy-20260715
+```
+
+Grades and the per-run report are written under
+`grades/<run-id>/<grade-id>/<task>/`. Local Qwen and Fugu are diagnostic
+proxies; paper-comparable reporting requires GPT-5.4. Calibrate local scores
+manually before using them for exact method comparisons.
+
+```bash
 uv run --frozen python -m studybench.report \
   --baseline-run table1-base --cheatsheet-run table1-cheat
 ```
@@ -129,7 +145,8 @@ measurements and their limitations.
 ```text
 data/          StudyBench questions, rubrics, and evidence
 docs/          paper, author correspondence, and concise result record
-scripts/       setup.sh, nostudying.sbatch, and the vLLM dependency lock
+experiments/   reproducible experiment records and interpretations
+scripts/       setup.sh, nostudying.sbatch, grading.sbatch, and the vLLM lock
 studybench/    study/rollout, repository tools, grading, and reporting
 ```
 

@@ -10,6 +10,10 @@ from functools import lru_cache
 from pathlib import Path, PurePosixPath
 
 ROOT = Path(__file__).resolve().parent.parent
+NOTE_PREFIX = (
+    "Reference notes on {library} from your prior study of its repository:\n\n"
+    "{note}\n\n---\n\n"
+)
 
 
 @dataclass(frozen=True)
