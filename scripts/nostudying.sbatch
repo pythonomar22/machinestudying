@@ -6,7 +6,7 @@
 #SBATCH --account=matx
 #SBATCH --partition=matx
 #SBATCH --nodes=1
-#SBATCH --gpus-per-node=6
+#SBATCH --gpus-per-node=4
 #SBATCH --time=12:00:00
 #SBATCH --output=logs/slurm/%x-%j.out
 #SBATCH --error=logs/slurm/%x-%j.out
@@ -57,7 +57,7 @@ export CUDA_HOME
 export PATH="$PWD/.venv-vllm/bin:$CUDA_HOME/bin:$PATH"
 IFS=',' read -r -a GPUS <<< "$CUDA_VISIBLE_DEVICES"
 NGPU=${#GPUS[@]}
-[ "$NGPU" -eq 6 ] || die "expected six visible GPUs"
+[ "$NGPU" -eq 4 ] || die "expected four visible GPUs"
 export SB_EXPECTED_NGPU=$NGPU
 
 GPU_INFO=$(.venv-vllm/bin/python - <<'PY'

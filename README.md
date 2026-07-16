@@ -26,7 +26,7 @@ Each point averages three rollouts over all 30 DSPy or 20 OpenClaw questions.
 
 - `scripts/setup.sh` clones the two exact source snapshots and creates the
   locked grading, DSPy, and vLLM environments with `uv`.
-- `scripts/nostudying.sbatch` uses all eight allocated L40S GPUs to run the
+- `scripts/nostudying.sbatch` uses all four allocated L40S GPUs to run the
   no-studying baseline on `data/smalldspy.jsonl` against `corpora/smalldspy`.
 
 Everything else is Python for the three actual stages: study/rollout, grade,
