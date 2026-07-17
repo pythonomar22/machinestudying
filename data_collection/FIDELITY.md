@@ -15,8 +15,10 @@ buildable without knowledge of StudyBench. Two rules:
 1. **Priors must be general.** Every design choice must be defensible as a
    claim about studying *any* codebase (e.g., "user questions are good
    study anchors", "expertise organizes around library capabilities, not
-   the genre in which friction is reported"), never as knowledge of this
-   test set (its topics, labels, register, or questions).
+   the genre in which friction is reported", "study questions must be
+   groundable in the study corpus — the corpus is the studier's whole
+   world at study and answer time"), never as knowledge of this test set
+   (its topics, labels, register, or questions).
 2. **The test set may remove or measure, never add or steer.** Allowed:
    final transfer evaluation; dropping generated questions that are too
    similar to test questions (decontamination); post-hoc similarity audits
@@ -150,17 +152,33 @@ representatives would be chosen) disappears entirely.
 | 5 | (no labeling prompt published — Stage 2's prompt is NOT in the appendix, unlike A.2/A.3/A.4/A.5) | the prompt | ours: mechanism-anchored behavioral labels; genre labels ("bug reports") explicitly disqualified; snake_case style examples drawn from unrelated software domains; coherent=false when a cluster is united only by genre. The first version leaked StudyBench Table-3 labels as examples — see Principles; fixed and rerun |
 | 6 | six clusters selected for DSPy | what noise points get | `topic: null` (90 sessions); no forced assignment |
 
-**Result (2026-07-17, mechanism instruct + whole-cluster labeling):** seven
-topics — language_model_backend_integration (70),
-core_runtime_and_api_compatibility (36, coherent=false — a genre grab-bag
-that correctly self-reports as mechanism-incoherent),
-prompt_compilation_optimization_and_inspection (35),
-api_reference_and_docs_site_maintenance (23),
-lm_multimodal_inputs_and_token_limits (17),
+**Corpus-groundability (added 2026-07-17).** The paper enforces, at
+generation and critic time, that questions be answerable from the code
+roots alone (its "no documentation-only questions" hard bans exist because
+the test-taker's world is source + tests). The same constraint binds our
+studier for a corpus-conditioned reason — during self-quizzing it must
+answer these questions inside the corpus — so we state it as a general
+prior (Principles #1) and surface it early: the labeler also judges each
+cluster `corpus_groundable` (can its typical friction be resolved by
+reading source + tests, versus docs-site/packaging/CI/process artifacts).
+The paper's own late enforcement is inherited verbatim in Stage 3a/3b
+regardless; the flag only sets expectations for topic yield.
+
+**Result (2026-07-17, mechanism instruct + whole-cluster labeling +
+groundability):** seven topics —
+lm_provider_and_backend_integration (70),
+core_primitives_configuration_and_execution (36, coherent=false AND
+groundable=false: a grab-bag mixing runtime mechanisms with
+packaging/versioning/tutorial noise),
+prompt_compilation_and_optimization (35),
+api_reference_and_docstrings (23, groundable=true — its dominant task is
+understanding implementation behavior well enough to document it, i.e.
+docstrings in source files, not the docs website),
+lm_request_limits_and_multimodal_inputs (17),
 optimizer_compilation_and_state_persistence (16),
-async_parallel_and_batched_execution (15); 90 noise. The capability axis
-now dominates: prompt/template control, optimizer state, async/batching,
-and multimodal/token-limit clusters are clean capability groupings rather
-than report genres. No agents/tools capability cluster emerges — the
-scarcity of such sessions in issue data (v1 finding, git `47c3363`)
-persists under the mechanism-oriented geometry.
+concurrent_execution_and_batching (15); 90 noise. Six of seven topics are
+coherent and groundable anchors for generation; the grab-bag is excluded
+on both flags. No agents/tools capability cluster emerges — the scarcity
+of such sessions in issue data (v1 finding, git `47c3363`) persists under
+the mechanism-oriented geometry. Label wording shifts across reruns (the
+labeler is not seeded); the partition itself is deterministic.

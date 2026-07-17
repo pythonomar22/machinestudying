@@ -83,6 +83,7 @@ Return JSON with:
 - `label`: a short snake_case behavioral label
 - `description`: 1-2 sentences describing what users in this cluster are trying to do
 - `coherent`: false if the cluster has no single dominant capability (for example, it is united only by all being bug reports or all being feature requests about unrelated capabilities), true otherwise
+- `corpus_groundable`: whether resolving this cluster's typical friction requires reading the library's source code and tests (true), or instead concerns artifacts outside the code corpus, such as the documentation website, tutorials and notebooks, packaging and releases, CI, or repository process (false). The study corpus is the library's source and tests only, so only groundable clusters can anchor study questions.
 
 ## Cluster members
 {sessions_json}
@@ -100,8 +101,9 @@ LABEL_SCHEMA = {
                 "label": {"type": "string"},
                 "description": {"type": "string"},
                 "coherent": {"type": "boolean"},
+                "corpus_groundable": {"type": "boolean"},
             },
-            "required": ["label", "description", "coherent"],
+            "required": ["label", "description", "coherent", "corpus_groundable"],
             "additionalProperties": False,
         },
     },
@@ -318,7 +320,8 @@ def label(min_cluster_size: int | None, min_samples: int | None,
             "member_numbers": [sessions[i]["number"] for i in members],
         })
         print(f"cluster {cluster_id} (n={len(members)}): {verdict['label']} "
-              f"(coherent={verdict['coherent']})")
+              f"(coherent={verdict['coherent']}, "
+              f"groundable={verdict['corpus_groundable']})")
 
     by_id = {cluster["cluster_id"]: cluster["label"] for cluster in clusters}
     labeled_sessions = [

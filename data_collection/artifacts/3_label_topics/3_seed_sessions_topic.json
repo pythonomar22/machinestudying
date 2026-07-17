@@ -29,9 +29,10 @@
   {
    "cluster_id": 0,
    "size": 17,
-   "label": "lm_multimodal_inputs_and_token_limits",
-   "description": "Users in this cluster are trying to use DSPy's LM layer with non-text inputs and model-specific token budgets. They need image/VLM input support and formatting across adapters/providers, plus ways to control or diagnose max_tokens, input length, and context-window overflows.",
+   "label": "lm_request_limits_and_multimodal_inputs",
+   "description": "Users are trying to configure DSPy LM calls so they fit model-specific token/context limits and work with multimodal image inputs, especially for vision-language models. The friction centers on max_tokens and context-window handling, plus how DSPy formats and propagates image inputs through adapters, signatures, and optimizers.",
    "coherent": true,
+   "corpus_groundable": true,
    "member_numbers": [
     169,
     356,
@@ -55,9 +56,10 @@
   {
    "cluster_id": 1,
    "size": 15,
-   "label": "async_parallel_and_batched_execution",
-   "description": "Users in this cluster are trying to speed up DSPy workloads by running LM calls, evaluation, metrics, tools, and optimization steps asynchronously, in parallel, or in batches. They also need concurrency-related runtime controls—such as thread/process limits, timeouts, interrupts, and async-safe configuration—to make high-throughput execution reliable.",
+   "label": "concurrent_execution_and_batching",
+   "description": "Users in this cluster are trying to make DSPy workloads run faster and more robustly by executing LM calls, evaluation, metrics, optimizers, and tool use asynchronously, in parallel, or as provider-side batches. Their friction centers on concurrency behavior and controls such as thread safety, interruption, batching support, async compatibility, timeouts, and throughput under load.",
    "coherent": true,
+   "corpus_groundable": true,
    "member_numbers": [
     572,
     715,
@@ -79,9 +81,10 @@
   {
    "cluster_id": 2,
    "size": 23,
-   "label": "api_reference_and_docs_site_maintenance",
-   "description": "Users in this cluster are trying to build, fix, and contribute to DSPy’s developer documentation, especially public API docstrings/reference coverage and the docs site’s content, links, styling, and local build pipeline. A few adjacent issues touch maintainer hygiene like changelogs or lint cleanup, but the dominant behavior is maintaining documentation infrastructure for the library.",
+   "label": "api_reference_and_docstrings",
+   "description": "Contributors in this cluster are trying to improve DSPy's developer-facing API reference, mainly by adding or correcting docstrings for public classes, methods, and key entry points, with a few adjacent fixes to the docs experience. The dominant task is understanding implementation behavior well enough to document it accurately.",
    "coherent": true,
+   "corpus_groundable": true,
    "member_numbers": [
     376,
     475,
@@ -111,9 +114,10 @@
   {
    "cluster_id": 3,
    "size": 70,
-   "label": "language_model_backend_integration",
-   "description": "Users are trying to connect DSPy to specific LM backends—cloud providers, OpenAI-compatible APIs, local/self-hosted servers, and Hugging Face models—and need DSPy’s LM client layer to handle the right credentials, endpoints, parameters, and API quirks. This includes adding support for new providers/backends, using local or quantized models, and working with provider-specific features like chat, function calling, embeddings, and serving.",
+   "label": "lm_provider_and_backend_integration",
+   "description": "Users in this cluster are trying to plug DSPy into specific hosted or local model backends—OpenAI-compatible APIs, Azure/Bedrock/Vertex, Hugging Face, Ollama, vLLM, llama.cpp, and custom endpoints or clients. Their friction centers on DSPy’s LM client layer: configuring auth and endpoints, handling provider-specific parameters and API quirks, and extending support to newer chat/tool/function interfaces or unsupported backends.",
    "coherent": true,
+   "corpus_groundable": true,
    "member_numbers": [
     13,
     19,
@@ -190,9 +194,10 @@
   {
    "cluster_id": 4,
    "size": 35,
-   "label": "prompt_compilation_optimization_and_inspection",
-   "description": "Users are trying to control DSPy’s prompt pipeline end to end: customize templates, system messages, signature or adapter formats, field ordering, and how few-shot examples or reasoning fields are inserted. They also want to inspect the exact formatted prompts, histories, and traces DSPy produces, and tune optimizer or teleprompter behavior when generating or reusing instructions and demonstrations.",
+   "label": "prompt_compilation_and_optimization",
+   "description": "Users are trying to control how DSPy compiles Signatures, adapters, demonstrations, reasoning fields, and system instructions into actual LM prompts, and to inspect the exact formatted messages/history sent to models. They also want teleprompters and optimizers to reuse, preserve, initialize, or constrain prompt components such as instructions, examples, tool descriptions, and output formats.",
    "coherent": true,
+   "corpus_groundable": true,
    "member_numbers": [
     80,
     178,
@@ -235,8 +240,9 @@
    "cluster_id": 5,
    "size": 16,
    "label": "optimizer_compilation_and_state_persistence",
-   "description": "Users in this cluster are compiling/optimizing DSPy programs with teleprompters/optimizers and then trying to save, reload, checkpoint, or inspect the resulting compiled state and artifacts. The friction centers on serialization of demos, signatures, and attached components, plus compile-time traces/log directories and optimizer-specific behavior in Bootstrap, GEPA, MIPRO, and fine-tuning flows.",
+   "description": "Users are trying to compile and optimize DSPy programs with optimizers/teleprompters, then save, load, or inspect the resulting compiled artifacts such as demos, checkpoints, traces, and log directories. Typical friction involves the optimizer compile path itself—bootstrapping, fine-tuning, GEPA/MIPRO behavior, LM settings, and serialization of optimized modules or agents.",
    "coherent": true,
+   "corpus_groundable": true,
    "member_numbers": [
     135,
     224,
@@ -259,9 +265,10 @@
   {
    "cluster_id": 6,
    "size": 36,
-   "label": "core_runtime_and_api_compatibility",
-   "description": "Users are trying to get DSPy installed, imported, configured, and running with foundational APIs like LM setup, typed/structured predictions, retrieval, assertions, and tool/ReAct integrations across different backends and Python versions. This cluster is only loosely coherent because the questions span several feature areas and are tied together mainly by runtime, dependency, and interface-compatibility friction.",
+   "label": "core_primitives_configuration_and_execution",
+   "description": "Users are trying to get DSPy's core programming primitives working end-to-end: install/import the library, configure LM/adapters/settings, and run features such as Predict, ReAct, Retrieve, typed Signatures, and Assertions. The cluster is only loosely coherent because it mixes several different runtime mechanisms with packaging, versioning, tutorial, and external-integration issues.",
    "coherent": false,
+   "corpus_groundable": false,
    "member_numbers": [
     220,
     293,
@@ -362,7 +369,7 @@
    ],
    "question_text": "Feature: add custom HF-models as LLMs\n\nHi team,\nDo you have any plans for physical models, not only APIs? Can we serve LLM like Flan-T5-xxl and query it for free instead of the OpenAIs endpoint (as the only available option)?\nAccording to [this](https://blog.vespa.ai/improving-text-ranking-with-few-shot-prompting/) blog post from Yahoo/Vespa search team, even the 3B model can deliver a performance boost while generating with a proper prompt. At the same time, it's available for individuals like me & community.\nIMO this change also requires code/structure refactoring, and it's not a one-evening task.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 18,
@@ -452,7 +459,7 @@
    ],
    "question_text": "Using davinci-003 makes results worse?\n\nHave others noticed this issue as well? I swapped the LM to be `davinci-text-003` and my results are actually worse than with `davinci-text-002`.\nSome of the answers are pretty \"obviously wrong\" too:\n[code]\nOn `multihop_QA_v2`, instead of 84.6% results, I am getting 53.8%. `multihop_QA_v1` achieved ~34%.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 22,
@@ -482,7 +489,7 @@
    ],
    "question_text": "Add 'gpt-3.5-turbo' model\n\nWill you add a new model gpt-3.5-turbo to your framework?\nNow it is generating an error.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 52,
@@ -533,7 +540,7 @@
    ],
    "question_text": "Request: Instructions for how to use Chat\n\nWould it be possible to edit intro.ipynb to include instructions for how to utilize gpt-3.5-turbo as the LM?\nIn the setup paragraph I tried invoking Chat as the LM using\n[code]\nas suggested by my reading of gpt3.py\nBut when getting to the execution of Program 1 I get the error\n[code]",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 58,
@@ -605,7 +612,7 @@
    ],
    "question_text": "how to use hf client\n\nHi, I hope this is the correct place to ask but I can't figure out how to run dsp with hf-client.\nSo far I have managed to get the hf-server running.\nBut I can't figure out how to use the hf-client.\nI start the server with:\n`python -m dsp.modules.hf_server --port 4242 --model \"google/flan-t5-base\"`\nWith curl everything is fine:\n**Client**:\n`curl -d '{\"prompt\":\"What is the answer to life, the universe, and everything?\"}' \\\n-X POST \" \" \\\n-H 'Content-Type: application/json' `\n`{\"prompt\":\"What is the answer to life, the universe, and everything?\",\"choices\":[{\"text\":\"atoms\"}],\"latency\":22557.142734527588}`\n**Server**:\n[code]\nAfterward I tried to use the hf_client similar to the intro notebook.\n**Client:**\n[code]\n**Server:**\n`INFO: 141.56.132.131:0 - \"POST /%3A HTTP/1.1\" 404 Not Found`",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 69,
@@ -653,7 +660,7 @@
    ],
    "question_text": "Is it legal to use OpenAI output to compile a smaller model?\n\nThe compilation step is very neat and I love the DSP paradym and was planning to implement it internally. But we not sure about a legal consideration. According to openai's terms of service\nis not allowed.\nDoes this mean if I compile a model based on the outputs from GPT-4 to fine-tune a smaller opensource model that is used internally or used to power a product that is in no way competing with OpenAI fine? or is that Illegal as well?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 74,
@@ -749,7 +756,7 @@
    ],
    "question_text": "How to remove multiple use of demonstrate stage to save LLM calls\n\nI am using the program 5 on intro notebook for an experiment.\nI have multiple 100 of questions to get answers. I am using 5 train questions to demonstrate.\nI notice that for each question, the demonstrate stage is annotating answers. Can this repeated task be avoided to save LLM calls in demonstrate stage?\nCan we use the demonstrate once, and use the demonstration in other questions as well?\nThanks.",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 82,
@@ -1079,7 +1086,7 @@
    ],
    "question_text": "HF demo\n\nCould you please add some demos on how to use the huggingface models locally and on the server. I am struggling on how to use them.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 129,
@@ -1643,7 +1650,7 @@
    ],
    "question_text": "How to increase maximum length of tokens?\n\nMy prompt outputs are on the longer side, and often the (output) text is cut off. Is there a way to adjust the max length of tokens? Thank you.",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 175,
@@ -1709,7 +1716,7 @@
    ],
    "question_text": "How to make my own template in DSPy?\n\nHi,\nI'm using DSPy with korean LM(this is in hugging face) and Retrieval.\nBut I'm having some problems in using it.\nHow can I rewrite template in Korean?\nAs I know there was Type and Template method in DSP but I couldn't find it in DSPy.",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 180,
@@ -1793,7 +1800,7 @@
    ],
    "question_text": "Are you interested in adding support for llama-cpp-python?\n\nHi, I am working on this in my fork because I need to run models on the CPU and I had issues using the llama-cpp-python server.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 193,
@@ -1949,7 +1956,7 @@
    ],
    "question_text": "Is this an \"Example Retriever\" optimisation or it can also produce prompt from scratch like \"LLM as Optimizers\" ?\n\nIt is not clear if the teleprompter is just a way to retrieve a good example from your training dataset or it can also write a prompt from scratch , and in this case how .",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 220,
@@ -1991,7 +1998,7 @@
    ],
    "question_text": "ModuleNotFoundError: No module named 'openai.error'\n\nWhen running colab example\nthe first cell, containing the below code results in\n[code]\nRunning `pip install -U openai` does not help. Does the DSPy relies on some concrete openai library version or am I missing something?",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 224,
@@ -2111,7 +2118,7 @@
    ],
    "question_text": "How to set prompt templates for local models?\n\nLocal models are often sensitive to be prompted with their own prompt template. For example, for Mistral models that would be:\n[code]\nWhat's the mechanism a user of `dspy` should use to set the correct prompt templates for an llm?",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 232,
@@ -2435,7 +2442,7 @@
    ],
    "question_text": "Support Assistant API\n\nhttps://platform.openai.com/docs/assistants/overview\nOpenAI put Assistant API into Beta",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 293,
@@ -2537,7 +2544,7 @@
    ],
    "question_text": "TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'\n\nHey,\nWhen I try the [Getting Started Notebook](https://github.com/stanfordnlp/dspy/blob/main/intro.ipynb) with Ollama, the first time I run one of the examples it works fine. But the next time it's maybe cached and throws an error around token use?\n[code]\nFirst time:\n[code]\nTry again:\n[code]",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 298,
@@ -2651,7 +2658,7 @@
    ],
    "question_text": "Production deployment guide\n\nWhat is best way to deploy the compiled model ? Do we need to run the compilation pipeline for every input or we just take the compiled model and deploy this in production environment? Any kind of guide on configuration and deployment to production will help .",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 321,
@@ -2711,7 +2718,7 @@
    ],
    "question_text": "[feat] Adding toolkits to llms\n\nIs there any future provision for adding toolkits to DSPy, like calendar, calculators, google search, etc?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 355,
@@ -2771,7 +2778,7 @@
    ],
    "question_text": "add system prompt design to GPT model\n\nIt seems missing a key feature: \"system prompt\"\n\"system prompt\" impacts gpt-model significantly\nat least let as can put in config or somewhere else?",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 356,
@@ -2795,7 +2802,7 @@
    ],
    "question_text": "Support VQA tasks or Image Captioning?\n\nAny plan to support VQA or Image Captioning tasks with image inputs using Hugging Face models?",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 362,
@@ -2866,7 +2873,7 @@
    "comments": [],
    "question_text": "Could we have release management for DSPy?\n\nThis is not an issue per se, but since there's no Discussions tab in the repo for Q&A, I thought I could raise this here..",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 377,
@@ -2944,7 +2951,7 @@
    ],
    "question_text": "Using DSPy with Azure OpenAI fails (when `openai >= 1.0.0`)\n\nWhen I execute this code without `api_base`\n[code]\nI get this error `AssertionError: Must specify api_base for Azure API`.\nWhen I set it up `api_base=azure_endpoint`, the error disappears.\nNow, when I call the LM:\n[code]\nI get this error `ValueError: base_url and azure_endpoint are mutually exclusive`\nThe reason is because DSPy configures the LM it this way:\nhttps://github.com/stanfordnlp/dspy/blob/2d8db68c7258eda8db15a1b3cfa15ec3a15eb587/dsp/modules/gpt3.py#L95\nTo sum up, this is the behaviour of `openai` regarding `base_url`:\nhttps://github.com/openai/openai-python/blob/7f9e85017a0959e3ba07834880d92c748f8f67ab/src/openai/lib/azure.py#L197\n[code]\nI'm just thinking why DSPy is forcing the library consumer to use `base_url` instead of delegating this to `openai`; in my use case, I'm stuck/blocked..",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 385,
@@ -2992,7 +2999,7 @@
    ],
    "question_text": "support mlx as backend?\n\nIs it possible to support MLX as backend? That would be great for local development environment.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 414,
@@ -3028,7 +3035,7 @@
    ],
    "question_text": "How to use a local finetuned model\n\nI have a model that was downloaded from hugging face and finetuned. How do I choose it as my llm? thanks",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 416,
@@ -3058,7 +3065,7 @@
    ],
    "question_text": "How to use endpoint for model published on EC-2 server\n\nHi, I was wondering if we use custom endpoint for LM. I have published my model on an ec2-machine and calling my model vi API through endpoint to do inference tasks. I am not sure how to integrate it with dspy.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 429,
@@ -3130,7 +3137,7 @@
    ],
    "question_text": "how to connect to llama-2-7b.ggmlv3.q4_K_S.bin\n\nHi,\nI am trying to connect llama-2-7b.ggmlv3.q4_K_S.bin from DSPy code and i am not able to find right way to do this. Can someone please explain or guide me to a document on do this? Btw, i am able to connect using OpenAI.\nRegards,\nDeepak.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 441,
@@ -3160,7 +3167,7 @@
    ],
    "question_text": "How to use Mıstral API\n\nHow to use Mıstral API as an llm for mistral medium model? Can I get an example code.\nI am using it like that: llm = dspy.OpenAI(api_base='https://api.mistral.ai/v1/', api_key='MY_API_KEY', model='mistral-medium', model_type='chat')\nHowever, error occurs and 422 Unprocessable Entity error specifically points out that frequency_penalty, n, and presence_penalty are not permitted in the request body. Mistral API does not allow these ones as parameter",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 448,
@@ -3190,7 +3197,7 @@
    ],
    "question_text": "Is it possible to use Llama-cpp-python with dspy?\n\nCan I use a model loaded with the Llama cpp for python library to power DSPy?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 454,
@@ -3234,7 +3241,7 @@
    ],
    "question_text": "How to serve a dspy model\n\nHave a simple model all configured but cannot get it to work on a Flask/FastAPI server. I have looked at similar issues brought up but nothing conclusive on if the problem was addressed. At bottom issue seemed to be something with threading. Can someone give me an example of how to do a simple forward pass with a Flask server?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 463,
@@ -3288,7 +3295,7 @@
    ],
    "question_text": "Integrate vertexai\n\nDo you plan to integrate Google's VertexAI?\nIf not, I can add little by little based on this https://github.com/langchain-ai/langchain/blob/master/libs/partners/google-vertexai/langchain_google_vertexai/llms.py",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 475,
@@ -3330,7 +3337,7 @@
    ],
    "question_text": "Fix dspy chain of thought doc\n\nSeems like the hint is not required for vanilla Cot?\nhttps://dspy-docs.vercel.app/docs/cheatsheet#dspychainofthoughtwithhint\nHappy to open a PR for the fix, seems minor. Any recommended workflow for that?",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 479,
@@ -3390,7 +3397,7 @@
    ],
    "question_text": "How to use dspy.OpenAI() like langchain.llms.OpenAI()\n\nHey, I'm trying to use my LLM on vLLM server which is exposed as an API.\nUsually, I create an openai LLM instance with Langchain like below, and it works fine.\n[code]\nI want to use `dspy.OpenAI` module in similar way,\n[code]\nGetting the following error,\n[code]\nAny idea how to use dspy.OpenAI like above ?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 487,
@@ -3510,7 +3517,7 @@
    ],
    "question_text": "DSPy framework and support for AWS BedRock\n\nhi,\nCan someone please let me know whether **DSPy** framework support models hosted on **AWS Bedrock**? And can I use `dspy.OpenAI() `for Bedrock as well? It would be really great if someone can share me an example of `dspy.OpenAI() `with bedrock endpoint.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 494,
@@ -3598,7 +3605,7 @@
    ],
    "question_text": "How to use any quantized huggingface transformers model\n\nHey,\nI'm trying to use a quantized model due to memory issue.\nWe usually load the model like this,\n[code]\nHow to use this quantized model with dspy?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 518,
@@ -3738,7 +3745,7 @@
    ],
    "question_text": "Add 🤗Hugs Adapter (various useful huggingface adapters for specialized models)\n\nllm based \"1-5\" prompts suffer from numerous biases like confirmation bias.\nIdentify hosted endpoints on huggingface for specialized models that are more appropriate for dspy specific tasks like evaluation, agent functions.\n- Contribute Here:[https:/git.tonic-ai.com/contribute/DSPy/dspy/](https://tonic-ai-git.eastus2.cloudapp.azure.com/contribute/DSPy/dspy/)\n- [DSPy/Hf_client](https://github.com/stanfordnlp/dspy/blob/c8375fc0b877a22371233f68cf945bdf23f12ee3/dsp/modules/hf_client.py)\n- [evaluation](https://github.com/stanfordnlp/dspy/blob/c8375fc0b877a22371233f68cf945bdf23f12ee3/dsp/evaluation/utils.py#L4)\n- [auto-evaluation](https://github.com/stanfordnlp/dspy/blob/c8375fc0b877a22371233f68cf945bdf23f12ee3/dspy/evaluate/auto_evaluation.py#L4)\n- [full lm interoperability](https://github.com/stanfordnlp/dspy/pull/674) : good for standards used here\n- [ ] identify and select appropriate models on huggingface\n- [ ] produce the documentation for each function\n- [ ] add modules to dsp/modules\n- [ ] Add hugs __call__ in LM\n- [ ] add utilities to dsp/utils\n- [ ] Add hugs.py adapter(s) in dspy/adapter\n- [ ] add testing notebooks",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 525,
@@ -3787,7 +3794,7 @@
    ],
    "question_text": "Support python 3.12\n\nPython 3.12 has significant improvements for asyncio: https://docs.python.org/3/whatsnew/3.12.html\n\"The [asyncio](https://docs.python.org/3/library/asyncio.html#module-asyncio) package has had a number of performance improvements, with some benchmarks showing a 75% speed up.\"\nI know dspy doesn't support asyncio yet but given the discussions around supporting it, it's worth supporting 3.12.\nFrom doing this on a branch, seems like the one missing dependency is onnx, which recently added support for 3.12 and will support it officially with their 1.16 release: https://github.com/onnx/onnx/issues/5884",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 575,
@@ -3901,7 +3908,7 @@
    ],
    "question_text": "format_handler error when setting non-string as type for OutputField\n\nThanks for all your hard work on this project.\nWhen trying to set the `dspy.OutputField` as a list\n[code]\nreturns this error when running the compiler:\n[code]\nI scoured the docs and code but couldn't make sense of this error. I know it has something to do with Template V2 put past that I gave up.\nSo the questions are:\n* Is it only possible to provide strings as field types?\n* If we can provide other types, how do we properly set the `format_handler`? The only option I see is to provide a `format` argument - but this is not clear what is supposed to go there. The [docs](https://dspy-docs.vercel.app/docs/deep-dive/signature/understanding-signatures#class-based-method) mention the `format` arg only in passing\n* Do we have to request some form of json output as discussed in #264 instead? I have inquired about what \"typed dspy\" means in this context in that issue\nI think at the very least we need a better error message. I would be happy to help with this - just need to understand whats happening here first :)\nBy the way, we get the same error when using a non-string type for the `dspy.InputField` too\nThanks for any guidance",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 578,
@@ -4003,7 +4010,7 @@
    ],
    "question_text": "Docs Discrepancy / Clarification Needed\n\nHow are we currently building docs?\nI see [Vercel](https://dspy-docs.vercel.app/) is what’s publicly facing, but we also have a mkdocs.yml in the root of the dspy repo. Running `mkdocs serve` used to produce documentation locally that was very different from the vercel documentation (fully different landing page, different UI, UX, etc); now it doesn't build at all.\nIf we can clarify how/where docs are generated, and how the community can contribute to said docs, awesome. I'm down to implement and PR if this can be first clarified here.\n@krypticmouse tagging you at @okhat 's request.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 590,
@@ -4105,7 +4112,7 @@
    ],
    "question_text": "How to change the generation length\n\nHey,\nI'm initializing my LM as follows,\n[code]\nBut the response length is still short.\nI have not provided any such `desc` in `dspy.OutputField()` too.\nAny idea why am I facing this ?",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 595,
@@ -4135,7 +4142,7 @@
    ],
    "question_text": "colab note: An error with suggestion was encountered during execution\n\nWhen executing the `6] Compilation With Assertions` of [this notebook](https://colab.research.google.com/github/stanfordnlp/dspy/blob/main/examples/longformqa/longformqa_assertions.ipynb#scrollTo=-ONhE9V5uzgS), the following problem is encountered:\n[code]\nSuggestion: If need to get the code of dspy codebase when making a colab notebook, specify the url corresponding to the specific commit when providing the url.",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 621,
@@ -4183,7 +4190,7 @@
    ],
    "question_text": "how to connect my LM by a client?\n\nthis is one LM deployed in my company, and now i can use it by a grpc client. so how can i connect this LM with dspy? Thanks!",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 633,
@@ -4493,7 +4500,7 @@
    ],
    "question_text": "TypedPredictor asking for 'very succinct' object leads to incomplete object in output\n\nWhen a typed predictor creates examples, it uses the following promt [here](https://github.com/stanfordnlp/dspy/blob/7227e7081d8edc3d0ffc2729f7c97871aa61338b/dspy/functional/functional.py#L103), which states:\nThis is problematic. In my case I have a quite complex schema with many fields, a few of which are nested. Sometimes the prompt works, but often the object that's output is missing required fields. I think the root cause is that the example that's created by that prompt is also missing fields.\nNote that it seems the model (GPT4) is aware of this. Beneath the LLM-generated example, the model notes that\nI think your intention with `very succinct` is that this is just an example, so the model should not waste tokens creating a long/verbose/expressive example. That totally makes sense. But empirically I'm observing that the example has become so succinct that it's actually not valid, leading to the output also being invalid.\nThus I would suggest modifying this prompt a bit to something like\ncc @thomasahle",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 715,
@@ -4525,7 +4532,7 @@
    ],
    "question_text": "Predictors hang when errors happen in multithreading\n\nConsider these three programs:\n**Program 1:**\n[code]\n**Program 1:**\n[code]\n**Program 3:**\n[code]\nProgram 1 works.\nProgram 2 throws an error (TypeError: TypedPredictor.forward() takes 1 positional argument but 2 were given)\nProgram 3 just hangs forever.\nI'm not sure what in dspy's multithreading is causing this, but I spent an hour today debugging a problem because of it.\nI know dspy and threading is a bit complicated right now, and maybe not supported at all, but if there's any way to at least give some more information when it fails, it would be greatly appreciated.",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 718,
@@ -4542,7 +4549,7 @@
    "comments": [],
    "question_text": "Why is the `HFClientVLLM` accepting `kwargs` to discard them and never pass those by to `vLLM`?\n\nOne might think from [reading the doc:](https://dspy-docs.vercel.app/docs/deep-dive/language_model_clients/local_models/HFClientVLLM#setting-up-the-vllm-client) that it's possible to use the full extent of the [keyword arguments offered by vLLM](https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html#extra-parameters-for-completions-api)\nas well [that for the `_generate` method](https://dspy-docs.vercel.app/docs/deep-dive/language_model_clients/local_models/HFClientVLLM#under-the-hood)\n![image](https://github.com/stanfordnlp/dspy/assets/28846642/508a127f-ab9c-4948-8ee0-ac8dc800849d)\n**In the `__init__`: the `kwargs` is not used nor attached to the instance**\nhttps://github.com/stanfordnlp/dspy/blob/c8375fc0b877a22371233f68cf945bdf23f12ee3/dsp/modules/hf_client.py#L116-L131\n**And in the generate the only 3 keys are specifically used, the rest is discarded and never passed to the payload**\nhttps://github.com/stanfordnlp/dspy/blob/c8375fc0b877a22371233f68cf945bdf23f12ee3/dsp/modules/hf_client.py#L131-L158\n---\nIs there a specific reason for doing this?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 724,
@@ -4578,7 +4585,7 @@
    ],
    "question_text": "How to best use TypedPredictors?\n\nI want to extract information using pydantic types, and generate many examples like in the Readme.\n[code]\nI get an error:\n[code] \"):\n[284](..../lib/python3.12/site-packages/dspy/functional/functional.py:284) if not output.startswith(\" [code]\nWhat is the best way to use Typed Predictors?\nI was trying something like [this](https://github.com/stanfordnlp/dspy/discussions/723) to but failed.",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 736,
@@ -4608,7 +4615,7 @@
    ],
    "question_text": "How to use DSPy on Databricks cluster with HFClientVLLM\n\nWhile we can use the below code for [local](http://localhost) installation. Can you suggest what needs to be replaced instead of local host when we are hosting Mistral7B on Databricks cluster?\nThis throws a port exception error given I have a cluster of GPU",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 767,
@@ -4692,7 +4699,7 @@
    ],
    "question_text": "Support for Fireworks API Models with DSPY\n\nHello DSPY community. I am trying to work out why my use of firework is failing when loaded into DSPY. I've been trying to find an example without success, but I'm hoping someone who has experience with getting hosted models to work can clue me in to how to do this with dspy. My code is this:\n[code]\nThe output is this:\n[code]\nWhat the output shows is\n1) the Fireworks API key is correct.\n2) the model I am using can be found and used by my python code.\n3) something about DSPY loading the model causes it to fail.\nThis seems like a bug. I thought I would report it and ask if there is a way to load models from Fireworks into DSPY? If not, I think it would be a good feature, as my students don't have the resources to deal with local models, or hosted models at cost. Fireworks offers free way for them to experiment with and learn DSPY. Thanks.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 778,
@@ -4716,7 +4723,7 @@
    ],
    "question_text": "Support for vLLM chat completion endpoint\n\nCurrently, i noticed the module HFClientVLLM only calls the completion endpoints. As vLLM now support applying chat templates. Would it be possible to add support for chat completion endpoints?\nthe following is a naive approach to add a chat completion support, edited the _generate method for HFClientVLLM\n[code]",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 789,
@@ -4818,7 +4825,7 @@
    ],
    "question_text": "Is there a generic way to change model's `max_tokens` dynamically?\n\nI have a use case where I want to use the same LM in different steps with different `max_tokens` and context size. I use `dspy.configure` to set this LM.\nSome of my steps will require much shorter output, so it would be useful to do something like this:\n[code]\nIs it currently possible to simulate this? If yes, how can I specify pass this to lm's `kwargs`?\nObviously one could do this by resetting `dspy.context(lm=...)` but it would be pretty cumbersome, it also seems for me that the point of `dspy.configure` to set LM is that the modules should abstract over what LM is actually used (but setting a key parameter like the context length or number of generated tokens seems reasonable).",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 802,
@@ -4914,7 +4921,7 @@
    ],
    "question_text": "Change example model to non gated model\n\nWhen I try to instantiate a model with the example from the documentation (https://dspy-docs.vercel.app/docs/building-blocks/language_models) with\n[code]\nI'm getting\n[code]\nHow about just changing the model to `mistralai/Mistral-7B-Instruct-v0.2`?\nSeems to work without issues.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 823,
@@ -4962,7 +4969,7 @@
    ],
    "question_text": "HFModel puts the entire prompt as the output\n\nWhen using HFModel, the entire prompt is included in the output Prediction. It works as expected using Ollama\nSorry, I could not test it with the same model. My laptop is not able to run mistral-7B directly from HF. I could not find a small model that is present both in Ollama and HF hub.\nI know that HFModel is not recommended. However, running docker containers in the UCL cluster is really challenging. Thus, I cannot use Ollama, VLLM, etc. Any alternative if HFModel is welcomed.\nNot sure to which extent it would be hard to lift and shift from LangChain or LLamaindex. Unfortunately beyond my expertise.\nhttps://api.python.langchain.com/en/latest/_modules/langchain_community/llms/huggingface_pipeline.html#HuggingFacePipeline\nhttps://github.com/run-llama/llama_index/blob/main/llama-index-integrations/llms/llama-index-llms-huggingface/llama_index/llms/huggingface/base.py\n[code]\nHFModel + Tau-0.5B\n[code]\nHF Model output\n[code]\nUsing Ollama + Mistral 7B\n[code]\nOllama output\n[code]",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 832,
@@ -4979,7 +4986,7 @@
    "comments": [],
    "question_text": "Does DSPy support Quanization for HF Models ?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 852,
@@ -5045,7 +5052,7 @@
    ],
    "question_text": "How to use OpenAI compatible 3rd party APIs (e.g. tgi/OpenRouter/VLLM etc)?\n\nAppreciate any help with this.\nWhile looking at this documentation: https://dspy-docs.vercel.app/api/language_model_clients/OpenAI\nIt was not clear how to set api base URL/key etc (e.g. OPENROUTER key instead of OpenAI key)\nCopied from docs\n[code]",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 878,
@@ -5141,7 +5148,7 @@
    ],
    "question_text": "Support OpenAI Batch requests.\n\nCan we support OpenAI Batch requests.\nExample use cases are classification, translation etc.\nReference:\nhttps://twitter.com/OpenAIDevs/status/1779922566091522492\nhttps://platform.openai.com/docs/api-reference/batch",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 892,
@@ -5171,7 +5178,7 @@
    ],
    "question_text": "Async Metric\n\nIs there any way to provide an async function as a metric? I haven't seen anything yet",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 899,
@@ -5195,7 +5202,7 @@
    ],
    "question_text": "Documentation\n\nIs any of the documentation created with an LLM?",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 913,
@@ -5273,7 +5280,7 @@
    ],
    "question_text": "How can I control the `Follow the following format` in the prompt?\n\nHello\nI have this code\n[code]\nThis produces this output\n![image](https://github.com/stanfordnlp/dspy/assets/392820/71931908-c4c4-45ab-85cc-677ddf52d6a8)\nWhere this `Follow the follow format` is coming from? And how can I change it?\nI want to generate only the answer, not the `tokens`",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 915,
@@ -5385,7 +5392,7 @@
    ],
    "question_text": "Make multi-threaded Evaluate(.) easier to interrupt\n\nThis gist seems like a great approach.\nhttps://gist.github.com/mrdrozdov/832cce1dd7d5830e66898486712fdea5",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 991,
@@ -5439,7 +5446,7 @@
    ],
    "question_text": "Support for batching for LM clients (OpenAI, vLLM etc)\n\nI have seen conversations where it has been mentioned that Evaluate has `num_threads` parameters that can parallelize but I am not completely sure if it provides significant performance gains compared to batching.\nReasoning:\n* Python doesn't truly support multi-threading.\n* Bottleneck in performance is sending data over to the GPU.\nSolution:\n* Send a batch of data even when running the dspy.Predict()\nFor example:\n[code]",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 994,
@@ -5519,7 +5526,7 @@
    ],
    "question_text": "Allow customization of DSPy template\n\nCurrently the way the instructions and format are passed to the LM uses a hardcoded template with `TemplateV2` as far as I understand. I've observed that depending on the model, this format is suboptimal. For example: Llama3-8b-instruct sometimes has difficulty recognizing what are input fields and what are output fields. I think it would be much nicer to have the option to customize all parts of the template by using something like a Jinja template. For example:\n[code]\nIf this is too much work at least dependency injection of the `Template` class would be cool to have, such that we don't have to fork DSPy for every change in template that we want. I can offer to contribute on this, but I'm not familiar enough with the lib to say how much effort this would be.",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 997,
@@ -5536,7 +5543,7 @@
    "comments": [],
    "question_text": "What castle did Thomas Gregory inherit?\n\nHello,\nI am new to dspy and play the demos one by one, it looks so fun!\nIn the [Intro Notebook](https://github.com/stanfordnlp/dspy/blob/main/intro.ipynb), I changed the question to \"What castle did Thomas Gregory inherit?\", and \"Thomas Gregory\" is a fake name, I expected the answer is \"not mentioned\". But the answer still is \"Kinnairdy Castle\", I wonder is there any solution to fix it? Thanks!",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 998,
@@ -5553,7 +5560,7 @@
    "comments": [],
    "question_text": "Confusion about return types of retrievers\n\nwhen we set a rm in dspy, and we call the dspy.Retrieve, the following lines will be executed\nhttps://github.com/stanfordnlp/dspy/blob/b05394bb20722444648a33b4447156bcef202fd6/dsp/primitives/search.py#L8-L24\nso we can see in L12, the `passages` return by retrievers should be a list of dotdict which has `long_text` attribute.\nBut we can find the base class of retrievers should return `Prediction`\nhttps://github.com/stanfordnlp/dspy/blob/b05394bb20722444648a33b4447156bcef202fd6/dspy/retrieve/retrieve.py#L32-L32\nthe official example which uses `dspy.ColBERTv2` returns List[dotdict] instead of Prediction (although it is not a dspy.Retrieve)\nhttps://github.com/stanfordnlp/dspy/blob/b05394bb20722444648a33b4447156bcef202fd6/dsp/modules/colbertv2.py#L35\nand we now have two kinds of retrievers, one return List[dotdict]\n- azureaisearch_rm.py\n- chromadb_rm.py\n- clarifai_rm.py\n- vectara_rm.py\nanother one return dspy.Prediction\n- databricks_rm.py\n- mongodb_atlas_rm.py\n- pinecone_rm.py\n- ragatouille_rm.py",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 1003,
@@ -5613,7 +5620,7 @@
    ],
    "question_text": "May I ask if dspy supports multimodal models, such as VLM models like gpt4 vision?\n\nMay I ask if dspy supports multimodal models, such as VLM models like gpt4 vision?\nIf you could provide examples, that would be even better.",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 1006,
@@ -5630,7 +5637,7 @@
    "comments": [],
    "question_text": "Add PremAI python sdk\n\n[Prem AI](https://premai.io) is a generative AI platform that lets developers seamlessly integrate generative AI solutions (LLM generation, fine-tuning, RAGs, etc) in best way possible.\nThis issue proposes to add it inside the dspy modules.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1016,
@@ -5696,7 +5703,7 @@
    ],
    "question_text": "BootstrapFewShotVision\n\nIs there interest in a BootstrapFewShotVision module?\nIt could bootstrap examples for vision models using image generation models and be added similar to other components:\n[code]\nIf this is something that could be merged I would look into it.",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 1018,
@@ -5762,7 +5769,7 @@
    ],
    "question_text": "How to convert a AutoModelForCausalLM object to a dspy model object?\n\nimport dspy\nllm = dspy.HFModel(model='model')\nThis method takes a string as input for the model if i have a quantized model object of the class AutoModelForCausalLM How i can convert the model object to dspy object?\ndirect assignment gives error on inference\nllm = model #previously created as AutoModelForCausalLM class object\nllm(\"Testing testing, is anyone out there?\")\nError After Code Line 4 File /opt/conda/lib/python3.10/site-packages/transformers/models/llama/modeling_llama.py:623, in LlamaModel.forward(self, input_ids, attention_mask, position_ids, past_key_values, inputs_embeds, use_cache, output_attentions, output_hidden_states, return_dict) 621 raise ValueError(\"You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time\") 622 elif input_ids is not None: --> 623 batch_size, seq_length = input_ids.shape 624 elif inputs_embeds is not None: 625 batch_size, seq_length, _ = inputs_embeds.shape\nAttributeError: 'str' object has no attribute 'shape'",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1055,
@@ -5809,7 +5816,7 @@
    "comments": [],
    "question_text": "How to actually view the full API call that dspy is making? [In my case, interested in examples]\n\nEDIT: Closed.",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 1073,
@@ -5863,7 +5870,7 @@
    ],
    "question_text": "Add an unique id for every entry in history\n\nWe can infer that, history in dspy acts as a trace, where we can see previous LLM response along with all the additional arguments. However, with more and more llm responses, it becomes hard to follow along the traces, since this is a list. And this becomes a common problem for all the supported LLMs in `dsp.modules`\nSo my proposal is to have some id parameter with the following example standard:\n[code]\nor we can also use uuid but then add, date-time parameter seperately. The reason I put emphasis on datetime, because it makes easier to do some filter operations.\nLet me know what everyone thinks on this.",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 1076,
@@ -5977,7 +5984,7 @@
    ],
    "question_text": "Triton Inference Server\n\nWhen it comes to fully production grade inference servers, TIS is very much optimized and open sourced. So an integration of this in dspy along with trt llm (#1094) would be some great additions.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1103,
@@ -6031,7 +6038,7 @@
    ],
    "question_text": "Adding information to tqdm\n\nCould it make sense to add more information to the tqdm progress bars, e.g. \"FINISHED EARLY\" when enough examples are collected? That text can be added to the progress bar itself using tqdm.\nAlso I wish we had nested tqdm progress bars for optimizers/teleprompters that generate multiple programs.\nThat way you could see the progress of the current program and also the progress for the whole search.\nExamples of nested tqdm can be seen here:\nhttps://medium.com/@harshit4084/track-your-loop-using-tqdm-7-ways-progress-bars-in-python-make-things-easier-fcbbb9233f24",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 1119,
@@ -6055,7 +6062,7 @@
    ],
    "question_text": "Where does this model call the OpenAI API?\n\n\"Where does this model call the OpenAI API? I want to call my own API interface, but I can't find the configuration file. Where should I configure it?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1122,
@@ -6085,7 +6092,7 @@
    ],
    "question_text": "Modifying optimized prompt in dspy.Predict\n\nIs there a way to modify the optimized prompt used by a dspy program?\nI am using dspy for a classification task where I am providing the list of classes to choose from. However, the list of classes is large (1000 classes), and the optimized prompt for chatgpt 3.5/4 uses few-shot learning, and so the list of classes is repeated in the prompt multiple times. This is a problem due to the rate limit of the gpt models. I want to modify the prompt, i.e: submit custom prompt where I only provide the list of classes once.",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 1131,
@@ -6169,7 +6176,7 @@
    ],
    "question_text": "How to set a max input length?\n\nI'm using a LLM being served by Hugging Face's TGI. TGI enforces a max-input-tokens setting, which is typically set to the context length of the model. Any requests to the endpoint which exceed this limit are rejected. This rejection causes DSPy to throw an exception and exit as seen here:\n[code]\nIs there a way to limit the max input length of all queries that get sent to the LLM, such that they never exceed a set context length?",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 1133,
@@ -6211,7 +6218,7 @@
    ],
    "question_text": "How to work with ChatOpenAI\n\nI want to use chatopenai of langchain core to interact with dspy, but something went wrong. On its run to predict.langchain, the error is as follows\n[code]\nWhat should I do to fix it？",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1144,
@@ -6265,7 +6272,7 @@
    ],
    "question_text": "Add support for Amazon Bedrock Claude 3 models\n\nWhile DSPy can be used easily with Claude 2 and Claude Instant models, DSPy does not support the Messages API which is required to use the new Claude 3 (Haiku/Sonnet/Opus) models in Amazon Bedrock. Please support the new Messages API.\n1. Use the following code:\n[code]\n2. See it working\n3. Change the model ID to `anthropic.claude-3-haiku-20240307-v1:0`\n4. Run the code again and see it fail with error: `ValidationException: An error occurred (ValidationException) when calling the InvokeModel operation: \"claude-3-haiku-20240307\" is not supported on this API. Please use the Messages API instead.`",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1159,
@@ -6319,7 +6326,7 @@
    ],
    "question_text": "Error installing dspy from git due to setup.py {VERSION_PLACEHOLDER}\n\nWhen installing dspy from git it gives an error due to setup.py line containing `name=\"{{PACKAGE_NAME_PLACEHOLDER}}\",` and `version=\"{{VERSION_PLACEHOLDER}}\",`. The version in pypi is 2.4.10 and package_name_placeholder value is dspy-ai. Is there a difference between git vs the published pypi package?\n[code]",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 1201,
@@ -6403,7 +6410,7 @@
    ],
    "question_text": "No module named 'mlc_chat'\n\nwhen i used this to load local module,it print No module named 'mlc_chat' in dsp/modules/hf_client.py line 464\n[code]\nhow to resolve it\nmy versions:\npython: 3.10\ndspy-ai: 2.4.10",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 1207,
@@ -6593,7 +6600,7 @@
    ],
    "question_text": "How to use Function calling in DSPy?\n\nI am trying to build an Agent using Function Calling and try to implement it with DSPy, but I haven't found the instructions for using DSPy with function calling.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1220,
@@ -6617,7 +6624,7 @@
    ],
    "question_text": "How to use the dspy to get embeddings for MTEB tasks?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1236,
@@ -6647,7 +6654,7 @@
    ],
    "question_text": "How to set the concurrency when using a custom api to access the model?\n\nMy api access concurrency is 5, I want to know how dspy handles concurrency when sending requests? Where can I set this parameter?",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 1238,
@@ -6703,7 +6710,7 @@
    ],
    "question_text": "Support custom signature format\n\n[code]\nThis is an extremely opinionated format",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 1251,
@@ -6786,7 +6793,7 @@
    ],
    "question_text": "Debug in DSPy\n\nIs there any way to see whats really happening under the hood when using `ChainOfThough` and `ReAct` while the program is running rather than looking at the history at the end of the program?",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 1308,
@@ -6864,7 +6871,7 @@
    ],
    "question_text": "How to view the optimized prompt ？\n\n[code]\nThe above is the code I executed，The following is the output result\n[code]\nHow to view the optimized prompt ？",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 1318,
@@ -6881,7 +6888,7 @@
    "comments": [],
    "question_text": "LlamaIndexRM returning Example with attribute `text` instead of `long_text`\n\nWhen using the LlamaIndexRM, `dsp/primitives/search.py` expects the RM to return an example with the attribute `long_text` instead of what LlamaIndexRM returns which is `text`.\nhttps://github.com/stanfordnlp/dspy/blob/4d4fa520e5c0e36385bc6202f0e4a4f4775ca33d/dsp/primitives/search.py#L19\nThis is resolved by simply changing this line\nhttps://github.com/stanfordnlp/dspy/blob/4d4fa520e5c0e36385bc6202f0e4a4f4775ca33d/dspy/retrieve/llama_index_rm.py#L86\nto\n[code]\nHere is the full trace:\n[code]",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 1326,
@@ -6919,7 +6926,7 @@
    ],
    "question_text": "How to handle Exceptions when calling Azure OpenAI model API\n\nI am currently working on a project that labels the sentiment of a response, For a response the API results in a BadRequestError due to Azure's content policy management. I am trying to catch this exception by handling it via a try-and-catch block but It isn't getting caught and I get the error repeatedly as it retries sending that response to API indefinitely. I am using DSPY to abstract away the prompting techniques but I am curious about how I can access the payload to handle exceptions from the API calls to Azure OpenAI models",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1342,
@@ -6989,7 +6996,7 @@
    ],
    "question_text": "Is it possible to make concurrent for every lm api calls？\n\nThere are many llm api calls during pipeline optimization.\nDoes DSPY support asynchronous calls to LLMs yet? When trainset size up to hundreds level, the current sequential execution is too time-consuming and takes hours. I'm looking for ways to optimize the process and speed it up.\nThanks.",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 1360,
@@ -7033,7 +7040,7 @@
    ],
    "question_text": "Support for AWS Credentials Input in dspy.Bedrock\n\nI would like to request support for **providing AWS credentials directly as input parameters** in the **dspy.Bedrock** function\n**Current Behavior:**\nCurrently, the dspy.Bedrock function supports setting the AWS region and Profile but does not allow for AWS credentials (access key and secret access key) to be provided directly. The only method available is to use an AWS profile through the profile_name option, which assumes credentials are managed via the AWS credentials file.\n**Desired Behavior:**\nTo enhance flexibility and use cases, I propose adding parameters to the dspy.Bedrock function that accept AWS credentials directly. This would allow users to specify:\naws_access_key_id\naws_secret_access_key\nThank you",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1367,
@@ -7050,7 +7057,7 @@
    "comments": [],
    "question_text": "Add support for default_headers in OpenAI client\n\n**Description**\nOpenAI Client accepts default_headers parameter, this is used to add headers for logging and tracing and authentication through proxies.\nSince the wrapper has to OpenAI SDK compliant, DsPy has to support this parameter\n**Exploration**\nThere's two fixes,\n1. Create a named argument to the init method for the OpenAI wrapper\n2. Initialize the open client with all the arg\n**Proposed solution**\nWill raise a PR",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1379,
@@ -7202,7 +7209,7 @@
    ],
    "question_text": "Add DeepSeek as part of modules for LM\n\nHey guys,\nDo we have plans to add DeepSeek in the near future or the intent was to use the default OpenAI API instead?\nThanks!",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1426,
@@ -7250,7 +7257,7 @@
    ],
    "question_text": "Support of Wenxin's LLM\n\nHello everyone!\nThis framework is very useful, and I plan to use it in my project. My project intends to use Wenxin's large language model, and I hope to optimize the prompts based on it. Does anyone know if there's already an implementation for calling Wenxin's LLM? If not, I plan to work on this.\nThank you!",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1447,
@@ -7280,7 +7287,7 @@
    ],
    "question_text": "Where is the code for 0-Shot MIPRO?\n\nThis paper says the optimizer is in DSPy: https://arxiv.org/pdf/2406.11695",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 1455,
@@ -7328,7 +7335,7 @@
    ],
    "question_text": "Generate changelog from commit history (git log)\n\nWould be nice to have detailed changelogs in the [DSPy Releases page](https://github.com/stanfordnlp/dspy/releases), generated with one shell command with [commitizen](https://commitizen-tools.github.io/commitizen/). Releases could look like [this](https://github.com/nongrata081/ng-assessment/releases). Includes:\n- CLI-utility for creating [Conventional commits](https://www.conventionalcommits.org/en/v1.0.0/)\n- Automatic version bump using [semantic versioning](https://semver.org/) based on the latest type of commits.\n- Possibility to **generate a changelog** using [Keep a changelog](https://keepachangelog.com/)\nPlease let me know if this is a desired functionality. I can look into creating a Pull Request for this.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 1459,
@@ -7364,7 +7371,7 @@
    ],
    "question_text": "Does dspy.GROQ actually works?\n\naccording to https://dspy-docs.vercel.app/api/language_model_clients/Groq\n[code]\nI am really keen to complete this tutorial using the free GROQ/LLama3 service in the cloud - https://github.com/stanfordnlp/dspy/blob/main/examples/llamaindex/dspy_llamaindex_rag.ipynb - to use as a reference for other projects involving the use of DSPy and LlamaIndex.\nThank you for your kind attention.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1505,
@@ -7400,7 +7407,7 @@
    ],
    "question_text": "NameError: name 'mistralai_api_error' is not defined\n\nWhen trying to import `MilvusRM` from `dspy.retrieve.milvus_rm`, a `NameError` is raised indicating that `mistralai_api_error` is not defined. This error occurs in the `dsp` module, specifically in the `Mistral` class definition.\n[code]\nNameError: name 'mistralai_api_error' is not defined\n[code]\n1. Set up a Python environment with dspy installed\n2. Attempt to import `MilvusRM` from `dspy.retrieve.milvus_rm`\n- Python version: 3.11\n- dspy version: 2.4.16\n- Operating System: ubuntu 22.04",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 1514,
@@ -7436,7 +7443,7 @@
    ],
    "question_text": "Support for setting OpenAI project field in addition to api_key? (I would be happy to send PR; not requesting work from team)\n\nHello,\nThanks for a great project.\nIn https://platform.openai.com/settings/ , OpenAI allows the configuration (API keys, rate limits, usage, and allowed models, etc) to be grouped by Projects, which have IDs.\n![Screenshot_20240919_132005](https://github.com/user-attachments/assets/a6bfcb69-7732-4322-ac66-1392fd252b9e)\nThe current DSPy OpenAI adapter `dsp/modules/gpt3.py`\n(named gpt3.py but supports many OpenAI models like gpt4, and even o-1 as of https://github.com/stanfordnlp/dspy/commit/928068e866a9d13c42cefa851871841c42e6b5fb )\nobviously allows passing one's API key when instantiating it:\nhttps://github.com/stanfordnlp/dspy/blob/2cc029b03e18fe3bc05b5131ef3e02390af895b3/dsp/modules/gpt3.py#L59\nHowever, DSPy's OpenAI adapter does not currently seem to allow specifying a particular project. One can use project specific API keys to work around this pretty easily but it also just a couple of lines code change to allow picking up a project argument from the `kwargs`, something like:\n[code]\nadded right AFTER `self.kwargs` is defined in `__init__` at https://github.com/stanfordnlp/dspy/blob/2cc029b03e18fe3bc05b5131ef3e02390af895b3/dsp/modules/gpt3.py#L98\nwill do the trick (tested and verified by me).\n![add_project_support_manually](https://github.com/user-attachments/assets/ed8efc57-d9ae-41ba-9e24-45c9c52e59b2)\nAny interest in a quick PR from me (or your team if preferred) to allow users who have a single multi-project API key to specify which project their DSPy activity in that particular code execution should be tracked against?\nThanks again for an awesome project!\n(Credit to Stanford XCS224U for introducing me to DSPy)",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1518,
@@ -7556,7 +7563,7 @@
    ],
    "question_text": "Error: 'Name' object has no attribute 'ops'\n\nWhen using ProgramOfThought and code is generated with named conditionals like this:\n[code]\nThe following error message is generated.\n`Error: 'Name' object has no attribute 'ops'`\nThis can be fixed by adding the 'elif isinstance(condition, ast.Name):' statement in `python_interpreter.py` as shown below.\n[code]",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 1540,
@@ -7634,7 +7641,7 @@
    ],
    "question_text": "How to get LangFuse trace_id\n\nHey dspy team,\nI am trying to use langfuse tracer to trace my usage and most importantly capture cost. The place where I am struggling at the moment is getting hold of ``trace_id`` for each request that is generated with LLMs (eg: openai). I am able to get to the whole list of traces using ``TracerObject.langfuse.fetch_traces()`` and then using the ``data`` attribute to get to ``total_cost`` but this requires a whole lot of processing to filter the actual traces I am looking for.\nIs there a cleaner way I can make use of ``fetch_trace_id()`` method without creating a custom tracer? From what I understand the default implementation is not passing any id and expecting LangFuse to generate random trace ids.\nPS: _Kudos on the Amazing work in getting this integration in place_",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 1560,
@@ -7658,7 +7665,7 @@
    ],
    "question_text": "Does DSPy support soft prompt optimization?\n\nDoes DSPy support soft prompt optimization?\nas in\nhttps://arxiv.org/pdf/2104.08691\nhttps://arxiv.org/pdf/2306.03082",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 1601,
@@ -7718,7 +7725,7 @@
    ],
    "question_text": "How can I check the current version of the dspy package?\n\nI've tried the following methods without success\n[code]\nand\n[code]",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 1625,
@@ -7748,7 +7755,7 @@
    ],
    "question_text": "dspy.configure lm error\n\nwhen i call this method dspy.configure(lm=lm), i am taking below error. dspy version is 2.5.7\nAttributeError\nThis cell raised an exception: AttributeError('module 'dspy' has no attribute 'configure'')\nSee the console area for a traceback.\nTraceback (most recent call last):\nFile \"C:\\Users\\bayaz\\OneDrive\\Masaüstü\\morimo\\morimo\\Lib\\site-packages\\marimo\\_runtime\\executor.py\", line 171, in execute_cell\nreturn eval(cell.last_expr, glbls)\n^^^^^^^^^^^^^^^^^^^^^^^^^^^\nCell marimo://C:\\Users\\bayaz\\OneDrive\\Masaüstü\\morimo\\gemini_agents.py#cell=cell-9, line 1, in\ndspy.configure(lm=lm)\n^^^^^^^^^^^^^^\nAttributeError: module 'dspy' has no attribute 'configure'",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 1631,
@@ -7784,7 +7791,7 @@
    ],
    "question_text": "Permission Error When Using DSPy version 2.5.3 in Azure Functions (OSError: [Errno 30] Read-only file system: 'local_cache')\n\nWhen attempting to deploy an Azure Function using the DSPy package (version 2.5.3), we encounter a file system permission error. The error suggests that DSPy is trying to create a folder without the necessary write permissions in the Azure Functions environment.\n[code]\n[code]\nWe have already attempted to follow the steps outlined in the issue \"[Change local file logging handler? · Issue #480](https://github.com/stanfordnlp/dspy/issues/480)\", but the problem persists.\nAny assistance or guidance on resolving this issue in the context of Azure Functions would be greatly appreciated.\nThanks a lot!",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1646,
@@ -7808,7 +7815,7 @@
    ],
    "question_text": "using agent method with dspy\n\nDoes DSPY support the agents using openai swarm method ?can we make this as enhancement for dspy lib??\n@okhat",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1648,
@@ -7832,7 +7839,7 @@
    ],
    "question_text": "What is the default max_tokens?\n\ndspy.ChainOfThought('question -> answer', max_tokens=8000)\nMy output was getting cut off but after specifying the max_tokens, it works fine.\nSo I was wondering if i do not explicitly state the max_tokens arguments, what would be the default? Would it be the token limit of the AI model minus the input tokens?",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 1659,
@@ -7898,7 +7905,7 @@
    ],
    "question_text": "Context length exceeded when using VLMs\n\nHow does this lib is supposed to work with images correctly?\nMy current script is:\n[code]\nI get the following error:\n`ContextWindowExceededError: litellm.BadRequestError: litellm.ContextWindowExceededError: ContextWindowExceededError: OpenAIException - Error code: 400 - {'error': {'message': \"Invalid 'messages[1].content': string too long. Expected a string with maximum length 1048576, but got a string with length 3686558 instead.\", 'type': 'invalid_request_error', 'param': 'messages[1].content', 'code': 'string_above_max_length'}}`\nHowever, I do not get the same error when I use the normal openai package.",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 1672,
@@ -7915,7 +7922,7 @@
    "comments": [],
    "question_text": "Fix broken CONTRIBUTING.md link in README\n\nLabels: `documentation`\nThe link to CONTRIBUTING.md in the README is broken since version 2.5.0, where the file was removed. This prevents new contributors from accessing contribution guidelines.\nEither:\n- Restore CONTRIBUTING.md file\n- Update README to point to correct documentation\n- Add contribution guidelines directly in README\n- Issue introduced in v2.5.0",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 1675,
@@ -7932,7 +7939,7 @@
    "comments": [],
    "question_text": "How to use dspy connect llm gateway model？\n\nHow to use dspy connect llm gateway model？",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1721,
@@ -7998,7 +8005,7 @@
    ],
    "question_text": "Cookbook for DSPy with multimodal support\n\nAre there any examples that support local multimodal large models? Including data format, model loading method",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 1738,
@@ -8053,7 +8060,7 @@
    ],
    "question_text": "Has DSPy used techinque from \"Automatic Prompt Optimization with “Gradient Descent” and Beam Search\"\n\nI read from the DSPy paper that \"_DSPy seeks to generalize this space_ (discreate optimization)\". So I'm wondering has DSPy used techinque from \"Automatic Prompt Optimization with “Gradient Descent” and Beam Search\"([paper](https://arxiv.org/abs/2305.03495), [code](https://github.com/microsoft/LMOps/tree/main/prompt_optimization))",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 1758,
@@ -8077,7 +8084,7 @@
    ],
    "question_text": "max_tokens\n\nWhy does it only support 2048 when deploying the qwen2.5-7b-instruct model using vllm? And no matter how much I set max_tokens, it doesn't work。\nlitellm.ContextWindowExceededError: ContextWindowExceededError: OpenAIException - Error code: 400 - {'object': 'error', 'message': \"This model's maximum context length is 2048 tokens. However, you requested 5067 tokens (4067 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.\", 'type': 'BadRequestError', 'param': None, 'code': 400}. [dspy.teleprompt.bootstrap] filename=bootstrap.py lineno=210",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 1786,
@@ -8131,7 +8138,7 @@
    ],
    "question_text": "support for async dspy.LM\n\nHi, does Dspy currently support the asynchronous version of dspy.LM?\nwhich might be equivalent to the following:\n[code]",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 1788,
@@ -8167,7 +8174,7 @@
    ],
    "question_text": "Neo4jRM\n\nDoes Neo4jRM only support OPENAI_API_KEY? If not, how do I use my local Embedding model or any other ways to execute the code? Thanks.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1798,
@@ -8197,7 +8204,7 @@
    ],
    "question_text": "About VLM\n\nDo we support multi-image input? Thanks",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 1811,
@@ -8251,7 +8258,7 @@
    ],
    "question_text": "Is dspy.OllamaLocal here to stay?\n\nHey guys,\nI've missed out the latest updates over the past 1-2 months. I remember update from v2.5 that we will remove `dspy.OllamaLocal` and all else to be replaced by `dspy.LM` which uses `litellm` under the hood.\nFor those of us using local models, it seems we still need `dspy.OllamaLocal` since the newest `llama` and `qwen` models are not supported from `litellm`: https://docs.litellm.ai/docs/providers/ollama#ollama-models\nEven for the local models that are supported, the structured format fails frequently with `dspy.LM`, while `dspy.OllamaLocal` works for most cases.\nCould you share any forward guidance for those of us relying on local models for your roadmap?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1814,
@@ -8281,7 +8288,7 @@
    ],
    "question_text": "package.json is missing in /docs\n\nWhen following the instructions in the `/docs` directly to build the docs locally, `npm install` gives the following error:\n[code]\nThis is due to `package.json` not existing. I suspect the instructiosn in the README might be stale.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 1831,
@@ -8317,7 +8324,7 @@
    ],
    "question_text": "How to instrument with langsmith traces?\n\nHi there!\nI'm using langsmith to instrument my LLM calls.\nI had trouble making dspy work with it.\nUsually langsmith instrumentation is done either via:\n* @traceable decorator\n* wrapping the openAI client\n* using langchain\nIs there a way to pass my own custom openAI client for dspy to use?\nI noticed dspy is using litellm under the hood. Is there a way to provide it with a custom client?\nby the way, I tried going through [this](https://docs.litellm.ai/docs/observability/langsmith_integration) but it doesn't seem to work well, mainly because it creates a new trace for each dspy call, and I would prefer to use the wrapped client approach which will unify everything under the same trace.\nThanks!",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1835,
@@ -8359,7 +8366,7 @@
    ],
    "question_text": "How to change order of input and prompt/instruction for prompt caching\n\nHi,\nI would like to use dspy for extensive Q/A and information extraction on very long input texts. Since dspy builds the prompt based on the Signature and appends input fields, the resulting prompt will change for every question. I want to ask whether we can instruct dspy to place the instruction after the input. This way, we can reuse the KV cache in a self-hosted LLM or save money with OpenAI's prompt caching.\nThanks.",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 1842,
@@ -8413,7 +8420,7 @@
    ],
    "question_text": "Are Assertions and Suggests still a thing?\n\nI see they aren't linked to in the \"Learn DSPy\" documentation any longer. Is there functionality replaced by something else?",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 1859,
@@ -8479,7 +8486,7 @@
    ],
    "question_text": "How to use my own LM configuration.\n\n**Hello, I am a newbie to Dspy!**\nI'm going to use a model that isn't supported in LiteLLM ([\"Link\"](https://docs.litellm.ai/docs/providers/perplexity)) .\nHow do I adapt this code:\n[code]\n... into something like this:\n[code]\nHas anyone done this before?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1899,
@@ -8515,7 +8522,7 @@
    ],
    "question_text": "Support more ast types in Signature typed parsing\n\nOn the website, you [see this example](https://dspy.ai/#__tabbed_3_3):\n[code]\nThis would have been a lot cleaner as\n[code]\nWe already has support for most of this.\nIf you see https://github.com/stanfordnlp/dspy/blob/a8d11075daf7b39b890bf47d8d9d4aa8b1cc9b14/dspy/signatures/signature.py#L402 you just have to add a case for `ast.Constant`, like this:\n[code]\nThen you get\n[code]\nand\n[code]",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 1927,
@@ -8532,7 +8539,7 @@
    "comments": [],
    "question_text": "How to use Quantised Model of molmo ?",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1932,
@@ -8574,7 +8581,7 @@
    ],
    "question_text": "Why isn't JSONAdapter the default adapter option?\n\nIn `dspy/predict/predict.py` the default adapter is the `ChatAdapter`:\n[code]\nBut once that fails (`adapter/base.py`):\n[code]\nIt switches to the `JSONAdapter`.\nIn my experience the ChatAdapter always fails wasting the LLM call (at least 2 calls are done for each prompt).\nI know it can be set as default via `dspy.configure(lm=lm, adapter=dspy.JSONAdapter())`, but why isn't the `JSONAdapter` the default one?",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 1940,
@@ -8598,7 +8605,7 @@
    ],
    "question_text": "LLM doesn't provide structured data after migrating to new lm call in DSPy\n\nWhen I migrated from `llm = dspy.OpenAI(model='gpt-4o-mini')` to `llm = dspy.LM('openai/gpt-4o-mini') `, the following example doesn't work anymore:\nExample case, return list of cities mentioned in the user query:\n[code]\nIn the first version ( `llm = dspy.OpenAI(model='gpt-4o-mini')` ), it worked properly:\n[code]\nWhen I migrated to : `llm = dspy.LM('openai/gpt-4o')`, it failed :\n[code]",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 1954,
@@ -8634,7 +8641,7 @@
    ],
    "question_text": "Using MIPROv2 max_bootstrapped_demos > 0 with dspy.Image causes context to blow up\n\nWhen using a vlm, optimizing using MIPROv2 & setting `max_bootstrap_demos` > 0. The optimizer will put the b64encoded image string into the prompt causing the context to blow up beyond the 200k context window available.\n[code]\n[code]\nIt would be cool to get an `image -> answer` shorthand string notation",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 1966,
@@ -8718,7 +8725,7 @@
    ],
    "question_text": "how to serve model in vllm and use in dspy?\n\n[code]\nI have served my model using vllm\n[code]\nWhile trying to infer the served model in dspy using singature, i get this error\n[code]\nIt works while using openai client\n[code]\nCan anyone help me with this",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1987,
@@ -8760,7 +8767,7 @@
    ],
    "question_text": "Error when using gemini-1.5-flash model\n\nWhen I used gemini model following the instructions in \"other provider\" tag, there's an error of content generation.\nhere's my code:\n`lm = dspy.LM(\n\"gemini/gemini-1.5-flash\",\napi_key=GEMINI_API_KEY,\napi_base=\"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash\",\n)`\nand the problem is:\n[code]\nI changed the `api_base` to `https://generativelanguage.googleapis.com`, the error remains the same as well.",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 1989,
@@ -8826,7 +8833,7 @@
    ],
    "question_text": "How to optimize LM with self-generated chain-of-thought ?\n\nI'm trying to get dspy to generate the `reasoning` field itself and prepend this to the example used in few-shot prompting. I've been implementing sort-of as follows:\n[code]\nBut as look at the vllm server logs, all the reasoning fields in the exemplars were filled as `Not supplied for this particular example`, even though they were present during the bootstraping phase i.e. I could print `pred.reasoning` in `metric_func`.\nHow to make the Module save and preserve the reasoning field in few-shot examples ?",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 2007,
@@ -8880,7 +8887,7 @@
    ],
    "question_text": "How to get the last prompt？\n\nHi, its a good job! And when I want to get the last prompt using ,it returns like followed:\n`[2025-01-02T21:33:21.657114]\nSystem message:\nYour input fields are:\n1. `question` (str)\nYour output fields are:\n1. `reasoning` (str)\n2. `answer` (str)\nAll interactions will be structured in the following way, with the appropriate values filled in.\n[[ ## question ## ]]\n{question}\n[[ ## reasoning ## ]]\n{reasoning}\n[[ ## answer ## ]]\n{answer}\n[[ ## completed ## ]]\nIn adhering to this structure, your objective is:\nXXX\nUser message:\n[[ ## question ## ]]\nXXXX\nRespond with the corresponding output fields, starting with the field `[[ ## reasoning ## ]]`, then `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.\nAssistant message:\n[[ ## reasoning ## ]]\nXXX\n[[ ## answer ## ]]\nXXX\n[[ ## completed ## ]]\nUser message:\n[[ ## question ## ]]\nXXX\nRespond with the corresponding output fields, starting with the field `[[ ## reasoning ## ]]`, then `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.\nResponse:\n[[ ## reasoning ## ]]\nXXX\n[[ ## answer ## ]]\nXX\n[[ ## completed ## ]]`\nIt doesn't like a prompt, and when I check the \"lm.history[0]\" the output likes:\n`{'prompt': None, 'messages': [{'role': 'system', 'content': 'Your input fields are:\\n1. `question` (str)\\n\\nYour output fields are:\\n1. `reasoning` (str)\\n2. `answer` (str)\\n\\nAll interactions will be structured in the following way, with the appropriate values filled in.\\n\\n[[ ## question ## ]]\\n{question}\\n\\n[[ ## reasoning ## ]]\\n{reasoning}\\n\\n[[ ## answer ## ]]\\n{answer}\\n\\n[[ ## completed ## ]]\\n\\nIn adhering to this structure, your objective is: \\n XXX}, {'role': 'user', 'content': 'This is an example of the task, though some input or output fields are not supplied.\\n\\n[[ ## question ## ]]\\nXXX。\\n\\nRespond with the corresponding output fields, starting with the field `[[ ## reasoning ## ]]`, then `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.'}, {'role': 'assistant', 'content': '[[ ## reasoning ## ]]\\nXXX.\\n\\n[[ ## answer ## ]]\\nXXX\\n\\n[[ ## completed ## ]]\\n'}, {'role': 'user', 'content': '[[ ## question ## ]]\\nXXX。\\n\\nRespond with the corresponding output fields, starting with the field `[[ ## reasoning ## ]]`, then `[[ ## answer ## ]]`, and then ending with the marker for `[[ ## completed ## ]]`.'}], 'kwargs': {'temperature': 0.0, 'max_tokens': 1000}, 'response': ModelResponse(id='chatcmpl-AlFc0fv8u7YuhAZXO7rvvbqHx3rw5', created=1735824792, model='gpt-4o-2024-08-06', object='chat.completion', system_fingerprint='fp_f3927aa00d', choices=[Choices(finish_reason='stop', index=0, message=Message(content='[[ ## reasoning ## ]]\\nXXX\\n\\n[[ ## answer ## ]]\\n符合要求\\n\\n[[ ## completed ## ]]', role='assistant', tool_calls=None, function_call=None))], usage=Usage(completion_tokens=99, prompt_tokens=685, total_tokens=784, completion_tokens_details=CompletionTokensDetailsWrapper(accepted_prediction_tokens=None, audio_tokens=0, reasoning_tokens=0, rejected_prediction_tokens=None, text_tokens=None), prompt_tokens_details=PromptTokensDetailsWrapper(audio_tokens=0, cached_tokens=0, text_tokens=None, image_tokens=None)), service_tier=None, prompt_filter_results=None), 'outputs': ['[[ ## reasoning ## ]]\\nXXX.\\n\\n[[ ## answer ## ]]\\nXXX\\n\\n[[ ## completed ## ]]'], 'usage': {'completion_tokens': 99, 'prompt_tokens': 685, 'total_tokens': 784, 'completion_tokens_details': CompletionTokensDetailsWrapper(accepted_prediction_tokens=None, audio_tokens=0, reasoning_tokens=0, rejected_prediction_tokens=None, text_tokens=None), 'prompt_tokens_details': PromptTokensDetailsWrapper(audio_tokens=0, cached_tokens=0, text_tokens=None, image_tokens=None)}, 'cost': 0.0029727499999999997, 'timestamp': '2025-01-02T21:33:16.691373', 'uuid': '9d81-b0ef-17c26d2df514', 'model': 'azure/gpt-4o-2024-08-06', 'model_type': 'chat'}`\nwhy the prompt is none?\nThe code is like :\n![image](https://github.com/user-attachments/assets/64b0f458-53d5-4712-bf48-332492bb773b)\nI wonder to know how to add the few shot into prompt ? and get the real prompt. Maybe the code is not correct and my result seems like strange.",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 2011,
@@ -8927,7 +8934,7 @@
    ],
    "question_text": "how to add general domain knowledge that won't be replicated in examples\n\nHi,\nOne option I can think of is adding it to the signature doctoring. But is this good practice ? All signature examples look very short and concise.\nadding it as input will create unneeded duplications when using FewShots optimizations.\nany recommendation ?\nThanks",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 2026,
@@ -9017,7 +9024,7 @@
    ],
    "question_text": "Support timeout\n\nLiteLLM supports configuring the timeout for a request, but DSPy clients cannot pass the necessary parameter.\nThe change would be a matter of passing in a `timeout` parameter in `__call__` (and storing it in `__init__`): https://github.com/stanfordnlp/dspy/blob/4b39e1b43c32adb3d579eddd7e5e9edff72969bb/dspy/clients/lm.py#L101-L104",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 3358,
@@ -9047,7 +9054,7 @@
    ],
    "question_text": "Dataset 'lighteval/MATH' doesn't exist on the Hub or cannot be accessed.\n\nHi, thanks for your wonderful work!\nWhen I tried to use the following code, it throws error (datasets.exceptions.DatasetNotFoundError: Dataset 'lighteval/MATH' doesn't exist on the Hub or cannot be accessed):\n[code]\nIt seems that [the download link](https://huggingface.co/datasets/lighteval/MATH) is no longer valid and therefore a pontential fix is needed.\nThanks a lot!",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 3964,
@@ -9071,7 +9078,7 @@
    ],
    "question_text": "KeyError: 'tags'\n\nWhen I tried to run the example in https://dspy.ai/tutorials/math/, it came out of the following error:\n[code]",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 6743,
@@ -9113,7 +9120,7 @@
    ],
    "question_text": "Unexpected Behavior: ChainOfThought \"reasoning\" output field is blank in the prompt\n\nWhen using ChainOfThought vs. Predict, I expect the prompt that is used to have a description for the reasoning field, based on the `prefix` and `desc` parameters. So, when I call `lm.inspect_history()`, I expect to see something like this:\n[code]\nInstead, I see:\n[code]\nWhy is there no description for the reasoning field? If I provide one using rationale_type, I see the description as expected, and this seems to result in better performance:\n[code]\nBelow is a minimal reproducible example, showing vanilla ChainOfThought vs. passing a rationale_type\n[code]\nAm I misunderstanding the expected behavior of using ChainOfThought? The source code in the docs [here](https://dspy.ai/api/modules/ChainOfThought/) seem to indicate that there should be a description included for the reasoning output field.\nI am using python 3.12.8 and dspy 2.5.43\nMany thanks!",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 7139,
@@ -9149,7 +9156,7 @@
    ],
    "question_text": "How to use dspy together with langchain?\n\nThere is a tutorial in langchain but it is outdated:\nhttps://python.langchain.com/docs/integrations/providers/dspy/",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 7767,
@@ -9207,7 +9214,7 @@
    ],
    "question_text": "[Bug] ... object has no attribute 'activate_assertions'\n\nWhen using `dspy==2.6.2`, I cannot use assertions anymore (as can be defined in `dspy==2.5.*`)\nRun code with assertions as defined in dspy==2.5.*, the method `.activate_assertions()` does not exist anymore (commented out in code). What would be an alternative? Would it be possible to restore old assertions while the new way of doing them is being worked on?\n2.6.2",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 7793,
@@ -9239,7 +9246,7 @@
    ],
    "question_text": "[Feature] Add support for deepseek 'reasoning_content' parameter\n\nWhen using the deepseek-reasoner model, we obtain a `reasoning_content` parameter that represents the reasoning process of the model.\nHowever, while working with the ChainOfThought() module, I noticed that the content of reasoning_content does not match the content wrapped in [[ ## reasoning ## ]].\nHow should we handle this inconsistency? Are there any specific guidelines or fixes to ensure alignment between reasoning_content and the [[ ## reasoning ## ]] section?\nCurrently, when using the deepseek-reasoner model, there is no straightforward way to access the model's internal reasoning results (`reasoning_content`).\nThis would allow users to clearly view the model's reasoning process, improving transparency and debugging capabilities.\nA simple and feasible approach would be to include the `reasoning_content` parameter in the `inspect_history()` function.\nThis would allow users to clearly view the model's reasoning process, improving transparency and debugging capabilities.\nThank you for your contributions to this great project.\nIf possible, I would like to know your thoughts on this issue. I have already written a small portion of the code, and I am willing to make changes to the rest if needed. [PR](https://github.com/stanfordnlp/dspy/pull/7794)\n- [x] Yes, I'd like to help implement this.\n- [ ] No, I just want to request it.\nHere is the log of my testing:\n[code]\nlog:\n[code]",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 7798,
@@ -9283,7 +9290,7 @@
    ],
    "question_text": "[Bug] AttributeError: module 'dspy' has no attribute 'settings'\n\nwhen trying to run the simple examples from the dspy tutorials page I keep getting this error no matter what I try:\n\\site-packages\\dspy\\utils\\callback.py:230, in with_callbacks. .wrapper(instance, *args, **kwargs)\n[227](file:///C:/Users/rahepler/AppData/Local/Programs/Python/Python313/Lib/site-packages/dspy/utils/callback.py:227) @functools.wraps(fn)\n[228](file:///C:/Users/rahepler/AppData/Local/Programs/Python/Python313/Lib/site-packages/dspy/utils/callback.py:228) def wrapper(instance, *args, **kwargs):\n[229](file:///C:/Users/rahepler/AppData/Local/Programs/Python/Python313/Lib/site-packages/dspy/utils/callback.py:229) # Combine global and local (per-instance) callbacks.\n--> [230](file:///C:/Users/rahepler/AppData/Local/Programs/Python/Python313/Lib/site-packages/dspy/utils/callback.py:230) callbacks = dspy.settings.get(\"callbacks\", []) + getattr(instance, \"callbacks\", [])\n[232](file:///C:/Users/rahepler/AppData/Local/Programs/Python/Python313/Lib/site-packages/dspy/utils/callback.py:232) # If no callbacks are provided, just call the function\n[233](file:///C:/Users/rahepler/AppData/Local/Programs/Python/Python313/Lib/site-packages/dspy/utils/callback.py:233) if not callbacks:\nAttributeError: module 'dspy' has no attribute 'settings'\nCode here:\nimport dspy\nfrom dspy.datasets import HotPotQA\nlm = dspy.LM('openai/gpt-4o-mini')\ncolbert = dspy.ColBERTv2(url='http://20.102.90.50:2017/wiki17_abstracts')\ndspy.configure(lm=lm, rm=colbert)\nagent = dspy.ReAct(\"question -> answer\", tools=[dspy.Retrieve(k=1)])\nprediction = agent(question=\"Which baseball team does Shohei Ohtani play for?\")\nprint(prediction.answer)\npip install dspy, then simply copy and past the above code in and run it.\n2.6.2",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 7835,
@@ -9302,7 +9309,7 @@
    "comments": [],
    "question_text": "RuntimeError: uvloop does not support Windows at the moment\n\nWhen installing dspy on Windows using `pip install dspy`, a runtime error occurs, preventing the package from being installed.\n[code]\n- open the cmd prompt\n- execute the `pip install dspy`\nlatest",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 7854,
@@ -9366,7 +9373,7 @@
    ],
    "question_text": "Fix Ruff violations\n\nThere are more than 50 violations when running `ruff check` inthe DSPy repo. This is a ticket for resolving the ruff violations.\n`$ruff check`\nmaster branch",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 7867,
@@ -9392,7 +9399,7 @@
    ],
    "question_text": "[Bug] ModuleNotFoundError: No module named 'dspy.predict'\n\nWhen you `import dspy` with `dspy-ai==2.6.7` it just fails immediately with `ModuleNotFoundError: No module named 'dspy.predict'`\nHere's my [gist](https://gist.github.com/bnsh/36890f62b5e47f69c2131f91132d0c16) [https://gist.github.com/bnsh/36890f62b5e47f69c2131f91132d0c16](https://gist.github.com/bnsh/36890f62b5e47f69c2131f91132d0c16)... You run it like so:\n`make build-2.6.7 # Will build (and run test.py with dspy-ai==2.6.7)` and\n`make build-2.6.6 # Will build (and run test.py with dspy-ai==2.6.6)`\nWhat you get with 2.6.7 is:\n[code]\nNotice the error isn't from the test.py code, it's from the dspy __init__ code.\nWhereas with 2.6.6:\n[code]\n2.6.7",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 7888,
@@ -9488,7 +9495,7 @@
    "comments": [],
    "question_text": "[Feature] Custom Adapter for LLMs that work well with XML like Anthropic Claude\n\nIs there a way to inform the DsPy compiler to format the optimized prompts using XML tags since they work well with Claude models.\n- [x] Yes, I'd like to help implement this.\n- [x] No, I just want to request it.\nI see some mentions of custom adapters but can someone point me to a good reference on this topic? I also have a need to format the prompt as JSON object.",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 7951,
@@ -9507,7 +9514,7 @@
    "comments": [],
    "question_text": "[Bug]NotImplementedError: Images are not yet supported in JSON mode.\n\nwhen i try to run llama:32b model with dspy framework , i get the bug report of NotImplementedError: Images are not yet supported in JSON mode.\nwhy?guys. code as follow:\nimport dspy\nfrom dspy.adapters.types import image\nimport subprocess\nimport platform\nimport time\ndef start_ollama():\n\"\"\"启动本地Ollama服务\"\"\"\ntry:\nif platform.system() != 'Windows':\nprint(\"该函数仅支持Windows系统\")\nreturn False\nprocess = subprocess.Popen(\n'ollama start',\nshell=True,\nstdout=subprocess.PIPE,\nstderr=subprocess.PIPE\n)\ntime.sleep(3)\nprint(\"Ollama服务已启动\")\nreturn True\nexcept Exception as e:\nprint(f\"启动Ollama服务失败: {str(e)}\")\nreturn False\ndef configure_local_model():\n\"\"\"配置本地Ollama语言模型\"\"\"\ntry:\nlm = dspy.LM(\nmodel=\"ollama_chat/llava:34b\",\nbase_url=\"http://localhost:11434\"\n)\ndspy.settings.configure(lm=lm)\nreturn True\nexcept Exception as e:\nprint(f\"模型配置失败: {str(e)}\")\nreturn False\nclass DogPictureSignature(dspy.Signature):\n\"\"\"Output the dog breed of the dog in the image.\"\"\"\nimage_1: dspy.Image = dspy.InputField(desc=\"An image of a dog\")\nanswer: str = dspy.OutputField(desc=\"The dog breed of the dog in the image\")\nclass SimpleQA(dspy.Module):\ndef __init__(self):\nsuper().__init__()\nself.qa = dspy.ChainOfThought(\"question -> answer\")\ndef forward(self, question):\nresponse = self.qa(question=question)\nreturn response.answer\ndef main():\nstart_ollama()\nconfigure_local_model()\nlm = dspy.settings.lm\nimage_url = \"https://picsum.photos/id/237/200/300.jpg\" # 方式2：正斜杠\nclassify = dspy.Predict(DogPictureSignature)\nimage =dspy.Image.from_url(image_url)\nprint(image.__str__())\nclassify(image_1 = image)\nprint(classify.answer)\nif __name__ == \"__main__\":\nmain()\nVersion: 2.6.10",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 7956,
@@ -9533,7 +9540,7 @@
    ],
    "question_text": "[Bug] litellm.exceptions.BadRequestError: litellm.BadRequestError: Text-completion-openaiException - Error code: 400\n\nwhen i run this code i get:\n(dspy) C:\\Users\\yury_\\Downloads\\project\\dspy>C:/Users/yury_/miniconda3/envs/dspy/python.exe c:/Users/yury_/Downloads/project/dspy/dspy_direct.py\nTraceback (most recent call last):\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\litellm\\llms\\openai\\completion\\handler.py\", line 125, in completion\nraw_response = openai_client.completions.with_raw_response.create(**data) # type: ignore\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\openai\\_legacy_response.py\", line 364, in wrapped\nreturn cast(LegacyAPIResponse[R], func(*args, **kwargs))\n^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\openai\\_utils\\_utils.py\", line 279, in wrapper\nreturn func(*args, **kwargs)\n^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\openai\\resources\\completions.py\", line 539, in create\nreturn self._post(\n^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\openai\\_base_client.py\", line 1296, in post\nreturn cast(ResponseT, self.request(cast_to, opts, stream=stream, stream_cls=stream_cls))\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\openai\\_base_client.py\", line 973, in request\nreturn self._request(\n^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\openai\\_base_client.py\", line 1077, in _request\nraise self._make_status_error_from_response(err.response) from None\nopenai.BadRequestError: Error code: 400 - {'error': {'message': 'invalid model ID', 'type': 'invalid_request_error', 'param': None, 'code': None}}\nDuring handling of the above exception, another exception occurred:\nTraceback (most recent call last):\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\litellm\\main.py\", line 1528, in completion\n_response = openai_text_completions.completion(\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\litellm\\llms\\openai\\completion\\handler.py\", line 148, in completion\nraise OpenAIError(\nlitellm.llms.openai.common_utils.OpenAIError: Error code: 400 - {'error': {'message': 'invalid model ID', 'type': 'invalid_request_error', 'param': None, 'code': None}}\nDuring handling of the above exception, another exception occurred:\nTraceback (most recent call last):\nFile \"c:\\Users\\yury_\\Downloads\\project\\dspy\\dspy_direct.py\", line 19, in\nprint(lm(\"Translate English to French: 'Hello, how are you?'\"))\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\dspy\\utils\\callback.py\", line 266, in wrapper\nreturn fn(instance, *args, **kwargs)\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\dspy\\clients\\lm.py\", line 115, in __call__\nresponse = completion(\n^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\dspy\\clients\\lm.py\", line 319, in wrapper\nreturn func_cached(key, request, *args, **kwargs)\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\cachetools\\__init__.py\", line 771, in wrapper\nv = func(*args, **kwargs)\n^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\dspy\\clients\\lm.py\", line 309, in func_cached\nreturn func(request, *args, **kwargs)\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\dspy\\clients\\lm.py\", line 374, in cached_litellm_text_completion\nreturn litellm_text_completion(\n^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\dspy\\clients\\lm.py\", line 394, in litellm_text_completion\nreturn litellm.text_completion(\n^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\litellm\\utils.py\", line 1212, in wrapper\nraise e\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\litellm\\utils.py\", line 1090, in wrapper\nresult = original_function(*args, **kwargs)\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\litellm\\main.py\", line 4209, in text_completion\nresponse = completion(\n^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\litellm\\utils.py\", line 1212, in wrapper\nraise e\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\litellm\\utils.py\", line 1090, in wrapper\nresult = original_function(*args, **kwargs)\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\litellm\\main.py\", line 3093, in completion\nraise exception_type(\n^^^^^^^^^^^^^^^\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\litellm\\litellm_core_utils\\exception_mapping_utils.py\", line 2210, in exception_type\nraise e\nFile \"C:\\Users\\yury_\\miniconda3\\envs\\dspy\\Lib\\site-packages\\litellm\\litellm_core_utils\\exception_mapping_utils.py\", line 328, in exception_type\nraise BadRequestError(\nlitellm.exceptions.BadRequestError: litellm.BadRequestError: Text-completion-openaiException - Error code: 400 - {'error': {'message': 'invalid model ID', 'type': 'invalid_request_error', 'param': None, 'code': None}}\n(dspy) C:\\Users\\yury_\\Downloads\\project\\dspy>\n`import dspy\nimport os\nfrom dotenv import load_dotenv\nload_dotenv() # Load environment variables from .env file\nhf_token = os.environ.get(\"HF_TOKEN\")\nlm = dspy.LM(\nmodel=\"huggingface/google-t5/t5-small\", # Correct model name for Hugging Face client\nmax_tokens=100, # Added to fix potential issues\nmodel_type=\"text\",\nprovider=\"huggingface\",\nnum_retries=1,\nlaunch_kwargs={}, # Ensure no unused model_kwargs are passed\n)\ndspy.settings.configure(lm=lm)\nprint(lm(\"Translate English to French: 'Hello, how are you?'\"))`\n2.6.10",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 7999,
@@ -9560,7 +9567,7 @@
    ],
    "question_text": "[Bug] insepct history could handle multiple outputs better\n\nWhen we use inspect_history with multiple LM outputs, it doesn't show the results properly.\n[code]\nThis could be modified as:\n[code]\nCall any LLM with parameter n>1 for generating more than 1 output\nThen, call `inspect_history`\n2.6.5",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 8016,
@@ -9604,7 +9611,7 @@
    ],
    "question_text": "[Feature] Can i set the dspy.configure(lm=model , system_message = My_system_prompt) to provide the context knowledge for LLM model?\n\nCan i set the dspy.configure(lm=My_model , system_message = My_system_prompt) to provide the context knowledge for LLM model? Or i have to set a context inputfeild in my signature?, is it equal?\n- [ ] Yes, I'd like to help implement this.\n- [ ] No, I just want to request it.\n_No response_",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 8018,
@@ -9655,7 +9662,7 @@
    "comments": [],
    "question_text": "[Feature] I hope to disable the COPRO log when I use prompt_model\n\nWhen I pass `prompt_model`, the model's logs are always printed.\nI tried setting the logger to `logger.disabled=True`, but it still didn't work.\nHere, it calls `self.prompt_model.inspect_history`, and the logs are directly printed inside this method.\n![Image](https://github.com/user-attachments/assets/1ce604af-f0ec-44ba-ac77-586055c635bb)\n- [ ] Yes, I'd like to help implement this.\n- [x] No, I just want to request it.\n_No response_",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 8055,
@@ -9717,7 +9724,7 @@
    ],
    "question_text": "how to set tensor_parallel_size for vllm backend\n\nmy code is here,\n[code]\nmy question is how to set tensor_parallel_size for vllm backend? this code isnot working for this param\n[code]\n2.6.17",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 8059,
@@ -9755,7 +9762,7 @@
    ],
    "question_text": "Update Signature instructions\n\nWhen we call a Signature, like this:\n`class MySig(dspy.Signature):\n\"\"\"Initial instruction\"\"\"\ninput: str = InputField(desc=\"...\")\noutput: int = OutputField(desc=\"...\")\n`\nIf I update the instruction like `MySig.instructions = \"new prompt\"` it will work, but if I reload the page or restart, the instructions revert back to \"Initial Instruction\".\nI’d prefer not to create a new Signature programmatically every time I want to update the instruction.\nIs there way for overriding or replacing instructions that doesn’t involve redefining classes?\nThanks\n- [ ] Yes, I'd like to help implement this.\n- [x] No, I just want to request it.\n_No response_",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 8068,
@@ -9813,7 +9820,7 @@
    ],
    "question_text": "[Bug]\n\nWhen installing `litellm` alongside `dspy`, we get the following error:\n[code]\nAttempt to install the following requirements.txt\n[code]\n2.6.19",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 8119,
@@ -9883,7 +9890,7 @@
    ],
    "question_text": "Add unit test for dspy.Parallel\n\nThis class is used to run DSPy modules in parallel in a thread-safe way. The code is located in `dspy/utils/parallelizer.py`, a sample usage is like below:\n[code]\nWe don't have unit test for this class now, and should test the following:\n- Worker threads don't affect each other, for example, each worker thread can maintain its own trace.\n- Worker threads are executed in parallel, which means it should be faster than executing in sequential order.\n- The parallel run doesn't crash until `max_errors` is hit.",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 8164,
@@ -9909,7 +9916,7 @@
    ],
    "question_text": "[Bug] Import error: getting UnicodeDecodeError when importing dspy\n\nWhen attempting to import the DSPy library, I'm encountering a\n[code]\nCreate a Python environment\npython 3.12\n[code]\nRun Python code that imports DSPy:\n`import dspy`\nGetting this error\n`UnicodeDecodeError: 'charmap' codec can't decode byte 0x81 in position 1980: character maps to '`\nFull traceback\n[code]\nmy current pyproject.toml\n[code]\n3.6.22",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 8195,
@@ -9965,7 +9972,7 @@
    ],
    "question_text": "[Bug] `dspy.ReAct` doesn't format/use `dspy.History` `OutputField`s\n\nWhen using `dspy.ReAct` and passing `dspy.History` as a `InputField`, none of the included `OutputFields` are used in the LLM chain.\n[code]\nChecking the LLM call chain reveals that the `user` portion is correctly passed, but the `assistant` portion is not.\n[code]",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 8206,
@@ -10057,7 +10064,7 @@
    ],
    "question_text": "DSPy Framework setup with Ollama in Local Machine\n\nHi,\nPlease suggest compatible version for DSPy Framework setup with Ollama in Local Machine.\nIf any document for the local Machine DSPy setup with Ollama , kindly share",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 8259,
@@ -10107,7 +10114,7 @@
    ],
    "question_text": "[Feature] Get actual formatted prompt\n\nHow could we **access the actual and formatted prompt used by DSPy** ?\nI am using `dspy` python package with `2.6.15` version.\nFor-example, with the following :\n[code]\nHow could I get that the actual and formated prompt used by DSPy in the `Predict` (`dspy.Predict(AnswerToQuestion)`) is something like :\n`{'role': 'system', 'content': 'Your input fields are:\\n1. `question` (str): Question\\n\\nYour output fields are:\\n1. `answer` (str): Answer\\n\\nAll interactions will be structured in the following way, with the appropriate values filled in.\\n\\nInputs will have the following structure:\\n\\n[[ ## question ## ]]\\n{question}\\n\\nOutputs will be a JSON object with the following fields.\\n\\n{\\n \"answer\": \"{answer}\"\\n}\\n\\nIn adhering to this structure, your objective is: \\n Answer the question.'}`\nAnd this is incomplete since there is no the `{'role': 'system', 'content': 'My actual question ?'` with my actual question.\nI need it since I want to be able to use the generated prompt externally(so not by the DSPy `Predict` function alone), for example for benchmarking purpose.\nIs this already implemented ? Or does this need to be added ?\nThanks !\n- [ ] Yes, I'd like to help implement this.\n- [ ] No, I just want to request it.\n_No response_",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 8265,
@@ -10223,7 +10230,7 @@
    ],
    "question_text": "[Ask]dspy.Evaluate\n\nWhen I run the program using Evaluate, the number of my test cases is about 1k, the metric is also a dspy callable object, the number of processes is 32, and it becomes very slow when running to about the last 30 cases. Why is this?",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 8366,
@@ -10281,7 +10288,7 @@
    ],
    "question_text": "[Bug] Vertex AI location\n\nIs there a way for dspy to honor the location/region being passed to vertex AI?\n`lm = dspy.LM('vertex_ai/gemini-2.0-flash', project=\"A\", location=\"us-west1\", cache=False)` does not seem to honor the` location passed here and uses the gcloud config's location.\nUsing `vertexai.init(project=\"A\", location=\"us-west1\")` did not work. We do not want to change the gcloud config. It defaults to us-central1 at the moment.\n`lm = dspy.LM('vertex_ai/gemini-2.0-flash', project=\"A\", location=\"us-west1\", cache=False)`\n2.6.27",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 8376,
@@ -10307,7 +10314,7 @@
    ],
    "question_text": "[Feature] Tool Description optimizer\n\nIs there a way to have DSPy optimize tool descriptions? I'm fairly new to it but I went through the docs and didn't see a way to do so.\n- [ ] Yes, I'd like to help implement this.\n- [x] No, I just want to request it.\n_No response_",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 8393,
@@ -10358,7 +10365,7 @@
    ],
    "question_text": "[Bug] AzureOpenAI ContentPolicyViolation raising RuntimeError\n\nWhen a ContentPolicyViolation from AzureOpenAI is triggered, the JSON-Adapter is currently raising a RuntimeError instead of propagating the proper error from litellm, because of a blanket Exception statement in the adapter.\nFull Traceback:\n[code]\nI believe it would be better to simply propagate the ContentViolationError from litelllm in these cases and let it be handled through application logic, as in our case e.g. we would like to flag cases like these and remove them from further processing.\nSimply run any harmful prompt through AzureOpenAI. In our case we are using the following general structure for the module:\n[code]\nBut the exception handler for ContentPolicyViolation would never trigger since its intercept in the adapter\n2.6.27",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 8434,
@@ -10420,7 +10427,7 @@
    ],
    "question_text": "[Bug] Making Settings/Configure safe in async broke Mlflow for me.\n\nWhen using DSPY with FastAPI and MLFlow, on latest repo commit, MLflow integration is broken.\nI tracked this merge to be responsible of the error: https://github.com/stanfordnlp/dspy/pull/8324\n[code]\nNot sure how to reproduce easily. I have a simple FastAPI app with this in config.py\n[code]\n`mlowflow.dspy.autolog()` call `dspy.configure()` so it crashes\n3.0.0b1 // Latest commits",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 8473,
@@ -10484,7 +10491,7 @@
    ],
    "question_text": "[Feature] the use of fine-tuned llms by dspy for agent\n\nAre there any agent frameworks, such as langraph, CrewAI, Pydantic AI, or similar tools, natively support using LLMs that have been fine-tuned by DSPy or provide direct integration for DSPy-fine-tuned models? It seems it is a useful direction, hope one day the need can be considered\n- [ ] Yes, I'd like to help implement this.\n- [ ] No, I just want to request it.\n_No response_",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 8541,
@@ -10538,7 +10545,7 @@
    ],
    "question_text": "Is it possible to use Hugging Face and DSPY?\n\nGreetings. I am struggling to find information in the docs on using Hugging Face with DSPy.\nIs it possible to use it?\nIm struggling with Ollama as well:\n`# Ollama Configuration Cell\nimport dspy\ngemma_llm = dspy.LM(\"ollama_chat/gemma2:2b\", api_base=\"http://localhost:11434\")\ndspy.configure(lm=gemma_llm)\nprint(\"✅ Ollama configured with Gemma 2 2b model\")\nprint(\"Make sure you have:\")\nprint(\"1. Ollama running: ollama serve\")\nprint(\"2. Gemma 2 2b pulled: ollama pull gemma2:2b\")`",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 8612,
@@ -10570,7 +10577,7 @@
    ],
    "question_text": "[Bug] DSPy incorrectly passes `max_tokens` to OpenAI GPT-5 models instead of `max_completion_tokens`\n\nWhen using DSPy with OpenAI's new GPT-5 model family (gpt-5, gpt-5-mini, gpt-5-nano), DSPy incorrectly passes the deprecated `max_tokens` parameter instead of the required `max_completion_tokens` parameter to the OpenAI API. This causes all API calls to fail with a 400 Bad Request error.\n**Error message:**\n[code]\nThe issue occurs even when explicitly configuring DSPy with `max_completion_tokens` and setting `litellm.drop_params = True`. DSPy appears to be adding `max_tokens` internally when making the API call.\n**1. Set up environment:**\n[code]\n**2. Configure DSPy with GPT-5 model:**\n[code]\n**3. Try to use any DSPy module:**\n[code]\n**4. Observe the error:**\n[code]\n**Complete reproducible example:**\n[code]\nOpenAI's new GPT-5 models have breaking API changes:\n- ❌ `max_tokens` is no longer supported\n- ✅ Must use `max_completion_tokens` instead\n- ❌ `temperature` and `top_p` are not supported\n- ✅ Some models support new `reasoning_effort` parameter\n- gpt-5, gpt-5-mini, gpt-5-nano\n- o1, o3, o4 (reasoning models)\nDSPy should detect these new models and use `max_completion_tokens` instead of `max_tokens`.\nThis blocks all users from using DSPy with OpenAI's latest GPT-5 models and reasoning models.\nDSPy's LM class should be updated to detect new OpenAI models and use the correct parameters:\n[code]\n- Similar issue was reported for o4 models: #8078\n- OpenAI API documentation: https://platform.openai.com/docs/api-reference/chat/create\n2.6.27",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 8695,
@@ -10602,7 +10609,7 @@
    ],
    "question_text": "[Feature] Warning for exceeding context window\n\nWhen, for instance, producing few-shot examples, it would be helpful to know if the total token length of the few-shot examples exceeds the context window for the model. Same with prompt optimization and cases where the model is looking at the examples in totum (reflection, etc.). It's hard to tell what the total context of any given LM call is purely based on the length of the Examples or the Signature docstring given the amount of formatting and abstraction that goes on under the hood. In fact, it's hard to even know when an LM call is being made, but that is a separate issue.\n- [ ] Yes, I'd like to help implement this.\n- [x] No, I just want to request it.\n_No response_",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 8734,
@@ -10674,7 +10681,7 @@
    ],
    "question_text": "How to make dspy faster\n\nAnyone else notice that compared to other frameworks dspy requests seems slower or maybe I am doing something incorrectly.\nDoes DSPy load the LM everytime I call this function?\nAlso I know a smaller max_token makes requests faster, any techniques.\nI have a fastapi based backend that should be much faster, my API tiers are okay (Tier 2 or Tier 3)\nasync def update_model_settings(\nsettings: ModelSettings,\napp_state = Depends(get_app_state),\nsession_id: str = Depends(get_session_id_dependency)\n):\ntry:\nif not settings.api_key:\nif settings.provider.lower() == \"groq\":\nsettings.api_key = os.getenv(\"GROQ_API_KEY\")\nelif settings.provider.lower() == \"openai\":\nsettings.api_key = os.getenv(\"OPENAI_API_KEY\")\nelif settings.provider.lower() == \"anthropic\":\nsettings.api_key = os.getenv(\"ANTHROPIC_API_KEY\")\nelif settings.provider.lower() == \"gemini\":\nsettings.api_key = os.getenv(\"GEMINI_API_KEY\")\nsession_state = app_state.get_session_state(session_id)\nif 'gpt-5' in str(settings.model):\nmodel_config = {\n\"provider\": settings.provider,\n\"model\": settings.model,\n\"api_key\": settings.api_key,\n\"temperature\": settings.temperature,\n\"max_tokens\":None,\n\"max_completion_tokens\": 10000\n}\nelse:\nmodel_config = {\n\"provider\": settings.provider,\n\"model\": settings.model,\n\"api_key\": settings.api_key,\n\"temperature\": settings.temperature,\n\"max_tokens\": settings.max_tokens\n}\nsession_state[\"model_config\"] = model_config\napp_state.model_config = model_config\napp_state._session_manager._app_model_config = model_config\nimport dspy\nif settings.provider.lower() == \"groq\":\nlogger.log_message(f\"Groq Model: {settings.model}\", level=logging.INFO)\nlm = dspy.LM(\nmodel=f\"groq/{settings.model}\",\napi_key=settings.api_key,\ntemperature=settings.temperature,\nmax_tokens=settings.max_tokens\n)\nelif settings.provider.lower() == \"anthropic\":\nlogger.log_message(f\"Anthropic Model: {settings.model}\", level=logging.INFO)\nlm = dspy.LM(\nmodel=f\"anthropic/{settings.model}\",\napi_key=settings.api_key,\ntemperature=settings.temperature,\nmax_tokens=settings.max_tokens\n)\nelif settings.provider.lower() == \"gemini\":\nlogger.log_message(f\"Gemini Model: {settings.model}, API Key: {settings.api_key}, Temperature: {settings.temperature}, Max Tokens: {settings.max_tokens}\", level=logging.INFO)\nlm = dspy.LM(\nmodel=f\"gemini/{settings.model}\",\napi_key=settings.api_key,\ntemperature=settings.temperature,\nmax_tokens=settings.max_tokens\n)\nelif settings.provider.lower() == \"openai\": # OpenAI is the default\nlogger.log_message(f\"OpenAI Model: {settings.model}\", level=logging.INFO)\nprint(settings.model.lower())\nif 'gpt-5' in settings.model.lower():\nlm = dspy.LM(\nmodel=f\"openai/{settings.model}\",\napi_key=settings.api_key,\ntemperature=settings.temperature,\nmax_tokens = None,\nmax_completion_tokens= 10000\n)\nelse:\nlm = dspy.LM(\nmodel=f\"openai/{settings.model}\",\napi_key=settings.api_key,\ntemperature=settings.temperature,\nmax_tokens=settings.max_tokens\n)\ntry:\nreturn {\"message\": \"Model settings updated successfully\"}\nexcept Exception as model_error:\nif \"auth\" in str(model_error).lower() or \"api\" in str(model_error).lower():\nraise HTTPException(\nstatus_code=401,\ndetail=f\"Invalid API key for {settings.model}. Please check your API key and try again.\"\n)\nelif \"model\" in str(model_error).lower():\nraise HTTPException(\nstatus_code=400,\ndetail=f\"Invalid model selection: {settings.model}. Please check if you have access to this model. {model_error}\"\n)\nelse:\nraise HTTPException(\nstatus_code=500,\ndetail=f\"Error configuring model: {str(model_error)}\"\n)\nexcept Exception as e:\nraise HTTPException(\nstatus_code=500,\ndetail=f\"Unexpected error: {str(e)}. Please check your model selection and API key.\"\n)\nIn case it is helpful, I run autoanalyst.ai made via DSPY, only problem is that requests are too slow",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 8760,
@@ -10736,7 +10743,7 @@
    ],
    "question_text": "[Bug] _convert_mcp_tool_result fails because it checks for isError instead of is_error\n\nWhen my model calls a MCP tool I get the following error:\nIt seems that the `_convert_mcp_tool_result` function in dspy checks for errors with\n`if call_tool_result.isError:\nraise RuntimeError(f\"Failed to call a MCP tool: {tool_content}\")`\nHowever the fastmcp `CallToolResult` has `is_error` as attribute instead of `isError`\nI setup a simple MCP server (using fastmcp) with three tools. I followed the dspy MCP tutorial (https://dspy.ai/tutorials/mcp/?h=mcp) to connect with the server, list the tools, and convert the tools to dspy tools. Minor difference is that I am using a StreamableHttpTransport.\nAs in the tutorial I created a dspy.ReAct object and used acall. This is when the error occurred.\n3.0.3",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 8787,
@@ -10766,7 +10773,7 @@
    ],
    "question_text": "Does the Dspy support the local models like qwen3-32B？\n\nhow to define a customized llm？any example in this repo？",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 8793,
@@ -10810,7 +10817,7 @@
    ],
    "question_text": "[Bug]  WARNING dspy.adapters.json_adapter: Failed to use structured output format, falling back to JSON mode.\n\nWhen i use meta-llama/Llama-3.3-70B-Instruct-Turbo, with a Predict module I am gettting a warning:\ndspy.adapters.json_adapter: Failed to use structured output format, falling back to JSON mode.\nI inspected the raw output and it is valid json, so I don't see how the output format is wrong. On top of that I executed the same script yesterday and had no problem.\n[code]\n[code]\n3.0.2",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 8795,
@@ -10840,7 +10847,7 @@
    ],
    "question_text": "[Feature_or_Tutorial] An exemple or feature for multi-label classification task\n\nHi,\nHow can we do multi-label classification ?\nwould be nice and usefull to have a tutorial or a feature for that.\nThanks!",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 8800,
@@ -10876,7 +10883,7 @@
    ],
    "question_text": "How to Optimize Existing Prompt\n\nHi, I'm looking to optimize an existing system prompt we already have. How can I initialize the program with my existing prompt and have GEPA start from there? I tried something like:\n[code]\nbut GEPA seemed to just reinitialize the instructions.\nA couple other features I'm interested in (and haven't found in tutorials or documentation):\n1. Freezing certain parts of the prompt\n2. Certain frozen parts can be re-ordered (ie I have a set of in-context learning examples that I don't want to be modified but GEPA can change the order of them",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 8841,
@@ -10902,7 +10909,7 @@
    ],
    "question_text": "[Feature] GPT 5 model support\n\nCan dspy support GPT 5? Thank you\n<img width=\"1728\" height=\"562\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/169e7525-1f07-4910-b07a-e95b57529c0a\" />\n- [ ] Yes, I'd like to help implement this.\n- [ ] No, I just want to request it.\n_No response_",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 8858,
@@ -10940,7 +10947,7 @@
    ],
    "question_text": "[Bug] TypeError: issubclass() arg 1 must be a class when using ReAct with tools\n\nWhen using `dspy.ReAct` with tools, the following error occurs:\n` TypeError: issubclass() arg 1 must be a class`\nThis happens in DSPy's internal type checking code at:\nFile \"/path/to/dspy/adapters/base.py\", line 71, in _call_preprocess\n` if isinstance(field.annotation, type) and issubclass(field.annotation, Type) and field.annotation in self.native_response_types:`\n` ## Environment\n- DSPy version: 3.0.3\n- Python version: 3.10.18\n- OS: macOS (Darwin 24.6.0)\n[code]",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 8866,
@@ -10996,7 +11003,7 @@
    ],
    "question_text": "[Feature] Markdown code font size consistency\n\nHi,\nCould the font size inside Markdown ( [code] blocks) be made the same as the regular surrounding text? Currently, the font size inside code blocks appears smaller, and making it consistent would improve readability.\nThanks!\n- [x] Yes, I'd like to help implement this.\n- [ ] No, I just want to request it.\n_No response_",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 8889,
@@ -11052,7 +11059,7 @@
    ],
    "question_text": "Support for async tool calls during optimisation\n\nDoes any of the optimisers like GEPA, MIPRIv2 or SIMBA support optimisation with async tool calls in the react agent?",
    "cluster_id": 1,
-   "topic": "async_parallel_and_batched_execution"
+   "topic": "concurrent_execution_and_batching"
   },
   {
    "number": 8898,
@@ -11141,7 +11148,7 @@
    ],
    "question_text": "[Help wanted] Add docstring to public APIs\n\nHi all,\nWe would like to get your help on adding docstrings to our public APIs. The general rule is every public API should have proper docstrings unless the API name + args is self-explainable. Currently we probably only have ~50% coverage, and we would like to move towards >90%.\nTo get started:\n- Find a file that has missing docstrings.\n- Create a github issue before working on it, so we know this file is claimed. In the created issue, mention this issue so that we can easily track it.\n- Put up a PR following our [contributing guide](https://github.com/stanfordnlp/dspy/blob/main/CONTRIBUTING.md) Make sure in the PR you mention your issue by adding `resolve #....` in the PR description.\n- Tag any collaborator as the reviewer. If you don't know who to request review, you can tag me as the reviewer.\nSome rules:\n- The docstring must be 100% correct, wrong docstring is way worse than having nothing.\n- The docstring follows the [Google python style guide](https://google.github.io/styleguide/pyguide.html)\n- It's recommended to include a code example to explain how to use the API/class.\n- We don't enforce type hints, but we don't reject type hints either.\n- Nothing in my head right now, probably more coming later...\nYou can refer to existing docstrings as reference, and if you feel ambiguous, feel free to tag us for questions.\nThank you ahead for your help.\nCheers,\nchenmoney",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 8940,
@@ -11192,7 +11199,7 @@
    ],
    "question_text": "[Bug] OpenAI Responses `model_type` fails with `Image` inputs\n\nWhen using the Responses API for OpenAI models, Image inputs aren't handled correctly.\nGiven the following code:\n[code]\nThis throws a LiteLLM error:\n[code]\nTo fix the issue, we need to make sure we're formatting images correctly for the Responses API.\nimport python\nclass ImageDescriptionGeneratorSignature(dspy.Signature):\nimage: dspy.Image = dspy.InputField(desc=\"\")\nimage_description: str = dspy.OutputField(desc=\"\")\ndescriptor = dspy.Predict(ImageDescriptionGeneratorSignature)\nlm = dspy.LM(\nmodel=\"openai/gpt-5-mini\",\napi_key=\"MY-KEY\",\nmax_tokens=16000,\ntemperature=1.0,\nmodel_type=\"responses\"\n)\ndspy.configure(lm=lm)\nimg = dspy.Image(\"overload.jpg\")\nresult = descriptor(image=img)\nprint(result.image_description)\n3.0.4b1",
    "cluster_id": 0,
-   "topic": "lm_multimodal_inputs_and_token_limits"
+   "topic": "lm_request_limits_and_multimodal_inputs"
   },
   {
    "number": 9012,
@@ -11250,7 +11257,7 @@
    ],
    "question_text": "[Bug] DSPy tool calling breaks on Python version 3.14\n\nWhen I try to execute tools that are defined in a DSPy program, it fails with \"AttributeError: 'str' object has no attribute 'tool_calls'\"\n1. Setup environment to use Python 3.14\n2. Try executing the code from DSPy docs [here](https://dspy.ai/learn/programming/tools/#approach-2-manual-tool-handling)\nNOTE: Attaching screenshot showing the difference in outputs for different Python versions\n<img width=\"743\" height=\"443\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/66028826-dbad-495c-a61c-af616f3ca85d\" />\n3.0.4b2",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 9098,
@@ -11282,7 +11289,7 @@
    ],
    "question_text": "[Bug] Type Validation not enforced in Python 3.14\n\nWhen using `dspy.Signature` classes to enforce structured data, the type are not correctly parsed and converted in Python 3.14. It works fine in 3.13.\n[code]\nWith this setup, I always get 100% errors in python 3.14. The object returned is\n[code]\nI get 0 errors executing the same code in Python 3.13. The object returned is :\n[code]\n3.0.4",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 9122,
@@ -11301,7 +11308,7 @@
    "comments": [],
    "question_text": "[Bug] Structured outputs always fail when using responses model\n\nWhen using a responses model, attempting to use structured outputs always fails. The request then falls back to normal `JSONAdapter` outputs, which are considerably more brittle.\nAttached is a minimal example, which runs a simple `dspy.Predict` module with a chat completions model first, followed by an attempt with a responses model (disable cache by uncommenting the relevant lines if needed).\nUsing the `JSONAdapter` to enable structured outputs and a responses model `dspy.LM(model=\"responses\", ...)` always results in:\n[code]\nThis is because the way the request parameters pertaining to structured output are constructed and passed on to LiteLLM is incompatible with the Responses API. Notably, passing a Pydantic model to `text.format` is *not* valid from the point of view of the API, despite documentation that might imply otherwise.\n[code]\nSee PR #9123.\nmain@b95e101",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 9136,
@@ -11327,7 +11334,7 @@
    ],
    "question_text": "[Feature] Add docstrings to dspy/retrievers/embeddings.py Embedding class\n\nAdd docstrings to dspy/retrievers/embeddings.py Embedding class\n- [x] Yes, I'd like to help implement this.\n- [ ] No, I just want to request it.\nPlan\n- Add/expand Google-style docstrings for the above classmethods.\n- Include concise usage examples where helpful.\n- Step1: add docstrings for class methods.\n- Step2: try to add examples\nRefs: https://github.com/stanfordnlp/dspy/issues/8926\n_No response_",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 9139,
@@ -11346,7 +11353,7 @@
    "comments": [],
    "question_text": "[Feature] Add Google style docstrings to dspy/clients/provider.py file\n\nAdd Google-style docstrings to all public APIs in `dspy/clients/provider.py` to improve code documentation and developer experience.\nThis file currently has missing docstrings for public classes:\n- `TrainingJob` class and its public methods\n- `ReinforceJob` class and its public methods\n- `Provider` class and its public methods\nThe docstrings should follow the Google Python style guide and include:\n- Clear descriptions of what each class/method does\n- `Args:` sections documenting all parameters\n- `Returns:` sections where applicable\n- `Raises:` sections for abstract methods\n- `Attributes:` sections for classes\n- Code examples where helpful\n- [x] Yes, I'd like to help implement this.\n- [ ] No, I just want to request it.\nThis issue is related to the broader docstring coverage initiative mentioned in https://github.com/stanfordnlp/dspy/issues/8926.\nThe file `dspy/clients/provider.py` is a base class file that defines the interface for language model providers, making it important for developers who want to:\n- Understand how to implement custom providers\n- Use the provider system for fine-tuning\n- Work with training jobs and reinforcement learning jobs\nAdding comprehensive docstrings will make this critical infrastructure code much more accessible to contributors and users.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 9150,
@@ -11382,7 +11389,7 @@
    ],
    "question_text": "How to use DSPy with stateful agent benchmarks?\n\nHow should we use DSPy with interactive, stateful agent benchmarks such as [AppWorld](https://github.com/stonybrooknlp/appworld) or [Terminal Bench](https://github.com/laude-institute/terminal-bench)?\nI'm aware that agents like `dspy.ReAct` can invoke tools. The [advanced tool use](https://dspy.ai/tutorials/tool_use/#tutorial-advanced-tool-use) tutorial shows how each task can have a different set of tools. But, these tools seem to be \"retrieval-only\" and does not mutate the task state in any way. Whereas in a benchmark like AppWorld, the agent can e.g. write to the filesystem, whose effects are persistent and needs to be explicilty reset should you wish to start fresh.\nI'm not sure how to use such stateful task environments with DSPy optimizers. For instance, there's no clean hook into GEPA to control when environments are created or reset.\nThese environments are also usually process-bound, allowing only one active instance per process (thus not easily parallelizable via threads).\n1. Is there a recommended or “standard” pattern for using DSPy with stateful benchmarks? Should we write a custom agent subclassing `dspy.Module`, whose `forward` function handles the task environment creation/deletion? This might work but feels like a hack. The agent technically shouldn't handle this.\n2. Are there existing tutorials, examples, or design guidelines for integrating DSPy with these interactive agent benchmarks?\nAny help is greatly appreciated!",
    "cluster_id": 3,
-   "topic": "language_model_backend_integration"
+   "topic": "lm_provider_and_backend_integration"
   },
   {
    "number": 9166,
@@ -11425,7 +11432,7 @@
    ],
    "question_text": "ReAct._call_with_potential_trajectory_truncation returns None after exhausting retries, causing AttributeError\n\nWhen a ReAct agent's trajectory exceeds the context window and truncation fails to resolve it after 3 attempts, `_call_with_potential_trajectory_truncation` implicitly returns `None`. The caller then crashes with `AttributeError: 'NoneType' object has no attribute 'next_thought'`.\n1. Create a ReAct agent with many tools or verbose tool outputs\n2. Run with `max_iters` high enough to accumulate a large trajectory\n3. Use a model with a smaller context window, or generate enough tool calls to exceed it\n[code]\nIn `react.py`, the method `_call_with_potential_trajectory_truncation` has no return statement after the retry loop:\n[code]\nThe caller assumes `pred` is never `None`:\n[code]\nThe same issue exists in `_async_call_with_potential_trajectory_truncation`.\nRaise an exception after exhausting retries:\n[code]\nThen catch this in `forward` and break gracefully:\n[code]\n- dspy version: 3.0.4 (also verified unfixed in 3.1.0)\n- Python version: 3.12",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 9174,
@@ -11455,7 +11462,7 @@
    ],
    "question_text": "[docs] Add Google-style docstrings for dspy/primitives/module.py Module class\n\nAdd Google-style docstrings to all public APIs in dspy/primitives/module.py to improve code documentation and developer experience.\nThis file currently has missing docstrings for public classes and methods:\n- Module class (core base class - no class-level docstring)\n- named_predictors() method\n- predictors() method\n- set_lm() method\n- get_lm() method\n- map_named_predictors() method\n- inspect_history() method\nThe docstrings should follow the Google Python style guide and include:\n- Clear descriptions of what each class/method does\n- Args: sections documenting all parameters\n- Returns: sections where applicable\n- Raises: sections for methods that raise exceptions\n- Attributes: sections for the class\n- Code examples where helpful\n- [x] Yes, I'd like to help implement this.\n- [ ] No, I just want to request it.\nAdditional Context\nThis issue is related to the broader docstring coverage initiative mentioned in #8926.\nThe file dspy/primitives/module.py contains the Module class, which is the foundational base class for all DSPy programs. This makes it critical for developers who want to:\n- Build custom DSPy modules and pipelines\n- Understand how predictors are managed within modules\n- Debug their programs using history inspection\n- Configure language models across their modules\nAdding comprehensive docstrings will make this core infrastructure code much more accessible to contributors and users.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 9230,
@@ -11536,7 +11543,7 @@
    ],
    "question_text": "Is there a straightforward way to add new instruction field for proposer ?\n\nIn my use case, I want the proposer to output several components (not just a single `instructions` field). These include audio (generated by prompting an external model) and video (also by prompting). I was trying to tweak the library so that the proposer would output additional text fields (for prompting to generate these additional components in the system prompt), but I find that this requires modifying the codes very recursively (down to the Adapter module). Would you suggest any (less buggy) way to achieve this ?",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 9292,
@@ -11553,7 +11560,7 @@
    "comments": [],
    "question_text": "Add docstrings to public APIs in dspy/utils/hasher.py\n\nFollowing #8926, I plan to add missing Google-style docstrings to public APIs in dspy/utils/hasher.py.\nThis issue is to claim work on that file.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 9299,
@@ -11591,7 +11598,7 @@
    ],
    "question_text": "[Feature] Please update https://dspy.ai/llms.txt\n\nHi,\nCan you please update your llms.txt page with the latest pages?\nPlease consider using `mkdocs-llmstxt==0.3.0` plugin in your mkdocs site creation so that you can use wildcard matches (**.md) in llmstxt plugin\ne.g.\n[code]\n- [x] Yes, I'd like to help implement this.\n- [ ] No, I just want to request it.\n_No response_",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 9308,
@@ -11627,7 +11634,7 @@
    "comments": [],
    "question_text": "Add docstrings to dspy/predict/predict.py and dspy/predict/chain_of_thought.py\n\nAs part of #8926, adding docstrings to public APIs in:\n- `dspy/predict/predict.py` - `Predict.reset()`, `Predict.dump_state()`, `Predict.forward()`, `Predict.aforward()`, `Predict.update_config()`, `Predict.get_config()`\n- `dspy/predict/chain_of_thought.py` - `ChainOfThought` class, `ChainOfThought.forward()`, `ChainOfThought.aforward()`\nAll docstrings follow the Google Python style guide.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 9378,
@@ -11677,7 +11684,7 @@
    ],
    "question_text": "[Bug] Pydantic typing skipped on empty return value and returns None\n\nWhen an LM models returns an empty string as a response, dspy will return with no error but output will not be of correct typing it will always be None.\nFor example if I have this signature\n[code]\nOn return I expect the typing of the object to match the schema I have provided so `spanish` field should be a str or error out to indicate typing issues. This works most of the time except if the LLM returns an empty string, this leads to a base case where the values all become null. Breaking my expectation of typed responses.\n[code]\n3.1.3",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 9425,
@@ -11715,7 +11722,7 @@
    ],
    "question_text": "[Bug] TypeError: issubclass() arg 1 must be a class when using ReAct with tools\n\nWhen using dspy.ReAct with tool functions, I'm getting a TypeError in the adapter's _call_preprocess method. The error occurs when DSPy tries to check issubclass(field.annotation, Type) but the annotation is not a class (likely a generic type like List[dict]).\nEnvironment:\nDSPy version: 3.1.3\nPython version: 3.x (miniconda)\nOS: Windows\nimport dspy\nfrom pydantic import BaseModel\ndspy.configure(lm=dspy.LM(\"groq/qwen/qwen3-32b\"))\nclass Date(BaseModel):\nyear: int\nmonth: int\nday: int\nhour: int\nclass UserProfile(BaseModel):\nuser_id: str\nname: str\nemail: str\ndef get_user_info(name: str):\n\"\"\"Fetch the user profile from database with given name.\"\"\"\nreturn UserProfile(user_id=\"1\", name=name, email=f\"{name}@example.com\")\nclass CustomerService(dspy.Signature):\n\"\"\"Handle user requests.\"\"\"\nuser_request: str = dspy.InputField()\nprocess_result: str = dspy.OutputField()\nreact = dspy.ReAct(CustomerService, tools=[get_user_info])\nresult = react(user_request=\"Help me, my name is Adam\") # TypeError here\n3.1.3",
    "cluster_id": 6,
-   "topic": "core_runtime_and_api_compatibility"
+   "topic": "core_primitives_configuration_and_execution"
   },
   {
    "number": 9437,
@@ -11745,7 +11752,7 @@
    ],
    "question_text": "Add docstrings to dspy/clients/lm.py\n\nClaiming `dspy/clients/lm.py` for the docstring initiative.\nRef #8926",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 9462,
@@ -11762,7 +11769,7 @@
    "comments": [],
    "question_text": "Add docstrings to dspy/predict/refine.py and dspy/predict/best_of_n.py\n\nClaiming `dspy/predict/refine.py` and `dspy/predict/best_of_n.py` for docstring additions, as described in #8926.\n**Files:**\n- `dspy/predict/refine.py` — Adding docstrings to `Refine.forward()`, `inspect_modules()`, and `recursive_mask()`\n- `dspy/predict/best_of_n.py` — Adding docstring to `BestOfN.forward()`\nAll docstrings follow the [Google Python Style Guide](https://google.github.io/styleguide/pyguide.html) with Args, Returns, and Raises sections.\nPR incoming shortly.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 9491,
@@ -11779,7 +11786,7 @@
    "comments": [],
    "question_text": "Feature Request: Add sinc-prompt format support for structured prompt decomposition\n\nAdd native support for **sinc-prompt format**, a structured prompt decomposition method based on the Whittaker-Shannon sampling theorem. Every prompt is treated as a 6-band signal: PERSONA, CONTEXT, DATA, CONSTRAINTS, FORMAT, TASK. Omitting bands violates the Nyquist criterion and degrades output quality (empirically measured).\nDSPy's core philosophy is **programming, not prompting**. sinc-prompt is exactly this: a formal, programmable structure for prompt construction with:\n- **Typed fields** (the 6 bands map directly to DSPy Signature InputFields)\n- **Measurable quality** (Nyquist completeness score, 0.0-1.0)\n- **Optimizable** (band weights are empirically derived and can be tuned by DSPy optimizers)\n- **Composable** (sinc JSON can be serialized, validated, and passed between modules)\nThe signal-processing foundation (Whittaker-Shannon interpolation) provides a mathematical basis for why structured prompts outperform unstructured ones: sub-Nyquist sampling causes aliasing, which manifests as hallucination.\n1. **`SincSignature`** -- A Signature subclass with 6 typed input fields (persona, context, data, constraints, fmt, task) and one output field. Weights: PERSONA 7.0%, CONTEXT 6.3%, DATA 3.8%, CONSTRAINTS 42.7%, FORMAT 26.3%, TASK 2.8%.\n2. **`SincModule`** -- A Module that accepts sinc JSON or individual bands, formats them, and calls the LM via Predict(SincSignature).\n3. **`SincOptimizer`** -- An optimizer wrapper that adds Nyquist completeness as a metric. Wraps existing optimizers (BootstrapFewShot, MIPROv2) and validates that training examples satisfy the sampling theorem.\n4. **`SincFormat`** -- Standalone utility class (no DSPy dependency) for parsing, formatting, validating, and scoring sinc JSON. Can be used independently of DSPy.\nA complete, tested implementation is available: [github.com/mdalexandre/sinc-llm](https://github.com/mdalexandre/sinc-llm)\n- **Structured prompt construction** without manual string formatting\n- **Quality metric** (Nyquist completeness) that integrates with DSPy's optimization loop\n- **Validation** that catches incomplete prompts before they reach the LM\n- **Interoperability** with the sinc-prompt ecosystem (VS Code extension, npm/PyPI packages, auto-scatter engine)\n- Spec: [tokencalc.pro/spec](https://tokencalc.pro/spec)\n- JSON Schema: [tokencalc.pro/schema/sinc-prompt-v1.json](https://tokencalc.pro/schema/sinc-prompt-v1.json)\n- Paper: [doi:10.5281/zenodo.19152668](https://doi.org/10.5281/zenodo.19152668)\n- npm: `npm install sinc-prompt`\n- PyPI: `pip install sinc-prompt`",
    "cluster_id": 4,
-   "topic": "prompt_compilation_optimization_and_inspection"
+   "topic": "prompt_compilation_and_optimization"
   },
   {
    "number": 9496,
@@ -11829,7 +11836,7 @@
    ],
    "question_text": "Add docstring to Embedder.acall() in dspy/clients/embedding.py\n\nRelates to #8926\n`Embedder.acall()` in `dspy/clients/embedding.py` is missing a docstring. The synchronous `__call__` method has a proper docstring, but the async counterpart does not.\nI'll submit a PR to add the missing docstring.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 9525,
@@ -11855,7 +11862,7 @@
    ],
    "question_text": "Add docstrings to Dataset base class in dspy/datasets/dataset.py\n\nRelates to #8926\nThe `Dataset` base class in `dspy/datasets/dataset.py` is missing docstrings for the class itself and several public methods:\n- `Dataset` class\n- `reset_seeds()`\n- `train` property\n- `dev` property\n- `test` property\nI'll submit a PR to add the missing docstrings.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 9530,
@@ -11885,7 +11892,7 @@
    ],
    "question_text": "Add docstring to compile function in dspy/teleprompt/bootstrap.py\n\nFunction is missing docstring and must be specified in correct format. The .compile() function is the primary entry point for users interacting with [BootstrapFewShot].\nI will be submitting a PR shortly.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 9535,
@@ -11909,7 +11916,7 @@
    ],
    "question_text": "Add docstrings to dspy/clients/utils_finetune.py\n\nFollowing #8926, I'd like to add Google-style docstrings to `dspy/clients/utils_finetune.py`.\nThe file contains 9 public functions and several TypedDict classes that currently have no docstrings:\n- `infer_data_format`\n- `get_finetune_directory`\n- `write_lines`\n- `save_data`\n- `validate_data_format`\n- `find_data_errors_completion`\n- `find_data_error_chat`\n- `find_data_error_chat_message`\nI'll submit a PR shortly.\nResolves part of #8926.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   },
   {
    "number": 9547,
@@ -11935,7 +11942,7 @@
    ],
    "question_text": "Add docstrings to LabeledFewShot in dspy/teleprompt/vanilla.py\n\nPer #8926, adding docstrings to the `LabeledFewShot` class and its `compile()` method in `dspy/teleprompt/vanilla.py`.",
    "cluster_id": 2,
-   "topic": "api_reference_and_docs_site_maintenance"
+   "topic": "api_reference_and_docstrings"
   }
  ]
 }
