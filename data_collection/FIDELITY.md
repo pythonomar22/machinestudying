@@ -221,7 +221,18 @@ one-time LLM judgment, archived).
 | 4 | (nothing) | output enforcement | `--output-schema` JSON Schema (exactly 20 items, difficulty enum, >=2 evidence items); deterministic validation of evidence paths against the checkout; at most 1 corrective re-run per topic |
 | 5 | (nothing) | model account | the operator's ChatGPT/Codex login, model pinned to gpt-5.4, effort xhigh (the user config's default model/effort are overridden per run) |
 
+**Two-corpus design (user-directed):** generation runs twice with
+identical seeds, template, and harness, differing ONLY in the repository
+Codex can read — `fulldspy` (full checkout, source + tests + docs) and
+`smalldspy` (the 66-file corpus checkout; no docs in its working tree, and
+the read-only sandbox enforces scope because out-of-scope files do not
+exist there). This measures how corpus scope shapes the generated
+questions. Expectation to verify, not assume: in the smalldspy run,
+seeds about out-of-scope mechanisms must be lifted toward in-scope
+mechanisms or produce weaker candidates.
+
 Every per-topic prompt, the full Codex event stream, and the raw final
-message are archived under `artifacts/4_generate_candidates/`. Each
-candidate is tagged `smalldspy_scope` (all evidence files inside the
-66-file corpus) per the scope note above.
+message are archived under `artifacts/4_generate_candidates/<scope>/`.
+Each candidate is tagged `smalldspy_scope` (all evidence files inside the
+66-file corpus) per the scope note above — trivially true for the
+smalldspy set, informative for the fulldspy set.

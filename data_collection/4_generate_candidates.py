@@ -20,18 +20,26 @@ unpublished) and ask for 20 candidates instead of 12. The A.2 template is
 verbatim; its {placeholder} values are our reconstructions (see
 FIDELITY.md).
 
+Two sets are generated, identical in seeds, template, and harness, and
+differing ONLY in the repository the generator can read:
+- fulldspy:  the full checkout (source + tests + docs) at the pinned commit
+- smalldspy: the 66-file SmallDSPy corpus checkout (no docs on disk); the
+  read-only sandbox itself enforces scope - out-of-scope evidence files do
+  not exist there
+
 Usage:
-    uv run data_collection/4_generate_candidates.py
+    uv run data_collection/4_generate_candidates.py [fulldspy|smalldspy|all]
 
 Idempotent: a topic with a valid per-topic output file is skipped. Output:
-artifacts/4_generate_candidates/ with per-topic prompts, codex event logs,
-raw last-messages, per-topic candidate files, and the merged
-4_candidates.json (topics x 20 triples, each tagged with SmallDSPy-scope
-compatibility).
+artifacts/4_generate_candidates/<scope>/ with per-topic prompts, codex
+event logs, raw last-messages, and per-topic candidate files, plus the
+merged 4_fulldspy_candidates.json / 4_smalldspy_candidates.json (topics x
+20 triples, each tagged with SmallDSPy-scope compatibility).
 """
 
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 from pathlib import Path
@@ -41,8 +49,11 @@ ROOT = DC.parent
 ARTIFACTS = DC / "artifacts" / "4_generate_candidates"
 TOPICS_FILE = DC / "artifacts" / "3_label_topics" / "3_seed_sessions_topic.json"
 EMBED_DIR = DC / "artifacts" / "3_label_topics"
-REPO = ROOT / "corpora" / "dspy-runtime"      # full checkout at pinned commit
 SMALL_CORPUS = ROOT / "corpora" / "smalldspy"  # 66-file scope, for tagging
+REPO_BY_SCOPE = {
+    "fulldspy": ROOT / "corpora" / "dspy-runtime",  # full checkout, incl. docs
+    "smalldspy": SMALL_CORPUS,                      # 66-file sparse checkout
+}
 PINNED_COMMIT = "9cdb0aac28b2a04b064e40697ccd301872cf6a43"
 
 MODEL, EFFORT = "gpt-5.4", "xhigh"            # paper
@@ -289,7 +300,7 @@ def smalldspy_files() -> frozenset[str]:
     )
 
 
-def violations(candidates: list[dict]) -> list[str]:
+def violations(candidates: list[dict], repo: Path) -> list[str]:
     problems = []
     questions = [candidate["question"].strip() for candidate in candidates]
     if len(set(questions)) != len(questions):
@@ -301,22 +312,22 @@ def violations(candidates: list[dict]) -> list[str]:
                 problems.append(f"candidate {position}: evidence '{file}' does not match *.py")
             elif file.split("/")[0] not in ("dspy", "tests"):
                 problems.append(f"candidate {position}: evidence '{file}' is outside dspy/ and tests/")
-            elif not (REPO / file).is_file():
+            elif not (repo / file).is_file():
                 problems.append(f"candidate {position}: evidence '{file}' is not a file in the repository")
     return problems
 
 
-def run_codex(prompt: str, slug: str, attempt: int) -> dict:
-    schema_path = ARTIFACTS / "output_schema.json"
+def run_codex(prompt: str, scope_dir: Path, repo: Path, slug: str, attempt: int) -> dict:
+    schema_path = scope_dir / "output_schema.json"
     schema_path.write_text(json.dumps(OUTPUT_SCHEMA, indent=1), encoding="utf-8")
-    last_message = ARTIFACTS / f"last_message_{slug}_a{attempt}.json"
-    events_path = ARTIFACTS / f"events_{slug}_a{attempt}.jsonl"
+    last_message = scope_dir / f"last_message_{slug}_a{attempt}.json"
+    events_path = scope_dir / f"events_{slug}_a{attempt}.jsonl"
     command = [
         "codex", "exec",
         "-m", MODEL,
         "-c", f"model_reasoning_effort={EFFORT}",
         "-s", "read-only",
-        "-C", str(REPO),
+        "-C", str(repo),
         "--output-schema", str(schema_path),
         "-o", str(last_message),
         "--json",
@@ -332,11 +343,14 @@ def run_codex(prompt: str, slug: str, attempt: int) -> dict:
     return json.loads(last_message.read_text(encoding="utf-8"))
 
 
-def generate_topic(topic: dict, sessions: dict[int, dict]) -> dict:
+def generate_topic(topic: dict, sessions: dict[int, dict], scope: str) -> dict:
     slug = topic["label"]
-    output_path = ARTIFACTS / f"4_topic_{topic['cluster_id']}_{slug}.json"
+    repo = REPO_BY_SCOPE[scope]
+    scope_dir = ARTIFACTS / scope
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    output_path = scope_dir / f"4_topic_{topic['cluster_id']}_{slug}.json"
     if output_path.exists():
-        print(f"{slug}: output exists, skipping")
+        print(f"{scope}/{slug}: output exists, skipping")
         return json.loads(output_path.read_text(encoding="utf-8"))
 
     seed_numbers = nearest_centroid_members(topic, sessions)
@@ -348,7 +362,7 @@ def generate_topic(topic: dict, sessions: dict[int, dict]) -> dict:
         num_candidates=NUM_CANDIDATES,
         sampled_sources_json=json.dumps(payload, ensure_ascii=False, indent=2),
     )
-    (ARTIFACTS / f"prompt_{slug}.txt").write_text(prompt, encoding="utf-8")
+    (scope_dir / f"prompt_{slug}.txt").write_text(prompt, encoding="utf-8")
 
     candidates, problems = None, ["not run"]
     for attempt in range(MAX_RETRIES + 1):
@@ -357,15 +371,15 @@ def generate_topic(topic: dict, sessions: dict[int, dict]) -> dict:
             "these problems; fix them and return the complete JSON again:\n- "
             + "\n- ".join(problems)
         )
-        print(f"{slug}: codex attempt {attempt + 1} ...", flush=True)
-        result = run_codex(attempt_prompt, slug, attempt)
+        print(f"{scope}/{slug}: codex attempt {attempt + 1} ...", flush=True)
+        result = run_codex(attempt_prompt, scope_dir, repo, slug, attempt)
         candidates = result["candidates"]
-        problems = violations(candidates)
+        problems = violations(candidates, repo)
         if not problems:
             break
-        print(f"{slug}: violations: {problems[:3]} ...")
+        print(f"{scope}/{slug}: violations: {problems[:3]} ...")
     if problems:
-        raise RuntimeError(f"{slug}: unresolved violations after retries: {problems}")
+        raise RuntimeError(f"{scope}/{slug}: unresolved violations after retries: {problems}")
 
     scope = smalldspy_files()
     record = {
@@ -388,24 +402,23 @@ def generate_topic(topic: dict, sessions: dict[int, dict]) -> dict:
         json.dumps(record, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
     )
     in_scope = sum(candidate["smalldspy_scope"] for candidate in record["candidates"])
-    print(f"{slug}: {len(candidates)} candidates ({in_scope} in SmallDSPy scope)")
+    print(f"{scope}/{slug}: {len(candidates)} candidates ({in_scope} in SmallDSPy scope)")
     return record
 
 
-def main() -> None:
+def run_scope(scope: str, topics: list[dict], sessions: dict[int, dict]) -> None:
+    repo = REPO_BY_SCOPE[scope]
     if subprocess.run(
-        ["git", "-C", str(REPO), "rev-parse", "HEAD"],
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
         capture_output=True, text=True, timeout=30,
     ).stdout.strip() != PINNED_COMMIT:
-        raise RuntimeError(f"{REPO} is not at the pinned commit")
-    ARTIFACTS.mkdir(parents=True, exist_ok=True)
-    topics, sessions = load_topics()
-    print(f"{len(topics)} coherent+groundable topics")
-    records = [generate_topic(topic, sessions) for topic in topics]
+        raise RuntimeError(f"{repo} is not at the pinned commit")
+    records = [generate_topic(topic, sessions, scope) for topic in topics]
     merged = {
+        "scope": scope,
         "harness": f"codex exec (codex-cli), model {MODEL}, effort {EFFORT}, "
                    "read-only sandbox",
-        "repository": str(REPO),
+        "repository": str(repo),
         "commit": PINNED_COMMIT,
         "num_seeds_per_topic": NUM_SEEDS,
         "seed_selection": "nearest cluster centroid, original embedding space",
@@ -416,12 +429,26 @@ def main() -> None:
         ],
         "candidates": [c for record in records for c in record["candidates"]],
     }
-    (ARTIFACTS / "4_candidates.json").write_text(
+    merged_path = ARTIFACTS / f"4_{scope}_candidates.json"
+    merged_path.write_text(
         json.dumps(merged, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
     )
     total = len(merged["candidates"])
     in_scope = sum(candidate["smalldspy_scope"] for candidate in merged["candidates"])
-    print(f"wrote {total} candidates ({in_scope} in SmallDSPy scope) to 4_candidates.json")
+    print(f"{scope}: wrote {total} candidates ({in_scope} in SmallDSPy scope) "
+          f"to {merged_path.name}")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("scope", nargs="?", default="all",
+                        choices=["fulldspy", "smalldspy", "all"])
+    args = parser.parse_args()
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    topics, sessions = load_topics()
+    print(f"{len(topics)} coherent+groundable topics")
+    for scope in (("fulldspy", "smalldspy") if args.scope == "all" else (args.scope,)):
+        run_scope(scope, topics, sessions)
 
 
 if __name__ == "__main__":
