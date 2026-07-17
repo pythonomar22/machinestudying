@@ -388,7 +388,7 @@ def generate_topic(topic: dict, sessions: dict[int, dict], scope: str) -> dict:
     if problems:
         raise RuntimeError(f"{scope}/{slug}: unresolved violations after retries: {problems}")
 
-    scope = smalldspy_files()
+    scope_files = smalldspy_files()
     record = {
         "cluster_id": topic["cluster_id"],
         "label": slug,
@@ -399,7 +399,8 @@ def generate_topic(topic: dict, sessions: dict[int, dict], scope: str) -> dict:
                 **candidate,
                 "topic": slug,
                 "smalldspy_scope": all(
-                    evidence["file"] in scope for evidence in candidate["code_evidence"]
+                    evidence["file"] in scope_files
+                    for evidence in candidate["code_evidence"]
                 ),
             }
             for candidate in candidates

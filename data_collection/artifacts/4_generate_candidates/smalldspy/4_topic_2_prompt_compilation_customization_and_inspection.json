@@ -1,0 +1,499 @@
+{
+ "cluster_id": 2,
+ "label": "prompt_compilation_customization_and_inspection",
+ "label_description": "Users in this cluster are trying to control DSPy’s prompt-building pipeline: customizing signatures, templates/adapters, system instructions, field formatting/order, chain-of-thought/tool descriptions, and optimizer-produced prompt text. They also want to inspect the exact rendered LM requests, prompt history, and tracing/logging behavior to debug, benchmark, or cache those prompts.",
+ "seed_numbers": [
+  1122,
+  8259,
+  913,
+  996,
+  1835,
+  7793,
+  219,
+  228,
+  1308,
+  355
+ ],
+ "candidates": [
+  {
+   "question": "I'm trying to benchmark a `dspy.Predict` call outside DSPy, so I need the exact rendered LM request, not a schematic template. With defaults on some inputs and no real API call allowed, what is the most faithful offline way to capture the final messages, and what turns should appear in that message list?",
+   "answer": "Use a spy LM or otherwise let `dspy.Predict` go through its normal preprocessing before you inspect the rendered `messages`, because preprocessing inserts default input values, merges config, and selects the active adapter before formatting. The final request is an OpenAI-style message list with one system message containing field descriptions, field structure, and task instructions, followed by any demos or conversation history, and then a final user message containing the actual inputs plus the adapter's output-format reminder.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict._forward_preprocess"
+    },
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.forward"
+    },
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_input_field_default_value"
+    }
+   ],
+   "note": "A runnable reference answer should use `DummyLM` or a custom spy LM so the message list can be asserted offline.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I have a signature that includes `dspy.History`, and I want to inspect the exact multi-turn prompt DSPy sends. Does the past conversation stay bundled inside one field, or does DSPy expand it into separate chat turns before adding my current request?",
+   "answer": "DSPy expands `dspy.History` into real multi-turn chat. It detects the history-typed input, removes that field from the formatting signature, turns each saved record into alternating user and assistant messages using the remaining signature fields, and then appends the current call as a separate final user message.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format"
+    },
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format_conversation_history"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_call_predict_with_chat_history"
+    }
+   ],
+   "note": "The chat-history test pins down the concrete message ordering for both chat-style and JSON-style adapters.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "My demos are partially filled because an optimizer or preprocessing step only produced some fields. When `dspy.Predict` renders the prompt, are those incomplete demos dropped, or do they still influence the prompt, and how are missing fields represented?",
+   "answer": "Incomplete demos still influence the prompt as long as they contain at least one input field and one output field. DSPy keeps those demos, prefixes the user side with a note that some fields are missing, and fills missing assistant-side fields with placeholder text instead of dropping the example. Demos missing either all inputs or all outputs are the ones that get discarded.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format_demos"
+    },
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.format_user_message_content"
+    },
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.format_assistant_message_content"
+    }
+   ],
+   "note": "A good offline repro should include one fully complete demo, one partial demo with both sides present, and one demo that gets dropped.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I want long context first and the reusable instructions later so provider-side prompt caching works better. Can I do that with a normal `dspy.Predict`, or is the supported path to replace the prompt-building layer, and what is the narrowest override surface?",
+   "answer": "There is no `dspy.Predict` flag that reorders instructions versus inputs. Prompt assembly always goes through the configured adapter, so the supported path is to swap adapters globally or inside `dspy.context`; override `format` if you need full control over message order, or override the smaller formatting hooks if the overall ordering can stay the same. `TwoStepAdapter` is the built-in example that takes over full message construction.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.forward"
+    },
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format"
+    },
+    {
+     "file": "dspy/adapters/two_step_adapter.py",
+     "symbol": "TwoStepAdapter.format"
+    }
+   ],
+   "note": "The smallest supported customization surface is the adapter layer, not `Predict` itself.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "Where does the formatting scaffolding actually come from in DSPy, and what concretely changes if I swap between the default chat-style formatting, JSON-style formatting, and XML-style formatting for the same signature?",
+   "answer": "The scaffolding comes from the adapter, not from `dspy.Predict` itself. All built-in adapters build the system message from field descriptions, field structure, and task instructions, but the structure block differs: chat mode uses `[[ ## field ## ]]` sections plus a `[[ ## completed ## ]]` marker, JSON mode keeps marker-style inputs but asks for a JSON object for outputs, and XML mode wraps fields in XML tags. The user-side output reminder changes with the adapter too.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format_system_message"
+    },
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.format_field_structure"
+    },
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter.format_field_structure"
+    },
+    {
+     "file": "dspy/adapters/xml_adapter.py",
+     "symbol": "XMLAdapter.format_field_structure"
+    }
+   ],
+   "note": "A strong answer should compare the actual rendered system/user messages across adapters, not just name the classes.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "Some local models keep returning malformed section markers. If I stay on the default chat-style adapter, will DSPy automatically retry with a different rendering, and in which failure modes will it refuse to do that?",
+   "answer": "Yes. The default chat-style adapter catches ordinary failures and retries through the JSON adapter. It deliberately does not retry on `ContextWindowExceededError`, it does not retry once you are already in JSON mode, and you can disable the fallback entirely.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.__call__"
+    },
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.acall"
+    },
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter.parse"
+    }
+   ],
+   "note": "The key distinction is that malformed formatting/parsing can trigger JSON fallback, while context-window failures do not.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I need to know when DSPy will ask the provider for a strict response schema versus a plain JSON object. What signature shapes force JSON fallback even if I'm using JSON-style formatting?",
+   "answer": "JSON-style prompting uses a strict provider schema only when the LM supports `response_format` and the output signature can be turned into a closed Pydantic model. Open-ended mapping outputs like `dict[str, Any]`, or `ToolCalls` outputs when native function calling is disabled, force fallback to `{\"type\": \"json_object\"}` instead. If strict schema construction fails, DSPy warns and falls back to the same plain-JSON path.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter._json_adapter_call_common"
+    },
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter.__call__"
+    },
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "_get_structured_outputs_response_format"
+    }
+   ],
+   "note": "A good repro should cover both an open-ended dict output and a closed typed output to show the branch change.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "Two of my output fields are close in meaning, and one keeps coming back missing even though the raw completion clearly contains text. What does DSPy require from the parsed completion before it will accept the result for chat-style, JSON-style, and XML-style outputs?",
+   "answer": "DSPy accepts the result only if the parsed output keys exactly match the signature's output fields. Chat and XML parsing keep the first occurrence of each expected field and then fail if any expected field is missing; JSON parsing repairs/loads the object, filters to expected keys, casts values, and also fails if the final key set is not exact. Extra text is tolerated, but missing or unparsable output fields are not.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.parse"
+    },
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter.parse"
+    },
+    {
+     "file": "dspy/adapters/xml_adapter.py",
+     "symbol": "XMLAdapter.parse"
+    }
+   ],
+   "note": "A runnable answer should show the same bad completion failing under more than one adapter to prove the shared exact-key-set rule.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I'm trying to squeeze tokens out of a structured prompt, but I still need the model to respect field order and validation constraints. Where does DSPy tell the model both the output ordering and the field constraints, and does that differ across adapters?",
+   "answer": "Output ordering comes from signature order and is echoed back to the model in the output reminder. Chat mode lists the expected field headers in order, while JSON mode explicitly says to return a JSON object in that field order. Constraints are injected through the field-description section of the system message, and the tests confirm that min/max and `multiple_of` metadata are rendered there.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/utils.py",
+     "symbol": "get_field_description_string"
+    },
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.user_message_output_requirements"
+    },
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter.user_message_output_requirements"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_field_constraints"
+    }
+   ],
+   "note": "This is about prompt text, not runtime validation; the constraints are described to the LM in the prompt.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "For reproducible prompt inspection, I need to know every mutation DSPy makes to call inputs before formatting. Which call-time changes happen before prompt rendering, especially around default values, extra kwargs, and type mismatch handling?",
+   "answer": "Before any prompt is rendered, `dspy.Predict` fills missing inputs from `InputField(default=...)`, warns and ignores extra kwargs that are not in the signature, and optionally logs type mismatches without blocking execution. Only that prepared input dict reaches the adapter, which is why default values show up in the final prompt while unknown fields do not.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict._forward_preprocess"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_input_field_default_value"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_extra_fields_warning"
+    }
+   ],
+   "note": "If type-mismatch warnings matter, an offline answer should enable or disable that setting explicitly in the repro.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "After I switch from `dspy.Predict` to `dspy.ChainOfThought`, I want to inspect exactly what changed in the prompt contract. Does ChainOfThought wrap the original program, or does it create a new signature, and where does the reasoning field land relative to my original outputs?",
+   "answer": "`dspy.ChainOfThought` creates a new signature and delegates it to an internal `dspy.Predict`. It prepends a `reasoning` output field ahead of the original outputs, uses `${reasoning}` as the default description unless you pass a custom rationale field, and otherwise relies on ordinary predictor/adapter formatting. The visible output order becomes `reasoning` first, then your original outputs.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/chain_of_thought.py",
+     "symbol": "ChainOfThought.__init__"
+    },
+    {
+     "file": "dspy/predict/chain_of_thought.py",
+     "symbol": "ChainOfThought.forward"
+    },
+    {
+     "file": "tests/predict/test_chain_of_thought.py",
+     "symbol": "test_initialization_with_string_signature"
+    }
+   ],
+   "note": "A runnable answer should inspect the wrapped predictor signature rather than only the final prediction object.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I'm using `dspy.ChainOfThought` on a reasoning-capable model and I see a mismatch between the visible reasoning field and the provider's native reasoning channel. When does DSPy use native reasoning versus the ordinary structured output field, and why can those diverge?",
+   "answer": "A reasoning-capable model does not automatically make ChainOfThought use the provider's native reasoning channel. The default ChainOfThought field is just a normal structured output field, so DSPy parses the visible `[[ ## reasoning ## ]]` section. Native reasoning only turns on when the signature uses `dspy.Reasoning`, which can delete that field from the rendered signature, set `reasoning_effort`, and later recover `reasoning_content`; GPT-5 chat models are explicitly excluded from that native path because LiteLLM does not expose the reasoning content there.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/types/reasoning.py",
+     "symbol": "Reasoning.adapt_to_native_lm_feature"
+    },
+    {
+     "file": "dspy/adapters/types/reasoning.py",
+     "symbol": "Reasoning.parse_lm_response"
+    },
+    {
+     "file": "tests/predict/test_chain_of_thought.py",
+     "symbol": "test_chain_of_thought_with_native_reasoning"
+    },
+    {
+     "file": "tests/predict/test_chain_of_thought.py",
+     "symbol": "test_chain_of_thought_with_manual_reasoning"
+    }
+   ],
+   "note": "A correct answer must distinguish 'model supports reasoning' from 'signature uses `dspy.Reasoning`'.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I want to inspect the exact prompt contract that `dspy.ReAct` gives the model before the first tool call. How are my original task instructions, the synthetic 'finish' action, and the tool descriptions/argument schemas folded into the rendered signature?",
+   "answer": "ReAct starts with the original task instructions and appends an agent template that explains the trajectory loop and the required `next_thought`, `next_tool_name`, and `next_tool_args` outputs. It always injects a synthetic `finish` tool, serializes every tool from its name, description, and argument schema, constrains `next_tool_name` to a literal set of allowed tool names, and keeps `next_tool_args` as JSON-shaped dict data.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct.__init__"
+    },
+    {
+     "file": "dspy/adapters/types/tool.py",
+     "symbol": "Tool.__str__"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_tool_calling_with_pydantic_args"
+    }
+   ],
+   "note": "The important subtlety is that the finish action is not optional metadata; DSPy adds it as an actual allowed tool.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "If I change adapters or let tools return custom multimodal values, does `dspy.ReAct` freeze its trajectory into one string format up front, or does it reformat the trajectory at runtime with the active adapter? I need the answer because I care about prompt fidelity and cached demos.",
+   "answer": "ReAct reformats the trajectory at runtime with the current adapter rather than freezing one string format at construction time. On each turn it builds a temporary signature from the current trajectory keys and calls the active adapter's user-message formatter, and the later LM call still runs through normal custom-type splitting. That is why multimodal observations like images survive as structured content blocks and why adapter changes affect live ReAct turns.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct._format_trajectory"
+    },
+    {
+     "file": "dspy/adapters/types/base_type.py",
+     "symbol": "split_message_content_for_custom_types"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_tool_observation_preserves_custom_type"
+    }
+   ],
+   "note": "A runnable repro should use a custom type such as `dspy.Image` so the formatting difference is visible in the raw message content.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I'm stress-testing a tool-heavy `dspy.ReAct` loop and keep hitting context window limits. What exactly gets truncated from the trajectory when DSPy retries, and when does it give up on further acting and fall back to extraction?",
+   "answer": "On each context-window overflow, ReAct retries up to three times and truncates one whole oldest tool turn by dropping four keys: thought, tool name, tool args, and observation. If the trajectory is too short to trim, it raises. If repeated overflows prevent further acting, DSPy falls back to the extractor module using whatever trajectory remains, including the empty-trajectory case covered by the tests.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct._call_with_potential_trajectory_truncation"
+    },
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct.truncate_trajectory"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_trajectory_truncation"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_context_window_exceeded_after_retries"
+    }
+   ],
+   "note": "The truncation unit is one full tool turn, not an arbitrary string slice.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "One of my tools takes a nested Pydantic object, and I want to know whether DSPy actually exposes that nested structure to the model and validates it before execution, or whether it just passes a string blob through the prompt and into the tool.",
+   "answer": "DSPy preserves nested tool structure. `dspy.Tool` introspects the callable's type hints, expands nested Pydantic models into JSON Schema for the prompt or function schema, validates model-produced args against that schema, and reparses them back into typed Python or Pydantic objects before calling the tool. ReAct's recorded trajectory keeps the structured dict form of those tool args rather than flattening them to a string.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/types/tool.py",
+     "symbol": "Tool._parse_function"
+    },
+    {
+     "file": "dspy/adapters/types/tool.py",
+     "symbol": "Tool._validate_and_parse_args"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_tool_calling_with_pydantic_args"
+    }
+   ],
+   "note": "A good offline repro should assert both the executed tool result and the exact structured trajectory entry.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I'm wrapping a program in a retry/selection module, and the final DSPy trace only seems to show one candidate run even though several rollouts clearly happened. Is that expected, and which attempt's prompt/inputs/outputs survive in the final trace?",
+   "answer": "Yes, that is expected. `dspy.Predict` appends one trace entry per call, but `BestOfN` and `Refine` run each rollout inside a fresh temporary trace, copy that attempt's entries, score it, and keep only the trace belonging to the selected best attempt. At the end they extend the outer trace with just that saved trace; `Refine` also omits reward-function tracing.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict._forward_postprocess"
+    },
+    {
+     "file": "dspy/predict/best_of_n.py",
+     "symbol": "BestOfN.forward"
+    },
+    {
+     "file": "dspy/predict/refine.py",
+     "symbol": "Refine.forward"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_trace_size_limit"
+    }
+   ],
+   "note": "This is about the global DSPy trace, not the per-module LM history list.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I'm considering the two-stage adapter for a reasoning model because I want a looser first-stage prompt but still structured outputs. Which part of that pipeline can actually absorb demos or optimizer changes, and which part stays fixed?",
+   "answer": "Only the first stage is prompt-tunable in the usual way. The two-stage adapter gives the main LM a simpler system-plus-user prompt and can include demos there, but it always parses the raw text with a second `ChatAdapter` call over a fresh `text -> outputs` signature and `demos=[]`. The file's own note says that extraction stage cannot learn or be optimized.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/two_step_adapter.py",
+     "symbol": "TwoStepAdapter.format"
+    },
+    {
+     "file": "dspy/adapters/two_step_adapter.py",
+     "symbol": "TwoStepAdapter.parse"
+    },
+    {
+     "file": "dspy/adapters/two_step_adapter.py",
+     "symbol": "TwoStepAdapter._create_extractor_signature"
+    }
+   ],
+   "note": "A strong answer should separate the prompt seen by the main LM from the prompt seen by the extraction LM.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I'm debugging why prompts change across retries in a refinement loop even though I never changed my original module. How does DSPy feed feedback back into later runs, and is that feedback part of the original signature or injected dynamically?",
+   "answer": "Refine changes later prompts by injecting advice dynamically. After a below-threshold run it builds an advice prompt from program code, module definitions, trace, outputs, and reward context; on later rollouts it wraps the current adapter class so each predictor call gets a synthetic `hint_` input appended to the signature and filled with per-module advice. That hint is not part of the original module signature.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/refine.py",
+     "symbol": "Refine.forward"
+    },
+    {
+     "file": "dspy/predict/refine.py",
+     "symbol": "OfferFeedback"
+    },
+    {
+     "file": "dspy/predict/refine.py",
+     "symbol": "inspect_modules"
+    }
+   ],
+   "note": "A runnable repro should show that the hint field appears only on later refinement attempts, not on the first run.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I saved a tuned predictor, loaded it into a fresh process with a different signature and LM configuration, and the prompt behavior partly changed and partly snapped back. What prompt-affecting state does DSPy actually preserve on save/load, and which LM endpoint settings are intentionally stripped unless I opt in?",
+   "answer": "State save/load preserves the predictor's demos, traces and train data, serialized signature including instructions and field metadata, and attached LM state. Loading overwrites the current signature with the saved one, but unsafe LM endpoint keys like `api_base`, `base_url`, and `model_list` are stripped unless you opt into unsafe LM state. Module-local `history` and `callbacks` are intentionally excluded from the module object state path.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.dump_state"
+    },
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.load_state"
+    },
+    {
+     "file": "dspy/primitives/base_module.py",
+     "symbol": "BaseModule.save"
+    },
+    {
+     "file": "dspy/primitives/base_module.py",
+     "symbol": "BaseModule.load"
+    },
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.__getstate__"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_signature_fields_after_dump_and_load_state"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_load_ignores_serialized_endpoint_override_by_default"
+    }
+   ],
+   "note": "A good round-trip repro should separately prove signature restoration, demo restoration, and unsafe-endpoint sanitization.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  }
+ ]
+}

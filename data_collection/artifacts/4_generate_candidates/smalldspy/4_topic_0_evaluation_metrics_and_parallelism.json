@@ -1,0 +1,467 @@
+{
+ "cluster_id": 0,
+ "label": "evaluation_metrics_and_parallelism",
+ "label_description": "Users in this cluster are trying to evaluate DSPy programs and drive teleprompter/optimizer compilation with custom evaluators, including boolean vs. numeric scores, LLM-graded metrics, callable or async metrics, and multiple metrics. They also need those evaluation and optimization runs to execute correctly and efficiently through threading, batching, concurrency controls, Parallel, and async LM/tool calls.",
+ "seed_numbers": [
+  175,
+  193,
+  1351,
+  7938,
+  110,
+  298,
+  429,
+  892,
+  139,
+  813
+ ],
+ "candidates": [
+  {
+   "question": "I swapped a boolean accept/reject metric for a numeric reward in one of DSPy's retrying selection wrappers. If the reward is a float, does DSPy maximize it, and does a reward exactly equal to the target stop further attempts? Please explain and include a minimal offline repro that uses DummyLM if you need an LM.",
+   "answer": "Yes. The N-try selectors compare rewards numerically: they update the incumbent only on strict improvement (`reward > best_reward`), and they stop as soon as `reward >= threshold`. So a score exactly equal to the threshold short-circuits the search, but equal-score ties do not replace an earlier best attempt.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/best_of_n.py",
+     "symbol": "BestOfN.forward"
+    },
+    {
+     "file": "dspy/predict/refine.py",
+     "symbol": "Refine.forward"
+    }
+   ],
+   "note": "Grade for the strict `>` vs. non-strict `>=` distinction.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "In the same N-attempt setup, none of my attempts ever reaches the target. Does DSPy return the last attempt, or the best one seen so far? And if every attempt gets the same score, which one wins? Please show an offline repro.",
+   "answer": "It returns the best attempt seen so far, not automatically the last one. Because the best-update check is strict `>`, a run where every attempt gets the same score keeps the first attempt as the winner. The BestOfN tests exercise exactly that pattern: all three attempts run and the first answer is still returned.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/best_of_n.py",
+     "symbol": "BestOfN.forward"
+    },
+    {
+     "file": "tests/predict/test_best_of_n.py",
+     "symbol": "test_refine_forward_success_first_attempt"
+    }
+   ],
+   "note": "Must mention earliest winner under all-score ties.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I set the target score to `None` because I wanted \"score everything, never early-stop.\" One DSPy retry wrapper seems built for that, and the other is not. What is the actual behavior difference? Show a minimal offline repro.",
+   "answer": "The feedback-driven wrapper treats `None` as \"never early-stop\" because it guards the threshold check with `self.threshold is not None`. The plain N-try selector does not have that guard and still evaluates `reward >= self.threshold`, so `threshold=None` is not safe there.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/best_of_n.py",
+     "symbol": "BestOfN.forward"
+    },
+    {
+     "file": "dspy/predict/refine.py",
+     "symbol": "Refine.forward"
+    }
+   ],
+   "note": "Need an explicit contrast between the two retry wrappers.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "The failure budget around my retrying DSPy wrapper feels off by one. If I say \"allow one failure,\" when does it really raise, and what does the default do when every attempt fails? Please prove it with a minimal offline repro.",
+   "answer": "With `fail_count=1`, the wrapper tolerates one exception and raises on the second. The default starts the budget at `N`, so if every attempt fails, the error is raised on the last attempt. The repo tests cover both the default and the custom-budget case.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/best_of_n.py",
+     "symbol": "BestOfN.forward"
+    },
+    {
+     "file": "tests/predict/test_best_of_n.py",
+     "symbol": "test_refine_module_default_fail_count"
+    },
+    {
+     "file": "tests/predict/test_best_of_n.py",
+     "symbol": "test_refine_module_custom_fail_count"
+    }
+   ],
+   "note": "Need the exact tolerated-failure behavior, not a hand-wavy summary.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I want my custom evaluator to call another DSPy program as an LLM judge inside a retrying wrapper, but I do not want judge calls mixed into the trace from the candidate program. Does DSPy isolate the trace from the evaluator, or not? Please explain with a small offline repro.",
+   "answer": "DSPy isolates the evaluator trace in both retry wrappers. Each attempt runs inside a fresh `trace=[]` context, the wrapper snapshots that trace immediately after the candidate program call, and the code explicitly excludes reward-function traces. After selection, only the chosen attempt's trace is appended back to the outer trace.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/best_of_n.py",
+     "symbol": "BestOfN.forward"
+    },
+    {
+     "file": "dspy/predict/refine.py",
+     "symbol": "Refine.forward"
+    }
+   ],
+   "note": "Trace pollution is the key point; LM usage is a separate concern.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I want a richer evaluator that returns both a numeric score and feedback, and I also want to average several such scores before deciding whether an attempt is good enough. Can I return a DSPy object instead of a bare float and still have ranking, thresholding, and arithmetic work? Any gotchas? Please show a minimal offline repro.",
+   "answer": "Yes. A `dspy.Prediction` with a `score` field behaves like a number for comparison and arithmetic, so you can return `Prediction(score=..., feedback=...)`, compare it to floats or other scored predictions, and average several of them with `+` and `/`. The main gotcha is equality: `==` still compares the full stored record, not just `score`.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/primitives/prediction.py",
+     "symbol": "Prediction.__float__"
+    },
+    {
+     "file": "dspy/primitives/prediction.py",
+     "symbol": "Prediction.__add__"
+    },
+    {
+     "file": "dspy/primitives/prediction.py",
+     "symbol": "Prediction.__truediv__"
+    },
+    {
+     "file": "dspy/primitives/prediction.py",
+     "symbol": "Prediction.__gt__"
+    },
+    {
+     "file": "dspy/primitives/example.py",
+     "symbol": "Example.__eq__"
+    },
+    {
+     "file": "dspy/predict/best_of_n.py",
+     "symbol": "BestOfN.forward"
+    }
+   ],
+   "note": "Need `score`-field numeric semantics plus the equality caveat.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "When DSPy retries the same program several times to hunt for a better answer, are those attempts truly isolated, or can mutable predictor state leak across tries? I care about rollout IDs, LM config, and any non-copyable custom attributes. Please explain the exact model and include an offline repro.",
+   "answer": "Each retry gets a copied LM and a copied module. The wrappers read the starting `rollout_id`, create an LM copy per attempt with incremented `rollout_id` and `temperature=1.0`, deep-copy the module, and attach the copied LM to that copy. Isolation is strong for normal DSPy state, but the generic deep-copy logic falls back to shallow copy or shared references for attributes it cannot deep-copy.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/best_of_n.py",
+     "symbol": "BestOfN.forward"
+    },
+    {
+     "file": "dspy/primitives/base_module.py",
+     "symbol": "BaseModule.deepcopy"
+    },
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.set_lm"
+    }
+   ],
+   "note": "Must mention the deep-copy fallback caveat, not just the happy path.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "In DSPy's feedback-driven retry wrapper, when does the model start seeing feedback from earlier failed attempts, and does that permanently change the wrapped predictors' input signatures? Please answer with a minimal offline repro.",
+   "answer": "Feedback is only injected after a below-threshold round has already produced advice. The first attempt sees no hint; later retries run under a temporary adapter that adds a synthetic `hint_` input populated from per-predictor advice. Because this happens inside a deep-copied module and a temporary context, the original predictor signatures are not permanently rewritten.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/refine.py",
+     "symbol": "Refine.forward"
+    },
+    {
+     "file": "dspy/primitives/base_module.py",
+     "symbol": "BaseModule.deepcopy"
+    }
+   ],
+   "note": "Need both 'only after the first failed round' and 'not permanent'.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "My custom evaluator is a callable class with internal state, not a plain function. If I plug it into DSPy's feedback-driven retry wrapper, what code does DSPy actually show to the model that writes retry advice? Please give the exact rule and a tiny offline repro.",
+   "answer": "The feedback-driven wrapper first tries to capture the source of the evaluator object directly. If that fails because the evaluator is a callable object rather than a plain function, it falls back to the source of the evaluator class. That captured code is then passed along as `reward_code` in the advice request.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/refine.py",
+     "symbol": "Refine.__init__"
+    },
+    {
+     "file": "dspy/predict/refine.py",
+     "symbol": "Refine.forward"
+    },
+    {
+     "file": "dspy/predict/refine.py",
+     "symbol": "OfferFeedback"
+    }
+   ],
+   "note": "Need the callable-object class-source fallback.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "When I run a DSPy program over a list of `dspy.Example`s and ask DSPy to return failures instead of aborting, the failed examples no longer include my gold labels. Is that expected? Explain why and give a minimal offline repro.",
+   "answer": "Yes, that is expected. The program-level list runner strips every example down to `example.inputs()` before queuing work, and the threaded runner returns those queued examples when it reports failures. So the failed examples you get back contain only input fields, not labels or extra metadata.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.batch"
+    },
+    {
+     "file": "dspy/predict/parallel.py",
+     "symbol": "Parallel.forward"
+    },
+    {
+     "file": "tests/predict/test_parallel.py",
+     "symbol": "test_batch_with_failed_examples"
+    }
+   ],
+   "note": "Need the input-only failed-example detail.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I want to evaluate a DSPy program over a devset concurrently without manually constructing worker pairs. Which concurrency and error-handling controls are exposed at the program level, and how do they map into DSPy's threaded runner? Please include a self-contained offline example.",
+   "answer": "DSPy's program-level list runner is a thin wrapper over `dspy.Parallel`. It builds `(self, example.inputs())` pairs and forwards `num_threads`, `max_errors`, `return_failed_examples`, `provide_traceback`, `disable_progress_bar`, `timeout`, and `straggler_limit` directly to the threaded runner.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.batch"
+    },
+    {
+     "file": "dspy/predict/parallel.py",
+     "symbol": "Parallel.__init__"
+    }
+   ],
+   "note": "Need the full forwarded knob set.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I'm seeing repeated work near the tail of a threaded DSPy run and I suspect the straggler logic. What are the default timeout and straggler settings, and how do I disable the timeout-based retry behavior entirely? Show a tiny offline repro.",
+   "answer": "The defaults are `timeout=120` and `straggler_limit=3`. Setting `timeout=0` disables the timeout-based straggler behavior entirely; the same knobs also flow through the program-level list runner.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/parallel.py",
+     "symbol": "Parallel.__init__"
+    },
+    {
+     "file": "tests/predict/test_parallel.py",
+     "symbol": "test_parallel_timeout_and_straggler_limit_params"
+    },
+    {
+     "file": "tests/predict/test_parallel.py",
+     "symbol": "test_batch_timeout_and_straggler_limit_params"
+    }
+   ],
+   "note": "Need exact defaults and the `timeout=0` disable behavior.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I want one `dspy.Parallel` call to mix full `dspy.Example`s, plain keyword dictionaries, positional tuples, and even a nested concurrent sub-run. Which payload shapes are actually supported, and what special case makes the nested case work? Please show it offline.",
+   "answer": "`dspy.Parallel` accepts four payload shapes: `dspy.Example`, `dict`, `tuple`, and `list` only when the callee is itself another `dspy.Parallel`. Examples are unpacked via their inputs, dicts become keyword calls, tuples become positional calls, and unsupported shapes raise `ValueError`.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/parallel.py",
+     "symbol": "Parallel.forward"
+    },
+    {
+     "file": "tests/predict/test_parallel.py",
+     "symbol": "test_nested_parallel_module"
+    }
+   ],
+   "note": "Need the nested-list special case tied specifically to `dspy.Parallel`.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "If one item fails during a concurrent DSPy run, can I keep the successful outputs and inspect the failures separately instead of losing the whole job? I want the exact return shape, including what sits in the failed slots. Please give a minimal offline repro.",
+   "answer": "Yes. In failure-return mode, DSPy returns a triple: `results`, `failed_examples`, and `exceptions`. The `results` list keeps successful outputs in place and uses `None` for failed positions, while the failing inputs and caught exceptions are collected separately.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/parallel.py",
+     "symbol": "Parallel.forward"
+    },
+    {
+     "file": "tests/predict/test_parallel.py",
+     "symbol": "test_batch_with_failed_examples"
+    }
+   ],
+   "note": "Need the triple return shape and `None` slots.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "During threaded or async evaluation I need per-prediction token usage, but I'm worried concurrent calls will stomp on a shared counter. Does DSPy attach usage correctly under concurrency? Please explain with a small repro; use DummyLM only if needed.",
+   "answer": "Yes. `dspy.Module` starts a fresh usage tracker per call unless a thread-local tracker already exists, then attaches the collected token totals to the returned prediction. The tests verify that this survives both a threaded `dspy.Parallel` run and an `asyncio.gather` run.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.__call__"
+    },
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.acall"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_lm_usage_with_parallel"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_lm_usage_with_async"
+    }
+   ],
+   "note": "Need both threaded and async evidence.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "Some optimization code temporarily wraps a DSPy program so the forward path returns `(prediction, trace)` instead of just a prediction. If usage tracking is on, does the token accounting still end up on the prediction? Please explain the exact behavior.",
+   "answer": "Yes. The usage-attachment logic explicitly handles both a bare `Prediction` and a tuple whose first element is a `Prediction`, which is the pattern some optimizers use for `(prediction, trace)`. Only outputs with no identifiable prediction object miss usage attachment.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module._set_lm_usage"
+    },
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.__call__"
+    },
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.acall"
+    }
+   ],
+   "note": "Need the tuple-first-element rule.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "My `dspy.ReAct` agent works when I run it asynchronously, but the synchronous call breaks as soon as one tool becomes `async def`. What is the supported sync-vs-async behavior for tool execution, and do I need separate tool definitions? Please show it with an offline repro.",
+   "answer": "In synchronous `dspy.ReAct`, tool calls go through the tool wrapper's sync entrypoint, so an `async def` tool raises unless you enable async-to-sync conversion. In asynchronous `dspy.ReAct`, tool calls go through the async entrypoint, which awaits real coroutines and also accepts ordinary sync functions. So you usually do not need separate tool definitions; you need the async program path when the tool itself is async.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct.forward"
+    },
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct.aforward"
+    },
+    {
+     "file": "dspy/adapters/types/tool.py",
+     "symbol": "Tool.__call__"
+    },
+    {
+     "file": "dspy/adapters/types/tool.py",
+     "symbol": "Tool.acall"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_async_tool_calling_with_pydantic_args"
+    }
+   ],
+   "note": "Need sync raise vs. async support, not just 'use acall'.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "In a long `dspy.ReAct` run, the growing trajectory can blow the context window. How exactly does DSPy recover, and what happens if repeated truncation still does not make the next planning step fit? Please include a minimal offline repro.",
+   "answer": "On overflow, `dspy.ReAct` enters a three-try recovery loop and each successful recovery step truncates the oldest four trajectory keys, यानी one complete tool-call chunk: thought, tool name, tool args, and observation. If planning still cannot fit, or the trajectory is too short to truncate, the resulting `ValueError` makes the outer loop stop extending the trajectory and do one final extraction call with the current trajectory, which may be empty. The tests cover both partial truncation and the empty-trajectory fallback in sync and async mode.",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct._call_with_potential_trajectory_truncation"
+    },
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct._async_call_with_potential_trajectory_truncation"
+    },
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct.truncate_trajectory"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_trajectory_truncation"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_context_window_exceeded_after_retries"
+    }
+   ],
+   "note": "Need 4-key truncation plus extract fallback behavior.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "When a tool explodes inside `dspy.ReAct`, does DSPy abort the whole run, or does the LM see the failure and get another chance to continue? I want the exact sync and async behavior, plus a tiny offline repro.",
+   "answer": "It does not abort on tool exceptions. `dspy.ReAct` catches the exception, turns it into an observation string, stores that string in the trajectory, and keeps going until `finish` or `max_iters`. The sync and async tests both assert that the tool-error text shows up inside the observation entries.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct.forward"
+    },
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct.aforward"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_error_retry"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_async_error_retry"
+    }
+   ],
+   "note": "Need exception-to-observation behavior, not just 'it retries'.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I'm aggregating several candidate outputs before scoring them. If I use DSPy's majority-vote helper, how does it pick the target field, what happens when my normalizer returns `None` for bad answers, and how are ties broken? Please explain with a minimal offline repro.",
+   "answer": "The majority-vote helper defaults to the last output field when you do not name one explicitly. It applies the normalizer to each candidate, ignores `None` values if there is at least one non-`None` normalized value, and only counts the raw normalized list when every normalized value is `None`. Ties go to the earliest completion, and the returned prediction is the first completion whose normalized value matches the winning value.",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/aggregation.py",
+     "symbol": "majority"
+    },
+    {
+     "file": "tests/predict/test_aggregation.py",
+     "symbol": "test_majority_with_normalize"
+    },
+    {
+     "file": "tests/predict/test_aggregation.py",
+     "symbol": "test_majority_with_no_majority"
+    },
+    {
+     "file": "tests/predict/test_aggregation.py",
+     "symbol": "test_majority_with_field"
+    }
+   ],
+   "note": "Need field defaulting, `None` filtering, and earliest-tie behavior.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  }
+ ]
+}

@@ -236,3 +236,22 @@ message are archived under `artifacts/4_generate_candidates/<scope>/`.
 Each candidate is tagged `smalldspy_scope` (all evidence files inside the
 66-file corpus) per the scope note above — trivially true for the
 smalldspy set, informative for the fulldspy set.
+
+**Stage 3a result (2026-07-17):** both sets complete — 4 topics x 20 = 80
+candidates per scope, all questions unique within each set.
+- `4_fulldspy_candidates.json`: 11/80 fall inside the 66-file SmallDSPy
+  scope (1/1/3/6 by topic, rising exactly along the corpus-overlap
+  gradient; module_composition highest).
+- `4_smalldspy_candidates.json`: 80/80 in scope by construction (the
+  sandbox enforces it). Constrained to the 66 files, the generator
+  re-anchored each topic's seed friction onto in-scope mechanisms (e.g.
+  evaluation/metrics questions attach to Refine/BestOfN reward semantics
+  instead of Evaluate/teleprompters; LM-provider questions attach to how
+  configuration flows through Predict/adapters instead of clients/).
+- Cross-scope overlap is low (mean max 3-gram Jaccard 0.024, max 0.163):
+  identical seeds yield related but distinct questions per scope.
+- One session failure: the first smalldspy module_composition attempt
+  derailed into a degenerate reasoning loop inside Codex and crashed; the
+  garbled event log is archived (`events_*_a0_crashed.jsonl`) and a fresh
+  session succeeded. One fulldspy topic was salvaged from its archived
+  attempt after the mid-run corpora rename (see git `ecdc800`).
