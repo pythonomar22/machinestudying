@@ -96,6 +96,21 @@ dataset (verified against `load_questions`-equivalent checks from disk).
   History-visibility question vs the test per-user-history chatbot) is
   topically adjacent but mechanistically distinct - the intended
   "same distribution, not a duplicate" regime.
+- **Register audit, properly calibrated** (`audit_fulldspy.py`). The
+  cluster maps compare RAW issue text against FINAL benchmark questions,
+  so they conflate source difference with the generator/critic/optimizer
+  transformation - do not read them as a source comparison. The
+  apples-to-apples comparison is transformed-vs-transformed, and the
+  same-topic-sibling inflation must be removed: the released questions'
+  cross-topic nearest-neighbor cosine is mean 0.898 [0.829-0.942], versus
+  our questions' nearest-released cosine of mean 0.880 [0.849-0.915], and
+  ours-to-react-five mean 0.868 versus the react five's own cross-topic
+  0.899. Verdict: our v1 questions are only mildly off-register (~0.02-
+  0.03 mean cosine deficit), not outside the benchmark mode as the raw
+  visual suggests; the earlier commit message overclaims this. The
+  suspected driver remains our reconstructed short-form exemplars in the
+  unpublished A.2 placeholder slots; swapping in released non-test
+  questions as exemplars is the cheap refinement, not a rescue.
 
 Manual adversarial verification performed on the artifacts:
 
