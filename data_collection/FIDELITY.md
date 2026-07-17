@@ -60,8 +60,7 @@ filter so the funnel is fully auditable.
   substantive user question.
 - UMAP to 10 dimensions.
 - HDBSCAN as the clusterer.
-- GPT-5.4 assigns a behavioral label per cluster after reviewing up to 30
-  representative sessions.
+- GPT-5.4 assigns a behavioral label per cluster.
 
 **Deliberately re-tuned (not copied), per first principles:** the paper's
 UMAP `n_neighbors=15` and HDBSCAN `(min_cluster_size=30, min_samples=5)`
@@ -85,6 +84,12 @@ choice is not knife-edge. The unconstrained DBCV optimum (0.276) produces
 clusters of size 8-9, too small to anchor generation, and n_neighbors=10
 degenerates to one blob; both are visible in the grid.
 
+The paper's 30-representative cap for labeling is also dropped, by the
+same logic: our clusters hold only 218 sessions in total (largest 72), so
+GPT-5.4 reads EVERY member of a cluster before naming it — the
+"representative selection" approximation (and the inference of how
+representatives would be chosen) disappears entirely.
+
 **Our inferences (each a potential discrepancy):**
 
 | # | Paper says | We had to decide | Our choice |
@@ -92,17 +97,20 @@ degenerates to one blob; both are visible in the grid.
 | 1 | "a domain-aware prefix prompt" | its wording | the Instruct prefix recorded in `3_embeddings_index.json` |
 | 2 | (nothing) | embedded text + truncation | cleaned `question_text`, first 4,000 chars |
 | 3 | (nothing) | UMAP metric / seed | cosine; `random_state=20260716` (paper unseeded, so exact reproduction of their partition is impossible in principle) |
-| 4 | "30 representative sessions" | how representatives are chosen | the 30 members nearest the cluster centroid by cosine in the original embedding space (all members if fewer) |
+| 4 | (nothing) | per-question truncation shown to the labeler | first 1,200 chars of each member's `question_text` |
 | 5 | (no labeling prompt published) | the prompt | ours, embedded in the script; asks for snake_case label + description + a coherence flag, with the paper's Table-3 labels shown as style examples |
 | 6 | six clusters selected for DSPy | what noise points get | `topic: null` (84 sessions); no forced assignment |
 
-**Result (2026-07-17):** six topics — custom_metrics_and_eval_scaling (15),
-runtime_errors_and_regressions (72), prompt_customization_and_generation_
-controls (16), documentation_and_maintenance_contributions (19),
-backend_integrations_and_extensibility (55), custom_lm_backends_and_clients
-(41); 84 noise. Two of six now correspond to paper topics (evaluation
-metrics; prompt customization) — the tuned, finer clustering recovers
-structure the paper-literal parameters missed. A react_agents_and_tools
-cluster still does not emerge from issue data (ReAct-related bug reports
-sit inside runtime_errors_and_regressions), consistent with the v1 finding
-(git `47c3363`).
+**Result (2026-07-17, whole-cluster labeling):** six topics —
+optimizer_metrics_and_async_scaling (15),
+setup_runtime_and_integration_troubleshooting (72),
+prompt_customization_and_generation_controls (16),
+documentation_and_repo_maintenance_contributions (19),
+support_for_new_integrations_and_features (55),
+custom_backend_integration_and_serving (41); 84 noise. Reading whole
+clusters (vs the core-30) broadened some names to match full contents.
+Two of six correspond to paper topics (optimizer/eval metrics; prompt
+customization) — the tuned, finer clustering recovers structure the
+paper-literal parameters missed. A react_agents_and_tools cluster still
+does not emerge from issue data (ReAct-related bug reports sit inside the
+troubleshooting cluster), consistent with the v1 finding (git `47c3363`).

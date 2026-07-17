@@ -23,7 +23,9 @@ Their HDBSCAN/UMAP numbers were tuned to their session pool; ours is a
 different source and size (302 issues), so the clustering parameters are
 re-tuned here from first principles via a reproducible sweep (see
 FIDELITY.md, Stage 2). The paper's values stay in the sweep grid so the
-comparison is on record.
+comparison is on record. Their 30-representative cap is likewise dropped:
+our clusters hold 218 sessions in total, so GPT-5.4 reads EVERY member of
+a cluster before naming it - no representative-selection approximation.
 
 Phases (embedding needs the vLLM env + one GPU; the rest run under uv):
   srun --overlap --jobid=<JOBID> .venv-vllm/bin/python data_collection/3_label_topics.py embed
@@ -65,11 +67,10 @@ MIN_KEPT_CLUSTER = 15      # a topic must (nearly) support the 20-seed sample
 MAX_NOISE_FRACTION = 0.45  # noise must not eat the pool
 MIN_CLUSTERS = 4           # enough topical diversity to be worth labeling
 
-REPRESENTATIVES = 30                              # paper (all members if fewer)
 OPENAI_MODEL, REASONING_EFFORT = "gpt-5.4", "xhigh"
-REPRESENTATIVE_QUESTION_CHARS = 1_200
+LABEL_QUESTION_CHARS = 1_200
 
-LABEL_TEMPLATE = """You are naming one cluster of real user questions about DSPy, an open-source library for programming language models. The {num_sessions} questions below are representative members of a single behavioral cluster discovered by embedding and clustering a large pool of DSPy GitHub issues.
+LABEL_TEMPLATE = """You are naming one cluster of real user questions about DSPy, an open-source library for programming language models. The {num_sessions} questions below are ALL the members of a single behavioral cluster discovered by embedding and clustering a large pool of DSPy GitHub issues.
 
 Assign the cluster a behavioral label describing what its users are trying to accomplish, in the style of these examples from a related benchmark: `gepa_optimizer_usage`, `rag_and_retrieval_pipelines`, `react_agents_and_tools`, `signature_schema_and_pydantic_types`, `evaluation_metrics_and_custom_eval`.
 
@@ -279,17 +280,13 @@ def label(min_cluster_size: int | None, min_samples: int | None,
     log_path = ARTIFACTS / "3_labeling_log.jsonl"
     clusters = []
     for cluster_id in sorted(set(int(value) for value in labels if value >= 0)):
-        members = np.flatnonzero(labels == cluster_id)
-        centroid = matrix[members].mean(axis=0)
-        centroid /= np.linalg.norm(centroid)
-        order = np.argsort(-(matrix[members] @ centroid))
-        representatives = [int(members[i]) for i in order[:REPRESENTATIVES]]
+        members = [int(i) for i in np.flatnonzero(labels == cluster_id)]
         payload = [
             {
                 "number": sessions[i]["number"],
-                "question": sessions[i]["question_text"][:REPRESENTATIVE_QUESTION_CHARS],
+                "question": sessions[i]["question_text"][:LABEL_QUESTION_CHARS],
             }
-            for i in representatives
+            for i in members
         ]
         prompt = LABEL_TEMPLATE.format(
             num_sessions=len(payload),
@@ -313,7 +310,7 @@ def label(min_cluster_size: int | None, min_samples: int | None,
             "cluster_id": cluster_id,
             "size": int(len(members)),
             **verdict,
-            "representative_numbers": [sessions[i]["number"] for i in representatives],
+            "member_numbers": [sessions[i]["number"] for i in members],
         })
         print(f"cluster {cluster_id} (n={len(members)}): {verdict['label']} "
               f"(coherent={verdict['coherent']})")
@@ -335,8 +332,10 @@ def label(min_cluster_size: int | None, min_samples: int | None,
                      "metric": "cosine", "random_state": UMAP_SEED},
             "hdbscan": {"min_cluster_size": chosen["min_cluster_size"],
                         "min_samples": chosen["min_samples"], "dbcv": round(dbcv, 4)},
-            "paper_reference": {"n_neighbors": 15, "min_cluster_size": 30, "min_samples": 5},
-            "representatives_per_cluster": REPRESENTATIVES,
+            "paper_reference": {"n_neighbors": 15, "min_cluster_size": 30,
+                                "min_samples": 5, "representatives": 30},
+            "label_input": "all cluster members "
+                           f"(question_text, {LABEL_QUESTION_CHARS} chars each)",
             "labeling_model": OPENAI_MODEL,
             "clusters": clusters,
             "noise_count": int((labels < 0).sum()),
