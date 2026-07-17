@@ -51,3 +51,57 @@ sessions' answers came from "a weaker assistant"; our comments are human
 Every parameter above is also recorded in `artifacts/2_seed_sessions.json`
 under `inferred_parameters`, and every dropped session number is listed per
 filter so the funnel is fully auditable.
+
+## Stage 2 — embed, cluster, label (file `3_label_topics.py`)
+
+**Copied exactly from the paper:**
+- Embedding model: Qwen3-Embedding-8B, one vector per session's first
+  substantive user question.
+- UMAP to 10 dimensions.
+- HDBSCAN as the clusterer.
+- GPT-5.4 assigns a behavioral label per cluster after reviewing up to 30
+  representative sessions.
+
+**Deliberately re-tuned (not copied), per first principles:** the paper's
+UMAP `n_neighbors=15` and HDBSCAN `(min_cluster_size=30, min_samples=5)`
+were tuned to their session pool (plausibly thousands of community
+sessions); our pool is 302 issues, on which the literal values collapse to
+3 coarse clusters (DBCV 0.143 — kept on record in the sweep grid). We
+selected parameters with a reproducible sweep (`sweep` phase, grid and
+result in `artifacts/3_cluster_sweep.json`) over n_neighbors x
+min_cluster_size x min_samples, scored by HDBSCAN's DBCV
+(`relative_validity_`) subject to constraints derived from what the
+clusters are FOR:
+- every kept cluster must have >= 15 members, so a topic can (nearly)
+  supply the paper's 20 sampled seed sessions for generation;
+- noise <= 45% of the pool;
+- >= 4 clusters (enough topical diversity to be worth labeling).
+
+Winner: `n_neighbors=25, min_cluster_size=10, min_samples=3` (DBCV 0.225,
+6 clusters, 27.8% noise, sizes 72/55/41/19/16/15). The identical partition
+arises for min_cluster_size in {10, 12, 15} — a stability plateau, so the
+choice is not knife-edge. The unconstrained DBCV optimum (0.276) produces
+clusters of size 8-9, too small to anchor generation, and n_neighbors=10
+degenerates to one blob; both are visible in the grid.
+
+**Our inferences (each a potential discrepancy):**
+
+| # | Paper says | We had to decide | Our choice |
+|---|---|---|---|
+| 1 | "a domain-aware prefix prompt" | its wording | the Instruct prefix recorded in `3_embeddings_index.json` |
+| 2 | (nothing) | embedded text + truncation | cleaned `question_text`, first 4,000 chars |
+| 3 | (nothing) | UMAP metric / seed | cosine; `random_state=20260716` (paper unseeded, so exact reproduction of their partition is impossible in principle) |
+| 4 | "30 representative sessions" | how representatives are chosen | the 30 members nearest the cluster centroid by cosine in the original embedding space (all members if fewer) |
+| 5 | (no labeling prompt published) | the prompt | ours, embedded in the script; asks for snake_case label + description + a coherence flag, with the paper's Table-3 labels shown as style examples |
+| 6 | six clusters selected for DSPy | what noise points get | `topic: null` (84 sessions); no forced assignment |
+
+**Result (2026-07-17):** six topics — custom_metrics_and_eval_scaling (15),
+runtime_errors_and_regressions (72), prompt_customization_and_generation_
+controls (16), documentation_and_maintenance_contributions (19),
+backend_integrations_and_extensibility (55), custom_lm_backends_and_clients
+(41); 84 noise. Two of six now correspond to paper topics (evaluation
+metrics; prompt customization) — the tuned, finer clustering recovers
+structure the paper-literal parameters missed. A react_agents_and_tools
+cluster still does not emerge from issue data (ReAct-related bug reports
+sit inside runtime_errors_and_regressions), consistent with the v1 finding
+(git `47c3363`).
