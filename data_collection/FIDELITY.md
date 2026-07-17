@@ -152,33 +152,39 @@ representatives would be chosen) disappears entirely.
 | 5 | (no labeling prompt published — Stage 2's prompt is NOT in the appendix, unlike A.2/A.3/A.4/A.5) | the prompt | ours: mechanism-anchored behavioral labels; genre labels ("bug reports") explicitly disqualified; snake_case style examples drawn from unrelated software domains; coherent=false when a cluster is united only by genre. The first version leaked StudyBench Table-3 labels as examples — see Principles; fixed and rerun |
 | 6 | six clusters selected for DSPy | what noise points get | `topic: null` (90 sessions); no forced assignment |
 
-**Corpus-groundability (added 2026-07-17).** The paper enforces, at
-generation and critic time, that questions be answerable from the code
-roots alone (its "no documentation-only questions" hard bans exist because
-the test-taker's world is source + tests). The same constraint binds our
-studier for a corpus-conditioned reason — during self-quizzing it must
-answer these questions inside the corpus — so we state it as a general
-prior (Principles #1) and surface it early: the labeler also judges each
-cluster `corpus_groundable` (can its typical friction be resolved by
-reading source + tests, versus docs-site/packaging/CI/process artifacts).
-The paper's own late enforcement is inherited verbatim in Stage 3a/3b
-regardless; the flag only sets expectations for topic yield.
+**Corpus-groundability screen (added 2026-07-17, applied per session
+BEFORE clustering).** The paper enforces, at generation and critic time,
+that questions be answerable from the code roots alone (its "no
+documentation-only questions" hard bans exist because the test-taker's
+world is source + tests). The same constraint binds our studier for a
+corpus-conditioned reason — during self-quizzing it must answer these
+questions inside the corpus — so we state it as a general prior
+(Principles #1) and apply it as a per-session screen ahead of clustering:
+GPT-5.4 (effort `low`, prompt in the script, every verdict + rationale in
+`3_groundability.json` / `3_screening_log.jsonl`) judges whether each
+session's friction is resolvable from source + tests. **195 of 302
+sessions pass; 107 screened out** (dependency/env breakage, external-API
+feature requests, docs-website content, repo process, hosted services,
+research-methodology questions). Clustering, labeling, and all downstream
+seeding use the groundable subset only. Applying the prior per-session
+rather than as a post-hoc cluster flag lets formerly grab-bag-bound
+sessions re-cluster by capability. The paper's own late enforcement is
+still inherited verbatim in Stage 3a/3b. The labeler retains a
+cluster-level `corpus_groundable` flag as a redundant sanity check.
 
-**Result (2026-07-17, mechanism instruct + whole-cluster labeling +
-groundability):** seven topics —
-lm_provider_and_backend_integration (70),
-core_primitives_configuration_and_execution (36, coherent=false AND
-groundable=false: a grab-bag mixing runtime mechanisms with
-packaging/versioning/tutorial noise),
-prompt_compilation_and_optimization (35),
-api_reference_and_docstrings (23, groundable=true — its dominant task is
-understanding implementation behavior well enough to document it, i.e.
-docstrings in source files, not the docs website),
-lm_request_limits_and_multimodal_inputs (17),
-optimizer_compilation_and_state_persistence (16),
-concurrent_execution_and_batching (15); 90 noise. Six of seven topics are
-coherent and groundable anchors for generation; the grab-bag is excluded
-on both flags. No agents/tools capability cluster emerges — the scarcity
-of such sessions in issue data (v1 finding, git `47c3363`) persists under
-the mechanism-oriented geometry. Label wording shifts across reruns (the
-labeler is not seeded); the partition itself is deterministic.
+**Result (2026-07-17, screen + mechanism instruct + whole-cluster
+labeling):** sweep winner on the 195-session subset is
+`n_neighbors=25, min_cluster_size=15, min_samples=3` (DBCV 0.219, stable
+across mcs 15-20; top-DBCV rows are degenerate 182/13 splits rejected by
+the constraints). Four topics, all coherent and groundable —
+module_composition_and_runtime_interoperability (42: Signatures,
+Predictors, ReAct agents, typed fields, save/load state),
+lm_provider_integration_and_configuration (35),
+prompt_compilation_customization_and_inspection (32),
+evaluation_metrics_and_parallelism (22); 64 noise. The old grab-bag
+dissolved as intended: its runtime-mechanism members re-clustered into
+module_composition. Still no dedicated agents/tools cluster (v1 finding,
+git `47c3363`, persists); such sessions now sit inside module_composition.
+Label wording shifts across reruns (the labeler is not seeded); the
+partition itself is deterministic given the screen verdicts (which are a
+one-time LLM judgment, archived).

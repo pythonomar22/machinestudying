@@ -27,13 +27,22 @@ comparison is on record. Their 30-representative cap is likewise dropped:
 our clusters hold 218 sessions in total, so GPT-5.4 reads EVERY member of
 a cluster before naming it - no representative-selection approximation.
 
+Before clustering, every session is screened for CORPUS-GROUNDABILITY (a
+general, corpus-conditioned prior; see FIDELITY.md): the study corpus is
+the library's source + tests, so a session whose friction cannot be
+resolved by reading them (docs-site content, packaging/installation, CI,
+repo process, third-party internals) cannot anchor study questions.
+Clustering and labeling run on the groundable subset only.
+
 Phases (embedding needs the vLLM env + one GPU; the rest run under uv):
   srun --overlap --jobid=<JOBID> .venv-vllm/bin/python data_collection/3_label_topics.py embed
+  uv run data_collection/3_label_topics.py screen
   uv run data_collection/3_label_topics.py sweep
   uv run data_collection/3_label_topics.py label [--min-cluster-size N] [--min-samples M] [--n-neighbors K]
 
-Artifacts: 3_embeddings.npy, 3_embeddings_index.json, 3_cluster_sweep.json,
-3_umap10.npy, 3_clusters.png, and the labeled clone 3_seed_sessions_topic.json.
+Artifacts: 3_embeddings.npy, 3_embeddings_index.json, 3_groundability.json,
+3_cluster_sweep.json, 3_umap10.npy, 3_clusters.png, and the labeled clone
+3_seed_sessions_topic.json.
 """
 
 from __future__ import annotations
@@ -73,7 +82,36 @@ MAX_NOISE_FRACTION = 0.45  # noise must not eat the pool
 MIN_CLUSTERS = 4           # enough topical diversity to be worth labeling
 
 OPENAI_MODEL, REASONING_EFFORT = "gpt-5.4", "xhigh"
+SCREEN_EFFORT = "low"        # binary screening; 302 mechanical judgments
+SCREEN_WORKERS = 8
+SCREEN_QUESTION_CHARS = 2_000
 LABEL_QUESTION_CHARS = 1_200
+
+SCREEN_TEMPLATE = """You are screening one real user question about DSPy, an open-source library for programming language models, as potential study material. The study corpus available to the studier is the library's SOURCE CODE and TESTS only.
+
+Judge whether this question is groundable in that corpus: could the friction it describes be resolved by reading the library's source code and tests? Answer false if it primarily concerns artifacts outside the source corpus, such as documentation-website or tutorial/notebook content, installation/packaging/releases, CI or repository process, hosted third-party services, or the internal behavior of other libraries.
+
+## Question
+{question}
+
+Return JSON that matches the schema exactly."""
+
+SCREEN_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "groundability",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "groundable": {"type": "boolean"},
+                "reason": {"type": "string"},
+            },
+            "required": ["groundable", "reason"],
+            "additionalProperties": False,
+        },
+    },
+}
 
 LABEL_TEMPLATE = """You are naming one cluster of real user questions about DSPy, an open-source library for programming language models. The {num_sessions} questions below are ALL the members of a single behavioral cluster discovered by embedding and clustering a large pool of user questions about the library.
 
@@ -200,10 +238,69 @@ def embed() -> None:
           f"norm range [{norms.min():.4f}, {norms.max():.4f}]")
 
 
+def screen() -> None:
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from openai import OpenAI
+
+    sessions = load_sessions()
+    client = OpenAI(api_key=openai_key(), timeout=300, max_retries=2)
+    log_path = ARTIFACTS / "3_screening_log.jsonl"
+
+    def judge(row: dict) -> tuple[int, dict]:
+        request = {
+            "model": OPENAI_MODEL,
+            "reasoning_effort": SCREEN_EFFORT,
+            "messages": [{"role": "user", "content": SCREEN_TEMPLATE.format(
+                question=row["question_text"][:SCREEN_QUESTION_CHARS])}],
+            "response_format": SCREEN_SCHEMA,
+        }
+        response = client.chat.completions.create(**request)
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "timestamp": time.time(), "number": row["number"],
+                "request": request,
+                "response": response.model_dump(exclude_none=True),
+            }, ensure_ascii=False) + "\n")
+        return row["number"], json.loads(response.choices[0].message.content)
+
+    with ThreadPoolExecutor(max_workers=SCREEN_WORKERS) as pool:
+        verdicts = dict(pool.map(judge, sessions))
+    groundable = [n for n, v in verdicts.items() if v["groundable"]]
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    (ARTIFACTS / "3_groundability.json").write_text(
+        json.dumps({
+            "model": OPENAI_MODEL,
+            "reasoning_effort": SCREEN_EFFORT,
+            "screened": len(sessions),
+            "groundable": len(groundable),
+            "verdicts": {str(n): verdicts[n] for n in sorted(verdicts)},
+        }, ensure_ascii=False, indent=1) + "\n",
+        encoding="utf-8",
+    )
+    print(f"groundable: {len(groundable)}/{len(sessions)} "
+          f"({len(sessions) - len(groundable)} screened out)")
+
+
+def groundable_subset(sessions: list[dict]) -> list[int]:
+    verdicts = json.loads(
+        (ARTIFACTS / "3_groundability.json").read_text(encoding="utf-8")
+    )["verdicts"]
+    return [
+        position for position, row in enumerate(sessions)
+        if verdicts[str(row["number"])]["groundable"]
+    ]
+
+
 def sweep() -> None:
     matrix, index = load_embeddings()
-    if index["numbers"] != [row["number"] for row in load_sessions()]:
+    sessions = load_sessions()
+    if index["numbers"] != [row["number"] for row in sessions]:
         raise RuntimeError("embeddings and seed sessions disagree; rerun embed")
+    keep = groundable_subset(sessions)
+    matrix = matrix[keep]
+    print(f"clustering the groundable subset: {len(keep)} of {len(sessions)}")
     rows = []
     for n_neighbors in SWEEP_N_NEIGHBORS:
         projected = project(matrix, n_neighbors, UMAP_DIMS)
@@ -273,10 +370,14 @@ def label(min_cluster_size: int | None, min_samples: int | None,
     if not all(chosen.get(k) for k in ("min_cluster_size", "min_samples", "n_neighbors")):
         raise SystemExit("no sweep recommendation; pass --min-cluster-size/--min-samples/--n-neighbors")
 
-    sessions = load_sessions()
+    all_sessions = load_sessions()
     matrix, index = load_embeddings()
-    if index["numbers"] != [row["number"] for row in sessions]:
+    if index["numbers"] != [row["number"] for row in all_sessions]:
         raise RuntimeError("embeddings and seed sessions disagree; rerun embed")
+    keep = groundable_subset(all_sessions)
+    sessions = [all_sessions[i] for i in keep]
+    matrix = matrix[keep]
+    print(f"labeling the groundable subset: {len(sessions)} of {len(all_sessions)}")
     projected = project(matrix, chosen["n_neighbors"], UMAP_DIMS)
     np.save(ARTIFACTS / "3_umap10.npy", projected)
     labels, dbcv = cluster(projected, chosen["min_cluster_size"], chosen["min_samples"])
@@ -324,17 +425,28 @@ def label(min_cluster_size: int | None, min_samples: int | None,
               f"groundable={verdict['corpus_groundable']})")
 
     by_id = {cluster["cluster_id"]: cluster["label"] for cluster in clusters}
+    assignment = {  # session number -> cluster id (groundable subset only)
+        row["number"]: int(value)
+        for row, value in zip(sessions, labels) if value >= 0
+    }
+    groundable_numbers = {row["number"] for row in sessions}
     labeled_sessions = [
         {
             **row,
-            "cluster_id": int(value) if value >= 0 else None,
-            "topic": by_id.get(int(value)) if value >= 0 else None,
+            "groundable": row["number"] in groundable_numbers,
+            "cluster_id": assignment.get(row["number"]),
+            "topic": by_id.get(assignment.get(row["number"])),
         }
-        for row, value in zip(sessions, labels)
+        for row in all_sessions
     ]
     (ARTIFACTS / "3_seed_sessions_topic.json").write_text(
         json.dumps({
             "source": INPUT.name,
+            "groundability_screen": {
+                "screened": len(all_sessions),
+                "groundable": len(sessions),
+                "reasoning_effort": SCREEN_EFFORT,
+            },
             "embedding": {k: index[k] for k in ("model", "instruct", "max_chars", "dimensions")},
             "umap": {"n_components": UMAP_DIMS, "n_neighbors": chosen["n_neighbors"],
                      "metric": "cosine", "random_state": UMAP_SEED},
@@ -380,13 +492,15 @@ def label(min_cluster_size: int | None, min_samples: int | None,
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("phase", choices=["embed", "sweep", "label"])
+    parser.add_argument("phase", choices=["embed", "screen", "sweep", "label"])
     parser.add_argument("--min-cluster-size", type=int)
     parser.add_argument("--min-samples", type=int)
     parser.add_argument("--n-neighbors", type=int)
     args = parser.parse_args()
     if args.phase == "embed":
         embed()
+    elif args.phase == "screen":
+        screen()
     elif args.phase == "sweep":
         sweep()
     else:
