@@ -8,7 +8,7 @@ conversation that followed (comments). Every issue is captured regardless
 of state or date - Stage 1 filtering happens downstream, explicitly.
 
 Usage:
-    uv run --frozen python data_collection/scrape_sessions.py
+    uv run --frozen python data_collection/1_scrape_sessions.py
 
 Requires GITHUB_PAT in .env. Writes artifacts/sessions.json: one JSON
 object with the collection manifest and the full list of sessions.
@@ -26,7 +26,7 @@ OWNER, REPO = "stanfordnlp", "dspy"
 PAGE_SIZE, COMMENT_CAP = 50, 20
 DC = Path(__file__).resolve().parent
 ROOT = DC.parent
-OUTPUT = DC / "artifacts" / "sessions.json"
+OUTPUT = DC / "artifacts" / "1_sessions.json"
 
 QUERY = """
 query($cursor: String) {
