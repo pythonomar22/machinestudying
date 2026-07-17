@@ -50,12 +50,15 @@ def embed() -> None:
     from s2a_embed import INSTRUCT, MAX_CHARS, MODEL
 
     benchmark = load_benchmark()
+    ours = [json.loads(line) for line in
+            open(ROOT / "data/smalldspy_ourvalidationset.jsonl", encoding="utf-8")]
     llm = LLM(model=MODEL, runner="pooling", max_model_len=8192,
               gpu_memory_utilization=0.85, enforce_eager=True)
-    outputs = llm.embed([INSTRUCT + row["question"][:MAX_CHARS] for row in benchmark])
-    matrix = np.array([out.outputs.embedding for out in outputs], dtype=np.float32)
-    np.save(DC / "artifacts/embeddings_fulldspy.npy", matrix)
-    print(f"embedded {matrix.shape[0]} benchmark questions, dim={matrix.shape[1]}")
+    texts = [INSTRUCT + row["question"][:MAX_CHARS] for row in benchmark + ours]
+    matrix = np.array([out.outputs.embedding for out in llm.embed(texts)], dtype=np.float32)
+    np.save(DC / "artifacts/embeddings_fulldspy.npy", matrix[: len(benchmark)])
+    np.save(DC / "artifacts/embeddings_ourval.npy", matrix[len(benchmark):])
+    print(f"embedded {len(benchmark)} benchmark + {len(ours)} generated questions")
 
 
 def plot() -> None:
@@ -117,17 +120,53 @@ def plot() -> None:
             float((intra.sum() - np.trace(intra)) / (len(members) * (len(members) - 1))), 4
         )
         del bucket["cosines"]
+
+    # Register check: do OUR generated questions sit inside the benchmark's
+    # own mode? Calibrate with the released set's leave-one-out neighbors.
+    ours = [json.loads(line) for line in
+            open(ROOT / "data/smalldspy_ourvalidationset.jsonl", encoding="utf-8")]
+    ours_matrix = np.load(DC / "artifacts/embeddings_ourval.npy")
+    ours_matrix /= np.linalg.norm(ours_matrix, axis=1, keepdims=True)
+    bench_sims = bench_matrix @ bench_matrix.T
+    np.fill_diagonal(bench_sims, -1.0)
+    bench_nn = bench_sims.max(axis=1)
+    react_rows = [i for i, row in enumerate(benchmark) if row["topic"] == "react_agents_and_tools"]
+    register = {
+        "benchmark_nn_cosine": {
+            "mean": round(float(bench_nn.mean()), 4),
+            "min": round(float(bench_nn.min()), 4),
+            "max": round(float(bench_nn.max()), 4),
+        },
+        "react5_mutual_mean": round(float(
+            (bench_matrix[react_rows] @ bench_matrix[react_rows].T)
+            [~np.eye(len(react_rows), dtype=bool)].mean()), 4),
+        "ours": [],
+    }
+    for row, vector in zip(ours, ours_matrix):
+        to_bench = bench_matrix @ vector
+        nearest = int(np.argmax(to_bench))
+        register["ours"].append({
+            "id": row["id"],
+            "nearest_benchmark_cosine": round(float(to_bench[nearest]), 4),
+            "nearest_benchmark_id": benchmark[nearest]["id"],
+            "nearest_benchmark_topic": benchmark[nearest]["topic"],
+            "max_react5_cosine": round(float(to_bench[react_rows].max()), 4),
+            "max_seed_cosine": round(float((seed_matrix @ vector).max()), 4),
+        })
     (DC / "artifacts/audit_fulldspy.json").write_text(
         json.dumps({"umap_seed": UMAP_SEED, "topics": per_topic,
-                    "questions": per_question}, indent=2) + "\n",
+                    "questions": per_question, "register_check": register},
+                   indent=2) + "\n",
         encoding="utf-8",
     )
 
     plane = umap.UMAP(n_components=2, n_neighbors=UMAP_NEIGHBORS, metric="cosine",
                       random_state=UMAP_SEED).fit_transform(
-        np.vstack([seed_matrix, bench_matrix])
+        np.vstack([seed_matrix, bench_matrix, ours_matrix])
     )
-    seed_plane, bench_plane = plane[: len(seed_keys)], plane[len(seed_keys):]
+    seed_plane = plane[: len(seed_keys)]
+    bench_plane = plane[len(seed_keys): len(seed_keys) + len(benchmark)]
+    ours_plane = plane[len(seed_keys) + len(benchmark):]
 
     figure, axis = plt.subplots(figsize=(12, 8.5))
     clustered_mask = np.array([key in assignment for key in seed_keys])
@@ -147,22 +186,30 @@ def plot() -> None:
     subset_mask = np.array([row["id"] in smalldspy_ids for row in benchmark])
     axis.scatter(bench_plane[subset_mask, 0], bench_plane[subset_mask, 1],
                  s=290, facecolors="none", edgecolors="#1a1a1a", linewidths=1.1,
-                 label="in SmallDSPy subset")
-    axis.set_title("Full Study-DSPy benchmark (30 questions, stars by topic) "
-                   "over the DSPy issue seed pool")
+                 label="in SmallDSPy subset (held-out test)")
+    axis.scatter(ours_plane[:, 0], ours_plane[:, 1], s=150, marker="D",
+                 color="#1a1a1a", label="our generated validation questions (5)")
+    axis.set_title("Full Study-DSPy benchmark (stars by topic) and our generated "
+                   "questions (diamonds) over the DSPy issue seed pool")
     axis.set_xticks([]), axis.set_yticks([])
     for side in axis.spines.values():
         side.set_color("#d0d0d0")
     axis.legend(loc="best", fontsize=8, framealpha=0.9)
     figure.tight_layout()
-    figure.savefig(DC / "artifacts/clusters_fulldspy.png", dpi=150)
+    figure.savefig(DC / "artifacts/clusters_fulldspy_ours.png", dpi=150)
 
     for topic in topics:
         bucket = per_topic[topic]
         print(f"{topic}: nearest clusters {bucket['counts']} | "
               f"mean nearest cosine {bucket['mean_nearest_cosine']} | "
               f"intra-topic {bucket['mean_intra_topic_cosine']}")
-    print("wrote clusters_fulldspy.png and audit_fulldspy.json")
+    print(f"\nbenchmark leave-one-out NN cosine: {register['benchmark_nn_cosine']}")
+    print(f"react-five mutual mean: {register['react5_mutual_mean']}")
+    for entry in register["ours"]:
+        print(f"{entry['id']}: nearest benchmark {entry['nearest_benchmark_cosine']} "
+              f"({entry['nearest_benchmark_topic']}) | max react5 "
+              f"{entry['max_react5_cosine']} | max seed {entry['max_seed_cosine']}")
+    print("wrote clusters_fulldspy_ours.png and audit_fulldspy.json")
 
 
 if __name__ == "__main__":

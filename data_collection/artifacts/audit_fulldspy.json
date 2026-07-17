@@ -262,5 +262,55 @@
       "nearest_cluster": "prompt_customization_and_few_shot_control",
       "nearest_cluster_cosine": 0.8372
     }
-  ]
+  ],
+  "register_check": {
+    "benchmark_nn_cosine": {
+      "mean": 0.9144,
+      "min": 0.8375,
+      "max": 0.9428
+    },
+    "react5_mutual_mean": 0.8901,
+    "ours": [
+      {
+        "id": "dspyval_bb0aeb703683",
+        "nearest_benchmark_cosine": 0.8836,
+        "nearest_benchmark_id": "dspy_136c0583928c",
+        "nearest_benchmark_topic": "rag_and_retrieval_pipelines",
+        "max_react5_cosine": 0.8641,
+        "max_seed_cosine": 0.8895
+      },
+      {
+        "id": "dspyval_12d9975adc3b",
+        "nearest_benchmark_cosine": 0.8485,
+        "nearest_benchmark_id": "dspy_136c0583928c",
+        "nearest_benchmark_topic": "rag_and_retrieval_pipelines",
+        "max_react5_cosine": 0.8276,
+        "max_seed_cosine": 0.897
+      },
+      {
+        "id": "dspyval_644a76c356b9",
+        "nearest_benchmark_cosine": 0.915,
+        "nearest_benchmark_id": "dspy_2de37073e8e4",
+        "nearest_benchmark_topic": "react_agents_and_tools",
+        "max_react5_cosine": 0.915,
+        "max_seed_cosine": 0.8931
+      },
+      {
+        "id": "dspyval_143f185af3a4",
+        "nearest_benchmark_cosine": 0.8702,
+        "nearest_benchmark_id": "dspy_136c0583928c",
+        "nearest_benchmark_topic": "rag_and_retrieval_pipelines",
+        "max_react5_cosine": 0.8522,
+        "max_seed_cosine": 0.8984
+      },
+      {
+        "id": "dspyval_6662d2cde328",
+        "nearest_benchmark_cosine": 0.8822,
+        "nearest_benchmark_id": "dspy_898cf1643d8a",
+        "nearest_benchmark_topic": "prompt_optimization_workflows",
+        "max_react5_cosine": 0.8819,
+        "max_seed_cosine": 0.8926
+      }
+    ]
+  }
 }
