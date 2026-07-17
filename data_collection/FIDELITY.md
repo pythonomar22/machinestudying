@@ -7,6 +7,30 @@ from the paper and (b) every inference we had to make because the paper
 does not specify it — each inference is a potential source of discrepancy
 with the authors' actual pipeline. It grows one section per stage file.
 
+## Principles: what the pipeline may know
+
+The studying paradigm evaluates on a hidden task, so this pipeline must be
+buildable without knowledge of StudyBench. Two rules:
+
+1. **Priors must be general.** Every design choice must be defensible as a
+   claim about studying *any* codebase (e.g., "user questions are good
+   study anchors", "expertise organizes around library capabilities, not
+   the genre in which friction is reported"), never as knowledge of this
+   test set (its topics, labels, register, or questions).
+2. **The test set may remove or measure, never add or steer.** Allowed:
+   final transfer evaluation; dropping generated questions that are too
+   similar to test questions (decontamination); post-hoc similarity audits
+   that are reported, not optimized against. Forbidden: test labels or
+   questions appearing in any construction prompt, topic selection by test
+   taxonomy, register-matching against test questions as a design target.
+
+Violation found and fixed on 2026-07-17: the first version of the Stage-2
+labeling prompt showed StudyBench's Table-3 DSPy labels as style examples.
+It was rewritten to encode the general capability-not-genre prior with
+style examples from unrelated software domains, and the stage was rerun
+(the leak could only have influenced label *naming*, not cluster
+membership, but the relabeled artifacts replace the old ones entirely).
+
 ## Source (file `1_scrape_sessions.py`)
 
 **Theirs:** "a snapshot of real user-question sessions for each library" —
@@ -77,12 +101,14 @@ clusters are FOR:
 - noise <= 45% of the pool;
 - >= 4 clusters (enough topical diversity to be worth labeling).
 
-Winner: `n_neighbors=25, min_cluster_size=10, min_samples=3` (DBCV 0.225,
-6 clusters, 27.8% noise, sizes 72/55/41/19/16/15). The identical partition
-arises for min_cluster_size in {10, 12, 15} — a stability plateau, so the
-choice is not knife-edge. The unconstrained DBCV optimum (0.276) produces
-clusters of size 8-9, too small to anchor generation, and n_neighbors=10
-degenerates to one blob; both are visible in the grid.
+Winner (mechanism-oriented embeddings, 2026-07-17):
+`n_neighbors=10, min_cluster_size=15, min_samples=5` (DBCV 0.192,
+7 clusters, 29.8% noise, sizes 70/36/35/23/17/16/15). The only
+higher-DBCV config is a degenerate 290/12 two-way split, excluded by the
+constraints. DBCV runs lower than under the earlier intent-oriented
+instruct (0.225) — expected: genre has strong lexical cues ("[Bug]...")
+that make clusters artificially separable, and the mechanism axis we
+actually want is subtler.
 
 The paper's 30-representative cap for labeling is also dropped, by the
 same logic: our clusters hold only 218 sessions in total (largest 72), so
@@ -94,23 +120,24 @@ representatives would be chosen) disappears entirely.
 
 | # | Paper says | We had to decide | Our choice |
 |---|---|---|---|
-| 1 | "a domain-aware prefix prompt" | its wording | the Instruct prefix recorded in `3_embeddings_index.json` |
+| 1 | "a domain-aware prefix prompt" | its wording | ours, encoding the capability-not-genre prior: represent each question by the library capability it concerns, not the kind of report it is (recorded in `3_embeddings_index.json`) |
 | 2 | (nothing) | embedded text + truncation | cleaned `question_text`, first 4,000 chars |
 | 3 | (nothing) | UMAP metric / seed | cosine; `random_state=20260716` (paper unseeded, so exact reproduction of their partition is impossible in principle) |
 | 4 | (nothing) | per-question truncation shown to the labeler | first 1,200 chars of each member's `question_text` |
-| 5 | (no labeling prompt published) | the prompt | ours, embedded in the script; asks for snake_case label + description + a coherence flag, with the paper's Table-3 labels shown as style examples |
-| 6 | six clusters selected for DSPy | what noise points get | `topic: null` (84 sessions); no forced assignment |
+| 5 | (no labeling prompt published — Stage 2's prompt is NOT in the appendix, unlike A.2/A.3/A.4/A.5) | the prompt | ours: mechanism-anchored behavioral labels; genre labels ("bug reports") explicitly disqualified; snake_case style examples drawn from unrelated software domains; coherent=false when a cluster is united only by genre. The first version leaked StudyBench Table-3 labels as examples — see Principles; fixed and rerun |
+| 6 | six clusters selected for DSPy | what noise points get | `topic: null` (90 sessions); no forced assignment |
 
-**Result (2026-07-17, whole-cluster labeling):** six topics —
-optimizer_metrics_and_async_scaling (15),
-setup_runtime_and_integration_troubleshooting (72),
-prompt_customization_and_generation_controls (16),
-documentation_and_repo_maintenance_contributions (19),
-support_for_new_integrations_and_features (55),
-custom_backend_integration_and_serving (41); 84 noise. Reading whole
-clusters (vs the core-30) broadened some names to match full contents.
-Two of six correspond to paper topics (optimizer/eval metrics; prompt
-customization) — the tuned, finer clustering recovers structure the
-paper-literal parameters missed. A react_agents_and_tools cluster still
-does not emerge from issue data (ReAct-related bug reports sit inside the
-troubleshooting cluster), consistent with the v1 finding (git `47c3363`).
+**Result (2026-07-17, mechanism instruct + whole-cluster labeling):** seven
+topics — language_model_backend_integration (70),
+core_runtime_and_api_compatibility (36, coherent=false — a genre grab-bag
+that correctly self-reports as mechanism-incoherent),
+prompt_compilation_optimization_and_inspection (35),
+api_reference_and_docs_site_maintenance (23),
+lm_multimodal_inputs_and_token_limits (17),
+optimizer_compilation_and_state_persistence (16),
+async_parallel_and_batched_execution (15); 90 noise. The capability axis
+now dominates: prompt/template control, optimizer state, async/batching,
+and multimodal/token-limit clusters are clean capability groupings rather
+than report genres. No agents/tools capability cluster emerges — the
+scarcity of such sessions in issue data (v1 finding, git `47c3363`)
+persists under the mechanism-oriented geometry.

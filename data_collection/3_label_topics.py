@@ -49,9 +49,14 @@ ARTIFACTS = DC / "artifacts" / "3_label_topics"
 INPUT = DC / "artifacts" / "2_filter_sessions" / "2_seed_sessions.json"
 
 EMBED_MODEL = "Qwen/Qwen3-Embedding-8B"          # paper
-INSTRUCT = (                                      # inference: wording is ours
-    "Instruct: Identify the topic and user intent of a question about the "
-    "DSPy language-model programming library.\nQuery: "
+# Inference: the paper says only "a domain-aware prefix prompt". Ours encodes
+# a general prior (see FIDELITY.md): represent a question by the library
+# capability it concerns, not the genre of the report (bug/feature/docs).
+INSTRUCT = (
+    "Instruct: Represent this user question about the DSPy language-model "
+    "programming library by the library capability or mechanism it concerns "
+    "and what the user is trying to accomplish, not by the kind of report "
+    "it is.\nQuery: "
 )
 EMBED_MAX_CHARS = 4_000                           # inference
 UMAP_DIMS = 10                                    # paper
@@ -70,16 +75,16 @@ MIN_CLUSTERS = 4           # enough topical diversity to be worth labeling
 OPENAI_MODEL, REASONING_EFFORT = "gpt-5.4", "xhigh"
 LABEL_QUESTION_CHARS = 1_200
 
-LABEL_TEMPLATE = """You are naming one cluster of real user questions about DSPy, an open-source library for programming language models. The {num_sessions} questions below are ALL the members of a single behavioral cluster discovered by embedding and clustering a large pool of DSPy GitHub issues.
+LABEL_TEMPLATE = """You are naming one cluster of real user questions about DSPy, an open-source library for programming language models. The {num_sessions} questions below are ALL the members of a single behavioral cluster discovered by embedding and clustering a large pool of user questions about the library.
 
-Assign the cluster a behavioral label describing what its users are trying to accomplish, in the style of these examples from a related benchmark: `gepa_optimizer_usage`, `rag_and_retrieval_pipelines`, `react_agents_and_tools`, `signature_schema_and_pydantic_types`, `evaluation_metrics_and_custom_eval`.
+Assign the cluster a behavioral label describing what its users are trying to accomplish with the library. Anchor the label in the library capability or mechanism the questions exercise, never in the medium or genre of the reports: "bug reports", "feature requests", or "documentation chores" are not behaviors — the capability the user was exercising when they hit friction is. Format the label like these examples from unrelated software domains: `request_routing_and_middleware`, `database_migrations_and_schema_state`, `background_jobs_and_scheduling`.
 
 Return JSON with:
 - `label`: a short snake_case behavioral label
 - `description`: 1-2 sentences describing what users in this cluster are trying to do
-- `coherent`: false if the cluster mixes several unrelated behaviors, true otherwise
+- `coherent`: false if the cluster has no single dominant capability (for example, it is united only by all being bug reports or all being feature requests about unrelated capabilities), true otherwise
 
-## Representative questions
+## Cluster members
 {sessions_json}
 
 Return JSON that matches the schema exactly."""
