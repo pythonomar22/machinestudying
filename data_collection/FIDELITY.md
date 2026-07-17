@@ -188,3 +188,40 @@ git `47c3363`, persists); such sessions now sit inside module_composition.
 Label wording shifts across reruns (the labeler is not seeded); the
 partition itself is deterministic given the screen verdicts (which are a
 one-time LLM judgment, archived).
+
+## Stage 3a — candidate generation (file `4_generate_candidates.py`)
+
+**Copied exactly from the paper:**
+- The harness itself: GPT-5.4 at reasoning effort xhigh **running within
+  Codex** (`codex exec`, ChatGPT-account auth, read-only sandbox) with
+  access to the full repository and documentation — the working root is
+  the full DSPy checkout (source + tests + docs) at the pinned commit.
+  This removes v1's harness divergence (a hand-rolled Responses-API tool
+  loop).
+- The A.2 generator template, verbatim.
+- Conditioning on seed sessions + the label description + the library
+  description; output = (question, gold answer, code_evidence) triples
+  with difficulty and note.
+
+**Deliberate divergences (user-directed, ledgered):**
+
+| Paper | Ours | Why |
+|---|---|---|
+| 20 sampled seed sessions per label (sampling method unpublished) | 10 seed sessions: the members nearest the cluster centroid (cosine, original embedding space) | our clusters are small (22-42); nearest-centroid picks the most prototypical anchors and is deterministic |
+| 12 candidates per label | 20 candidates per label | we want a larger pool per topic for validation + training splits |
+| labels: their six community-session topics | our four screened, coherent, groundable capability topics | topics are derived from our source, test-blind |
+
+**Our inferences (each a potential discrepancy):**
+
+| # | Paper says | We had to decide | Our choice |
+|---|---|---|---|
+| 1 | all `{placeholder}` values in A.2 are unpublished | library description | factual description of DSPy plus a runnable-offline requirement: solutions must run with no API key using the corpus's own test stub (`dspy.utils.dummies.DummyLM`). Justified by sandbox verifiability (Stage 5 must execute reference answers), not by any test-set style |
+| 2 | " | ok-to-name / not-ok lists, bad/good example blocks | brand-level public API names drawn from the corpus itself; examples are behavioral and topic-neutral |
+| 3 | (nothing) | seed session payload | number + question_text (3,000 chars) + up to 3 non-author human comments (2,000 chars each) as untrusted community answers |
+| 4 | (nothing) | output enforcement | `--output-schema` JSON Schema (exactly 20 items, difficulty enum, >=2 evidence items); deterministic validation of evidence paths against the checkout; at most 1 corrective re-run per topic |
+| 5 | (nothing) | model account | the operator's ChatGPT/Codex login, model pinned to gpt-5.4, effort xhigh (the user config's default model/effort are overridden per run) |
+
+Every per-topic prompt, the full Codex event stream, and the raw final
+message are archived under `artifacts/4_generate_candidates/`. Each
+candidate is tagged `smalldspy_scope` (all evidence files inside the
+66-file corpus) per the scope note above.
