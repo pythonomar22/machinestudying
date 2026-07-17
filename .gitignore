@@ -10,3 +10,6 @@ logs/slurm/*
 !logs/slurm/.gitkeep
 __pycache__/
 *.egg-info/
+
+# data_collection: full API request/response logs stay local
+data_collection/logs/

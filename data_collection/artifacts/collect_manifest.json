@@ -1,0 +1,11 @@
+{
+  "repository": "stanfordnlp/dspy",
+  "collected_at": "2026-07-17T04:52:39Z",
+  "issue_count": 1634,
+  "states": {
+    "CLOSED": 1331,
+    "OPEN": 303
+  },
+  "comment_cap_per_issue": 20,
+  "query": "\nquery($cursor: String) {\n  repository(owner: \"stanfordnlp\", name: \"dspy\") {\n    issues(first: 50, after: $cursor, orderBy: {field: CREATED_AT, direction: ASC}) {\n      pageInfo { hasNextPage endCursor }\n      nodes {\n        number title body state createdAt closedAt url\n        author { login __typename }\n        labels(first: 10) { nodes { name } }\n        comments(first: 20) {\n          totalCount\n          nodes { body createdAt author { login __typename } }\n        }\n      }\n    }\n  }\n}\n"
+}
