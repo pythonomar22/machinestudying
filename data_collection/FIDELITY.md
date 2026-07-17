@@ -48,8 +48,9 @@ sessions' answers came from "a weaker assistant"; our comments are human
 | 9 | (nothing) | which duplicate survives | the earliest-created session of each group |
 | 10 | (nothing) | what one embedded/compared "question" is | cleaned `title + "\n\n" + body` |
 
-Every parameter above is also recorded in `artifacts/2_seed_sessions.json`
-under `inferred_parameters`, and every dropped session number is listed per
+Every parameter above is also recorded in
+`artifacts/2_filter_sessions/2_seed_sessions.json` under
+`inferred_parameters`, and every dropped session number is listed per
 filter so the funnel is fully auditable.
 
 ## Stage 2 — embed, cluster, label (file `3_label_topics.py`)
@@ -68,7 +69,7 @@ were tuned to their session pool (plausibly thousands of community
 sessions); our pool is 302 issues, on which the literal values collapse to
 3 coarse clusters (DBCV 0.143 — kept on record in the sweep grid). We
 selected parameters with a reproducible sweep (`sweep` phase, grid and
-result in `artifacts/3_cluster_sweep.json`) over n_neighbors x
+result in `artifacts/3_label_topics/3_cluster_sweep.json`) over n_neighbors x
 min_cluster_size x min_samples, scored by HDBSCAN's DBCV
 (`relative_validity_`) subject to constraints derived from what the
 clusters are FOR:

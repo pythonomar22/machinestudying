@@ -36,8 +36,8 @@ DetectorFactory.seed = 0  # langdetect is otherwise nondeterministic
 
 DC = Path(__file__).resolve().parent
 ROOT = DC.parent
-INPUT = DC / "artifacts" / "1_sessions.json"
-OUTPUT = DC / "artifacts" / "2_seed_sessions.json"
+INPUT = DC / "artifacts" / "1_scrape_sessions" / "1_sessions.json"
+OUTPUT = DC / "artifacts" / "2_filter_sessions" / "2_seed_sessions.json"
 
 # --- Paper-specified parameters (exact) -----------------------------------
 NUM_PERM = 128
@@ -186,6 +186,7 @@ def main() -> None:
         "after_exact_dedup": len(exact_unique),
         "seed_sessions": len(seed_sessions),
     }
+    OUTPUT.parent.mkdir(parents=True, exist_ok=True)
     OUTPUT.write_text(
         json.dumps(
             {

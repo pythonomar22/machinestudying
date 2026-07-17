@@ -43,8 +43,8 @@ from pathlib import Path
 
 DC = Path(__file__).resolve().parent
 ROOT = DC.parent
-ARTIFACTS = DC / "artifacts"
-INPUT = ARTIFACTS / "2_seed_sessions.json"
+ARTIFACTS = DC / "artifacts" / "3_label_topics"
+INPUT = DC / "artifacts" / "2_filter_sessions" / "2_seed_sessions.json"
 
 EMBED_MODEL = "Qwen/Qwen3-Embedding-8B"          # paper
 INSTRUCT = (                                      # inference: wording is ours
@@ -175,6 +175,7 @@ def embed() -> None:
     if matrix.shape[0] != len(sessions):
         raise RuntimeError(f"embedded {matrix.shape[0]} of {len(sessions)} sessions")
     norms = np.linalg.norm(matrix, axis=1)
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
     np.save(ARTIFACTS / "3_embeddings.npy", matrix)
     (ARTIFACTS / "3_embeddings_index.json").write_text(
         json.dumps({

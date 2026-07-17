@@ -26,7 +26,7 @@ OWNER, REPO = "stanfordnlp", "dspy"
 PAGE_SIZE, COMMENT_CAP = 50, 20
 DC = Path(__file__).resolve().parent
 ROOT = DC.parent
-OUTPUT = DC / "artifacts" / "1_sessions.json"
+OUTPUT = DC / "artifacts" / "1_scrape_sessions" / "1_sessions.json"
 
 QUERY = """
 query($cursor: String) {
