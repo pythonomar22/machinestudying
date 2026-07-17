@@ -31,7 +31,30 @@ style examples from unrelated software domains, and the stage was rerun
 (the leak could only have influenced label *naming*, not cluster
 membership, but the relabeled artifacts replace the old ones entirely).
 
-## Source (file `1_scrape_sessions.py`)
+## Scope note: SmallDSPy vs the session source (2026-07-17)
+
+SmallDSPy was built for cheap iteration on studying baselines: the subset
+of Study-DSPy test questions (5 of 30) answerable from the smallest code
+span, giving a 66-file study corpus — `dspy/predict`, `dspy/adapters`,
+`dspy/primitives`, `tests/predict` only. Our seed sessions, however, come
+from issues about the WHOLE codebase: measured against the 66-file scope,
+roughly 60-70% of seed mass concerns code that is not in it
+(`clients/` backends: 70 sessions; optimizers/`teleprompt`: 16; docs
+site: 23; plus parts of other topics). Self-quizzing a SmallDSPy-corpus
+studier on such questions is not merely off-distribution - the studier
+cannot even read the relevant files.
+
+Decision: candidate generation runs corpus-general - all topics, with the
+generator given the FULL repository + docs at the pinned commit (which is
+also the paper's literal Stage-3a setup, and the paper's actual Study-DSPy
+corpus is the full `dspy/` + `tests/`). Consequently the self-quizzing
+experiment line moves to the full-DSPy setting (study corpus = full repo,
+test = all 30 Study-DSPy questions), which requires one-time no-study and
+cheatsheet baselines on the full corpus; the existing SmallDSPy baselines
+remain valid for the cheatsheet replication but are not paired with this
+line. Each generated triple is additionally tagged with whether its
+code_evidence lies inside the 66-file SmallDSPy scope, preserving the
+option of a fast small-scope loop if enough in-scope questions accumulate.
 
 **Theirs:** "a snapshot of real user-question sessions for each library" —
 for DSPy, private community QA conversations; for OpenClaw, GitHub closed
