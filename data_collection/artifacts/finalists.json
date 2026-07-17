@@ -1,0 +1,146 @@
+{
+  "model": "gpt-5.4",
+  "reasoning_effort": "xhigh",
+  "label": "react_agents_and_tools",
+  "tool_calls": 66,
+  "usage": {
+    "input_tokens": 882221,
+    "output_tokens": 33345
+  },
+  "correction_rounds": 0,
+  "selection_notes": "Selected five multi-file, code-root-grounded items that span loop truncation, sync/async tool execution, stage-specific history handling, tool registration/name collisions, and multimodal trajectory preservation. I dropped the simpler `max_iters` and standalone `finish` items as too single-locator, and left out the save/load variant as somewhat off the primary ReAct/tools label.",
+  "finalists": [
+    {
+      "question": "When a `dspy.ReAct` run gets long, old trajectory steps sometimes vanish from later LM calls. When exactly does DSPy start truncating, how much does it drop per retry, and how can I override that policy? Give a tiny offline repro.",
+      "answer": "ReAct never truncates proactively. Both the planning call and the final extraction call go through a helper that only truncates after `ContextWindowExceededError`. The default policy drops the oldest 4 trajectory keys—one full step: `thought_i`, `tool_name_i`, `tool_args_i`, and `observation_i`—then retries. The helper makes up to 3 attempts, and you can override the policy by subclassing `truncate_trajectory`.\n\n```python\nimport dspy\nfrom dspy.utils.exceptions import ContextWindowExceededError\n\ndef echo(text: str) -> str:\n    return f'Echoed: {text}'\n\nagent = dspy.ReAct('input_text -> output_text', tools=[echo])\ncalls = {'n': 0}\n\ndef fake_react(**kwargs):\n    calls['n'] += 1\n    if calls['n'] == 1:\n        return dspy.Prediction(next_thought='t1', next_tool_name='echo', next_tool_args={'text': 'one'})\n    if calls['n'] == 2:\n        return dspy.Prediction(next_thought='t2', next_tool_name='echo', next_tool_args={'text': 'two'})\n    if calls['n'] == 3:\n        raise ContextWindowExceededError()\n    return dspy.Prediction(next_thought='done', next_tool_name='finish', next_tool_args={})\n\nagent.react = fake_react\nagent.extract = lambda **kwargs: dspy.Prediction(output_text='final')\n\nout = agent(input_text='x')\nprint(list(out.trajectory.keys()))\n```\n\nAfter truncation, the oldest 4-key step is gone. If there is no full 4-key step to remove, `truncate_trajectory` raises `ValueError`; in the planning loop that stops tool use and ReAct still attempts one final extraction.",
+      "difficulty": "very_hard",
+      "code_evidence": [
+        {
+          "file": "dspy/predict/react.py",
+          "symbol": "ReAct._call_with_potential_trajectory_truncation"
+        },
+        {
+          "file": "dspy/predict/react.py",
+          "symbol": "ReAct.truncate_trajectory"
+        },
+        {
+          "file": "tests/predict/test_react.py",
+          "symbol": "test_trajectory_truncation"
+        },
+        {
+          "file": "tests/predict/test_react.py",
+          "symbol": "test_context_window_exceeded_after_retries"
+        }
+      ],
+      "note": "Requires combining the truncation helper, the default 4-key policy, and the retry/error-path tests."
+    },
+    {
+      "question": "I passed an `async def` tool into a normal `dspy.ReAct(...)` call and got an execution-error observation instead of a result. What is DSPy's actual sync/async behavior here, and what are the supported fixes? Show it offline.",
+      "answer": "Sync `agent(...)` uses each tool's sync path (`Tool.__call__`). If the wrapped function returns a coroutine, that path raises unless async-to-sync conversion is enabled, and `ReAct.forward` turns the exception into `observation_i`. Async `await agent.acall(...)` uses `Tool.acall` and awaits the coroutine.\n\n```python\nimport asyncio\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\nasync def add(a: int, b: int) -> int:\n    return a + b\n\nagent = dspy.ReAct('question -> answer', tools=[add])\n\ndspy.configure(lm=DummyLM([\n    {'next_thought': 'call add', 'next_tool_name': 'add', 'next_tool_args': {'a': 2, 'b': 3}},\n    {'next_thought': 'finish', 'next_tool_name': 'finish', 'next_tool_args': {}},\n    {'reasoning': 'fallback', 'answer': '5'},\n]))\nsync_out = agent(question='2+3?')\nprint(sync_out.trajectory['observation_0'])\n\nasync def main():\n    with dspy.context(lm=DummyLM([\n        {'next_thought': 'call add', 'next_tool_name': 'add', 'next_tool_args': {'a': 2, 'b': 3}},\n        {'next_thought': 'finish', 'next_tool_name': 'finish', 'next_tool_args': {}},\n        {'reasoning': 'done', 'answer': '5'},\n    ])):\n        out = await agent.acall(question='2+3?')\n        print(out.trajectory['observation_0'])\n\nasyncio.run(main())\n```\n\nPreferred fix: use `await agent.acall(...)`. The sync escape hatch is `dspy.configure(allow_tool_async_sync_conversion=True)` or the matching `dspy.context(...)` override.",
+      "difficulty": "hard",
+      "code_evidence": [
+        {
+          "file": "dspy/adapters/types/tool.py",
+          "symbol": "Tool.__call__"
+        },
+        {
+          "file": "dspy/adapters/types/tool.py",
+          "symbol": "Tool.acall"
+        },
+        {
+          "file": "dspy/adapters/types/tool.py",
+          "symbol": "Tool._run_async_in_sync"
+        },
+        {
+          "file": "dspy/predict/react.py",
+          "symbol": "ReAct.forward"
+        },
+        {
+          "file": "dspy/predict/react.py",
+          "symbol": "ReAct.aforward"
+        },
+        {
+          "file": "tests/predict/test_react.py",
+          "symbol": "test_async_tool_calling_with_pydantic_args"
+        },
+        {
+          "file": "tests/predict/test_react.py",
+          "symbol": "test_async_error_retry"
+        }
+      ],
+      "note": "Crosses tool sync/async wrappers, the opt-in async-to-sync escape hatch, and ReAct's exception-to-observation behavior."
+    },
+    {
+      "question": "I pass `dspy.History` into a `dspy.ReAct` chat agent. Earlier user turns show up, but earlier assistant answers disappear during tool planning. Is that expected? Show a runnable inspection script and explain which internal stage sees what.",
+      "answer": "Yes. ReAct is two-stage. Its planning stage uses an internal signature whose outputs are only `next_thought`, `next_tool_name`, and `next_tool_args`; its final stage uses your original outputs inside `ChainOfThought`. `dspy.History` is formatted against the current stage's signature, so old assistant `answer` fields disappear in planning but show up in extraction.\n\n```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\ndef noop() -> str:\n    return 'unused'\n\nclass ChatSig(dspy.Signature):\n    question: str = dspy.InputField()\n    history: dspy.History = dspy.InputField()\n    answer: str = dspy.OutputField()\n\nlm = DummyLM([\n    {'next_thought': 'I can finish', 'next_tool_name': 'finish', 'next_tool_args': {}},\n    {'reasoning': 'done', 'answer': 'Paris'},\n])\ndspy.configure(lm=lm, adapter=dspy.ChatAdapter())\n\nagent = dspy.ReAct(ChatSig, tools=[noop])\nhistory = dspy.History(messages=[{'question': 'Capital of Germany?', 'answer': 'Berlin'}])\nagent(question='Capital of France?', history=history)\n\nplan_prev_assistant = lm.history[0]['messages'][2]['content']\nextract_prev_assistant = lm.history[1]['messages'][2]['content']\nprint('Berlin' in plan_prev_assistant, 'Berlin' in extract_prev_assistant)\n```\n\nThis prints `False True`.",
+      "difficulty": "very_hard",
+      "code_evidence": [
+        {
+          "file": "dspy/predict/react.py",
+          "symbol": "ReAct.__init__"
+        },
+        {
+          "file": "dspy/predict/chain_of_thought.py",
+          "symbol": "ChainOfThought.__init__"
+        },
+        {
+          "file": "dspy/adapters/base.py",
+          "symbol": "Adapter.format_conversation_history"
+        },
+        {
+          "file": "dspy/adapters/chat_adapter.py",
+          "symbol": "ChatAdapter.format_assistant_message_content"
+        },
+        {
+          "file": "tests/predict/test_predict.py",
+          "symbol": "test_call_predict_with_chat_history"
+        }
+      ],
+      "note": "The hard part is noticing that ReAct's planning and extraction stages use different internal signatures, so the same history is rendered differently."
+    },
+    {
+      "question": "I passed two callable retriever objects as tools on one `dspy.ReAct` agent, but one of them seems to disappear even though the instances are different. Why, and how do I keep both tools available?",
+      "answer": "ReAct keys tools by name. For callable objects, the default name is `getattr(obj, '__name__', type(obj).__name__)`, so two instances of the same class usually get the same tool name. `ReAct.__init__` then builds `{tool.name: tool}`, and the later one silently overwrites the earlier one.\n\n```python\nimport dspy\n\nclass Retriever:\n    def __init__(self, label):\n        self.label = label\n    def __call__(self, query: str) -> str:\n        return f'{self.label}:{query}'\n\na = Retriever('A')\nb = Retriever('B')\nagent = dspy.ReAct('question -> answer', tools=[a, b])\n\nprint(sorted(agent.tools))\nprint(agent.tools['Retriever'](query='x'))\n```\n\nGive them explicit names if you want both:\n\n```python\nagent = dspy.ReAct(\n    'question -> answer',\n    tools=[\n        dspy.Tool(a, name='retriever_a'),\n        dspy.Tool(b, name='retriever_b'),\n    ],\n)\nprint(sorted(agent.tools))\n```\n\nThe same collision rule means `finish` is effectively reserved, because ReAct inserts its own built-in tool under that name.",
+      "difficulty": "very_hard",
+      "code_evidence": [
+        {
+          "file": "dspy/predict/react.py",
+          "symbol": "ReAct.__init__"
+        },
+        {
+          "file": "dspy/adapters/types/tool.py",
+          "symbol": "Tool._parse_function"
+        }
+      ],
+      "note": "The tricky locator is generic tool naming plus dict keying, not retrieval logic."
+    },
+    {
+      "question": "My tool returns `dspy.Image` objects. For the next `dspy.ReAct` step I want those to stay multimodal, not collapse into plain text. Does DSPy preserve them through the trajectory? Show a minimal offline check.",
+      "answer": "Yes. ReAct stores the raw observation object in `trajectory`, then formats that trajectory back through the adapter. Custom DSPy types are serialized with markers and then split into structured content blocks, so image observations become real `image_url` parts in the next LM call.\n\n```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\ndef make_images():\n    return dspy.Image('https://example.com/a.png'), dspy.Image('https://example.com/b.png')\n\nadapter = dspy.ChatAdapter()\nlm = DummyLM([\n    {'next_thought': 'call tool', 'next_tool_name': 'make_images', 'next_tool_args': {}},\n    {'next_thought': 'finish', 'next_tool_name': 'finish', 'next_tool_args': {}},\n    {'reasoning': 'done', 'answer': 'ok'},\n], adapter=adapter)\n\ndspy.configure(lm=lm, adapter=adapter)\nagent = dspy.ReAct('question -> answer', tools=[make_images])\nagent(question='show me two images')\n\ncontent = lm.history[1]['messages'][1]['content']\ncount = sum(1 for part in content if isinstance(part, dict) and part.get('type') == 'image_url')\nprint(count)\n```\n\nThis prints `2`, so the second ReAct planning call received two structured image blocks rather than plain text.",
+      "difficulty": "very_hard",
+      "code_evidence": [
+        {
+          "file": "dspy/predict/react.py",
+          "symbol": "ReAct.forward"
+        },
+        {
+          "file": "dspy/predict/react.py",
+          "symbol": "ReAct._format_trajectory"
+        },
+        {
+          "file": "dspy/adapters/types/base_type.py",
+          "symbol": "Type.serialize_model"
+        },
+        {
+          "file": "dspy/adapters/types/base_type.py",
+          "symbol": "split_message_content_for_custom_types"
+        },
+        {
+          "file": "tests/predict/test_react.py",
+          "symbol": "test_tool_observation_preserves_custom_type"
+        }
+      ],
+      "note": "Requires tracing raw trajectory storage through adapter formatting into multimodal content blocks."
+    }
+  ]
+}

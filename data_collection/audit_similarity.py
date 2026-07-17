@@ -15,8 +15,6 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import numpy as np
-
 from s2a_embed import INSTRUCT, MAX_CHARS, MODEL
 
 DC = Path(__file__).resolve().parent
@@ -25,6 +23,7 @@ FLAG_THRESHOLD = 0.95
 
 
 def main() -> None:
+    import numpy as np
     from vllm import LLM
 
     generated = [
