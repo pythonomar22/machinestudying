@@ -51,8 +51,8 @@ TOPICS_FILE = DC / "artifacts" / "3_label_topics" / "3_seed_sessions_topic.json"
 EMBED_DIR = DC / "artifacts" / "3_label_topics"
 SMALL_CORPUS = ROOT / "corpora" / "smalldspy"  # 66-file scope, for tagging
 REPO_BY_SCOPE = {
-    "fulldspy": ROOT / "corpora" / "dspy-runtime",  # full checkout, incl. docs
-    "smalldspy": SMALL_CORPUS,                      # 66-file sparse checkout
+    "fulldspy": ROOT / "corpora" / "dspy",  # full checkout, incl. docs
+    "smalldspy": SMALL_CORPUS,              # 66-file sparse checkout
 }
 PINNED_COMMIT = "9cdb0aac28b2a04b064e40697ccd301872cf6a43"
 
@@ -365,7 +365,15 @@ def generate_topic(topic: dict, sessions: dict[int, dict], scope: str) -> dict:
     (scope_dir / f"prompt_{slug}.txt").write_text(prompt, encoding="utf-8")
 
     candidates, problems = None, ["not run"]
+    salvage = scope_dir / f"last_message_{slug}_a0.json"
+    if salvage.exists():  # a completed archived attempt survives a crash/rerun
+        candidates = json.loads(salvage.read_text(encoding="utf-8"))["candidates"]
+        problems = violations(candidates, repo)
+        if not problems:
+            print(f"{scope}/{slug}: salvaged valid archived attempt a0")
     for attempt in range(MAX_RETRIES + 1):
+        if not problems:
+            break
         attempt_prompt = prompt if attempt == 0 else (
             prompt + "\n\n## Corrections required\nYour previous output had "
             "these problems; fix them and return the complete JSON again:\n- "
@@ -375,9 +383,8 @@ def generate_topic(topic: dict, sessions: dict[int, dict], scope: str) -> dict:
         result = run_codex(attempt_prompt, scope_dir, repo, slug, attempt)
         candidates = result["candidates"]
         problems = violations(candidates, repo)
-        if not problems:
-            break
-        print(f"{scope}/{slug}: violations: {problems[:3]} ...")
+        if problems:
+            print(f"{scope}/{slug}: violations: {problems[:3]} ...")
     if problems:
         raise RuntimeError(f"{scope}/{slug}: unresolved violations after retries: {problems}")
 
