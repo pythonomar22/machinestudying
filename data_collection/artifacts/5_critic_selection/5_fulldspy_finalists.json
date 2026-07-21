@@ -1,0 +1,809 @@
+{
+ "scope": "fulldspy",
+ "harness": "codex exec (codex-cli), model gpt-5.4, effort xhigh, read-only sandbox",
+ "repository": "/matx/u/omarah/ms2/corpora/dspy",
+ "commit": "9cdb0aac28b2a04b064e40697ccd301872cf6a43",
+ "num_candidates_per_topic": 20,
+ "num_final_per_topic": 8,
+ "selection_ratio_note": "paper keeps 5/12; we keep round(20 * 5/12) = 8 of 20",
+ "topics": [
+  {
+   "cluster_id": 0,
+   "label": "evaluation_metrics_and_parallelism",
+   "kept_indices": [
+    0,
+    3,
+    4,
+    9,
+    10,
+    15,
+    17,
+    19
+   ],
+   "rejected_indices": [
+    1,
+    2,
+    5,
+    6,
+    7,
+    8,
+    11,
+    12,
+    13,
+    14,
+    16,
+    18
+   ],
+   "selection_notes": "Selected 8 source-grounded, benchmark-grade items that span numeric scores, async and trace-aware metrics, bootstrap acceptance rules, random-search candidate accounting, SIMBA-style metadata preservation, thread-local parallel context isolation, and async call overlap. I excluded weaker one-lookup variants, near-duplicates, and finetune-only cases that fit the label less directly."
+  },
+  {
+   "cluster_id": 1,
+   "label": "lm_provider_integration_and_configuration",
+   "kept_indices": [
+    0,
+    3,
+    6,
+    9,
+    13,
+    15,
+    17,
+    19
+   ],
+   "rejected_indices": [
+    1,
+    2,
+    4,
+    5,
+    7,
+    8,
+    10,
+    11,
+    12,
+    14,
+    16,
+    18
+   ],
+   "selection_notes": "Selected eight items that are fully grounded in `dspy/` and `tests/`, cover distinct provider-integration subtopics, and still require real repo reading rather than a one-symbol grep. I excluded near-duplicates around rollout warnings, developer-role / reasoning-effort rewrites, simpler serialization checks like API-key omission, and response-parsing cases that leaned less on backend configuration than the chosen set."
+  },
+  {
+   "cluster_id": 2,
+   "label": "prompt_compilation_customization_and_inspection",
+   "kept_indices": [
+    0,
+    3,
+    4,
+    5,
+    7,
+    9,
+    11,
+    19
+   ],
+   "rejected_indices": [
+    1,
+    2,
+    6,
+    8,
+    10,
+    12,
+    13,
+    14,
+    15,
+    16,
+    17,
+    18
+   ],
+   "selection_notes": "Selected for diversity across exact request capture, few-shot demo formatting, field order, deprecated field metadata, native reasoning, structured outputs, native tool transport, and optimizer-mutated prompt text. Rejected near-duplicate negative-path variants (for example the GPT-5 chat reasoning exception and the non-native tool-calling mirror case), simple history-tail checks, and LM-state safety/config questions as redundant or off-label for the target cluster. I did not execute the snippets in this sandbox because `pydantic` is unavailable here, so the final set is grounded by source and tests rather than live runs."
+  },
+  {
+   "cluster_id": 3,
+   "label": "module_composition_and_runtime_interoperability",
+   "kept_indices": [
+    0,
+    1,
+    2,
+    3,
+    6,
+    8,
+    12,
+    18
+   ],
+   "rejected_indices": [
+    4,
+    5,
+    7,
+    9,
+    10,
+    11,
+    13,
+    14,
+    15,
+    16,
+    17,
+    19
+   ],
+   "selection_notes": "Selected items emphasize multi-step runtime boundaries that are grounded directly in `dspy/` and `tests/`: predictor-local LM attachment during compile, ReAct tool/type interoperability, trajectory truncation, by-value program serialization, structured-output fallback, per-module history propagation, and bootstrap trace failure capture. I excluded otherwise solid candidates when they overlapped too much with a selected item, relied on weaker inferred behavior without equally direct test support, or felt a bit too locator-revealing/easy for the final eight."
+  }
+ ],
+ "finalists": [
+  {
+   "source_index": 0,
+   "question": "I'm using a graded metric for a QA program where exact matches get 1.0, near-misses get 0.5, and bad answers get 0.0. I want to use the same style of metric for evaluation and later compilation, but I'm not sure whether DSPy treats non-boolean scores as real numeric values or just truthy/falsy passes.\n\nI already saw the overall score printed as a percentage, which made me wonder whether it's averaging the raw floats or silently thresholding them. I don't want a prose explanation because this is the sort of thing that's easy to misunderstand from logs alone.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, evaluates a tiny `dspy.Predict` program on three examples with scores 1.0, 0.5, and 0.0, and prints/asserts the final percentage so the aggregation behavior is undeniable.",
+   "answer": "```python\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.utils.dummies import DummyLM\n\n\ndspy.configure(\n    lm=DummyLM(\n        {\n            \"q1\": {\"answer\": \"red\"},\n            \"q2\": {\"answer\": \"bluish\"},\n            \"q3\": {\"answer\": \"yellow\"},\n        }\n    )\n)\n\nprogram = dspy.Predict(\"question -> answer\")\ndevset = [\n    dspy.Example(question=\"q1\", answer=\"red\").with_inputs(\"question\"),\n    dspy.Example(question=\"q2\", answer=\"blue\").with_inputs(\"question\"),\n    dspy.Example(question=\"q3\", answer=\"green\").with_inputs(\"question\"),\n]\n\n\ndef partial_credit(example, prediction):\n    if prediction.answer == example.answer:\n        return 1.0\n    if prediction.answer[0] == example.answer[0]:\n        return 0.5\n    return 0.0\n\n\nresult = Evaluate(devset=devset, metric=partial_credit, display_progress=False)(program)\nper_example_scores = [score for _, _, score in result.results]\nprint(result.score)\nprint(per_example_scores)\nassert per_example_scores == [1.0, 0.5, 0.0]\nassert result.score == 50.0\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "Evaluate.__call__"
+    },
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "EvaluationResult.__init__"
+    }
+   ],
+   "note": "Keeps the core numeric-metric question from the community anchors, but makes the user prove aggregation behavior from code.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 3,
+   "question": "I'm trying to reuse an async evaluator because my judge already lives in async code. Passing it into a normal DSPy evaluation run doesn't seem to get awaited, and the failure mode is confusing enough that I'd rather have a minimal repro than keep guessing.\n\nPlease give me a complete, runnable Python program that uses `DummyLM` offline, passes an async metric into a normal evaluation run, and prints/asserts the exact kind of failure you get when DSPy treats that metric synchronously.",
+   "answer": "```python\nimport asyncio\nimport warnings\n\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.utils.dummies import DummyLM\n\n\nwarnings.filterwarnings(\"ignore\", category=RuntimeWarning)\ndspy.configure(lm=DummyLM({\"q\": {\"answer\": \"2\"}}))\nprogram = dspy.Predict(\"question -> answer\")\ndevset = [dspy.Example(question=\"q\", answer=\"2\").with_inputs(\"question\")]\n\n\nasync def async_metric(example, prediction):\n    await asyncio.sleep(0)\n    return 1.0\n\n\ntry:\n    with warnings.catch_warnings():\n        warnings.simplefilter(\"ignore\", category=RuntimeWarning)\n        Evaluate(devset=devset, metric=async_metric, display_progress=False)(program)\nexcept TypeError as e:\n    print(type(e).__name__)\n    print(str(e))\n    assert \"unsupported operand type(s)\" in str(e)\n    assert \"coroutine\" in str(e)\nelse:\n    raise AssertionError(\"Expected a sync Evaluate run to fail on an async metric.\")\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "Evaluate.__call__"
+    },
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "EvaluationResult.__init__"
+    }
+   ],
+   "note": "Directly covers the async-metric subtopic in the target label without relying on docs.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 4,
+   "question": "My acceptance logic needs the execution trace, not just gold and prediction. The confusing part is that it seems fine during prompt compilation, then blows up when I try to run a plain evaluation pass over the same program.\n\nI want a small repro that demonstrates both sides of that mismatch in one place. Give me a complete, runnable Python program that uses `DummyLM` offline, shows a trace-requiring metric failing under plain evaluation, then shows the same metric working during few-shot bootstrapping, with prints/assertions proving both outcomes.",
+   "answer": "```python\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.teleprompt import BootstrapFewShot\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\ndef trace_required_metric(example, prediction, trace):\n    return len(trace) == 1 and prediction.answer == example.answer\n\n\ndspy.configure(lm=DummyLM({\"math\": {\"answer\": \"4\"}}))\ntrainset = [dspy.Example(question=\"math\", answer=\"4\").with_inputs(\"question\")]\nstudent = SimpleModule()\nteacher = SimpleModule()\n\ntry:\n    Evaluate(devset=trainset, metric=trace_required_metric, display_progress=False)(student)\nexcept TypeError as e:\n    evaluate_error = str(e)\nelse:\n    raise AssertionError(\"Expected plain Evaluate to fail for a metric that requires trace.\")\n\ncompiled = BootstrapFewShot(\n    metric=trace_required_metric,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n).compile(student, teacher=teacher, trainset=trainset)\n\nprint(evaluate_error)\nprint(compiled._compiled, len(compiled.predictor.demos))\nassert \"trace\" in evaluate_error\nassert compiled._compiled is True\nassert len(compiled.predictor.demos) == 1\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "Evaluate.__call__"
+    },
+    {
+     "file": "dspy/teleprompt/bootstrap.py",
+     "symbol": "BootstrapFewShot._bootstrap_one_example"
+    }
+   ],
+   "note": "Strong locator-free question: the solver has to discover that evaluation and bootstrapping call metrics with different arities.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 9,
+   "question": "I'm using a graded acceptance metric during few-shot bootstrapping, and I hit something surprising: tiny nonzero scores seem to behave like successes unless I set an explicit threshold. I want a repro that shows whether a score like 0.1 is accepted as \"good enough\" when no threshold is configured.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, compiles the same tiny program twice with a metric that always returns 0.1, once without a threshold and once with a stricter threshold, and prints/asserts the resulting demo counts so the acceptance rule is obvious.",
+   "answer": "```python\nimport dspy\nfrom dspy.teleprompt import BootstrapFewShot\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\ndef tiny_nonzero_metric(example, prediction, trace=None):\n    return 0.1\n\n\ndspy.configure(lm=DummyLM({\"math\": {\"answer\": \"4\"}}))\ntrainset = [dspy.Example(question=\"math\", answer=\"4\").with_inputs(\"question\")]\n\ncompiled_without_threshold = BootstrapFewShot(\n    metric=tiny_nonzero_metric,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n).compile(SimpleModule(), teacher=SimpleModule(), trainset=trainset)\n\ncompiled_with_threshold = BootstrapFewShot(\n    metric=tiny_nonzero_metric,\n    metric_threshold=0.5,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n).compile(SimpleModule(), teacher=SimpleModule(), trainset=trainset)\n\ncount_without_threshold = len(compiled_without_threshold.predictor.demos)\ncount_with_threshold = len(compiled_with_threshold.predictor.demos)\nprint(count_without_threshold, count_with_threshold)\nassert count_without_threshold == 1\nassert count_with_threshold == 0\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bootstrap.py",
+     "symbol": "BootstrapFewShot._bootstrap_one_example"
+    },
+    {
+     "file": "dspy/teleprompt/bootstrap.py",
+     "symbol": "BootstrapFewShot._train"
+    }
+   ],
+   "note": "Captures a subtle optimizer behavior that is easy to miss from logs and closely tied to numeric-vs-bool metric semantics.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 10,
+   "question": "I asked the random-search few-shot optimizer for only one candidate set, but the compiled program came back carrying more scored variants than I requested. I suspect DSPy is always evaluating a few built-in baselines before it starts counting random candidates, but I want a repro that proves the exact count.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, asks for one candidate set, and prints/asserts both the stored count and the stored seed identifiers if DSPy records them.",
+   "answer": "```python\nimport dspy\nfrom dspy.teleprompt import BootstrapFewShotWithRandomSearch\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\ndef metric(example, prediction, trace=None):\n    return example.answer == prediction.answer\n\n\ndspy.configure(\n    lm=DummyLM(\n        {\n            \"q1\": {\"answer\": \"A\"},\n            \"q2\": {\"answer\": \"B\"},\n        }\n    )\n)\n\ntrainset = [\n    dspy.Example(question=\"q1\", answer=\"A\").with_inputs(\"question\"),\n    dspy.Example(question=\"q2\", answer=\"B\").with_inputs(\"question\"),\n]\n\noptimizer = BootstrapFewShotWithRandomSearch(\n    metric=metric,\n    num_candidate_programs=1,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=1,\n    num_threads=1,\n)\nbest = optimizer.compile(SimpleModule(), teacher=SimpleModule(), trainset=trainset, valset=trainset)\nseeds = [candidate[\"seed\"] for candidate in best.candidate_programs]\nprint(len(seeds), seeds)\nassert len(seeds) == 4\nassert set(seeds) == {-3, -2, -1, 0}\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/random_search.py",
+     "symbol": "BootstrapFewShotWithRandomSearch.compile"
+    },
+    {
+     "file": "dspy/teleprompt/bootstrap.py",
+     "symbol": "BootstrapFewShot.compile"
+    }
+   ],
+   "note": "Good closed-book optimizer question because the user observes an external count mismatch, not an internal attribute name.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 15,
+   "question": "I'm trying to optimize against one aggregate reward while still carrying several field-level subscores and feedback alongside it. I don't need multiple objectives for selection right now, but I do need proof that DSPy's SIMBA-style reward wrapping keeps the auxiliary metadata instead of dropping everything except the main score.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, runs a tiny program through the same metric-wrapping path that `SIMBA` uses, and prints/asserts the aggregate score plus the preserved auxiliary metadata.",
+   "answer": "```python\nimport dspy\nfrom dspy.teleprompt.simba_utils import wrap_program\nfrom dspy.utils.dummies import DummyLM\n\n\ndspy.configure(lm=DummyLM({\"What is 1+1?\": {\"answer\": \"2\"}}))\nprogram = dspy.Predict(\"question -> answer\")\nexample = dspy.Example(question=\"What is 1+1?\", answer=\"2\").with_inputs(\"question\")\n\n\ndef composite_metric(example, prediction):\n    return dspy.Prediction(\n        score=0.75,\n        answer_score=float(prediction.answer == example.answer),\n        overlap_score=0.5,\n        feedback=\"aggregate score is for selection; field scores are auxiliary\",\n    )\n\n\nwrapped = wrap_program(program, composite_metric)\nout = wrapped(example)\nprint(out[\"score\"])\nprint(out[\"output_metadata\"])\nassert out[\"score\"] == 0.75\nassert out[\"prediction\"].answer == \"2\"\nassert out[\"output_metadata\"] == {\n    \"answer_score\": 1.0,\n    \"overlap_score\": 0.5,\n    \"feedback\": \"aggregate score is for selection; field scores are auxiliary\",\n}\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/simba_utils.py",
+     "symbol": "wrap_program"
+    },
+    {
+     "file": "dspy/teleprompt/simba.py",
+     "symbol": "SIMBA.compile"
+    }
+   ],
+   "note": "Covers the multi-metric/feedback branch of the label without requiring docs or leaking the helper name in the prompt.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 17,
+   "question": "I'm running the same program in parallel with per-example LM overrides inside the module. The thing I'm nervous about is cross-talk: one thread picking up another thread's LM or leaking its override back to the main thread.\n\nGive me a complete, runnable Python program that uses two different `DummyLM` instances offline, runs two calls through DSPy's parallel executor at the same time, and prints/asserts that each input gets the answer from its own LM while the main thread keeps the original default LM.",
+   "answer": "```python\nimport time\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nglobal_lm = DummyLM({\"Germany\": {\"answer\": \"Berlin\"}})\nfrance_lm = DummyLM({\"France\": {\"answer\": \"Paris\"}})\ndspy.configure(lm=global_lm)\n\n\nclass CountryProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        if \"France\" in question:\n            with dspy.context(lm=france_lm):\n                time.sleep(0.2)\n                return self.predictor(question=question)\n        time.sleep(0.2)\n        return self.predictor(question=question)\n\n\nprogram = CountryProgram()\nparallel = dspy.Parallel(num_threads=2, disable_progress_bar=True)\nresults = parallel(\n    [\n        (program, {\"question\": \"What is the capital of France?\"}),\n        (program, {\"question\": \"What is the capital of Germany?\"}),\n    ]\n)\nanswers = [result.answer for result in results]\nprint(answers)\nprint(dspy.settings.lm is global_lm)\nassert answers == [\"Paris\", \"Berlin\"]\nassert dspy.settings.lm is global_lm\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/parallel.py",
+     "symbol": "Parallel.forward"
+    },
+    {
+     "file": "dspy/utils/parallelizer.py",
+     "symbol": "ParallelExecutor._execute_parallel"
+    },
+    {
+     "file": "tests/utils/test_settings.py",
+     "symbol": "test_dspy_context_with_dspy_parallel"
+    }
+   ],
+   "note": "Strong parallelism item: it tests thread-local context isolation rather than merely faster execution.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 19,
+   "question": "I'm using DSPy from async code and I need proof that concurrent offline prediction calls actually overlap instead of serializing under the hood. This matters because my evaluation pipeline does a lot of independent LM work and the wall-clock difference is huge.\n\nI don't want a source reading. Give me a complete, runnable Python program that uses a sleeping `DummyLM` offline, fires several async prediction requests with `asyncio.gather`, and prints/asserts both the answers and a wall-clock bound showing that the calls overlapped.",
+   "answer": "```python\nimport asyncio\nimport time\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SlowDummyLM(DummyLM):\n    async def aforward(self, prompt=None, messages=None, **kwargs):\n        await asyncio.sleep(0.2)\n        return super().forward(prompt=prompt, messages=messages, **kwargs)\n\n\nasync def main():\n    dspy.configure(\n        lm=SlowDummyLM(\n            {\n                \"Q1\": {\"answer\": \"A1\"},\n                \"Q2\": {\"answer\": \"A2\"},\n                \"Q3\": {\"answer\": \"A3\"},\n                \"Q4\": {\"answer\": \"A4\"},\n            }\n        )\n    )\n    program = dspy.Predict(\"question -> answer\")\n\n    start = time.perf_counter()\n    results = await asyncio.gather(\n        program.acall(question=\"Q1\"),\n        program.acall(question=\"Q2\"),\n        program.acall(question=\"Q3\"),\n        program.acall(question=\"Q4\"),\n    )\n    elapsed = time.perf_counter() - start\n    answers = [result.answer for result in results]\n    print(round(elapsed, 2), answers)\n    assert answers == [\"A1\", \"A2\", \"A3\", \"A4\"]\n    assert elapsed < 0.6\n\n\nasyncio.run(main())\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.aforward"
+    },
+    {
+     "file": "dspy/utils/dummies.py",
+     "symbol": "DummyLM.aforward"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_lm_usage_with_async"
+    }
+   ],
+   "note": "Rewritten to remove the method-level locator from the prompt while keeping the async-concurrency behavior intact.",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 0,
+   "question": "I'm pointing DSPy at an OpenAI-compatible server that already works through the OpenAI client. The confusing part is that the same base URL behaves differently depending on whether I treat the model as chat-style or text-style, and I want to see the exact outbound request before I blame the proxy.\n\nI suspect one path keeps a `messages` payload while the other collapses everything into a single prompt, which would explain why one route works and the other 404s.\n\nGive me a complete, runnable Python program that patches DSPy's outbound calls, creates one `dspy.LM` in chat mode and one in text mode against the same fake endpoint, and prints/asserts which call path was used, what payload was sent, and that the text prompt ends with the exact response marker DSPy adds.",
+   "answer": "```python\nimport json\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n    usage = {}\n\n    def __init__(self):\n        super().__init__({\"choices\": []})\n        self.model = \"offline\"\n\n\nchat_calls = []\ntext_calls = []\n\n\ndef fake_chat(*, cache, num_retries, retry_strategy, headers=None, **request):\n    chat_calls.append({\"headers\": headers, **request})\n    return FakeResp()\n\n\ndef fake_text(*, cache, model, api_key, api_base, prompt, num_retries, retry_strategy, headers=None, **request):\n    text_calls.append(\n        {\n            \"model\": model,\n            \"api_key\": api_key,\n            \"api_base\": api_base,\n            \"prompt\": prompt,\n            \"headers\": headers,\n            **request,\n        }\n    )\n    return FakeResp()\n\n\nwith patch(\"litellm.completion\", side_effect=fake_chat), patch(\"litellm.text_completion\", side_effect=fake_text):\n    chat_lm = dspy.LM(\n        \"openai/my-chat-model\",\n        model_type=\"chat\",\n        api_base=\"http://localhost:8000/v1\",\n        api_key=\"test\",\n        cache=False,\n    )\n    text_lm = dspy.LM(\n        \"openai/my-text-model\",\n        model_type=\"text\",\n        api_base=\"http://localhost:8000/v1\",\n        api_key=\"test\",\n        cache=False,\n    )\n\n    chat_lm.forward(prompt=\"ping\")\n    text_lm.forward(prompt=\"ping\")\n\nassert len(chat_calls) == 1\nassert len(text_calls) == 1\nassert chat_calls[0][\"messages\"] == [{\"role\": \"user\", \"content\": \"ping\"}]\nassert text_calls[0][\"prompt\"] == \"ping\\n\\nBEGIN RESPONSE:\"\nassert text_calls[0][\"model\"] == \"text-completion-openai/my-text-model\"\nassert text_calls[0][\"api_base\"] == \"http://localhost:8000/v1\"\n\nprint(\"chat_path=completion\")\nprint(json.dumps({\"messages\": chat_calls[0][\"messages\"], \"api_base\": chat_calls[0][\"api_base\"]}, indent=2))\nprint(\"text_path=text_completion\")\nprint(json.dumps({\"prompt\": text_calls[0][\"prompt\"], \"model\": text_calls[0][\"model\"], \"api_base\": text_calls[0][\"api_base\"]}, indent=2))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.forward"
+    },
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "litellm_completion"
+    },
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "litellm_text_completion"
+    }
+   ],
+   "note": "OpenAI-compatible chat vs text request shaping.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 3,
+   "question": "We run two OpenAI-compatible gateways behind different base URLs. I changed only the endpoint and credential on the second call, kept the same prompt, and still got the first cluster's answer back out of cache.\n\nThat makes me think DSPy might be leaving connection details out of its cache key, but I want a minimal proof before I rip out caching in production.\n\nGive me a complete, runnable Python program that enables DSPy's cache, patches the outbound chat call to return a different answer per endpoint, then prints/asserts that the second call reuses the first cached answer even though the base URL and key changed.",
+   "answer": "```python\nfrom types import SimpleNamespace\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n\n    def __init__(self, text):\n        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason=\"stop\")\n        super().__init__({\"choices\": [choice]})\n        self.choices = [choice]\n        self.usage = {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/cache-demo\"\n\n\noriginal_cache = dspy.cache\ncall_bases = []\n\n\ndef fake_chat(*, cache, num_retries, retry_strategy, headers=None, api_base=None, api_key=None, **request):\n    call_bases.append(api_base)\n    return FakeResp(f\"response from {api_base}\")\n\n\ntry:\n    dspy.configure_cache(enable_disk_cache=False, enable_memory_cache=True)\n\n    with patch(\"litellm.completion\", side_effect=fake_chat):\n        lm = dspy.LM(\"openai/cache-demo\", cache=True)\n        first = lm(\"same prompt\", api_base=\"http://cluster-a/v1\", api_key=\"key-a\")\n        second = lm(\"same prompt\", api_base=\"http://cluster-b/v1\", api_key=\"key-b\")\n\n    assert first == [\"response from http://cluster-a/v1\"]\n    assert second == [\"response from http://cluster-a/v1\"]\n    assert call_bases == [\"http://cluster-a/v1\"]\n    assert len(dspy.cache.memory_cache) == 1\n\n    print(\"first_result=\", first)\n    print(\"second_result=\", second)\n    print(\"underlying_calls=\", call_bases)\nfinally:\n    dspy.cache = original_cache\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM._get_cached_completion_fn"
+    },
+    {
+     "file": "dspy/clients/cache.py",
+     "symbol": "request_cache"
+    }
+   ],
+   "note": "Cache keys ignore endpoint and credential fields.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 6,
+   "question": "I'm switching between `openai/gpt-5-mini` and `openai/gpt-5-chat` on the same code path. One setup rejects my usual `temperature` / `max_tokens`, while the other accepts them, and I want a concrete repro instead of guessing from docs.\n\nI also want to see which token-limit field DSPy stores internally for each model family, because that difference is what seems to break my wrapper code.\n\nGive me a complete, runnable Python program that instantiates both models, prints/asserts the stored kwargs, and proves that the reasoning-family configuration raises the expected error when I pass a small `max_tokens` and a non-1.0 temperature.",
+   "answer": "```python\nimport dspy\n\n\nreasoning_lm = dspy.LM(\"openai/gpt-5-mini\", temperature=1.0, max_tokens=16000)\nassert reasoning_lm.kwargs[\"max_completion_tokens\"] == 16000\nassert \"max_tokens\" not in reasoning_lm.kwargs\n\ntry:\n    dspy.LM(\"openai/gpt-5-mini\", temperature=0.7, max_tokens=1000)\nexcept ValueError as exc:\n    reasoning_error = str(exc)\nelse:\n    raise AssertionError(\"Expected a ValueError for the invalid reasoning-model configuration\")\n\nchat_variant = dspy.LM(\"openai/gpt-5-chat\", temperature=0.7, max_tokens=1000)\nassert chat_variant.kwargs[\"max_tokens\"] == 1000\nassert \"max_completion_tokens\" not in chat_variant.kwargs\n\nassert \"reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None\" in reasoning_error\n\nprint(\"reasoning_kwargs=\", reasoning_lm.kwargs)\nprint(\"chat_variant_kwargs=\", chat_variant.kwargs)\nprint(\"reasoning_error=\", reasoning_error)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.__init__"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_reasoning_model_requirements"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_gpt_5_chat_not_reasoning_model"
+    }
+   ],
+   "note": "Reasoning-family validation and token-parameter rewrite.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 9,
+   "question": "I'm sending a Pydantic model as my structured-output contract while using a responses-style backend. The provider keeps rejecting the request, so I need to inspect the exact payload DSPy sends rather than rely on prose.\n\nMy suspicion is that DSPy takes the chat-style schema hint I pass in Python and rewrites it into the different nested shape that the responses API expects.\n\nGive me a complete, runnable Python program that patches the outbound responses call, passes a Pydantic model as the output schema, and prints/asserts the captured payload so it's undeniable how DSPy transforms that schema before sending it.",
+   "answer": "```python\nimport json\nfrom unittest.mock import patch\n\nimport dspy\nimport pydantic\n\n\nclass AnswerModel(pydantic.BaseModel):\n    answer: str\n    score: int\n\n\nclass FakeResponsesResp:\n    cache_hit = False\n\n    def __init__(self):\n        self.output = []\n        self.usage = {\"input_tokens\": 1, \"output_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/gpt-5-mini\"\n\n\ncaptured = []\n\n\ndef fake_responses(*, cache, num_retries, retry_strategy, headers=None, **request):\n    captured.append({\"headers\": headers, **request})\n    return FakeResponsesResp()\n\n\nwith patch(\"litellm.responses\", side_effect=fake_responses):\n    lm = dspy.LM(\"openai/gpt-5-mini\", model_type=\"responses\", temperature=1.0, max_tokens=16000, cache=False)\n    lm.forward(prompt=\"grade this\", response_format=AnswerModel)\n\ncall = captured[0]\nfmt = call[\"text\"][\"format\"]\nassert \"response_format\" not in call\nassert fmt[\"name\"] == \"AnswerModel\"\nassert fmt[\"type\"] == \"json_schema\"\nassert set(fmt[\"schema\"][\"properties\"]) == {\"answer\", \"score\"}\n\nprint(json.dumps(fmt, indent=2))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "_convert_chat_request_to_responses_request"
+    },
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "litellm_responses_completion"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_responses_api_with_pydantic_model_input"
+    }
+   ],
+   "note": "Pydantic output schemas are rewritten for responses-mode requests.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 13,
+   "question": "I saved a DSPy program that had a private endpoint override, then loaded it later and the override silently disappeared. Before I call that a bug, I want a tiny round-trip that shows the default behavior and the explicit opt-in side by side.\n\nThe important part is proving this from a saved JSON file, not from hand-constructed state in memory, because that's how the issue shows up in my deployment flow.\n\nGive me a complete, runnable Python program that saves a program to JSON, injects an endpoint override into the serialized LM state, loads it once normally and once with the unsafe-state opt-in, and prints/asserts the loaded LM kwargs so the difference is undeniable.",
+   "answer": "```python\nimport json\nimport tempfile\nfrom pathlib import Path\n\nimport dspy\n\n\npredict = dspy.Predict(\"q -> a\")\npredict.lm = dspy.LM(\"openai/gpt-4o-mini\")\n\noverride_url = \"http://override.local/v1\"\n\nwith tempfile.TemporaryDirectory() as tmpdir:\n    path = Path(tmpdir) / \"program.json\"\n    predict.save(path)\n\n    saved_state = json.loads(path.read_text())\n    saved_state[\"lm\"][\"api_base\"] = override_url\n    path.write_text(json.dumps(saved_state))\n\n    safe_loaded = dspy.Predict(\"q -> a\")\n    safe_loaded.load(path)\n\n    unsafe_loaded = dspy.Predict(\"q -> a\")\n    unsafe_loaded.load(path, allow_unsafe_lm_state=True)\n\n    assert \"api_base\" not in safe_loaded.lm.kwargs\n    assert unsafe_loaded.lm.kwargs[\"api_base\"] == override_url\n\n    print(json.dumps({\"safe_kwargs\": safe_loaded.lm.kwargs, \"unsafe_kwargs\": unsafe_loaded.lm.kwargs}, indent=2))\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "_sanitize_lm_state"
+    },
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.load_state"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_load_ignores_serialized_endpoint_override_by_default"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_load_allows_serialized_endpoint_override_with_opt_in"
+    }
+   ],
+   "note": "Serialized endpoint overrides are stripped unless explicitly opted back in.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": true
+  },
+  {
+   "source_index": 15,
+   "question": "I'm wrapping our internal gateway in a custom `dspy.BaseLM`. Structured JSON outputs only seem to work when DSPy believes the backend can accept a schema, and I need to know the minimum capability contract I have to advertise on the LM object.\n\nWhat I want is not a prose answer but a small experiment that shows the three branches: native structured schema, plain JSON mode, and no response-format hint at all.\n\nGive me a complete, runnable Python program that defines tiny offline `dspy.BaseLM` wrappers with different capability combinations, runs the same `dspy.Predict` + `dspy.JSONAdapter` call through each one, and prints/asserts whether DSPy sent a structured schema, plain JSON mode, or no response-format hint.",
+   "answer": "```python\nfrom types import SimpleNamespace\n\nimport dspy\nimport pydantic\n\n\nclass FakeResp(dict):\n    cache_hit = False\n\n    def __init__(self, text):\n        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason=\"stop\")\n        super().__init__({\"choices\": [choice]})\n        self.choices = [choice]\n        self.usage = {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"custom/offline\"\n\n\nclass CaptureLM(dspy.BaseLM):\n    def __init__(self, support_response_format, support_schema):\n        super().__init__(\"custom/offline\", \"chat\", 0.0, 1000, False)\n        self._support_response_format = support_response_format\n        self._support_schema = support_schema\n        self.calls = []\n\n    @property\n    def supported_params(self):\n        return {\"response_format\"} if self._support_response_format else set()\n\n    @property\n    def supports_response_schema(self):\n        return self._support_schema\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        self.calls.append({\"prompt\": prompt, \"messages\": messages, **kwargs})\n        return FakeResp('{\"answer\": \"Paris\"}')\n\n    async def aforward(self, prompt=None, messages=None, **kwargs):\n        return self.forward(prompt=prompt, messages=messages, **kwargs)\n\n\nclass QASignature(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nprogram = dspy.Predict(QASignature)\nadapter = dspy.JSONAdapter()\nstructured_lm = CaptureLM(True, True)\njson_mode_lm = CaptureLM(True, False)\nplain_lm = CaptureLM(False, False)\n\nwith dspy.context(lm=structured_lm, adapter=adapter):\n    assert program(question=\"What is the capital of France?\").answer == \"Paris\"\n\nwith dspy.context(lm=json_mode_lm, adapter=adapter):\n    assert program(question=\"What is the capital of France?\").answer == \"Paris\"\n\nwith dspy.context(lm=plain_lm, adapter=adapter):\n    assert program(question=\"What is the capital of France?\").answer == \"Paris\"\n\nstructured_rf = structured_lm.calls[0][\"response_format\"]\njson_mode_rf = json_mode_lm.calls[0][\"response_format\"]\nplain_has_rf = \"response_format\" in plain_lm.calls[0]\n\nassert issubclass(structured_rf, pydantic.BaseModel)\nassert json_mode_rf == {\"type\": \"json_object\"}\nassert not plain_has_rf\n\nprint(\n    {\n        \"structured_response_format_type\": structured_rf.__name__,\n        \"json_mode_response_format\": json_mode_rf,\n        \"plain_has_response_format\": plain_has_rf,\n    }\n)\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter._json_adapter_call_common"
+    },
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM.supported_params"
+    },
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM.supports_response_schema"
+    },
+    {
+     "file": "tests/adapters/test_json_adapter.py",
+     "symbol": "test_json_adapter_passes_structured_output_when_supported_by_model"
+    },
+    {
+     "file": "tests/adapters/test_json_adapter.py",
+     "symbol": "test_json_adapter_json_mode_no_structured_outputs"
+    }
+   ],
+   "note": "Custom BaseLM capability flags decide schema mode vs JSON mode vs no hint.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 17,
+   "question": "I want DSPy to launch a local Hugging Face model for me and then point the LM client at that spawned server. What I can't tell from the outside is how DSPy normalizes a model string with common public prefixes before launch, or what connection details it writes back onto the LM after the server is up.\n\nI'd rather verify the actual launch command and post-launch LM state than guess based on log messages.\n\nGive me a complete, runnable Python program that mocks the local launcher, starts from a model string with the usual public prefixes, and prints/asserts the exact subprocess command plus the final `api_base` / `api_key` values DSPy places on the LM object.",
+   "answer": "```python\nimport sys\nfrom types import SimpleNamespace\nfrom unittest.mock import Mock, patch\n\nfrom dspy.clients.lm_local import LocalProvider\n\n\nprocess = Mock()\nprocess.pid = 1234\nprocess.stdout.readline.return_value = \"\"\nprocess.poll.return_value = 0\nthread = Mock()\n\nlm = SimpleNamespace(model=\"openai/huggingface/my-org/my-model\", launch_kwargs={}, kwargs={})\n\nwith patch.dict(sys.modules, {\"sglang\": Mock(), \"sglang.utils\": Mock()}):\n    with patch(\"dspy.clients.lm_local.get_free_port\", return_value=8123), patch(\n        \"dspy.clients.lm_local.wait_for_server\"\n    ), patch(\"dspy.clients.lm_local.subprocess.Popen\", return_value=process) as popen_mock, patch(\n        \"dspy.clients.lm_local.threading.Thread\", return_value=thread\n    ):\n        LocalProvider.launch(lm, launch_kwargs={})\n\ncommand = popen_mock.call_args[0][0]\nmodel_path = command[command.index(\"--model-path\") + 1]\n\nassert model_path == \"my-org/my-model\"\nassert lm.kwargs[\"api_base\"] == \"http://localhost:8123/v1\"\nassert lm.kwargs[\"api_key\"] == \"local\"\n\nprint(\"command=\", command)\nprint(\"lm_kwargs=\", lm.kwargs)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm_local.py",
+     "symbol": "LocalProvider.launch"
+    },
+    {
+     "file": "tests/clients/test_lm_local.py",
+     "symbol": "test_command_is_list_not_string"
+    }
+   ],
+   "note": "Local launch strips common public prefixes and injects localhost connection settings.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 19,
+   "question": "I'm using OpenAI-compatible model names and assumed DSPy would infer a fine-tuning provider from any provider-like string. Instead, some model IDs act like OpenAI immediately, while another one only complains later when I try to fine-tune.\n\nI want a small repro that shows exactly which model-name patterns get the OpenAI provider automatically and which ones stay on the generic provider unless I override it.\n\nGive me a complete, runnable Python program that instantiates `dspy.LM` for an `openai/...` model, an `ft:...` model, and an `azure/...` model, then prints/asserts which provider each one gets and that the non-inferred case raises the fine-tuning error until I pass an explicit provider object.",
+   "answer": "```python\nimport dspy\nfrom dspy.clients.openai import OpenAIProvider\nfrom dspy.clients.provider import Provider\n\n\nopenai_lm = dspy.LM(\"openai/gpt-4o-mini\")\nft_lm = dspy.LM(\"ft:job-123\")\nazure_lm = dspy.LM(\"azure/gpt-4o-mini\")\nexplicit_lm = dspy.LM(\"azure/gpt-4o-mini\", provider=OpenAIProvider())\n\nassert openai_lm.provider.__class__.__name__ == \"OpenAIProvider\"\nassert ft_lm.provider.__class__.__name__ == \"OpenAIProvider\"\nassert azure_lm.provider.__class__ is Provider\nassert explicit_lm.provider.__class__.__name__ == \"OpenAIProvider\"\n\ntry:\n    azure_lm.finetune(train_data=[], train_data_format=None)\nexcept ValueError as exc:\n    error = str(exc)\nelse:\n    raise AssertionError(\"Expected fine-tuning on the generic provider to fail\")\n\nassert \"please specify your provider by explicitly setting `provider`\" in error\n\nprint(\n    {\n        \"openai_provider\": openai_lm.provider.__class__.__name__,\n        \"ft_provider\": ft_lm.provider.__class__.__name__,\n        \"azure_provider\": azure_lm.provider.__class__.__name__,\n        \"explicit_provider\": explicit_lm.provider.__class__.__name__,\n        \"error\": error,\n    }\n)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.infer_provider"
+    },
+    {
+     "file": "dspy/clients/openai.py",
+     "symbol": "OpenAIProvider.is_provider_model"
+    },
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.finetune"
+    }
+   ],
+   "note": "Provider inference is intentionally narrow; fine-tuning may require an explicit provider override.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 0,
+   "question": "I'm trying to benchmark the exact prompt DSPy sends, not a hand-written approximation. I can already inspect the signature, but for reproducibility I need the fully rendered chat request with my real input values filled in.\n\nWhat confused me is that formatting in isolation is only useful if I can prove it matches the real module call exactly. I want an offline check with `DummyLM`, no API key, where the program both precomputes the messages and then captures the actual request from a real `dspy.Predict` call.\n\nGive me a complete, runnable Python program that prints the precomputed messages and the actual recorded messages, then asserts that they are identical and that the prediction still succeeds.",
+   "answer": "```python\nimport pprint\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass QA(dspy.Signature):\n    question: str = dspy.InputField(desc=\"Question to answer\")\n    answer: str = dspy.OutputField(desc=\"Short answer\")\n\n\nadapter = dspy.ChatAdapter()\nexpected_messages = adapter.format(QA, [], {\"question\": \"What is 2 + 2?\"})\n\nlm = DummyLM([{\"answer\": \"4\"}], adapter=adapter)\ndspy.configure(lm=lm, adapter=adapter)\n\npredict = dspy.Predict(QA)\nresult = predict(question=\"What is 2 + 2?\")\nactual_messages = lm.history[-1][\"messages\"]\n\nprint(\"PRECOMPUTED:\")\npprint.pp(expected_messages)\nprint(\"ACTUAL:\")\npprint.pp(actual_messages)\nprint(\"ANSWER:\", result.answer)\n\nassert actual_messages == expected_messages\nassert result.answer == \"4\"\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.forward"
+    },
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM._process_lm_response"
+    }
+   ],
+   "note": "Verifies external prompt rendering matches the exact message list logged for a real `Predict` call.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 3,
+   "question": "I'm using few-shot examples, but some of my stored examples are intentionally partial because certain outputs were never labeled. I need to know whether DSPy drops those examples, silently treats missing fields as empty strings, or keeps them with some explicit placeholder text.\n\nThis matters because I am debugging prompt bloat and want to know exactly what gets shown to the model. I only want an offline repro that inspects the rendered messages.\n\nGive me a complete, runnable Python program that builds one partial example and one complete example, prints the formatted demo messages, and asserts that the partial one is kept with an explicit \"not supplied\" style placeholder instead of being discarded.",
+   "answer": "```python\nimport pprint\n\nimport dspy\n\n\nclass QAWithCitation(dspy.Signature):\n    passage: str = dspy.InputField()\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n    citation: str = dspy.OutputField()\n\n\nadapter = dspy.ChatAdapter()\ndemos = [\n    dspy.Example(passage=\"A short passage.\", answer=\"A partial answer\"),\n    dspy.Example(\n        passage=\"Another passage.\",\n        question=\"What is it about?\",\n        answer=\"It is about testing.\",\n        citation=\"line 1\",\n    ),\n]\nmessages = adapter.format(QAWithCitation, demos, {\"passage\": \"Final passage.\", \"question\": \"Final question?\"})\n\npprint.pp(messages)\n\nassert \"some input or output fields are not supplied\" in messages[1][\"content\"]\nassert \"Not supplied for this particular example.\" in messages[2][\"content\"]\nassert \"Another passage.\" in messages[3][\"content\"]\nassert \"line 1\" in messages[4][\"content\"]\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format_demos"
+    },
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.format_assistant_message_content"
+    }
+   ],
+   "note": "Exercises the incomplete-demo retention path and its explicit placeholder text.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "source_index": 4,
+   "question": "I need hard control over prompt field order because I'm trying to stabilize prefix caching and prompt diffs. The important part is not just the Python schema object; I need proof that changing the signature order changes the actual rendered system prompt in the same order.\n\nI also need to see both directions: putting a new input before the original one and surrounding the original output with extra outputs. If the order only changes metadata and not the prompt text, that would be a bad surprise.\n\nGive me a complete, runnable Python program that constructs a signature by inserting fields around an existing one, prints the rendered system message, and asserts that the input and output fields appear in the exact new order.",
+   "answer": "```python\nimport dspy\n\n\nclass BaseQA(dspy.Signature):\n    question: str = dspy.InputField(desc=\"Question\")\n    answer: str = dspy.OutputField(desc=\"Answer\")\n\n\nsig = BaseQA.prepend(\"context\", dspy.InputField(desc=\"Background\"), str)\nsig = sig.prepend(\"reasoning\", dspy.OutputField(desc=\"Scratch work\"), str)\nsig = sig.append(\"confidence\", dspy.OutputField(desc=\"Confidence score\"), float)\n\nadapter = dspy.ChatAdapter()\nsystem_message = adapter.format_system_message(sig)\n\nprint(system_message)\nprint(\"INPUT ORDER:\", list(sig.input_fields.keys()))\nprint(\"OUTPUT ORDER:\", list(sig.output_fields.keys()))\n\nassert list(sig.input_fields.keys()) == [\"context\", \"question\"]\nassert list(sig.output_fields.keys()) == [\"reasoning\", \"answer\", \"confidence\"]\nassert system_message.index(\"1. `context`\") < system_message.index(\"2. `question`\")\nassert system_message.index(\"1. `reasoning`\") < system_message.index(\"2. `answer`\") < system_message.index(\"3. `confidence`\")\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/signatures/signature.py",
+     "symbol": "Signature.prepend"
+    },
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format_system_message"
+    }
+   ],
+   "note": "Shows signature insertion changes rendered prompt order, not just Python-side metadata.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 5,
+   "question": "I tried setting custom field prefixes because I wanted the prompt labels to say something other than the default markers, but the rendered request did not change. That makes me worry I am editing metadata DSPy no longer uses.\n\nI want a minimal proof, not a prose answer. Show me whether those custom prefixes survive anywhere useful, and whether they actually affect the prompt text the default chat rendering produces.\n\nGive me a complete, runnable Python program that captures any warning, prints the stored field metadata and the rendered prompt, and asserts that the custom prefixes are stored but do not appear in the final prompt text.",
+   "answer": "```python\nimport warnings\n\nimport dspy\n\n\nwith warnings.catch_warnings(record=True) as caught:\n    warnings.simplefilter(\"always\")\n\n    class PrefixedQA(dspy.Signature):\n        question: str = dspy.InputField(prefix=\"QUESTION PREFIX:\", desc=\"Question\")\n        answer: str = dspy.OutputField(prefix=\"ANSWER PREFIX:\", desc=\"Answer\")\n\n\nadapter = dspy.ChatAdapter()\nmessages = adapter.format(PrefixedQA, [], {\"question\": \"Why?\"})\nsystem_message = messages[0][\"content\"]\nuser_message = messages[1][\"content\"]\n\nprint(\"WARNING MESSAGES:\", [str(w.message) for w in caught])\nprint(\"STORED QUESTION PREFIX:\", PrefixedQA.input_fields[\"question\"].json_schema_extra[\"prefix\"])\nprint(\"STORED ANSWER PREFIX:\", PrefixedQA.output_fields[\"answer\"].json_schema_extra[\"prefix\"])\nprint(\"SYSTEM MESSAGE:\\n\", system_message)\nprint(\"USER MESSAGE:\\n\", user_message)\n\nassert any(\"has no effect in DSPy\" in str(w.message) for w in caught)\nassert PrefixedQA.input_fields[\"question\"].json_schema_extra[\"prefix\"] == \"QUESTION PREFIX:\"\nassert PrefixedQA.output_fields[\"answer\"].json_schema_extra[\"prefix\"] == \"ANSWER PREFIX:\"\nassert \"QUESTION PREFIX:\" not in system_message\nassert \"ANSWER PREFIX:\" not in system_message\nassert \"QUESTION PREFIX:\" not in user_message\nassert \"ANSWER PREFIX:\" not in user_message\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/signatures/field.py",
+     "symbol": "InputField"
+    },
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.format_field_structure"
+    }
+   ],
+   "note": "Proves deprecated prefix metadata is preserved on fields but ignored by default chat rendering.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 7,
+   "question": "I have a reasoning-capable chat model and I want DSPy to use the provider's native reasoning channel instead of forcing a visible reasoning field into the text prompt. The confusing part is that I still want the final `Prediction` object to contain reasoning, even though the rendered prompt should no longer ask for it explicitly.\n\nI need an offline repro, so please don't use a real provider. Simulate the model behavior in a small stub built on top of `DummyLM`, then show me the request DSPy renders and the parsed result.\n\nGive me a complete, runnable Python program that prints the system message, the LM kwargs, and the parsed prediction, then asserts that the visible reasoning field disappears from the prompt, `reasoning_effort` is sent, and the returned prediction still contains reasoning.",
+   "answer": "```python\nfrom types import SimpleNamespace\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass NativeReasoningDummy(DummyLM):\n    def __init__(self, adapter):\n        super().__init__([{\"answer\": \"Paris\"}], adapter=adapter)\n        self.model = \"anthropic/claude-3-7-sonnet-20250219\"\n        self.model_type = \"chat\"\n\n    @property\n    def supports_reasoning(self):\n        return True\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        return SimpleNamespace(\n            choices=[\n                SimpleNamespace(\n                    message=SimpleNamespace(\n                        content=\"[[ ## answer ## ]]\\nParis\\n\\n[[ ## completed ## ]]\\n\",\n                        reasoning_content=\"Native reasoning trace\",\n                        tool_calls=None,\n                    ),\n                    finish_reason=\"stop\",\n                )\n            ],\n            usage={},\n            model=self.model,\n        )\n\n\nclass QA(dspy.Signature):\n    question: str = dspy.InputField()\n    reasoning: dspy.Reasoning = dspy.OutputField()\n    answer: str = dspy.OutputField()\n\n\nadapter = dspy.ChatAdapter()\nlm = NativeReasoningDummy(adapter)\ndspy.configure(lm=lm, adapter=adapter)\n\npredict = dspy.Predict(QA)\nresult = predict(question=\"What is the capital of France?\")\nentry = lm.history[-1]\nsystem_message = entry[\"messages\"][0][\"content\"]\n\nprint(system_message)\nprint(\"KWARGS:\", entry[\"kwargs\"])\nprint(\"ANSWER:\", result.answer)\nprint(\"REASONING:\", result.reasoning)\n\nassert \"[[ ## reasoning ## ]]\" not in system_message\nassert entry[\"kwargs\"].get(\"reasoning_effort\") == \"low\"\nassert result.answer == \"Paris\"\nassert str(result.reasoning) == \"Native reasoning trace\"\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/types/reasoning.py",
+     "symbol": "Reasoning.adapt_to_native_lm_feature"
+    },
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter._call_postprocess"
+    }
+   ],
+   "note": "Demonstrates prompt rewriting for native reasoning plus reconstruction of `reasoning` from `reasoning_content`.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "source_index": 9,
+   "question": "I'm comparing two JSON-rendered tasks and I think DSPy silently changes how it asks the provider for structured output depending on the output types. One of my signatures has ordinary typed outputs, and another has an open-ended mapping, and I need a proof of what request parameter changes between them.\n\nThis is for benchmarking, so I need an offline repro that records the outgoing kwargs instead of calling a real API. The key thing I want to verify is whether one case gets a generated schema class while the other falls back to generic JSON mode.\n\nGive me a complete, runnable Python program that uses `DummyLM`, prints the recorded `response_format` for both signatures, and asserts that the typed case uses a generated schema class while the open-ended mapping case uses `{\\\"type\\\": \\\"json_object\\\"}`.",
+   "answer": "```python\nfrom typing import Any\n\nimport pydantic\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SchemaAwareDummy(DummyLM):\n    def __init__(self, answers, adapter):\n        super().__init__(answers, adapter=adapter)\n\n    @property\n    def supported_params(self):\n        return {\"response_format\"}\n\n    @property\n    def supports_response_schema(self):\n        return True\n\n\nclass Tight(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nclass Loose(dspy.Signature):\n    question: str = dspy.InputField()\n    data: dict[str, Any] = dspy.OutputField()\n\n\nadapter = dspy.JSONAdapter()\n\nlm_tight = SchemaAwareDummy([{\"answer\": \"ok\"}], adapter=adapter)\ndspy.configure(lm=lm_tight, adapter=adapter)\ndspy.Predict(Tight)(question=\"hi\")\ntight_format = lm_tight.history[-1][\"kwargs\"][\"response_format\"]\n\nlm_loose = SchemaAwareDummy([{\"data\": {\"x\": 1}}], adapter=adapter)\ndspy.configure(lm=lm_loose, adapter=adapter)\ndspy.Predict(Loose)(question=\"hi\")\nloose_format = lm_loose.history[-1][\"kwargs\"][\"response_format\"]\n\nprint(\"TIGHT RESPONSE FORMAT:\", tight_format)\nprint(\"LOOSE RESPONSE FORMAT:\", loose_format)\n\nassert isinstance(tight_format, type)\nassert issubclass(tight_format, pydantic.BaseModel)\nassert loose_format == {\"type\": \"json_object\"}\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter._json_adapter_call_common"
+    },
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "_get_structured_outputs_response_format"
+    }
+   ],
+   "note": "Contrasts generated structured-output schemas with the open-ended-mapping JSON fallback.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "source_index": 11,
+   "question": "I'm building a tool-using task and I need to know what changes in the prompt pipeline when native function calling is actually enabled. My worry is that DSPy might still duplicate the tool catalog inside the text prompt even when the provider already gets a structured `tools` payload.\n\nI want an offline proof with no external API. Please simulate one tool-call response and show me both the rendered text prompt and the non-text request kwargs that went out.\n\nGive me a complete, runnable Python program that prints the sent messages, the `tools` kwarg, and the parsed output, then asserts that the tool list is sent out-of-band, the prompt text no longer contains the tool catalog, and the parsed tool call lands in the structured output field.",
+   "answer": "```python\nfrom types import SimpleNamespace\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\ndef get_weather(city: str) -> str:\n    return f\"The weather in {city} is sunny\"\n\n\nclass NativeToolDummy(DummyLM):\n    def __init__(self, adapter):\n        super().__init__([{\"answer\": \"unused\"}], adapter=adapter)\n        self.model = \"tool-capable-dummy\"\n\n    @property\n    def supports_function_calling(self):\n        return True\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        return SimpleNamespace(\n            choices=[\n                SimpleNamespace(\n                    message=SimpleNamespace(\n                        content=None,\n                        tool_calls=[\n                            {\"function\": {\"name\": \"get_weather\", \"arguments\": '{\"city\": \"Paris\"}'}}\n                        ],\n                    ),\n                    finish_reason=\"tool_calls\",\n                )\n            ],\n            usage={},\n            model=self.model,\n        )\n\n\nclass ToolSig(dspy.Signature):\n    question: str = dspy.InputField()\n    tools: list[dspy.Tool] = dspy.InputField()\n    answer: str = dspy.OutputField()\n    tool_calls: dspy.ToolCalls = dspy.OutputField()\n\n\nadapter = dspy.JSONAdapter(use_native_function_calling=True)\nlm = NativeToolDummy(adapter)\ndspy.configure(lm=lm, adapter=adapter)\n\npredict = dspy.Predict(ToolSig)\nresult = predict(question=\"What's the weather in Paris?\", tools=[dspy.Tool(get_weather)])\nentry = lm.history[-1]\ncombined_text = \"\\n\".join(str(message[\"content\"]) for message in entry[\"messages\"])\n\nprint(\"MESSAGES:\", entry[\"messages\"])\nprint(\"TOOLS KWARG:\", entry[\"kwargs\"].get(\"tools\"))\nprint(\"PARSED RESULT:\", result)\n\nassert entry[\"kwargs\"][\"tools\"][0][\"function\"][\"name\"] == \"get_weather\"\nassert \"get_weather\" not in combined_text\nassert result.answer is None\nassert result.tool_calls.tool_calls[0].name == \"get_weather\"\nassert result.tool_calls.tool_calls[0].args == {\"city\": \"Paris\"}\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter._call_preprocess"
+    },
+    {
+     "file": "tests/adapters/test_json_adapter.py",
+     "symbol": "test_json_adapter_toolcalls_native_function_calling"
+    }
+   ],
+   "note": "Shows native function calling strips tool fields from prompt text and sends tools out-of-band.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 19,
+   "question": "I'm trying to verify that an optimizer really changes the prompt text of a compiled program instead of only mutating some hidden score table. In particular, I want a tiny offline repro where the optimizer proposes a new instruction and I can prove that the compiled program's rendered prompt actually contains it.\n\nPlease keep it deterministic with `DummyLM`. I want a minimal student module, a trivial metric, and a compiled result whose final rendered prompt can be inspected directly.\n\nGive me a complete, runnable Python program that compiles a small module offline, prints the optimized instruction and rendered system message, and asserts that the compiled predictor now uses the optimizer-proposed instruction text.",
+   "answer": "```python\nimport dspy\nfrom dspy import Example\nfrom dspy.utils.dummies import DummyLM\n\n\nclass Student(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.ChainOfThought(\"question -> answer\")\n\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\n\ndef metric(example, prediction):\n    return prediction.answer == example.answer\n\n\ntrainset = [\n    Example(question=\"What is 2 + 2?\", answer=\"4\").with_inputs(\"question\")\n]\n\nlm = DummyLM(\n    [\n        {\n            \"proposed_instruction\": \"Answer with a numeral only.\",\n            \"proposed_prefix_for_output_field\": \"Ignored prefix\",\n        }\n    ]\n    + [{\"reasoning\": \"2 + 2 = 4\", \"answer\": \"4\"}] * 4\n)\ndspy.configure(lm=lm)\n\noptimizer = dspy.COPRO(metric=metric, breadth=2, depth=1, init_temperature=1.4)\ncompiled = optimizer.compile(\n    Student(),\n    trainset=trainset,\n    eval_kwargs={\"num_threads\": 1, \"display_progress\": False},\n)\n\noptimized_instruction = compiled.predictor.predict.signature.instructions\nsystem_message = dspy.ChatAdapter().format_system_message(compiled.predictor.predict.signature)\n\nprint(\"OPTIMIZED INSTRUCTION:\", optimized_instruction)\nprint(\"SYSTEM MESSAGE:\\n\", system_message)\n\nassert optimized_instruction == \"Answer with a numeral only.\"\nassert \"Answer with a numeral only.\" in system_message\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/copro_optimizer.py",
+     "symbol": "COPRO.compile"
+    },
+    {
+     "file": "dspy/signatures/signature.py",
+     "symbol": "Signature.with_instructions"
+    }
+   ],
+   "note": "Connects optimizer-proposed instruction text to the compiled predictor's final rendered prompt.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 0,
+   "question": "I'm trying to use `BootstrapFinetune` on a tiny offline program before I swap in a real provider. Plain inference works if I only do `dspy.configure(lm=...)`, so I expected the optimizer to inherit that and start compiling.\n\nWhat I'm actually seeing is that compilation fails because one of the predictors supposedly has no LM assigned, even though the global LM is set and the same module can answer questions. I want a proof that this is about per-predictor wiring, not about the dataset or the metric.\n\nGive me a complete, runnable Python program that uses `DummyLM`, triggers the optimizer error first, then fixes it by attaching the LM directly to the module, with prints and assertions that prove the before/after behavior.",
+   "answer": "```python\nimport dspy\nfrom unittest.mock import patch\nfrom dspy.teleprompt import BootstrapFinetune\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"input -> output\")\n\n    def forward(self, input):\n        return self.predictor(input=input)\n\n\ntrainset = [\n    dspy.Example(input=\"What is the color of the sky?\", output=\"blue\").with_inputs(\"input\")\n]\nlm = DummyLM([{\"output\": \"blue\"}])\ndspy.configure(lm=lm)\n\noptimizer = BootstrapFinetune(metric=lambda example, pred, trace=None: example.output == pred.output)\nstudent = SimpleModule()\n\ntry:\n    optimizer.compile(student, trainset=trainset)\n    raise AssertionError(\"Expected BootstrapFinetune to reject a predictor that only relies on dspy.configure(lm=...)\")\nexcept ValueError as e:\n    msg = str(e)\n    print(\"missing_lm_error:\", msg)\n    assert \"does not have an LM assigned\" in msg\n    assert \"set_lm\" in msg\n\nstudent = SimpleModule()\nteacher = SimpleModule()\nstudent.set_lm(lm)\nteacher.set_lm(lm)\noptimizer = BootstrapFinetune(metric=lambda example, pred, trace=None: example.output == pred.output)\n\nwith patch.object(optimizer, \"finetune_lms\", return_value={(lm, None): lm}) as mocked:\n    compiled = optimizer.compile(student, teacher=teacher, trainset=trainset)\n    mocked.assert_called_once()\n\nassert compiled._compiled is True\nassert compiled.predictor.lm is lm\nprint(\"compiled_flag:\", compiled._compiled)\nprint(\"predictor_lm_model:\", compiled.predictor.lm.model)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bootstrap_finetune.py",
+     "symbol": "BootstrapFinetune.compile"
+    },
+    {
+     "file": "tests/teleprompt/test_bootstrap_finetune.py",
+     "symbol": "test_error_handling_missing_lm"
+    }
+   ],
+   "note": "Shows that `BootstrapFinetune` reads predictor-local LM attachments rather than falling back to the globally configured LM during compile.",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 1,
+   "question": "I'm debugging a `dspy.ReAct` tool-using program on newer Python builds, and the failure path looks like a type-introspection problem rather than a tool problem. The crash only shows up once the agent signature grows a generic-looking tool-argument field.\n\nI want a minimal proof that this path no longer tries to do a raw subclass check on that generic annotation. In other words, the agent should still run, pick the tool, and finish, even if I deliberately booby-trap plain `issubclass(...)` for that one annotation.\n\nGive me a complete, runnable Python program that monkeypatches the relevant globals, runs a `dspy.ReAct` call offline with `DummyLM`, and uses prints/assertions to prove the tool call succeeds instead of crashing.",
+   "answer": "```python\nimport dspy\nimport dspy.adapters.base as adapter_base\nimport dspy.adapters.utils as adapter_utils\nfrom dspy.utils.dummies import DummyLM\n\n\ndef get_user_info(name: str):\n    return {\"name\": name}\n\n\nclass CustomerService(dspy.Signature):\n    user_request: str = dspy.InputField()\n    process_result: str = dspy.OutputField()\n\n\nreact = dspy.ReAct(CustomerService, tools=[get_user_info])\nproblem_annotation = react.react.signature.output_fields[\"next_tool_args\"].annotation\n\n\ndef guarded_issubclass(cls, class_or_tuple):\n    if cls == problem_annotation:\n        raise TypeError(\"issubclass() arg 1 must be a class\")\n    return issubclass(cls, class_or_tuple)\n\n\noriginal_base_issubclass = getattr(adapter_base, \"issubclass\", issubclass)\noriginal_utils_issubclass = getattr(adapter_utils, \"issubclass\", issubclass)\nadapter_base.issubclass = guarded_issubclass\nadapter_utils.issubclass = guarded_issubclass\n\ntry:\n    lm = DummyLM(\n        [\n            {\n                \"next_thought\": \"I should look up the user first.\",\n                \"next_tool_name\": \"get_user_info\",\n                \"next_tool_args\": {\"name\": \"Adam\"},\n            },\n            {\n                \"next_thought\": \"I have the information I need, so I can finish now.\",\n                \"next_tool_name\": \"finish\",\n                \"next_tool_args\": {},\n            },\n            {\n                \"reasoning\": \"I fetched the user profile and can answer the request.\",\n                \"process_result\": \"Resolved Adam's request.\",\n            },\n        ]\n    )\n    with dspy.context(lm=lm):\n        result = react(user_request=\"Help me, my name is Adam\")\nfinally:\n    adapter_base.issubclass = original_base_issubclass\n    adapter_utils.issubclass = original_utils_issubclass\n\nassert result.process_result == \"Resolved Adam's request.\"\nassert result.trajectory[\"tool_name_0\"] == \"get_user_info\"\nassert result.trajectory[\"tool_args_0\"] == {\"name\": \"Adam\"}\nprint(\"final_result:\", result.process_result)\nprint(\"first_tool_call:\", result.trajectory[\"tool_name_0\"], result.trajectory[\"tool_args_0\"])\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter._call_preprocess"
+    },
+    {
+     "file": "dspy/adapters/utils.py",
+     "symbol": "_annotation_is_subclass"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_react_with_tools_skips_native_response_issubclass_for_generic_alias"
+    }
+   ],
+   "note": "Forces the generic-alias path without naming the internal hook in the question, and grounds the fix in the adapter/type-introspection layer.",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": true
+  },
+  {
+   "source_index": 2,
+   "question": "I'm using `dspy.ReAct` with a tool that takes a nested Pydantic object, and I don't want to assume the agent is handing my function a raw dict just because the LM emitted JSON-shaped arguments. The trajectory should keep the JSON-looking args, but the actual Python tool call should still receive the typed object.\n\nI need a tiny offline repro that makes this distinction obvious. The program should show the tool saw a real Pydantic model, while the stored trajectory still shows the plain JSON-like arguments that came from the LM.\n\nGive me a complete, runnable Python program that uses `DummyLM`, runs one tool call plus finish, and prints/assertions both the typed tool input and the trajectory contents.",
+   "answer": "```python\nimport dspy\nfrom pydantic import BaseModel\nfrom dspy.utils.dummies import DummyLM\n\n\nclass CalendarEvent(BaseModel):\n    name: str\n    date: str\n    participants: dict[str, str]\n\n\nseen_types = []\n\n\ndef write_invitation_letter(participant_name: str, event_info: CalendarEvent):\n    seen_types.append(type(event_info).__name__)\n    if participant_name not in event_info.participants:\n        return None\n    return f\"It's my honor to invite {participant_name} to event {event_info.name} on {event_info.date}\"\n\n\nclass InvitationSignature(dspy.Signature):\n    participant_name: str = dspy.InputField()\n    event_info: CalendarEvent = dspy.InputField()\n    invitation_letter: str = dspy.OutputField()\n\n\nlm = DummyLM(\n    [\n        {\n            \"next_thought\": \"I need to write an invitation letter for Alice.\",\n            \"next_tool_name\": \"write_invitation_letter\",\n            \"next_tool_args\": {\n                \"participant_name\": \"Alice\",\n                \"event_info\": {\n                    \"name\": \"Science Fair\",\n                    \"date\": \"Friday\",\n                    \"participants\": {\"Alice\": \"female\", \"Bob\": \"male\"},\n                },\n            },\n        },\n        {\n            \"next_thought\": \"I have the letter, so I can finish.\",\n            \"next_tool_name\": \"finish\",\n            \"next_tool_args\": {},\n        },\n        {\n            \"reasoning\": \"Tool call succeeded.\",\n            \"invitation_letter\": \"It's my honor to invite Alice to the Science Fair event on Friday.\",\n        },\n    ]\n)\ndspy.configure(lm=lm)\nreact = dspy.ReAct(InvitationSignature, tools=[write_invitation_letter])\n\nresult = react(\n    participant_name=\"Alice\",\n    event_info=CalendarEvent(\n        name=\"Science Fair\",\n        date=\"Friday\",\n        participants={\"Alice\": \"female\", \"Bob\": \"male\"},\n    ),\n)\n\nassert seen_types == [\"CalendarEvent\"]\nassert result.invitation_letter == \"It's my honor to invite Alice to the Science Fair event on Friday.\"\nassert result.trajectory[\"tool_args_0\"] == {\n    \"participant_name\": \"Alice\",\n    \"event_info\": {\n        \"name\": \"Science Fair\",\n        \"date\": \"Friday\",\n        \"participants\": {\"Alice\": \"female\", \"Bob\": \"male\"},\n    },\n}\nprint(\"tool_saw_type:\", seen_types[0])\nprint(\"trajectory_tool_args:\", result.trajectory[\"tool_args_0\"])\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/types/tool.py",
+     "symbol": "Tool._validate_and_parse_args"
+    },
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct.forward"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_tool_calling_with_pydantic_args"
+    }
+   ],
+   "note": "Separates execution-time Pydantic coercion from the JSON-looking trajectory that records the LM-emitted tool arguments.",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": true
+  },
+  {
+   "source_index": 3,
+   "question": "I have a long-running `dspy.ReAct` agent where the only real problem is that the trajectory gets too large. What I care about is the exact fallback behavior once the context window is exceeded: does it abandon the run, or does it drop the oldest tool step and retry?\n\nI don't want a high-level explanation. I want a tiny deterministic harness where the agent gets through a couple of tool steps, hits a forced context-window exception, retries, and proves that the oldest four trajectory entries were discarded before continuing.\n\nGive me a complete, runnable Python program that stubs the agent internals, forces the truncation path, and ends with prints/assertions that prove the old step was removed and the run still completed.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.exceptions import ContextWindowExceededError\n\n\ndef echo(text: str) -> str:\n    return f\"Echoed: {text}\"\n\n\nreact = dspy.ReAct(\"input_text -> output_text\", tools=[echo])\n\n\ndef fake_react(**kwargs):\n    step = fake_react.state\n    fake_react.state += 1\n    if step < 2:\n        idx = step + 1\n        return dspy.Prediction(\n            next_thought=f\"Thought {idx}\",\n            next_tool_name=\"echo\",\n            next_tool_args={\"text\": f\"Text {idx}\"},\n        )\n    if step == 2:\n        raise ContextWindowExceededError()\n    return dspy.Prediction(next_thought=\"Final thought\", next_tool_name=\"finish\", next_tool_args={})\n\n\nfake_react.state = 0\nreact.react = fake_react\nreact.extract = lambda **kwargs: dspy.Prediction(output_text=\"Final output\")\n\nresult = react(input_text=\"test input\")\n\nassert result.output_text == \"Final output\"\nassert \"thought_0\" not in result.trajectory\nassert \"tool_name_0\" not in result.trajectory\nassert \"tool_args_0\" not in result.trajectory\nassert \"observation_0\" not in result.trajectory\nassert \"thought_1\" in result.trajectory\nassert \"thought_2\" in result.trajectory\nprint(\"trajectory_keys:\", sorted(result.trajectory.keys()))\nprint(\"final_output:\", result.output_text)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct._call_with_potential_trajectory_truncation"
+    },
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct.truncate_trajectory"
+    },
+    {
+     "file": "tests/predict/test_react.py",
+     "symbol": "test_trajectory_truncation"
+    }
+   ],
+   "note": "Pins down the retry/truncation semantics by proving the oldest four keys are dropped and the run continues.",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": true
+  },
+  {
+   "source_index": 6,
+   "question": "I have a custom DSPy module defined in a local Python file, and I want to save the whole program architecture, not just the state. The awkward part is that loading in a fresh process fails once that original Python module is gone from `sys.path`.\n\nI don't want documentation about pickle safety or package layout. I want one tight repro that shows the exact difference between saving a whole program by reference versus embedding the custom module definition so the saved artifact can be loaded after the original import path disappears.\n\nGive me a complete, runnable Python program that writes a temporary custom module, saves the program both ways, simulates the module becoming unavailable, and uses prints/assertions to prove the first load fails while the second succeeds.",
+   "answer": "```python\nimport importlib\nimport pathlib\nimport sys\nimport tempfile\nimport textwrap\n\nimport dspy\n\n\nwith tempfile.TemporaryDirectory() as tmpdir:\n    tmp_path = pathlib.Path(tmpdir)\n    module_path = tmp_path / \"custom_module.py\"\n    save_dir = tmp_path / \"saved_program\"\n\n    module_path.write_text(\n        textwrap.dedent(\n            \"\"\"\n            import dspy\n\n            class MyModule(dspy.Module):\n                def __init__(self):\n                    self.cot = dspy.ChainOfThought(dspy.Signature(\"q -> a\"))\n\n                def forward(self, q):\n                    return self.cot(q=q)\n            \"\"\"\n        )\n    )\n\n    sys.path.insert(0, str(tmp_path))\n    custom_module = importlib.import_module(\"custom_module\")\n    program = custom_module.MyModule()\n\n    program.save(save_dir, save_program=True)\n\n    sys.modules.pop(\"custom_module\", None)\n    sys.path.remove(str(tmp_path))\n\n    try:\n        dspy.load(save_dir, allow_pickle=True)\n        raise AssertionError(\"Expected a missing-module failure when the custom module is only saved by reference\")\n    except ModuleNotFoundError as e:\n        print(\"first_load_error:\", e)\n\n    sys.path.insert(0, str(tmp_path))\n    custom_module = importlib.import_module(\"custom_module\")\n    program.save(save_dir, save_program=True, modules_to_serialize=[custom_module])\n\n    sys.modules.pop(\"custom_module\", None)\n    sys.path.remove(str(tmp_path))\n\n    loaded = dspy.load(save_dir, allow_pickle=True)\n    assert loaded.cot.predict.signature == program.cot.predict.signature\n    print(\"loaded_type:\", type(loaded).__name__)\n    print(\"loaded_signature:\", loaded.cot.predict.signature)\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/primitives/base_module.py",
+     "symbol": "BaseModule.save"
+    },
+    {
+     "file": "dspy/utils/saving.py",
+     "symbol": "load"
+    },
+    {
+     "file": "tests/primitives/test_base_module.py",
+     "symbol": "test_save_with_extra_modules"
+    }
+   ],
+   "note": "Captures the by-reference vs by-value serialization boundary for custom program code.",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 8,
+   "question": "I'm chasing one of those cases where structured output mode fails, DSPy warns, and then the call still somehow succeeds. I want to know the exact retry behavior, not just that there is a warning.\n\nSpecifically, I want a tiny offline harness where the first JSON-adapter call fails only when the response schema object is used, then the second call succeeds once DSPy falls back to plain JSON mode. The proof I need is the pair of `response_format` values and the final parsed answer.\n\nGive me a complete, runnable Python program that uses `DummyLM`, forces that structured-output failure path, and ends with prints/assertions that show the first call used a schema class, the second used `{\"type\": \"json_object\"}`, and parsing still succeeded.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass FallbackLM(DummyLM):\n    def __init__(self):\n        super().__init__([{\"answer\": \"worked\"}], adapter=dspy.JSONAdapter())\n        self.response_formats = []\n\n    @property\n    def supported_params(self):\n        return {\"response_format\"}\n\n    @property\n    def supports_response_schema(self):\n        return True\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        self.response_formats.append(kwargs.get(\"response_format\"))\n        if len(self.response_formats) == 1:\n            raise RuntimeError(\"structured output failed\")\n        return super().forward(prompt=prompt, messages=messages, **kwargs)\n\n\nlm = FallbackLM()\nprogram = dspy.Predict(\"question -> answer\")\nwith dspy.context(lm=lm, adapter=dspy.JSONAdapter()):\n    result = program(question=\"dummy question\")\n\nassert len(lm.response_formats) == 2\nfirst = lm.response_formats[0]\nsecond = lm.response_formats[1]\nassert hasattr(first, \"model_json_schema\")\nassert second == {\"type\": \"json_object\"}\nassert result.answer == \"worked\"\nprint(\"first_response_format_type:\", type(first).__name__)\nprint(\"second_response_format:\", second)\nprint(\"answer:\", result.answer)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter.__call__"
+    },
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "_get_structured_outputs_response_format"
+    },
+    {
+     "file": "tests/adapters/test_json_adapter.py",
+     "symbol": "test_json_adapter_fallback_to_json_mode_on_structured_output_failure"
+    }
+   ],
+   "note": "Captures both request formats in the fallback sequence, not just the final parsed answer.",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 12,
+   "question": "I'm debugging history growth in a nested DSPy program and I want to know whether one LM call is copied into each module's history or whether ancestor modules share the same history entry object. I also need to confirm what `disable_history` actually stops.\n\nThe concrete scenario is a parent `dspy.Module` that calls a `dspy.ChainOfThought` submodule, followed by a direct call to the submodule itself. Then I want to toggle history off and prove that no new entries are recorded anywhere.\n\nGive me a complete, runnable Python program that uses `DummyLM`, inspects parent and child histories, and prints/assertions the lengths plus object identity so the sharing and the disable toggle are both proven.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass MyProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.cot = dspy.ChainOfThought(\"question -> answer\")\n\n    def forward(self, question: str):\n        return self.cot(question=question)\n\n\nlm = DummyLM(\n    [\n        {\"reasoning\": \"r1\", \"answer\": \"Paris\"},\n        {\"reasoning\": \"r2\", \"answer\": \"Rome\"},\n        {\"reasoning\": \"r3\", \"answer\": \"Berlin\"},\n    ],\n    adapter=dspy.JSONAdapter(),\n)\nprogram = MyProgram()\n\ndspy.configure(lm=lm, adapter=dspy.JSONAdapter(), disable_history=False)\nprogram(question=\"What is the capital of France?\")\nprogram.cot(question=\"What is the capital of Italy?\")\n\nassert len(program.history) == 1\nassert len(program.cot.history) == 2\nassert len(program.cot.predict.history) == 2\nassert id(program.history[0]) == id(program.cot.history[0])\nprint(\"history_lengths_before_disable:\", len(program.history), len(program.cot.history), len(program.cot.predict.history))\nprint(\"shared_entry_before_disable:\", id(program.history[0]) == id(program.cot.history[0]))\n\ndspy.configure(disable_history=True)\nprogram(question=\"What is the capital of Germany?\")\n\nassert len(program.history) == 1\nassert len(program.cot.history) == 2\nassert len(program.cot.predict.history) == 2\nprint(\"history_lengths_after_disable:\", len(program.history), len(program.cot.history), len(program.cot.predict.history))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.__call__"
+    },
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM.update_history"
+    },
+    {
+     "file": "tests/primitives/test_base_module.py",
+     "symbol": "test_module_history"
+    }
+   ],
+   "note": "Shows both the shared-entry history behavior across caller modules and the effect of `disable_history` on subsequent LM calls.",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 18,
+   "question": "I'm trying to do optimizer-style trace harvesting, but one example comes back in the wrong format and I do not want the whole pass to blow up. What I need is a concrete proof of the current behavior when a parse failure is retained as data instead of treated as a fatal stop.\n\nThe important part is that I should get a placeholder prediction object containing the raw bad completion, plus a trace entry, while successful examples still come back normally. I want an offline harness where one example parses and the next one doesn't.\n\nGive me a complete, runnable Python program that uses `DummyLM`, runs the bootstrapping trace-harvest path on a tiny dataset, and prints/assertions the successful prediction, the failed placeholder type, and the captured bad text.",
+   "answer": "```python\nimport dspy\nfrom dspy.dsp.utils.utils import dotdict\nfrom dspy.teleprompt.bootstrap_trace import FailedPrediction, bootstrap_trace_data\nfrom dspy.utils.dummies import DummyLM\n\n\nclass RawSequenceLM(DummyLM):\n    def __init__(self, raw_outputs):\n        super().__init__([{}], adapter=dspy.JSONAdapter())\n        self.raw_outputs = iter(raw_outputs)\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        text = next(self.raw_outputs)\n        choice = dotdict(message=dotdict(content=text, tool_calls=None), finish_reason=\"stop\")\n        return dotdict(\n            choices=[choice],\n            usage=dotdict(prompt_tokens=0, completion_tokens=0, total_tokens=0),\n            model=\"dummy\",\n        )\n\n\nclass StringToInt(dspy.Signature):\n    text: str = dspy.InputField()\n    number: int = dspy.OutputField()\n\n\nprogram = dspy.Predict(StringToInt)\ndataset = [\n    dspy.Example(text=\"one\", number=1).with_inputs(\"text\"),\n    dspy.Example(text=\"two\", number=2).with_inputs(\"text\"),\n]\n\ndef exact_match(example, prediction, trace=None):\n    return example.number == prediction.number\n\n\nlm = RawSequenceLM(['{\"number\": 1}', 'not json at all'])\ndspy.configure(lm=lm, adapter=dspy.JSONAdapter())\nresults = bootstrap_trace_data(\n    program=program,\n    dataset=dataset,\n    metric=exact_match,\n    num_threads=1,\n    raise_on_error=False,\n    capture_failed_parses=True,\n)\n\nassert results[0][\"prediction\"].number == 1\nassert isinstance(results[1][\"prediction\"], FailedPrediction)\nassert results[1][\"prediction\"].completion_text == 'not json at all'\nassert len(results[1][\"trace\"]) > 0\nprint(\"successful_prediction:\", results[0][\"prediction\"].number)\nprint(\"failed_prediction_type:\", type(results[1][\"prediction\"]).__name__)\nprint(\"failed_completion_text:\", results[1][\"prediction\"].completion_text)\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bootstrap_trace.py",
+     "symbol": "bootstrap_trace_data"
+    },
+    {
+     "file": "dspy/teleprompt/bootstrap_trace.py",
+     "symbol": "FailedPrediction"
+    },
+    {
+     "file": "tests/teleprompt/test_bootstrap_trace.py",
+     "symbol": "test_bootstrap_trace_data"
+    }
+   ],
+   "note": "The failed parse is preserved as data and placed in the trace, which is the runtime behavior an optimizer author needs to reason about.",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  }
+ ]
+}
