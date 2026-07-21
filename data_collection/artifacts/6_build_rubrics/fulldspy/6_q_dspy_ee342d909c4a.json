@@ -1,0 +1,106 @@
+{
+ "id": "dspy_ee342d909c4a",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I'm sending a Pydantic model as my structured-output contract while using a responses-style backend. The provider keeps rejecting the request, so I need to inspect the exact payload DSPy sends rather than rely on prose.\n\nMy suspicion is that DSPy takes the chat-style schema hint I pass in Python and rewrites it into the different nested shape that the responses API expects.\n\nGive me a complete, runnable Python program that patches the outbound responses call, passes a Pydantic model as the output schema, and prints/asserts the captured payload so it's undeniable how DSPy transforms that schema before sending it.",
+ "gold_answer": "```python\nimport json\nfrom unittest.mock import patch\n\nimport dspy\nimport pydantic\n\n\nclass AnswerModel(pydantic.BaseModel):\n    answer: str\n    score: int\n\n\nclass FakeResponsesResp:\n    cache_hit = False\n\n    def __init__(self):\n        self.output = []\n        self.usage = {\"input_tokens\": 1, \"output_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/gpt-5-mini\"\n\n\ncaptured = []\n\n\ndef fake_responses(*, cache, num_retries, retry_strategy, headers=None, **request):\n    captured.append({\"headers\": headers, **request})\n    return FakeResponsesResp()\n\n\nwith patch(\"litellm.responses\", side_effect=fake_responses):\n    lm = dspy.LM(\"openai/gpt-5-mini\", model_type=\"responses\", temperature=1.0, max_tokens=16000, cache=False)\n    lm.forward(prompt=\"grade this\", response_format=AnswerModel)\n\ncall = captured[0]\nfmt = call[\"text\"][\"format\"]\nassert \"response_format\" not in call\nassert fmt[\"name\"] == \"AnswerModel\"\nassert fmt[\"type\"] == \"json_schema\"\nassert set(fmt[\"schema\"][\"properties\"]) == {\"answer\", \"score\"}\n\nprint(json.dumps(fmt, indent=2))\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 22,
+   "statement": "The program patches `litellm.responses` itself and inspects the kwargs captured there, because DSPy sends the final Responses API payload through that function after conversion.",
+   "span_ids": [
+    "s1",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 22,
+   "statement": "It uses a `dspy.LM` configured with `model_type=\"responses\"` and invokes it with `response_format=<Pydantic BaseModel subclass>`.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "supporting",
+   "weight": 8,
+   "statement": "If the example uses a reasoning model such as `openai/gpt-5-mini`, it configures reasoning-compatible values (`temperature=1.0` and `max_tokens=16000`) so the LM construction and call are valid.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 24,
+   "statement": "The captured outbound payload is asserted at `call_kwargs[\"text\"][\"format\"]`, reflecting that DSPy rewrites `response_format` into the Responses API's nested `text.format` field before sending the request.",
+   "span_ids": [
+    "s2",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 24,
+   "statement": "It asserts that the rewritten format is a JSON-schema object derived from the Pydantic model: `name` equals the model class name, `type` is `json_schema`, and `schema` matches `model_json_schema()` or an equivalent field-level check.",
+   "span_ids": [
+    "s2",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 479,
+   "end_line": 492,
+   "excerpt": "0479: def litellm_responses_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0480:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0481:     request = dict(request)\n0482:     request.pop(\"rollout_id\", None)\n0483:     headers = request.pop(\"headers\", None)\n0484:     request = _convert_chat_request_to_responses_request(request)\n0485: \n0486:     return litellm.responses(\n0487:         cache=cache,\n0488:         num_retries=num_retries,\n0489:         retry_strategy=\"exponential_backoff_retry\",\n0490:         headers=_add_dspy_identifier_to_headers(headers),\n0491:         **request,\n0492:     )"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 517,
+   "end_line": 545,
+   "excerpt": "0517:     request = dict(request)\n0518:     if \"messages\" in request:\n0519:         content_blocks = []\n0520:         for msg in request.pop(\"messages\"):\n0521:             c = msg.get(\"content\")\n0522:             if isinstance(c, str):\n0523:                 content_blocks.append({\"type\": \"input_text\", \"text\": c})\n0524:             elif isinstance(c, list):\n0525:                 # Convert each content item from Chat API format to Responses API format\n0526:                 for item in c:\n0527:                     content_blocks.append(_convert_content_item_to_responses_format(item))\n0528:         request[\"input\"] = [{\"role\": msg.get(\"role\", \"user\"), \"content\": content_blocks}]\n0529:     # Convert `reasoning_effort` to reasoning format supported by the Responses API\n0530:     if \"reasoning_effort\" in request:\n0531:         effort = request.pop(\"reasoning_effort\")\n0532:         request[\"reasoning\"] = {\"effort\": effort, \"summary\": \"auto\"}\n0533: \n0534:     # Convert `response_format` to `text.format` for Responses API\n0535:     if \"response_format\" in request:\n0536:         response_format = request.pop(\"response_format\")\n0537:         if isinstance(response_format, type) and issubclass(response_format, pydantic.BaseModel):\n0538:             response_format = {\n0539:                 \"name\": response_format.__name__,\n0540:                 \"type\": \"json_schema\",\n0541:                 \"schema\": response_format.model_json_schema(),\n0542:             }\n0543:         text = request.pop(\"text\", {})\n0544:         request[\"text\"] = {**text, \"format\": response_format}\n0545: "
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 90,
+   "end_line": 105,
+   "excerpt": "0090:         # Recognize OpenAI reasoning models (o1, o3, o4, gpt-5 family)\n0091:         # Exclude non-reasoning variants like gpt-5-chat this is in azure ai foundry\n0092:         # Allow date suffixes like -2023-01-01 after model name or mini/nano/pro\n0093:         # For gpt-5, use negative lookahead to exclude -chat and allow other suffixes\n0094:         model_pattern = re.match(\n0095:             r\"^(?:o[1345](?:-(?:mini|nano|pro))?(?:-\\d{4}-\\d{2}-\\d{2})?|gpt-5(?!-chat)(?:-.*)?)$\",\n0096:             model_family,\n0097:         )\n0098: \n0099:         if model_pattern:\n0100:             if (temperature and temperature != 1.0) or (max_tokens and max_tokens < 16000):\n0101:                 raise ValueError(\n0102:                     \"OpenAI's reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None to \"\n0103:                     \"`dspy.LM(...)`, e.g., dspy.LM('openai/gpt-5', temperature=1.0, max_tokens=16000)\"\n0104:                 )\n0105:             self.kwargs = dict(temperature=temperature, max_completion_tokens=max_tokens, **kwargs)"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/lm.py",
+   "start_line": 177,
+   "end_line": 188,
+   "excerpt": "0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0184: \n0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 968,
+   "end_line": 983,
+   "excerpt": "0968:     lm = dspy.LM(\n0969:         model=\"openai/gpt-5-mini\",\n0970:         model_type=\"responses\",\n0971:         cache=False,\n0972:         temperature=1.0,\n0973:         max_tokens=16000,\n0974:     )\n0975: \n0976:     class TestModel(pydantic.BaseModel):\n0977:         answer: str\n0978:         number: int\n0979: \n0980:     with mock.patch(\"litellm.responses\", autospec=True, return_value=api_response) as dspy_responses:\n0981:         # Test with messages containing a Pydantic model as response format\n0982:         lm_result = lm(\"What is a good test answer?\", response_format=TestModel)\n0983: "
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 980,
+   "end_line": 998,
+   "excerpt": "0980:     with mock.patch(\"litellm.responses\", autospec=True, return_value=api_response) as dspy_responses:\n0981:         # Test with messages containing a Pydantic model as response format\n0982:         lm_result = lm(\"What is a good test answer?\", response_format=TestModel)\n0983: \n0984:     # Try to validate to Pydantic model\n0985:     TestModel.model_validate_json(lm_result[0][\"text\"])\n0986: \n0987:     dspy_responses.assert_called_once()\n0988:     call_args = dspy_responses.call_args.kwargs\n0989: \n0990:     # Verify the request was converted correctly\n0991:     assert \"text\" in call_args\n0992:     response_format = call_args[\"text\"][\"format\"]\n0993: \n0994:     assert response_format == {\n0995:         \"name\": TestModel.__name__,\n0996:         \"type\": \"json_schema\",\n0997:         \"schema\": TestModel.model_json_schema(),\n0998:     }"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Pydantic output schemas are rewritten for responses-mode requests.",
+ "source_index": 9,
+ "smalldspy_scope": false
+}

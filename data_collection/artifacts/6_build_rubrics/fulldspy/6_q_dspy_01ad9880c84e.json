@@ -1,0 +1,93 @@
+{
+ "id": "dspy_01ad9880c84e",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I'm using OpenAI-compatible model names and assumed DSPy would infer a fine-tuning provider from any provider-like string. Instead, some model IDs act like OpenAI immediately, while another one only complains later when I try to fine-tune.\n\nI want a small repro that shows exactly which model-name patterns get the OpenAI provider automatically and which ones stay on the generic provider unless I override it.\n\nGive me a complete, runnable Python program that instantiates `dspy.LM` for an `openai/...` model, an `ft:...` model, and an `azure/...` model, then prints/asserts which provider each one gets and that the non-inferred case raises the fine-tuning error until I pass an explicit provider object.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.clients.openai import OpenAIProvider\nfrom dspy.clients.provider import Provider\n\n\nopenai_lm = dspy.LM(\"openai/gpt-4o-mini\")\nft_lm = dspy.LM(\"ft:job-123\")\nazure_lm = dspy.LM(\"azure/gpt-4o-mini\")\nexplicit_lm = dspy.LM(\"azure/gpt-4o-mini\", provider=OpenAIProvider())\n\nassert openai_lm.provider.__class__.__name__ == \"OpenAIProvider\"\nassert ft_lm.provider.__class__.__name__ == \"OpenAIProvider\"\nassert azure_lm.provider.__class__ is Provider\nassert explicit_lm.provider.__class__.__name__ == \"OpenAIProvider\"\n\ntry:\n    azure_lm.finetune(train_data=[], train_data_format=None)\nexcept ValueError as exc:\n    error = str(exc)\nelse:\n    raise AssertionError(\"Expected fine-tuning on the generic provider to fail\")\n\nassert \"please specify your provider by explicitly setting `provider`\" in error\n\nprint(\n    {\n        \"openai_provider\": openai_lm.provider.__class__.__name__,\n        \"ft_provider\": ft_lm.provider.__class__.__name__,\n        \"azure_provider\": azure_lm.provider.__class__.__name__,\n        \"explicit_provider\": explicit_lm.provider.__class__.__name__,\n        \"error\": error,\n    }\n)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Instantiates an `LM` for an `openai/...` model (for example, `openai/gpt-4o-mini`) and verifies that it gets `OpenAIProvider` by default.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Instantiates an `LM` for an `ft:...` model (for example, `ft:job-123`) and verifies that it also gets `OpenAIProvider` by default.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Instantiates an `LM` for an `azure/...` model (for example, `azure/gpt-4o-mini`) and verifies that it falls back to the generic `Provider` rather than `OpenAIProvider`.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "Shows that passing `provider=OpenAIProvider()` when constructing the `azure/...` LM overrides inference, so that instance uses `OpenAIProvider`.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Demonstrates that calling `finetune(train_data=[], train_data_format=None)` on the default `azure/...` LM raises `ValueError`, and checks that the error message instructs the caller to explicitly set `provider`.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 74,
+   "end_line": 78,
+   "excerpt": "0074:         self.model = model\n0075:         self.model_type = model_type\n0076:         self.cache = cache\n0077:         self.provider = provider or self.infer_provider()\n0078:         self.callbacks = callbacks or []"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 247,
+   "end_line": 260,
+   "excerpt": "0247:     def finetune(\n0248:         self,\n0249:         train_data: list[dict[str, Any]],\n0250:         train_data_format: TrainDataFormat | None,\n0251:         train_kwargs: dict[str, Any] | None = None,\n0252:     ) -> TrainingJob:\n0253:         from dspy import settings as settings\n0254: \n0255:         if not self.provider.finetunable:\n0256:             raise ValueError(\n0257:                 f\"Provider {self.provider} does not support fine-tuning, please specify your provider by explicitly \"\n0258:                 \"setting `provider` when creating the `dspy.LM` instance. For example, \"\n0259:                 \"`dspy.LM('openai/gpt-4.1-mini-2025-04-14', provider=dspy.OpenAIProvider())`.\"\n0260:             )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 307,
+   "end_line": 310,
+   "excerpt": "0307:     def infer_provider(self) -> Provider:\n0308:         if OpenAIProvider.is_provider_model(self.model):\n0309:             return OpenAIProvider()\n0310:         return Provider()"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/openai.py",
+   "start_line": 42,
+   "end_line": 55,
+   "excerpt": "0042: class OpenAIProvider(Provider):\n0043:     def __init__(self):\n0044:         super().__init__()\n0045:         self.finetunable = True\n0046:         self.TrainingJob = TrainingJobOpenAI\n0047: \n0048:     @staticmethod\n0049:     def is_provider_model(model: str) -> bool:\n0050:         if model.startswith(\"openai/\") or model.startswith(\"ft:\"):\n0051:             # Althought it looks strange, `ft:` is a unique identifer for openai finetuned models in litellm context:\n0052:             # https://github.com/BerriAI/litellm/blob/cd893134b7974d9f21477049a373b469fff747a5/litellm/utils.py#L4495\n0053:             return True\n0054: \n0055:         return False"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Provider inference is intentionally narrow; fine-tuning may require an explicit provider override.",
+ "source_index": 19,
+ "smalldspy_scope": false
+}

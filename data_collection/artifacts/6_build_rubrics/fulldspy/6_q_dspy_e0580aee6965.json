@@ -1,0 +1,106 @@
+{
+ "id": "dspy_e0580aee6965",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I'm comparing two JSON-rendered tasks and I think DSPy silently changes how it asks the provider for structured output depending on the output types. One of my signatures has ordinary typed outputs, and another has an open-ended mapping, and I need a proof of what request parameter changes between them.\n\nThis is for benchmarking, so I need an offline repro that records the outgoing kwargs instead of calling a real API. The key thing I want to verify is whether one case gets a generated schema class while the other falls back to generic JSON mode.\n\nGive me a complete, runnable Python program that uses `DummyLM`, prints the recorded `response_format` for both signatures, and asserts that the typed case uses a generated schema class while the open-ended mapping case uses `{\\\"type\\\": \\\"json_object\\\"}`.",
+ "gold_answer": "```python\nfrom typing import Any\n\nimport pydantic\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SchemaAwareDummy(DummyLM):\n    def __init__(self, answers, adapter):\n        super().__init__(answers, adapter=adapter)\n\n    @property\n    def supported_params(self):\n        return {\"response_format\"}\n\n    @property\n    def supports_response_schema(self):\n        return True\n\n\nclass Tight(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nclass Loose(dspy.Signature):\n    question: str = dspy.InputField()\n    data: dict[str, Any] = dspy.OutputField()\n\n\nadapter = dspy.JSONAdapter()\n\nlm_tight = SchemaAwareDummy([{\"answer\": \"ok\"}], adapter=adapter)\ndspy.configure(lm=lm_tight, adapter=adapter)\ndspy.Predict(Tight)(question=\"hi\")\ntight_format = lm_tight.history[-1][\"kwargs\"][\"response_format\"]\n\nlm_loose = SchemaAwareDummy([{\"data\": {\"x\": 1}}], adapter=adapter)\ndspy.configure(lm=lm_loose, adapter=adapter)\ndspy.Predict(Loose)(question=\"hi\")\nloose_format = lm_loose.history[-1][\"kwargs\"][\"response_format\"]\n\nprint(\"TIGHT RESPONSE FORMAT:\", tight_format)\nprint(\"LOOSE RESPONSE FORMAT:\", loose_format)\n\nassert isinstance(tight_format, type)\nassert issubclass(tight_format, pydantic.BaseModel)\nassert loose_format == {\"type\": \"json_object\"}\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "The repro uses `DummyLM` (or a subclass) with `JSONAdapter`, and the dummy LM must advertise both `response_format` support and `supports_response_schema=True` so the adapter path under test actually sets `response_format`.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The loose signature must declare an output with an open-ended mapping annotation such as `dict[str, Any]`, because JSONAdapter treats any output field whose annotation origin is `dict` as incompatible with Structured Outputs.",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "For the open-ended mapping case, the recorded outgoing `response_format` must be exactly `{\"type\": \"json_object\"}` rather than a generated schema class.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The tight signature must use ordinary typed outputs so the adapter takes the structured-output branch and assigns `lm_kwargs[\"response_format\"]` from `_get_structured_outputs_response_format(...)` instead of the JSON fallback.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The typed case's `response_format` should be validated as the generated Pydantic schema class: `_get_structured_outputs_response_format` returns a `type[pydantic.BaseModel]` built with `pydantic.create_model(...)`, so the proof should assert it is a class and a `pydantic.BaseModel` subclass.",
+   "span_ids": [
+    "s4",
+    "s5",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 45,
+   "end_line": 56,
+   "excerpt": "0045:     def _json_adapter_call_common(self, lm, lm_kwargs, signature, demos, inputs, call_fn):\n0046:         \"\"\"Common call logic to be used for both sync and async calls.\"\"\"\n0047:         if \"response_format\" not in lm.supported_params:\n0048:             return call_fn(lm, lm_kwargs, signature, demos, inputs)\n0049: \n0050:         has_tool_calls = any(field.annotation == ToolCalls for field in signature.output_fields.values())\n0051: \n0052:         if _has_open_ended_mapping(signature) or (not self.use_native_function_calling and has_tool_calls) or not lm.supports_response_schema:\n0053:             # We found that structured output mode doesn't work well with dspy.ToolCalls as output field.\n0054:             # So we fall back to json mode if native function calling is disabled and ToolCalls is present.\n0055:             lm_kwargs[\"response_format\"] = {\"type\": \"json_object\"}\n0056:             return call_fn(lm, lm_kwargs, signature, demos, inputs)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 27,
+   "end_line": 37,
+   "excerpt": "0027: def _has_open_ended_mapping(signature: SignatureMeta) -> bool:\n0028:     \"\"\"\n0029:     Check whether any output field in the signature has an open-ended mapping type,\n0030:     such as dict[str, Any]. Structured Outputs require explicit properties, so such fields\n0031:     are incompatible.\n0032:     \"\"\"\n0033:     for field in signature.output_fields.values():\n0034:         annotation = field.annotation\n0035:         if get_origin(annotation) is dict:\n0036:             return True\n0037:     return False"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 70,
+   "end_line": 79,
+   "excerpt": "0070:         try:\n0071:             structured_output_model = _get_structured_outputs_response_format(\n0072:                 signature, self.use_native_function_calling\n0073:             )\n0074:             lm_kwargs[\"response_format\"] = structured_output_model\n0075:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)\n0076:         except Exception:\n0077:             logger.warning(\"Failed to use structured output format, falling back to JSON mode.\")\n0078:             lm_kwargs[\"response_format\"] = {\"type\": \"json_object\"}\n0079:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 212,
+   "end_line": 231,
+   "excerpt": "0212: def _get_structured_outputs_response_format(\n0213:     signature: SignatureMeta,\n0214:     use_native_function_calling: bool = True,\n0215: ) -> type[pydantic.BaseModel]:\n0216:     \"\"\"\n0217:     Builds a Pydantic model from a DSPy signature's output_fields and ensures the generated JSON schema\n0218:     is compatible with OpenAI Structured Outputs (all objects have a \"required\" key listing every property,\n0219:     and additionalProperties is always false).\n0220: \n0221:     IMPORTANT: If any field's annotation is an open-ended mapping (e.g. dict[str, Any]), then a structured\n0222:     schema cannot be generated since all properties must be explicitly declared. In that case, an exception\n0223:     is raised so that the caller can fall back to using a plain \"json_object\" response_format.\n0224:     \"\"\"\n0225:     # Although we've already performed an early check, we keep this here as a final guard.\n0226:     for name, field in signature.output_fields.items():\n0227:         annotation = field.annotation\n0228:         if get_origin(annotation) is dict:\n0229:             raise ValueError(\n0230:                 f\"Field '{name}' has an open-ended mapping type which is not supported by Structured Outputs.\"\n0231:             )"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 242,
+   "end_line": 247,
+   "excerpt": "0242:     # Build the model with extra fields forbidden.\n0243:     pydantic_model = pydantic.create_model(\n0244:         \"DSPyProgramOutputs\",\n0245:         __config__=pydantic.ConfigDict(extra=\"forbid\"),\n0246:         **fields,\n0247:     )"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 287,
+   "end_line": 290,
+   "excerpt": "0287:     # Override the model's JSON schema generation to return our precomputed schema.\n0288:     pydantic_model.model_json_schema = lambda *args, **kwargs: schema\n0289: \n0290:     return pydantic_model"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Contrasts generated structured-output schemas with the open-ended-mapping JSON fallback.",
+ "source_index": 9,
+ "smalldspy_scope": true
+}

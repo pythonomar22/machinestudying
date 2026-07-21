@@ -1,0 +1,113 @@
+{
+ "id": "dspy_3478cc6300b1",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm using DSPy from async code and I need proof that concurrent offline prediction calls actually overlap instead of serializing under the hood. This matters because my evaluation pipeline does a lot of independent LM work and the wall-clock difference is huge.\n\nI don't want a source reading. Give me a complete, runnable Python program that uses a sleeping `DummyLM` offline, fires several async prediction requests with `asyncio.gather`, and prints/asserts both the answers and a wall-clock bound showing that the calls overlapped.",
+ "gold_answer": "```python\nimport asyncio\nimport time\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SlowDummyLM(DummyLM):\n    async def aforward(self, prompt=None, messages=None, **kwargs):\n        await asyncio.sleep(0.2)\n        return super().forward(prompt=prompt, messages=messages, **kwargs)\n\n\nasync def main():\n    dspy.configure(\n        lm=SlowDummyLM(\n            {\n                \"Q1\": {\"answer\": \"A1\"},\n                \"Q2\": {\"answer\": \"A2\"},\n                \"Q3\": {\"answer\": \"A3\"},\n                \"Q4\": {\"answer\": \"A4\"},\n            }\n        )\n    )\n    program = dspy.Predict(\"question -> answer\")\n\n    start = time.perf_counter()\n    results = await asyncio.gather(\n        program.acall(question=\"Q1\"),\n        program.acall(question=\"Q2\"),\n        program.acall(question=\"Q3\"),\n        program.acall(question=\"Q4\"),\n    )\n    elapsed = time.perf_counter() - start\n    answers = [result.answer for result in results]\n    print(round(elapsed, 2), answers)\n    assert answers == [\"A1\", \"A2\", \"A3\", \"A4\"]\n    assert elapsed < 0.6\n\n\nasyncio.run(main())\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Creates a `dspy.Predict(\"question -> answer\")` program and launches several `program.acall(question=...)` coroutines that are awaited together in a single `asyncio.gather(...)` call.",
+   "span_ids": [
+    "s5",
+    "s1",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Uses an offline `DummyLM` variant whose `aforward` awaits an `asyncio.sleep(...)` delay before delegating to DummyLM's normal generation path, so each request has real async latency without external I/O.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Seeds the dummy LM with deterministic input-to-output mappings and verifies the gathered predictions by reading each result's `.answer` field against the expected answers.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s8"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "Measures wall-clock time around only the gathered batch and asserts the elapsed time is materially below the serial sum of the injected per-call sleeps, using that bound as proof that the async calls overlapped rather than serialized.",
+   "span_ids": [
+    "s2",
+    "s6",
+    "s7"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/predict.py",
+   "start_line": 132,
+   "end_line": 136,
+   "excerpt": "0132:     async def acall(self, *args, **kwargs):\n0133:         if args:\n0134:             raise ValueError(self._get_positional_args_error_message())\n0135: \n0136:         return await super().acall(**kwargs)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/predict.py",
+   "start_line": 257,
+   "end_line": 268,
+   "excerpt": "0257:     async def aforward(self, **kwargs):\n0258:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)\n0259: \n0260:         adapter = settings.adapter or ChatAdapter()\n0261:         if self._should_stream():\n0262:             with settings.context(caller_predict=self):\n0263:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0264:         else:\n0265:             with settings.context(send_stream=None):\n0266:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0267: \n0268:         return self._forward_postprocess(completions, signature, **kwargs)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/utils/dummies.py",
+   "start_line": 69,
+   "end_line": 80,
+   "excerpt": "0069:     def __init__(\n0070:         self,\n0071:         answers: list[dict[str, Any]] | dict[str, dict[str, Any]],\n0072:         follow_examples: bool = False,\n0073:         reasoning: bool = False,\n0074:         adapter=None,\n0075:     ):\n0076:         super().__init__(\"dummy\", \"chat\", 0.0, 1000, True)\n0077:         self.answers = answers\n0078:         if isinstance(answers, list):\n0079:             self.answers = iter(answers)\n0080:         self.follow_examples = follow_examples"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/utils/dummies.py",
+   "start_line": 122,
+   "end_line": 150,
+   "excerpt": "0122:     def forward(self, prompt=None, messages=None, **kwargs):\n0123:         messages = messages or [{\"role\": \"user\", \"content\": prompt}]\n0124:         kwargs = {**self.kwargs, **kwargs}\n0125: \n0126:         choices = []\n0127:         for _ in range(kwargs.get(\"n\", 1)):\n0128:             if self.follow_examples:\n0129:                 current_output = self._use_example(messages)\n0130:             elif isinstance(self.answers, dict):\n0131:                 current_output = next(\n0132:                     (self._format_answer_fields(v) for k, v in self.answers.items() if k in messages[-1][\"content\"]),\n0133:                     \"No more responses\",\n0134:                 )\n0135:             else:\n0136:                 current_output = self._format_answer_fields(next(self.answers, {\"answer\": \"No more responses\"}))\n0137: \n0138:             message = dotdict(content=current_output, tool_calls=None)\n0139:             if self.reasoning:\n0140:                 message.reasoning_content = \"Some reasoning\"\n0141:             choices.append(dotdict(message=message, finish_reason=\"stop\"))\n0142: \n0143:         return dotdict(\n0144:             choices=choices,\n0145:             usage=dotdict(prompt_tokens=0, completion_tokens=0, total_tokens=0),\n0146:             model=\"dummy\",\n0147:         )\n0148: \n0149:     async def aforward(self, prompt=None, messages=None, **kwargs):\n0150:         return self.forward(prompt=prompt, messages=messages, **kwargs)"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 771,
+   "end_line": 773,
+   "excerpt": "0771: async def test_lm_usage_with_async():\n0772:     program = Predict(\"question -> answer\")\n0773: "
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 774,
+   "end_line": 780,
+   "excerpt": "0774:     original_aforward = program.aforward\n0775: \n0776:     async def patched_aforward(self, **kwargs):\n0777:         await asyncio.sleep(1)\n0778:         return await original_aforward(**kwargs)\n0779: \n0780:     program.aforward = types.MethodType(patched_aforward, program)"
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 790,
+   "end_line": 796,
+   "excerpt": "0790:             coroutines = [\n0791:                 program.acall(question=\"What is the capital of France?\"),\n0792:                 program.acall(question=\"What is the capital of France?\"),\n0793:                 program.acall(question=\"What is the capital of France?\"),\n0794:                 program.acall(question=\"What is the capital of France?\"),\n0795:             ]\n0796:             results = await asyncio.gather(*coroutines)"
+  },
+  {
+   "span_id": "s8",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 797,
+   "end_line": 802,
+   "excerpt": "0797:             assert results[0].answer == \"Paris\"\n0798:             assert results[1].answer == \"Paris\"\n0799:             assert results[0].get_lm_usage()[\"openai/gpt-4o-mini\"][\"total_tokens\"] == 10\n0800:             assert results[1].get_lm_usage()[\"openai/gpt-4o-mini\"][\"total_tokens\"] == 10\n0801:             assert results[2].get_lm_usage()[\"openai/gpt-4o-mini\"][\"total_tokens\"] == 10\n0802:             assert results[3].get_lm_usage()[\"openai/gpt-4o-mini\"][\"total_tokens\"] == 10"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Rewritten to remove the method-level locator from the prompt while keeping the async-concurrency behavior intact.",
+ "source_index": 19,
+ "smalldspy_scope": false
+}
