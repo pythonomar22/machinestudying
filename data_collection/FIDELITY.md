@@ -402,3 +402,43 @@ against the released-bundle invariants — all pass in both scopes:
   undefined or unused span.
 Records were rebuilt once from the archived raw last-messages after
 adding ID normalization (salvage path; zero additional codex sessions).
+
+## Stage 5 — bundle optimization (file `7_optimize_bundles.py`)
+
+**Copied exactly from the paper:**
+- The three verification instruments: a deterministic syntax checker, a
+  sandbox that runs the reference answers, and self-grading under the
+  private rubric with the A.5 grader template, verbatim.
+- Joint optimization: question, answer, and rubric are revised together,
+  iterating until the reference answer earns full scores (100, every
+  claim = 1, no regrade flag).
+- Execution is confined to this stage, matching the paper: the generator
+  and critic read the repo but never run code, and the rubric builder is
+  confined to provided text (A.4: "Use only the provided ...").
+
+**Deliberate divergences (user-directed, ledgered):**
+
+| Paper | Ours | Why |
+|---|---|---|
+| "Human experts confirm that the questions and rubrics are fair and that the answers are correct" | SKIPPED entirely — no model substitute | user decision: an LLM stand-in would launder the absence of human review into false confidence; the gap is declared instead |
+| iterate until pass (humans in the loop absorb hard cases) | at most 3 revision rounds, then the bundle is DROPPED and reported | without humans, unbounded iteration risks degenerate rewrites; dropping is the honest failure mode |
+
+**Our inferences (each a potential discrepancy):**
+
+| # | Paper says | We had to decide | Our choice |
+|---|---|---|---|
+| 1 | "a sandbox" | the environment | `.venv-dspy`: the pinned corpus commit installed editable; used for BOTH scopes (smalldspy programs must import the real installed package; its 66 files are a content-identical subset). Env vars with API_KEY/TOKEN/SECRET/_PAT stripped; 180s timeout; runs archived per round |
+| 2 | "run and verify answers" | what to execute | all fenced blocks syntax-checked; the longest fenced ```python block is executed as the reference program (rev-2 contract makes it the only block); exit 0 required |
+| 3 | "A Codex agent uses ..." | who drives the loop | verification runs deterministically in OUR script; the codex agent proposes revisions via structured output and can read the repo, but does not invoke the checker itself — same signal, fully archived and reproducible |
+| 4 | revision prompt unpublished | the reviser template | ours: binds the reviser to the deliverable contract, A.2 naming discipline, and A.4 rubric rules; demands root-cause, minimal joint edits; revised bundles are re-validated (contract + rubric rules), excerpts recomputed from the checkout |
+| 5 | grader I/O unpublished | grader schema + checks | per-claim scores as string enum "0"/"0.5"/"1" with rationales; `question_score` recomputed and required to equal the weighted sum (±0.01); every claim scored exactly once; `needs_regrade=true` is treated as a failure that triggers revision |
+| 6 | (nothing) | ID stability | question IDs are minted at Stage 4 (rubrics) and stay stable through revisions, even if the question text is edited |
+| 7 | (nothing) | concurrency & isolation | 3 bundles per scope in parallel; per-bundle failure isolation; idempotent per bundle |
+
+Output: `7_<scope>_validation.json` (full metadata incl. per-round history
+and drop list) and `7_<scope>_validation.jsonl` (canonical released-bundle
+fields only) — the final validation sets. Known accepted consequence of
+the paper's own design: programs arrive here unexecuted (no upstream
+stage runs code), so real revision rounds at this stage are expected, not
+anomalous; the likeliest failure class is DummyLM misuse (e.g. list-mode
+exhaustion), which the released gold programs handle expertly.
