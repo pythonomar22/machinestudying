@@ -255,3 +255,39 @@ candidates per scope, all questions unique within each set.
   garbled event log is archived (`events_*_a0_crashed.jsonl`) and a fresh
   session succeeded. One fulldspy topic was salvaged from its archived
   attempt after the mid-run corpora rename (see git `ecdc800`).
+
+## Stage 3b — critic selection (file `5_critic_selection.py`)
+
+**Copied exactly from the paper:**
+- The same model and harness as Stage 3a: GPT-5.4 at effort xhigh in
+  `codex exec`, read-only sandbox rooted at the scope's repository
+  checkout at the pinned commit.
+- The A.3 critic template, verbatim.
+- The critic reviews the candidates AND the seed sessions — the seed
+  payload is reconstructed byte-identically from the `seed_numbers`
+  archived in each Stage-3a topic record ("These are the same sampled
+  sessions used during generation").
+- All `{placeholder}` values are imported from the Stage-3a script
+  (single source of truth), so the critic sees the identical library
+  description and naming lists the generator saw.
+
+**Deliberate divergences (user-directed, ledgered):**
+
+| Paper | Ours | Why |
+|---|---|---|
+| 5 finalists from 12 candidates (ratio 5/12 ≈ 0.417) | 8 finalists from 20 (ratio 0.40; round(20·5/12) = 8) | keep the paper's selection pressure at our candidate-pool size |
+| one candidate set per label | the critic runs per scope (fulldspy / smalldspy), each reviewing its own candidates while reading the corresponding repository | Stage 3a's two-corpus design carries through unchanged |
+
+**Our inferences (each a potential discrepancy):**
+
+| # | Paper says | We had to decide | Our choice |
+|---|---|---|---|
+| 1 | output schema unpublished; A.3 names only `selection_notes` | the critic's output schema | `selections` (1–8 full items — question/answer/difficulty/code_evidence/note, all rewritable per A.3 — plus `source_index` linking back to the reviewed candidate for auditability) and required `selection_notes` |
+| 2 | (nothing) | how candidates are presented | the Stage-3a triples verbatim, each with an `index` field; our bookkeeping tags (`topic`, `smalldspy_scope`) are stripped |
+| 3 | (nothing) | validation & retry | same as Stage 3a: schema enforcement via `--output-schema`, evidence paths validated against the checkout, unique questions, unique in-range `source_index`, ≤1 corrective re-run |
+
+Every per-topic prompt, event stream, and raw last-message is archived
+under `artifacts/5_critic_selection/<scope>/`; per-topic records store
+`kept_indices` / `rejected_indices` / `selection_notes` so every
+rejection is auditable. Finalists are re-tagged `smalldspy_scope` after
+any critic rewrite of the evidence.
