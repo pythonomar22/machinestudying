@@ -1,0 +1,143 @@
+{
+ "id": "dspy_96fb38c0e02a",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "We run two OpenAI-compatible gateways behind different base URLs. I changed only the endpoint and credential on the second call, kept the same prompt, and still got the first cluster's answer back out of cache.\n\nThat makes me think DSPy might be leaving connection details out of its cache key, but I want a minimal proof before I rip out caching in production.\n\nGive me a complete, runnable Python program that enables DSPy's cache, patches the outbound chat call to return a different answer per endpoint, then prints/asserts that the second call reuses the first cached answer even though the base URL and key changed.",
+ "gold_answer": "```python\nfrom types import SimpleNamespace\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n\n    def __init__(self, text):\n        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason=\"stop\")\n        super().__init__({\"choices\": [choice]})\n        self.choices = [choice]\n        self.usage = {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/cache-demo\"\n\n\noriginal_cache = dspy.cache\ncall_bases = []\n\n\ndef fake_chat(*, cache, num_retries, retry_strategy, headers=None, api_base=None, api_key=None, **request):\n    call_bases.append(api_base)\n    return FakeResp(f\"response from {api_base}\")\n\n\ntry:\n    dspy.configure_cache(enable_disk_cache=False, enable_memory_cache=True)\n\n    with patch(\"litellm.completion\", side_effect=fake_chat):\n        lm = dspy.LM(\"openai/cache-demo\", cache=True)\n        first = lm(\"same prompt\", api_base=\"http://cluster-a/v1\", api_key=\"key-a\")\n        second = lm(\"same prompt\", api_base=\"http://cluster-b/v1\", api_key=\"key-b\")\n\n    assert first == [\"response from http://cluster-a/v1\"]\n    assert second == [\"response from http://cluster-a/v1\"]\n    assert call_bases == [\"http://cluster-a/v1\"]\n    assert len(dspy.cache.memory_cache) == 1\n\n    print(\"first_result=\", first)\n    print(\"second_result=\", second)\n    print(\"underlying_calls=\", call_bases)\nfinally:\n    dspy.cache = original_cache\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The program turns on DSPy's cache and uses a cached `dspy.LM` call path so DSPy wraps the outbound completion function with `request_cache` while sending `no-cache`/`no-store` to LiteLLM.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "It patches `litellm.completion` for a chat LM with a fake that can observe `api_base` and return different content per endpoint.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "It makes two calls with the same model/request content and changes only `api_base` and `api_key`, because DSPy's cache key is computed from the request after excluding `api_key`, `api_base`, and `base_url`.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "It asserts that the second returned value matches the first endpoint's answer rather than a new answer from the second endpoint, demonstrating that the second call was served from DSPy's cache.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 10,
+   "statement": "It also asserts that the patched backend ran only once, or only recorded the first base URL, showing the second call did not reach the outbound completion function.",
+   "span_ids": [
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "A further valid check is that the in-memory DSPy cache contains exactly one entry after the two calls.",
+   "span_ids": [
+    "s7",
+    "s8",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 147,
+   "end_line": 157,
+   "excerpt": "0147:     def _get_cached_completion_fn(self, completion_fn, cache):\n0148:         ignored_args_for_cache_key = [\"api_key\", \"api_base\", \"base_url\"]\n0149:         if cache:\n0150:             completion_fn = request_cache(\n0151:                 cache_arg_name=\"request\",\n0152:                 ignored_args_for_cache_key=ignored_args_for_cache_key,\n0153:             )(completion_fn)\n0154: \n0155:         litellm_cache_args = {\"no-cache\": True, \"no-store\": True}\n0156: \n0157:         return completion_fn, litellm_cache_args"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 165,
+   "end_line": 190,
+   "excerpt": "0165:         # Build the request.\n0166:         kwargs = dict(kwargs)\n0167:         cache = kwargs.pop(\"cache\", self.cache)\n0168: \n0169:         messages = messages or [{\"role\": \"user\", \"content\": prompt}]\n0170:         if self.use_developer_role and self.model_type == \"responses\":\n0171:             messages = [{**m, \"role\": \"developer\"} if m.get(\"role\") == \"system\" else m for m in messages]\n0172:         kwargs = {**self.kwargs, **kwargs}\n0173:         self._warn_zero_temp_rollout(kwargs.get(\"temperature\"), kwargs.get(\"rollout_id\"))\n0174:         if kwargs.get(\"rollout_id\") is None:\n0175:             kwargs.pop(\"rollout_id\", None)\n0176: \n0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0184: \n0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,\n0189:                 cache=litellm_cache_args,\n0190:             )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 385,
+   "end_line": 398,
+   "excerpt": "0385: def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0386:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0387:     request = dict(request)\n0388:     request.pop(\"rollout_id\", None)\n0389:     headers = _add_dspy_identifier_to_headers(request.pop(\"headers\", None))\n0390:     stream_completion = _get_stream_completion_fn(request, cache, sync=True, headers=headers)\n0391:     if stream_completion is None:\n0392:         return litellm.completion(\n0393:             cache=cache,\n0394:             num_retries=num_retries,\n0395:             retry_strategy=\"exponential_backoff_retry\",\n0396:             headers=headers,\n0397:             **request,\n0398:         )"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/cache.py",
+   "start_line": 69,
+   "end_line": 100,
+   "excerpt": "0069:     def cache_key(self, request: dict[str, Any], ignored_args_for_cache_key: list[str] | None = None) -> str:\n0070:         \"\"\"\n0071:         Obtain a unique cache key for the given request dictionary by hashing its JSON\n0072:         representation. For request fields having types that are known to be JSON-incompatible,\n0073:         convert them to a JSON-serializable format before hashing.\n0074:         \"\"\"\n0075: \n0076:         ignored_args_for_cache_key = ignored_args_for_cache_key or []\n0077: \n0078:         def transform_value(value):\n0079:             if isinstance(value, type) and issubclass(value, pydantic.BaseModel):\n0080:                 return value.model_json_schema()\n0081:             elif isinstance(value, pydantic.BaseModel):\n0082:                 return value.model_dump(mode=\"json\")\n0083:             elif callable(value):\n0084:                 # Try to get the source code of the callable if available\n0085:                 import inspect\n0086: \n0087:                 try:\n0088:                     # For regular functions, we can get the source code\n0089:                     return f\"<callable_source:{inspect.getsource(value)}>\"\n0090:                 except (TypeError, OSError):\n0091:                     # For lambda functions or other callables where source isn't available,\n0092:                     # use a string representation\n0093:                     return f\"<callable:{value.__name__ if hasattr(value, '__name__') else 'lambda'}>\"\n0094:             elif isinstance(value, dict):\n0095:                 return {k: transform_value(v) for k, v in value.items()}\n0096:             else:\n0097:                 return value\n0098: \n0099:         params = {k: transform_value(v) for k, v in request.items() if k not in ignored_args_for_cache_key}\n0100:         return sha256(orjson.dumps(params, option=orjson.OPT_SORT_KEYS)).hexdigest()"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/cache.py",
+   "start_line": 237,
+   "end_line": 257,
+   "excerpt": "0237:         @wraps(fn)\n0238:         def sync_wrapper(*args, **kwargs):\n0239:             import dspy\n0240: \n0241:             cache = dspy.cache\n0242:             modified_request = process_request(args, kwargs)\n0243: \n0244:             # Retrieve from cache if available\n0245:             cached_result = cache.get(modified_request, ignored_args_for_cache_key)\n0246: \n0247:             if cached_result is not None:\n0248:                 return cached_result\n0249: \n0250:             # Otherwise, compute and store the result\n0251:             # Make a copy of the original request in case it's modified in place, e.g., deleting some fields\n0252:             original_request = copy.deepcopy(modified_request)\n0253:             result = fn(*args, **kwargs)\n0254:             # `enable_memory_cache` can be provided at call time to avoid indefinite growth.\n0255:             cache.put(original_request, result, ignored_args_for_cache_key, enable_memory_cache)\n0256: \n0257:             return result"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/clients/cache.py",
+   "start_line": 102,
+   "end_line": 130,
+   "excerpt": "0102:     def get(self, request: dict[str, Any], ignored_args_for_cache_key: list[str] | None = None) -> Any:\n0103: \n0104:         if not self.enable_memory_cache and not self.enable_disk_cache:\n0105:             return None\n0106: \n0107:         try:\n0108:             key = self.cache_key(request, ignored_args_for_cache_key)\n0109:         except Exception:\n0110:             logger.debug(f\"Failed to generate cache key for request: {request}\")\n0111:             return None\n0112: \n0113:         if self.enable_memory_cache and key in self.memory_cache:\n0114:             with self._lock:\n0115:                 response = self.memory_cache[key]\n0116:         elif self.enable_disk_cache and key in self.disk_cache:\n0117:             # Found on disk but not in memory cache, add to memory cache\n0118:             response = self.disk_cache[key]\n0119:             if self.enable_memory_cache:\n0120:                 with self._lock:\n0121:                     self.memory_cache[key] = response\n0122:         else:\n0123:             return None\n0124: \n0125:         response = copy.deepcopy(response)\n0126:         if hasattr(response, \"usage\"):\n0127:             # Clear the usage data when cache is hit, because no LM call is made\n0128:             response.usage = {}\n0129:             response.cache_hit = True\n0130:         return response"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/clients/cache.py",
+   "start_line": 26,
+   "end_line": 63,
+   "excerpt": "0026:     def __init__(\n0027:         self,\n0028:         enable_disk_cache: bool,\n0029:         enable_memory_cache: bool,\n0030:         disk_cache_dir: str,\n0031:         disk_size_limit_bytes: int | None = 1024 * 1024 * 10,\n0032:         memory_max_entries: int = 1000000,\n0033:     ):\n0034:         \"\"\"\n0035:         Args:\n0036:             enable_disk_cache: Whether to enable on-disk cache.\n0037:             enable_memory_cache: Whether to enable in-memory cache.\n0038:             disk_cache_dir: The directory where the disk cache is stored.\n0039:             disk_size_limit_bytes: The maximum size of the disk cache (in bytes).\n0040:             memory_max_entries: The maximum size of the in-memory cache (in number of items).\n0041:         \"\"\"\n0042: \n0043:         self.enable_disk_cache = enable_disk_cache\n0044:         self.enable_memory_cache = enable_memory_cache\n0045:         if self.enable_memory_cache:\n0046:             if memory_max_entries is None:\n0047:                 raise ValueError(\"`memory_max_entries` cannot be None. Use `math.inf` if you need an unbounded cache.\")\n0048:             elif memory_max_entries <= 0:\n0049:                 raise ValueError(f\"`memory_max_entries` must be a positive number, but received {memory_max_entries}\")\n0050:             self.memory_cache = LRUCache(maxsize=memory_max_entries)\n0051:         else:\n0052:             self.memory_cache = {}\n0053:         if self.enable_disk_cache:\n0054:             self.disk_cache = FanoutCache(\n0055:                 shards=16,\n0056:                 timeout=10,\n0057:                 directory=disk_cache_dir,\n0058:                 size_limit=disk_size_limit_bytes,\n0059:             )\n0060:         else:\n0061:             self.disk_cache = {}\n0062: \n0063:         self._lock = threading.RLock()"
+  },
+  {
+   "span_id": "s8",
+   "path": "dspy/clients/cache.py",
+   "start_line": 132,
+   "end_line": 155,
+   "excerpt": "0132:     def put(\n0133:         self,\n0134:         request: dict[str, Any],\n0135:         value: Any,\n0136:         ignored_args_for_cache_key: list[str] | None = None,\n0137:         enable_memory_cache: bool = True,\n0138:     ) -> None:\n0139:         enable_memory_cache = self.enable_memory_cache and enable_memory_cache\n0140: \n0141:         # Early return to avoid computing cache key if both memory and disk cache are disabled\n0142:         if not enable_memory_cache and not self.enable_disk_cache:\n0143:             return\n0144: \n0145:         try:\n0146:             key = self.cache_key(request, ignored_args_for_cache_key)\n0147:         except Exception:\n0148:             logger.debug(f\"Failed to generate cache key for request: {request}\")\n0149:             return\n0150: \n0151:         if enable_memory_cache:\n0152:             with self._lock:\n0153:                 self.memory_cache[key] = value\n0154: \n0155:         if self.enable_disk_cache:"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Cache keys ignore endpoint and credential fields.",
+ "source_index": 3,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

@@ -459,3 +459,36 @@ the paper's own design: programs arrive here unexecuted (no upstream
 stage runs code), so real revision rounds at this stage are expected, not
 anomalous; the likeliest failure class is DummyLM misuse (e.g. list-mode
 exhaustion), which the released gold programs handle expertly.
+
+## Rev-2 end-to-end results (2026-07-21) — the current validation sets
+
+Single fulldspy pipeline under the deliverable contract, all stages
+max-parallel; smalldspy set derived by scope filter (see the retired
+two-corpus note).
+- **Stage 3a:** 80/80 candidates (20 x 4 topics), all unique, 100%
+  program-contract and question-bounds compliant; question chars med 614
+  (412–809); DummyLM in 45/80; 21/80 in SmallDSPy scope (9/9/2/1:
+  module_composition/prompt_compilation/evaluation_metrics/lm_provider).
+  The initial parallel run needed one smalldspy-abandoned rerun and the
+  fulldspy set completed with zero topic failures.
+- **Stage 3b:** 32 finalists (8 x 4), all contracts held through critic
+  rewrites (the shared validator now blocks program-stripping and
+  question-flattening); question chars med 708 post-sharpening; 16/32
+  very_hard; 7/32 in SmallDSPy scope.
+- **Stage 4:** 32 rubric bundles; weights sum 100 everywhere; core share
+  med 90 (65–100); claims med 5 (3–6); excerpts byte-identical to the
+  checkout; all first-attempt valid.
+- **Stage 5:** **32/32 pass — zero drops.** Every gold program compiles,
+  runs to exit 0 in the sandbox, and self-scores exactly 100 under its
+  rubric; only 3/32 bundles needed a revision round. Final sets:
+  `7_fulldspy_validation.jsonl` (32 questions, 8 per topic) and the
+  derived `7_smalldspy_validation.jsonl` (**7 questions**, topics:
+  module_composition, prompt_compilation, lm_provider;
+  evaluation_metrics has none in scope).
+- Honest residuals: final question lengths still run below the released
+  register (med ~708 vs their 856–1,848) — reported, deliberately not
+  optimized against; the derived small set is a strict subset of the
+  full set and is lean (fallback if needed: dedicated critic pass over
+  the 21 in-scope candidates); no human review anywhere (declared gap);
+  decontamination-by-dropping vs the 30 test questions has NOT yet been
+  run — it is the remaining allowed test-set interaction before use.

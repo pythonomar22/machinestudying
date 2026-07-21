@@ -1,0 +1,367 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_7ce05baff984`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I asked the random-search few-shot optimizer for only one candidate set, but the compiled program came back carrying more scored variants than I requested. I suspect DSPy is always evaluating a few built-in baselines before it starts counting random candidates, but I want a repro that proves the exact count.
+
+Give me a complete, runnable Python program that uses `DummyLM` offline, asks for one candidate set, and prints/asserts both the stored count and the stored seed identifiers if DSPy records them.`
+- Model answer:
+```python
+import dspy
+from dspy.teleprompt import BootstrapFewShotWithRandomSearch
+from dspy.utils.dummies import DummyLM
+
+
+class SimpleModule(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.predictor = dspy.Predict("question -> answer")
+
+    def forward(self, question):
+        return self.predictor(question=question)
+
+
+def metric(example, prediction, trace=None):
+    return example.answer == prediction.answer
+
+
+dspy.configure(
+    lm=DummyLM(
+        {
+            "q1": {"answer": "A"},
+            "q2": {"answer": "B"},
+        }
+    )
+)
+
+trainset = [
+    dspy.Example(question="q1", answer="A").with_inputs("question"),
+    dspy.Example(question="q2", answer="B").with_inputs("question"),
+]
+
+optimizer = BootstrapFewShotWithRandomSearch(
+    metric=metric,
+    num_candidate_programs=1,
+    max_bootstrapped_demos=1,
+    max_labeled_demos=1,
+    num_threads=1,
+)
+best = optimizer.compile(SimpleModule(), teacher=SimpleModule(), trainset=trainset, valset=trainset)
+seeds = [candidate["seed"] for candidate in best.candidate_programs]
+print(len(seeds), seeds)
+assert len(seeds) == 4
+assert set(seeds) == {-3, -2, -1, 0}
+```
+
+## Gold answer
+```python
+import dspy
+from dspy.teleprompt import BootstrapFewShotWithRandomSearch
+from dspy.utils.dummies import DummyLM
+
+
+class SimpleModule(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.predictor = dspy.Predict("question -> answer")
+
+    def forward(self, question):
+        return self.predictor(question=question)
+
+
+def metric(example, prediction, trace=None):
+    return example.answer == prediction.answer
+
+
+dspy.configure(
+    lm=DummyLM(
+        {
+            "q1": {"answer": "A"},
+            "q2": {"answer": "B"},
+        }
+    )
+)
+
+trainset = [
+    dspy.Example(question="q1", answer="A").with_inputs("question"),
+    dspy.Example(question="q2", answer="B").with_inputs("question"),
+]
+
+optimizer = BootstrapFewShotWithRandomSearch(
+    metric=metric,
+    num_candidate_programs=1,
+    max_bootstrapped_demos=1,
+    max_labeled_demos=1,
+    num_threads=1,
+)
+best = optimizer.compile(SimpleModule(), teacher=SimpleModule(), trainset=trainset, valset=trainset)
+seeds = [candidate["seed"] for candidate in best.candidate_programs]
+print(len(seeds), seeds)
+assert len(seeds) == 4
+assert set(seeds) == {-3, -2, -1, 0}
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The repro instantiates `BootstrapFewShotWithRandomSearch` with `num_candidate_programs=1`, because that argument is stored as `self.num_candidate_sets` and is the bound used by the candidate-seed loop.",
+    "span_ids": [
+      "s1",
+      "s2"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 30,
+    "statement": "Even when only one candidate set is requested, `compile` still evaluates and stores four candidates, because it iterates `seed` over `range(-3, self.num_candidate_sets)`, which yields `-3, -2, -1, 0` when `self.num_candidate_sets == 1`.",
+    "span_ids": [
+      "s2",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "The expected seed identifiers are `-3`, `-2`, `-1`, and `0`, corresponding respectively to the zero-shot baseline, the labeled-only baseline, the unshuffled `BootstrapFewShot` baseline, and the single shuffled/random `BootstrapFewShot` candidate.",
+    "span_ids": [
+      "s3",
+      "s4"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "The answer should inspect `best.candidate_programs` and assert both the stored count and the stored seeds, because DSPy appends one record per evaluated candidate containing at least `score`, `subscores`, `seed`, and `program`, then attaches the sorted list to the returned best program.",
+    "span_ids": [
+      "s5"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/teleprompt/random_search.py",
+    "start_line": 32,
+    "end_line": 55,
+    "excerpt": "0032:         max_bootstrapped_demos=4,\n0033:         max_labeled_demos=16,\n0034:         max_rounds=1,\n0035:         num_candidate_programs=16,\n0036:         num_threads=None,\n0037:         max_errors=None,\n0038:         stop_at_score=None,\n0039:         metric_threshold=None,\n0040:     ):\n0041:         self.metric = metric\n0042:         self.teacher_settings = teacher_settings or {}\n0043:         self.max_rounds = max_rounds\n0044: \n0045:         self.num_threads = num_threads\n0046:         self.stop_at_score = stop_at_score\n0047:         self.metric_threshold = metric_threshold\n0048:         self.min_num_samples = 1\n0049:         self.max_num_samples = max_bootstrapped_demos\n0050:         self.max_errors = max_errors\n0051:         self.num_candidate_sets = num_candidate_programs\n0052:         self.max_labeled_demos = max_labeled_demos\n0053: \n0054:         print(f\"Going to sample between {self.min_num_samples} and {self.max_num_samples} traces per predictor.\")\n0055:         print(f\"Will attempt to bootstrap {self.num_candidate_sets} candidate sets.\")"
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/teleprompt/random_search.py",
+    "start_line": 67,
+    "end_line": 69,
+    "excerpt": "0067:         for seed in range(-3, self.num_candidate_sets):\n0068:             if (restrict is not None) and (seed not in restrict):\n0069:                 continue"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/teleprompt/random_search.py",
+    "start_line": 73,
+    "end_line": 93,
+    "excerpt": "0073:             if seed == -3:\n0074:                 # zero-shot\n0075:                 program = student.reset_copy()\n0076: \n0077:             elif seed == -2:\n0078:                 # labels only\n0079:                 teleprompter = LabeledFewShot(k=self.max_labeled_demos)\n0080:                 program = teleprompter.compile(student, trainset=trainset_copy, sample=labeled_sample)\n0081: \n0082:             elif seed == -1:\n0083:                 # unshuffled few-shot\n0084:                 optimizer = BootstrapFewShot(\n0085:                     metric=self.metric,\n0086:                     metric_threshold=self.metric_threshold,\n0087:                     max_bootstrapped_demos=self.max_num_samples,\n0088:                     max_labeled_demos=self.max_labeled_demos,\n0089:                     teacher_settings=self.teacher_settings,\n0090:                     max_rounds=self.max_rounds,\n0091:                     max_errors=effective_max_errors,\n0092:                 )\n0093:                 program = optimizer.compile(student, teacher=teacher, trainset=trainset_copy)"
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/teleprompt/random_search.py",
+    "start_line": 95,
+    "end_line": 111,
+    "excerpt": "0095:             else:\n0096:                 assert seed >= 0, seed\n0097: \n0098:                 random.Random(seed).shuffle(trainset_copy)\n0099:                 size = random.Random(seed).randint(self.min_num_samples, self.max_num_samples)\n0100: \n0101:                 optimizer = BootstrapFewShot(\n0102:                     metric=self.metric,\n0103:                     metric_threshold=self.metric_threshold,\n0104:                     max_bootstrapped_demos=size,\n0105:                     max_labeled_demos=self.max_labeled_demos,\n0106:                     teacher_settings=self.teacher_settings,\n0107:                     max_rounds=self.max_rounds,\n0108:                     max_errors=effective_max_errors,\n0109:                 )\n0110: \n0111:                 program = optimizer.compile(student, teacher=teacher, trainset=trainset_copy)"
+  },
+  {
+    "span_id": "s5",
+    "path": "dspy/teleprompt/random_search.py",
+    "start_line": 122,
+    "end_line": 149,
+    "excerpt": "0122:             result = evaluate(program)\n0123: \n0124:             score, subscores = result.score, [output[2] for output in result.results]\n0125: \n0126:             all_subscores.append(subscores)\n0127: \n0128:             if len(scores) == 0 or score > max(scores):\n0129:                 print(\"New best score:\", score, \"for seed\", seed)\n0130:                 best_program = program\n0131: \n0132:             scores.append(score)\n0133:             print(f\"Scores so far: {scores}\")\n0134:             print(f\"Best score so far: {max(scores)}\")\n0135: \n0136:             score_data.append({\"score\": score, \"subscores\": subscores, \"seed\": seed, \"program\": program})\n0137: \n0138:             if self.stop_at_score is not None and score >= self.stop_at_score:\n0139:                 print(f\"Stopping early because score {score} is >= stop_at_score {self.stop_at_score}\")\n0140:                 break\n0141: \n0142:         # To best program, attach all program candidates in decreasing average score\n0143:         best_program.candidate_programs = score_data\n0144:         best_program.candidate_programs = sorted(\n0145:             best_program.candidate_programs, key=lambda x: x[\"score\"], reverse=True\n0146:         )\n0147: \n0148:         print(f\"{len(best_program.candidate_programs)} candidate programs found.\")\n0149: "
+  }
+]
+
+## Whole evidence files
+### dspy/teleprompt/random_search.py
+0001: import random
+0002: 
+0003: import dspy
+0004: from dspy.evaluate.evaluate import Evaluate
+0005: from dspy.teleprompt.teleprompt import Teleprompter
+0006: 
+0007: from .bootstrap import BootstrapFewShot
+0008: from .vanilla import LabeledFewShot
+0009: 
+0010: # TODO: Don't forget dealing with the raw demos.
+0011: # TODO: Deal with the (pretty common) case of having a metric for filtering and a separate metric for eval.
+0012: # The metric itself may tell though by the presence of trace.
+0013: 
+0014: # TODO: This function should take a max_budget and max_teacher_budget. That's in the number of program calls.
+0015: # In this case, max_student_budget is max_budget - max_teacher_budget.
+0016: # For max_teacher_budget, this will just limit the total number of things we bootstrap.
+0017: # This can end up implicitly defining the number of candidate programs (i.e., stop when runs out). Cap at 16.
+0018: # For max_student_budget, this will be a more upfront calculation.
+0019: # Right now, it can also just induce the number of candidate programs. Later, it could be used more interestingly
+0020: # for selective early stopping.
+0021: # Progressive elimination sounds about right: after 50 examples, drop bottom third, after 100, another third, etc.
+0022: # until only 3--5 are left for the end. Could also be systematic and add (earlier) stopping based on error bounds.
+0023: # In general, though, the early filtering is just saying: either there are some really bad ones, or some really really
+0024: # good ones, or most things are pretty close. In all of these cases, dropping the bottom third is not going to hurt.
+0025: 
+0026: 
+0027: class BootstrapFewShotWithRandomSearch(Teleprompter):
+0028:     def __init__(
+0029:         self,
+0030:         metric,
+0031:         teacher_settings=None,
+0032:         max_bootstrapped_demos=4,
+0033:         max_labeled_demos=16,
+0034:         max_rounds=1,
+0035:         num_candidate_programs=16,
+0036:         num_threads=None,
+0037:         max_errors=None,
+0038:         stop_at_score=None,
+0039:         metric_threshold=None,
+0040:     ):
+0041:         self.metric = metric
+0042:         self.teacher_settings = teacher_settings or {}
+0043:         self.max_rounds = max_rounds
+0044: 
+0045:         self.num_threads = num_threads
+0046:         self.stop_at_score = stop_at_score
+0047:         self.metric_threshold = metric_threshold
+0048:         self.min_num_samples = 1
+0049:         self.max_num_samples = max_bootstrapped_demos
+0050:         self.max_errors = max_errors
+0051:         self.num_candidate_sets = num_candidate_programs
+0052:         self.max_labeled_demos = max_labeled_demos
+0053: 
+0054:         print(f"Going to sample between {self.min_num_samples} and {self.max_num_samples} traces per predictor.")
+0055:         print(f"Will attempt to bootstrap {self.num_candidate_sets} candidate sets.")
+0056: 
+0057:     def compile(self, student, *, teacher=None, trainset, valset=None, restrict=None, labeled_sample=True):
+0058:         self.trainset = trainset
+0059:         self.valset = valset or trainset  # TODO: FIXME: Note this choice.
+0060: 
+0061:         effective_max_errors = self.max_errors if self.max_errors is not None else dspy.settings.max_errors
+0062: 
+0063:         scores = []
+0064:         all_subscores = []
+0065:         score_data = []
+0066: 
+0067:         for seed in range(-3, self.num_candidate_sets):
+0068:             if (restrict is not None) and (seed not in restrict):
+0069:                 continue
+0070: 
+0071:             trainset_copy = list(self.trainset)
+0072: 
+0073:             if seed == -3:
+0074:                 # zero-shot
+0075:                 program = student.reset_copy()
+0076: 
+0077:             elif seed == -2:
+0078:                 # labels only
+0079:                 teleprompter = LabeledFewShot(k=self.max_labeled_demos)
+0080:                 program = teleprompter.compile(student, trainset=trainset_copy, sample=labeled_sample)
+0081: 
+0082:             elif seed == -1:
+0083:                 # unshuffled few-shot
+0084:                 optimizer = BootstrapFewShot(
+0085:                     metric=self.metric,
+0086:                     metric_threshold=self.metric_threshold,
+0087:                     max_bootstrapped_demos=self.max_num_samples,
+0088:                     max_labeled_demos=self.max_labeled_demos,
+0089:                     teacher_settings=self.teacher_settings,
+0090:                     max_rounds=self.max_rounds,
+0091:                     max_errors=effective_max_errors,
+0092:                 )
+0093:                 program = optimizer.compile(student, teacher=teacher, trainset=trainset_copy)
+0094: 
+0095:             else:
+0096:                 assert seed >= 0, seed
+0097: 
+0098:                 random.Random(seed).shuffle(trainset_copy)
+0099:                 size = random.Random(seed).randint(self.min_num_samples, self.max_num_samples)
+0100: 
+0101:                 optimizer = BootstrapFewShot(
+0102:                     metric=self.metric,
+0103:                     metric_threshold=self.metric_threshold,
+0104:                     max_bootstrapped_demos=size,
+0105:                     max_labeled_demos=self.max_labeled_demos,
+0106:                     teacher_settings=self.teacher_settings,
+0107:                     max_rounds=self.max_rounds,
+0108:                     max_errors=effective_max_errors,
+0109:                 )
+0110: 
+0111:                 program = optimizer.compile(student, teacher=teacher, trainset=trainset_copy)
+0112: 
+0113:             evaluate = Evaluate(
+0114:                 devset=self.valset,
+0115:                 metric=self.metric,
+0116:                 num_threads=self.num_threads,
+0117:                 max_errors=effective_max_errors,
+0118:                 display_table=False,
+0119:                 display_progress=True,
+0120:             )
+0121: 
+0122:             result = evaluate(program)
+0123: 
+0124:             score, subscores = result.score, [output[2] for output in result.results]
+0125: 
+0126:             all_subscores.append(subscores)
+0127: 
+0128:             if len(scores) == 0 or score > max(scores):
+0129:                 print("New best score:", score, "for seed", seed)
+0130:                 best_program = program
+0131: 
+0132:             scores.append(score)
+0133:             print(f"Scores so far: {scores}")
+0134:             print(f"Best score so far: {max(scores)}")
+0135: 
+0136:             score_data.append({"score": score, "subscores": subscores, "seed": seed, "program": program})
+0137: 
+0138:             if self.stop_at_score is not None and score >= self.stop_at_score:
+0139:                 print(f"Stopping early because score {score} is >= stop_at_score {self.stop_at_score}")
+0140:                 break
+0141: 
+0142:         # To best program, attach all program candidates in decreasing average score
+0143:         best_program.candidate_programs = score_data
+0144:         best_program.candidate_programs = sorted(
+0145:             best_program.candidate_programs, key=lambda x: x["score"], reverse=True
+0146:         )
+0147: 
+0148:         print(f"{len(best_program.candidate_programs)} candidate programs found.")
+0149: 
+0150:         return best_program
+0151: 
+0152: 
+0153: # sample between 4 and 10 examples from traces
+0154: # TODO: FIXME: The max number of demos should be determined in part by the LM's tokenizer + max_length.
+0155: # This does require executing the program, or at least the predictor.
+0156: # # # # # # (Actually we can just combine the token counts of the traces, when formatted via signature/adapter).
+0157: # Alternatively, we can keep track of the (zero-shot) number of tokens when we bootstrap.
+0158: # As another option, we can just try a wide range and handle failures as penalties on the score.
+0159: # The number "24" of traces to collect can also be affected. If we only need 3x10, some overlap is ok.
+0160: # We can also consider having short_demos and long_demos.
+
+Return JSON that matches the schema exactly.

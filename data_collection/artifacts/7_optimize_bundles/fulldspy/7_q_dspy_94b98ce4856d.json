@@ -1,0 +1,109 @@
+{
+ "id": "dspy_94b98ce4856d",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm trying to optimize against one aggregate reward while still carrying several field-level subscores and feedback alongside it. I don't need multiple objectives for selection right now, but I do need proof that DSPy's SIMBA-style reward wrapping keeps the auxiliary metadata instead of dropping everything except the main score.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, runs a tiny program through the same metric-wrapping path that `SIMBA` uses, and prints/asserts the aggregate score plus the preserved auxiliary metadata.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.teleprompt.simba_utils import wrap_program\nfrom dspy.utils.dummies import DummyLM\n\n\ndspy.configure(lm=DummyLM({\"What is 1+1?\": {\"answer\": \"2\"}}))\nprogram = dspy.Predict(\"question -> answer\")\nexample = dspy.Example(question=\"What is 1+1?\", answer=\"2\").with_inputs(\"question\")\n\n\ndef composite_metric(example, prediction):\n    return dspy.Prediction(\n        score=0.75,\n        answer_score=float(prediction.answer == example.answer),\n        overlap_score=0.5,\n        feedback=\"aggregate score is for selection; field scores are auxiliary\",\n    )\n\n\nwrapped = wrap_program(program, composite_metric)\nout = wrapped(example)\nprint(out[\"score\"])\nprint(out[\"output_metadata\"])\nassert out[\"score\"] == 0.75\nassert out[\"prediction\"].answer == \"2\"\nassert out[\"output_metadata\"] == {\n    \"answer_score\": 1.0,\n    \"overlap_score\": 0.5,\n    \"feedback\": \"aggregate score is for selection; field scores are auxiliary\",\n}\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The code must build a runnable DSPy module/example pair, pass the module through `wrap_program`, and invoke the returned wrapper on the example, because that is the helper path `SIMBA.compile` uses to execute candidate programs.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The demo metric must return a `dspy.Prediction` with a required aggregate `score` field and additional named fields for auxiliary reward data.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The code must verify that the wrapped output's top-level `score` equals the aggregate reward taken from the metric's `score` field.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The code must verify that `output_metadata` equals the metric's non-`score` fields, demonstrating that auxiliary subscores and feedback are preserved and remain available to SIMBA downstream.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The code must also verify that the wrapped result still exposes the original program output under `prediction`.",
+   "span_ids": [
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/simba.py",
+   "start_line": 203,
+   "end_line": 205,
+   "excerpt": "0203:                     # Use the special wrap that includes the 'example' in the output\n0204:                     wrapped_candidate_system = wrap_program(candidate_system, self.metric)\n0205:                     exec_pairs.append((wrapped_candidate_system, example))"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/simba_utils.py",
+   "start_line": 34,
+   "end_line": 49,
+   "excerpt": "0034: def wrap_program(program: dspy.Module, metric: Callable):\n0035:     def wrapped_program(example):\n0036:         with dspy.context(trace=[]):\n0037:             prediction, trace, score = None, None, 0.0\n0038:             try:\n0039:                 prediction = program(**example.inputs())\n0040:             except Exception as e:\n0041:                 logger.warning(e)\n0042:             trace = dspy.settings.trace.copy()\n0043: \n0044:         output = None\n0045:         score = 0.0\n0046:         output_metadata = {}\n0047: \n0048:         try:\n0049:             output = metric(example, prediction)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/simba_utils.py",
+   "start_line": 48,
+   "end_line": 59,
+   "excerpt": "0048:         try:\n0049:             output = metric(example, prediction)\n0050:             if isinstance(output, (int, float)):\n0051:                 score = output\n0052:             elif isinstance(output, dspy.Prediction):\n0053:                 if not hasattr(output, \"score\"):\n0054:                     raise ValueError(\"When `metric` returns a `dspy.Prediction`, it must contain a `score` field.\")\n0055:                 score = output.score\n0056:                 # Extract fields from the output dspy.Prediction, excluding `score``\n0057:                 output_metadata = {\n0058:                     k: v for k, v in output.items() if k != \"score\"\n0059:                 }"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/teleprompt/simba_utils.py",
+   "start_line": 63,
+   "end_line": 69,
+   "excerpt": "0063:         return {\n0064:             \"prediction\": prediction,\n0065:             \"trace\": trace,\n0066:             \"score\": score,\n0067:             \"example\": example,\n0068:             \"output_metadata\": output_metadata\n0069:         }"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/teleprompt/simba_utils.py",
+   "start_line": 139,
+   "end_line": 152,
+   "excerpt": "0139:     kwargs = {\n0140:         \"program_code\": inspect.getsource(system.__class__),\n0141:         \"modules_defn\": inspect_modules(system),\n0142:         \"program_inputs\": {**example.inputs()},\n0143:         \"oracle_metadata\": {**example.labels()},\n0144:         \"better_program_trajectory\": better_trajectory,\n0145:         \"better_program_outputs\": dict(good[\"prediction\"]),\n0146:         \"worse_program_trajectory\": worse_trajectory,\n0147:         \"worse_program_outputs\": dict(bad[\"prediction\"] or {}),\n0148:         \"worse_reward_value\": bad[\"score\"],\n0149:         \"better_reward_value\": good[\"score\"],\n0150:         \"worse_reward_info\": bad[\"output_metadata\"],\n0151:         \"better_reward_info\": good[\"output_metadata\"],\n0152:         \"module_names\": module_names,"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Covers the multi-metric/feedback branch of the label without requiring docs or leaking the helper name in the prompt.",
+ "source_index": 15,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

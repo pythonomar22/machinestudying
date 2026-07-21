@@ -1,0 +1,100 @@
+{
+ "id": "dspy_43ddc176e87b",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm trying to reuse an async evaluator because my judge already lives in async code. Passing it into a normal DSPy evaluation run doesn't seem to get awaited, and the failure mode is confusing enough that I'd rather have a minimal repro than keep guessing.\n\nPlease give me a complete, runnable Python program that uses `DummyLM` offline, passes an async metric into a normal evaluation run, and prints/asserts the exact kind of failure you get when DSPy treats that metric synchronously.",
+ "gold_answer": "```python\nimport asyncio\nimport warnings\n\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.utils.dummies import DummyLM\n\n\nwarnings.filterwarnings(\"ignore\", category=RuntimeWarning)\ndspy.configure(lm=DummyLM({\"q\": {\"answer\": \"2\"}}))\nprogram = dspy.Predict(\"question -> answer\")\ndevset = [dspy.Example(question=\"q\", answer=\"2\").with_inputs(\"question\")]\n\n\nasync def async_metric(example, prediction):\n    await asyncio.sleep(0)\n    return 1.0\n\n\ntry:\n    with warnings.catch_warnings():\n        warnings.simplefilter(\"ignore\", category=RuntimeWarning)\n        Evaluate(devset=devset, metric=async_metric, display_progress=False)(program)\nexcept TypeError as e:\n    print(type(e).__name__)\n    print(str(e))\n    assert \"unsupported operand type(s)\" in str(e)\n    assert \"coroutine\" in str(e)\nelse:\n    raise AssertionError(\"Expected a sync Evaluate run to fail on an async metric.\")\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer uses the ordinary synchronous `Evaluate(...)(program)` path, matching that `Evaluate.__call__` is a regular method and runs evaluation work through `ParallelExecutor` rather than an async entrypoint.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 40,
+   "statement": "It shows that per-example scoring is performed synchronously: DSPy computes the prediction and then calls `metric(example, prediction)` directly with no `await`, so passing an `async def` metric yields a coroutine object as the score.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "It identifies the failure site in the sync evaluator: DSPy aggregates scores with `sum(score for *_, score in results)`, so coroutine scores produce a `TypeError` about unsupported operand types that mentions a coroutine.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "It treats the sync evaluation as expected to raise before a normal `EvaluationResult(score=..., results=...)` can be constructed, so the repro should catch and assert the exception instead of expecting a successful evaluation result.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 116,
+   "end_line": 128,
+   "excerpt": "0116:     @with_callbacks\n0117:     def __call__(\n0118:         self,\n0119:         program: \"dspy.Module\",\n0120:         metric: Callable | None = None,\n0121:         devset: list[\"dspy.Example\"] | None = None,\n0122:         num_threads: int | None = None,\n0123:         display_progress: bool | None = None,\n0124:         display_table: bool | int | None = None,\n0125:         callback_metadata: dict[str, Any] | None = None,\n0126:         save_as_csv: str | None = None,\n0127:         save_as_json: str | None = None,\n0128:     ) -> EvaluationResult:"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 162,
+   "end_line": 175,
+   "excerpt": "0162:         executor = ParallelExecutor(\n0163:             num_threads=num_threads,\n0164:             disable_progress_bar=not display_progress,\n0165:             max_errors=(self.max_errors if self.max_errors is not None else dspy.settings.max_errors),\n0166:             provide_traceback=self.provide_traceback,\n0167:             compare_results=True,\n0168:         )\n0169: \n0170:         def process_item(example):\n0171:             prediction = program(**example.inputs())\n0172:             score = metric(example, prediction)\n0173:             return prediction, score\n0174: \n0175:         results = executor.execute(process_item, devset)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 178,
+   "end_line": 182,
+   "excerpt": "0178:         results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]\n0179:         results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results, strict=False)]\n0180:         ncorrect, ntotal = sum(score for *_, score in results), len(devset)\n0181: \n0182:         logger.info(f\"Average Metric: {ncorrect} / {ntotal} ({round(100 * ncorrect / ntotal, 1)}%)\")"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 223,
+   "end_line": 226,
+   "excerpt": "0223:         return EvaluationResult(\n0224:             score=round(100 * ncorrect / ntotal, 2),\n0225:             results=results,\n0226:         )"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 57,
+   "end_line": 58,
+   "excerpt": "0057:     def __init__(self, score: float, results: list[tuple[\"dspy.Example\", \"dspy.Example\", Any]]):\n0058:         super().__init__(score=score, results=results)"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Directly covers the async-metric subtopic in the target label without relying on docs.",
+ "source_index": 3,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

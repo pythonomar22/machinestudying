@@ -1,0 +1,123 @@
+{
+ "id": "dspy_296a3a478f07",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I'm debugging a `dspy.ReAct` tool-using program on newer Python builds, and the failure path looks like a type-introspection problem rather than a tool problem. The crash only shows up once the agent signature grows a generic-looking tool-argument field.\n\nI want a minimal proof that this path no longer tries to do a raw subclass check on that generic annotation. In other words, the agent should still run, pick the tool, and finish, even if I deliberately booby-trap plain `issubclass(...)` for that one annotation.\n\nGive me a complete, runnable Python program that monkeypatches the relevant globals, runs a `dspy.ReAct` call offline with `DummyLM`, and uses prints/assertions to prove the tool call succeeds instead of crashing.",
+ "gold_answer": "```python\nimport dspy\nimport dspy.adapters.base as adapter_base\nimport dspy.adapters.utils as adapter_utils\nfrom dspy.utils.dummies import DummyLM\n\n\ndef get_user_info(name: str):\n    return {\"name\": name}\n\n\nclass CustomerService(dspy.Signature):\n    user_request: str = dspy.InputField()\n    process_result: str = dspy.OutputField()\n\n\nreact = dspy.ReAct(CustomerService, tools=[get_user_info])\nproblem_annotation = react.react.signature.output_fields[\"next_tool_args\"].annotation\n\n\ndef guarded_issubclass(cls, class_or_tuple):\n    if cls == problem_annotation:\n        raise TypeError(\"issubclass() arg 1 must be a class\")\n    return issubclass(cls, class_or_tuple)\n\n\noriginal_base_issubclass = getattr(adapter_base, \"issubclass\", issubclass)\noriginal_utils_issubclass = getattr(adapter_utils, \"issubclass\", issubclass)\nadapter_base.issubclass = guarded_issubclass\nadapter_utils.issubclass = guarded_issubclass\n\ntry:\n    lm = DummyLM(\n        [\n            {\n                \"next_thought\": \"I should look up the user first.\",\n                \"next_tool_name\": \"get_user_info\",\n                \"next_tool_args\": {\"name\": \"Adam\"},\n            },\n            {\n                \"next_thought\": \"I have the information I need, so I can finish now.\",\n                \"next_tool_name\": \"finish\",\n                \"next_tool_args\": {},\n            },\n            {\n                \"reasoning\": \"I fetched the user profile and can answer the request.\",\n                \"process_result\": \"Resolved Adam's request.\",\n            },\n        ]\n    )\n    with dspy.context(lm=lm):\n        result = react(user_request=\"Help me, my name is Adam\")\nfinally:\n    adapter_base.issubclass = original_base_issubclass\n    adapter_utils.issubclass = original_utils_issubclass\n\nassert result.process_result == \"Resolved Adam's request.\"\nassert result.trajectory[\"tool_name_0\"] == \"get_user_info\"\nassert result.trajectory[\"tool_args_0\"] == {\"name\": \"Adam\"}\nprint(\"final_result:\", result.process_result)\nprint(\"first_tool_call:\", result.trajectory[\"tool_name_0\"], result.trajectory[\"tool_args_0\"])\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Set up the repro with a real `dspy.ReAct` agent over `get_user_info`, a `CustomerService` signature with `user_request` input and `process_result` output, and capture `react.react.signature.output_fields[\"next_tool_args\"].annotation` as the specific annotation under test.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Define a guarded `issubclass` replacement that raises `TypeError` only when its first argument is the captured `next_tool_args` annotation, while delegating all other cases to the normal subclass check.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Monkeypatch both `dspy.adapters.base.issubclass` and `dspy.adapters.utils.issubclass` with that guard, covering the adapter code paths that perform annotation-based subclass checks.",
+   "span_ids": [
+    "s3",
+    "s6",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Run the agent offline inside `with dspy.context(lm=lm):` using `DummyLM` outputs that first choose `get_user_info` with `{\"name\": \"Adam\"}`, then choose `finish`, and finally return the completed `process_result`.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Prove the regression is avoided by asserting that the call completes with `process_result == \"Resolved Adam's request.\"` and that the recorded first tool call is `get_user_info` with arguments `{\"name\": \"Adam\"}`.",
+   "span_ids": [
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "tests/predict/test_react.py",
+   "start_line": 136,
+   "end_line": 145,
+   "excerpt": "0136: def test_react_with_tools_skips_native_response_issubclass_for_generic_alias(monkeypatch):\n0137:     def get_user_info(name: str):\n0138:         return {\"name\": name}\n0139: \n0140:     class CustomerService(dspy.Signature):\n0141:         user_request: str = dspy.InputField()\n0142:         process_result: str = dspy.OutputField()\n0143: \n0144:     react = dspy.ReAct(CustomerService, tools=[get_user_info])\n0145:     problem_annotation = react.react.signature.output_fields[\"next_tool_args\"].annotation"
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/predict/test_react.py",
+   "start_line": 147,
+   "end_line": 150,
+   "excerpt": "0147:     def guarded_issubclass(cls, class_or_tuple):\n0148:         if cls == problem_annotation:\n0149:             raise TypeError(\"issubclass() arg 1 must be a class\")\n0150:         return issubclass(cls, class_or_tuple)"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/predict/test_react.py",
+   "start_line": 152,
+   "end_line": 153,
+   "excerpt": "0152:     monkeypatch.setattr(adapter_base, \"issubclass\", guarded_issubclass, raising=False)\n0153:     monkeypatch.setattr(adapter_utils, \"issubclass\", guarded_issubclass, raising=False)"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/predict/test_react.py",
+   "start_line": 155,
+   "end_line": 175,
+   "excerpt": "0155:     lm = DummyLM(\n0156:         [\n0157:             {\n0158:                 \"next_thought\": \"I should look up the user first.\",\n0159:                 \"next_tool_name\": \"get_user_info\",\n0160:                 \"next_tool_args\": {\"name\": \"Adam\"},\n0161:             },\n0162:             {\n0163:                 \"next_thought\": \"I have the information I need, so I can finish now.\",\n0164:                 \"next_tool_name\": \"finish\",\n0165:                 \"next_tool_args\": {},\n0166:             },\n0167:             {\n0168:                 \"reasoning\": \"I fetched the user profile and can answer the request.\",\n0169:                 \"process_result\": \"Resolved Adam's request.\",\n0170:             },\n0171:         ]\n0172:     )\n0173: \n0174:     with dspy.context(lm=lm):\n0175:         result = react(user_request=\"Help me, my name is Adam\")"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/predict/test_react.py",
+   "start_line": 177,
+   "end_line": 179,
+   "excerpt": "0177:     assert result.process_result == \"Resolved Adam's request.\"\n0178:     assert result.trajectory[\"tool_name_0\"] == \"get_user_info\"\n0179:     assert result.trajectory[\"tool_args_0\"] == {\"name\": \"Adam\"}"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/adapters/base.py",
+   "start_line": 100,
+   "end_line": 106,
+   "excerpt": "0100:         for name, field in signature.output_fields.items():\n0101:             if (\n0102:                 isinstance(field.annotation, type)\n0103:                 and field.annotation in self.native_response_types\n0104:                 and issubclass(field.annotation, Type)\n0105:             ):\n0106:                 signature = field.annotation.adapt_to_native_lm_feature(signature, name, lm, lm_kwargs)"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/adapters/utils.py",
+   "start_line": 20,
+   "end_line": 24,
+   "excerpt": "0020: def _annotation_is_subclass(annotation: Any, expected_base: type) -> bool:\n0021:     try:\n0022:         return inspect.isclass(annotation) and issubclass(annotation, expected_base)\n0023:     except TypeError:\n0024:         return False"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Forces the generic-alias path without naming the internal hook in the question, and grounds the fix in the adapter/type-introspection layer.",
+ "source_index": 1,
+ "smalldspy_scope": true,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

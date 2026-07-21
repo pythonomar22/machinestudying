@@ -1,0 +1,132 @@
+{
+ "id": "dspy_4e5e86f8d35c",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I'm building a tool-using task and I need to know what changes in the prompt pipeline when native function calling is actually enabled. My worry is that DSPy might still duplicate the tool catalog inside the text prompt even when the provider already gets a structured `tools` payload.\n\nI want an offline proof with no external API. Please simulate one tool-call response and show me both the rendered text prompt and the non-text request kwargs that went out.\n\nGive me a complete, runnable Python program that prints the sent messages, the `tools` kwarg, and the parsed output, then asserts that the tool list is sent out-of-band, the prompt text no longer contains the tool catalog, and the parsed tool call lands in the structured output field.",
+ "gold_answer": "```python\nfrom types import SimpleNamespace\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\ndef get_weather(city: str) -> str:\n    return f\"The weather in {city} is sunny\"\n\n\nclass NativeToolDummy(DummyLM):\n    def __init__(self, adapter):\n        super().__init__([{\"answer\": \"unused\"}], adapter=adapter)\n        self.model = \"tool-capable-dummy\"\n\n    @property\n    def supports_function_calling(self):\n        return True\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        return SimpleNamespace(\n            choices=[\n                SimpleNamespace(\n                    message=SimpleNamespace(\n                        content=None,\n                        tool_calls=[\n                            {\"function\": {\"name\": \"get_weather\", \"arguments\": '{\"city\": \"Paris\"}'}}\n                        ],\n                    ),\n                    finish_reason=\"tool_calls\",\n                )\n            ],\n            usage={},\n            model=self.model,\n        )\n\n\nclass ToolSig(dspy.Signature):\n    question: str = dspy.InputField()\n    tools: list[dspy.Tool] = dspy.InputField()\n    answer: str = dspy.OutputField()\n    tool_calls: dspy.ToolCalls = dspy.OutputField()\n\n\nadapter = dspy.JSONAdapter(use_native_function_calling=True)\nlm = NativeToolDummy(adapter)\ndspy.configure(lm=lm, adapter=adapter)\n\npredict = dspy.Predict(ToolSig)\nresult = predict(question=\"What's the weather in Paris?\", tools=[dspy.Tool(get_weather)])\nentry = lm.history[-1]\ncombined_text = \"\\n\".join(str(message[\"content\"]) for message in entry[\"messages\"])\n\nprint(\"MESSAGES:\", entry[\"messages\"])\nprint(\"TOOLS KWARG:\", entry[\"kwargs\"].get(\"tools\"))\nprint(\"PARSED RESULT:\", result)\n\nassert entry[\"kwargs\"][\"tools\"][0][\"function\"][\"name\"] == \"get_weather\"\nassert \"get_weather\" not in combined_text\nassert result.answer is None\nassert result.tool_calls.tool_calls[0].name == \"get_weather\"\nassert result.tool_calls.tool_calls[0].args == {\"city\": \"Paris\"}\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The program puts DSPy on the native tool-calling path by using `JSONAdapter(use_native_function_calling=True)` with a signature that has a `list[dspy.Tool]` input and a `dspy.ToolCalls` output, against an LM that supports function calling.",
+   "span_ids": [
+    "s1",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "It demonstrates that native preprocessing sends the tool definitions out-of-band in the `tools` kwarg and removes the tool-related fields from the signature before `format()`, so the rendered text prompt omits the tool catalog that ordinary tool formatting would otherwise place in the user message.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The proof is offline: it uses a locally simulated tool-call response with no text content and one returned tool call, rather than relying on a live provider response.",
+   "span_ids": [
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "It relies on DSPy’s tool-call postprocessing: when `content` is empty but `tool_calls` are present, non-tool outputs are set to `None` and each returned function name plus JSON argument string is converted into structured `dspy.ToolCalls`.",
+   "span_ids": [
+    "s3",
+    "s8"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "It verifies concrete artifacts from the run: the outgoing `tools` payload contains a `get_weather` function schema, and the parsed structured result contains a `get_weather` call with `{\"city\": \"Paris\"}` while `answer` remains `None`.",
+   "span_ids": [
+    "s5",
+    "s8"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/base.py",
+   "start_line": 73,
+   "end_line": 97,
+   "excerpt": "0073:         if self.use_native_function_calling:\n0074:             tool_call_input_field_name = self._get_tool_call_input_field_name(signature)\n0075:             tool_call_output_field_name = self._get_tool_call_output_field_name(signature)\n0076: \n0077:             if tool_call_output_field_name and tool_call_input_field_name is None:\n0078:                 raise ValueError(\n0079:                     f\"You provided an output field {tool_call_output_field_name} to receive the tool calls information, \"\n0080:                     \"but did not provide any tools as the input. Please provide a list of tools as the input by adding an \"\n0081:                     \"input field with type `list[dspy.Tool]`.\"\n0082:                 )\n0083: \n0084:             if tool_call_output_field_name and lm.supports_function_calling:\n0085:                 tools = inputs[tool_call_input_field_name]\n0086:                 tools = tools if isinstance(tools, list) else [tools]\n0087: \n0088:                 lm_tools = [tool.format_as_litellm_function_call() for tool in tools]\n0089: \n0090:                 lm_kwargs[\"tools\"] = lm_tools\n0091: \n0092:                 signature_for_native_function_calling = signature.delete(tool_call_output_field_name)\n0093:                 signature_for_native_function_calling = signature_for_native_function_calling.delete(\n0094:                     tool_call_input_field_name\n0095:                 )\n0096: \n0097:                 return signature_for_native_function_calling"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/base.py",
+   "start_line": 202,
+   "end_line": 206,
+   "excerpt": "0202:         processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)\n0203:         inputs = self.format(processed_signature, demos, inputs)\n0204: \n0205:         outputs = lm(messages=inputs, **lm_kwargs)\n0206:         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/base.py",
+   "start_line": 138,
+   "end_line": 159,
+   "excerpt": "0138:             elif tool_calls and tool_call_output_field_name:\n0139:                 value = {}\n0140:                 for field_name in original_signature.output_fields.keys():\n0141:                     value[field_name] = None\n0142:             else:\n0143:                 raise AdapterParseError(\n0144:                     adapter_name=type(self).__name__,\n0145:                     signature=original_signature,\n0146:                     lm_response=str(output),\n0147:                     message=\"The LM returned an empty or null response.\",\n0148:                 )\n0149: \n0150:             if tool_calls and tool_call_output_field_name:\n0151:                 tool_calls = [\n0152:                     {\n0153:                         \"name\": v[\"function\"][\"name\"],\n0154:                         \"args\": json_repair.loads(v[\"function\"][\"arguments\"]),\n0155:                     }\n0156:                     for v in tool_calls\n0157:                 ]\n0158:                 value[tool_call_output_field_name] = ToolCalls.from_dict_list(tool_calls)\n0159: "
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 410,
+   "end_line": 425,
+   "excerpt": "0410:     adapter = dspy.JSONAdapter()\n0411:     messages = adapter.format(MySignature, [], {\"question\": \"What is the weather in Tokyo?\", \"tools\": tools})\n0412: \n0413:     assert len(messages) == 2\n0414: \n0415:     # The output field type description should be included in the system message even if the output field is nested\n0416:     assert dspy.ToolCalls.description() in messages[0][\"content\"]\n0417: \n0418:     # The user message should include the question and the tools\n0419:     assert \"What is the weather in Tokyo?\" in messages[1][\"content\"]\n0420:     assert \"get_weather\" in messages[1][\"content\"]\n0421:     assert \"get_population\" in messages[1][\"content\"]\n0422: \n0423:     # Tool arguments format should be included in the user message\n0424:     assert \"{'city': {'type': 'string'}}\" in messages[1][\"content\"]\n0425:     assert \"{'country': {'type': 'string'}, 'year': {'type': 'integer'}}\" in messages[1][\"content\"]"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 427,
+   "end_line": 451,
+   "excerpt": "0427:     with mock.patch(\"litellm.completion\") as mock_completion:\n0428:         lm = dspy.LM(model=\"openai/gpt-4o-mini\")\n0429:         adapter(lm, {}, MySignature, [], {\"question\": \"What is the weather in Tokyo?\", \"tools\": tools})\n0430: \n0431:     mock_completion.assert_called_once()\n0432:     _, call_kwargs = mock_completion.call_args\n0433: \n0434:     # Assert tool calls are included in the `tools` arg\n0435:     assert len(call_kwargs[\"tools\"]) > 0\n0436:     assert call_kwargs[\"tools\"][0] == {\n0437:         \"type\": \"function\",\n0438:         \"function\": {\n0439:             \"name\": \"get_weather\",\n0440:             \"description\": \"Get the weather for a city\",\n0441:             \"parameters\": {\n0442:                 \"type\": \"object\",\n0443:                 \"properties\": {\n0444:                     \"city\": {\n0445:                         \"type\": \"string\",\n0446:                     },\n0447:                 },\n0448:                 \"required\": [\"city\"],\n0449:             },\n0450:         },\n0451:     }"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 791,
+   "end_line": 804,
+   "excerpt": "0791: def test_json_adapter_toolcalls_native_function_calling():\n0792:     class MySignature(dspy.Signature):\n0793:         question: str = dspy.InputField()\n0794:         tools: list[dspy.Tool] = dspy.InputField()\n0795:         answer: str = dspy.OutputField()\n0796:         tool_calls: dspy.ToolCalls = dspy.OutputField()\n0797: \n0798:     def get_weather(city: str) -> str:\n0799:         return f\"The weather in {city} is sunny\"\n0800: \n0801:     tools = [dspy.Tool(get_weather)]\n0802: \n0803:     adapter = dspy.JSONAdapter(use_native_function_calling=True)\n0804: "
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 805,
+   "end_line": 825,
+   "excerpt": "0805:     # Case 1: Tool calls are present in the response, while content is None.\n0806:     with mock.patch(\"litellm.completion\") as mock_completion:\n0807:         mock_completion.return_value = ModelResponse(\n0808:             choices=[\n0809:                 Choices(\n0810:                     finish_reason=\"tool_calls\",\n0811:                     index=0,\n0812:                     message=Message(\n0813:                         content=None,\n0814:                         role=\"assistant\",\n0815:                         tool_calls=[\n0816:                             ChatCompletionMessageToolCall(\n0817:                                 function=Function(arguments='{\"city\":\"Paris\"}', name=\"get_weather\"),\n0818:                                 id=\"call_pQm8ajtSMxgA0nrzK2ivFmxG\",\n0819:                                 type=\"function\",\n0820:                             )\n0821:                         ],\n0822:                     ),\n0823:                 ),\n0824:             ],\n0825:             model=\"openai/gpt-4o-mini\","
+  },
+  {
+   "span_id": "s8",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 827,
+   "end_line": 839,
+   "excerpt": "0827:         result = adapter(\n0828:             dspy.LM(model=\"openai/gpt-4o-mini\", cache=False),\n0829:             {},\n0830:             MySignature,\n0831:             [],\n0832:             {\"question\": \"What is the weather in Paris?\", \"tools\": tools},\n0833:         )\n0834: \n0835:         assert result[0][\"tool_calls\"] == dspy.ToolCalls(\n0836:             tool_calls=[dspy.ToolCalls.ToolCall(name=\"get_weather\", args={\"city\": \"Paris\"})]\n0837:         )\n0838:         # `answer` is not present, so we set it to None\n0839:         assert result[0][\"answer\"] is None"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Shows native function calling strips tool fields from prompt text and sends tools out-of-band.",
+ "source_index": 11,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

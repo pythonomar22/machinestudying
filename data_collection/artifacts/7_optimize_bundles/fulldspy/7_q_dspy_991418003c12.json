@@ -1,0 +1,111 @@
+{
+ "id": "dspy_991418003c12",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I need hard control over prompt field order because I'm trying to stabilize prefix caching and prompt diffs. The important part is not just the Python schema object; I need proof that changing the signature order changes the actual rendered system prompt in the same order.\n\nI also need to see both directions: putting a new input before the original one and surrounding the original output with extra outputs. If the order only changes metadata and not the prompt text, that would be a bad surprise.\n\nGive me a complete, runnable Python program that constructs a signature by inserting fields around an existing one, prints the rendered system message, and asserts that the input and output fields appear in the exact new order.",
+ "gold_answer": "```python\nimport dspy\n\n\nclass BaseQA(dspy.Signature):\n    question: str = dspy.InputField(desc=\"Question\")\n    answer: str = dspy.OutputField(desc=\"Answer\")\n\n\nsig = BaseQA.prepend(\"context\", dspy.InputField(desc=\"Background\"), str)\nsig = sig.prepend(\"reasoning\", dspy.OutputField(desc=\"Scratch work\"), str)\nsig = sig.append(\"confidence\", dspy.OutputField(desc=\"Confidence score\"), float)\n\nadapter = dspy.ChatAdapter()\nsystem_message = adapter.format_system_message(sig)\n\nprint(system_message)\nprint(\"INPUT ORDER:\", list(sig.input_fields.keys()))\nprint(\"OUTPUT ORDER:\", list(sig.output_fields.keys()))\n\nassert list(sig.input_fields.keys()) == [\"context\", \"question\"]\nassert list(sig.output_fields.keys()) == [\"reasoning\", \"answer\", \"confidence\"]\nassert system_message.index(\"1. `context`\") < system_message.index(\"2. `question`\")\nassert system_message.index(\"1. `reasoning`\") < system_message.index(\"2. `answer`\") < system_message.index(\"3. `confidence`\")\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Construct the modified signature with DSPy’s field-order APIs so a new input is inserted before the existing input and two new outputs are placed before and after the existing output.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "Assert that `sig.input_fields` and `sig.output_fields` report the exact final input and output key orders after the insertions.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Render the actual system prompt by calling `format_system_message(sig)` on a concrete adapter and print or otherwise expose the returned string.",
+   "span_ids": [
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Assert on the rendered system message text itself that the input fields appear in the new order, not just in the signature metadata.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Assert on the rendered system message text itself that the output fields appear in the new order around the original output.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 223,
+   "end_line": 245,
+   "excerpt": "0223:     @property\n0224:     def input_fields(cls) -> dict[str, FieldInfo]:\n0225:         return cls._get_fields_with_type(\"input\")\n0226: \n0227:     @property\n0228:     def output_fields(cls) -> dict[str, FieldInfo]:\n0229:         return cls._get_fields_with_type(\"output\")\n0230: \n0231:     @property\n0232:     def fields(cls) -> dict[str, FieldInfo]:\n0233:         # Make sure to give input fields before output fields\n0234:         return {**cls.input_fields, **cls.output_fields}\n0235: \n0236:     @property\n0237:     def signature(cls) -> str:\n0238:         \"\"\"The string representation of the signature.\"\"\"\n0239:         input_fields = \", \".join(cls.input_fields.keys())\n0240:         output_fields = \", \".join(cls.output_fields.keys())\n0241:         return f\"{input_fields} -> {output_fields}\"\n0242: \n0243:     def _get_fields_with_type(cls, field_type) -> dict[str, FieldInfo]:\n0244:         return {k: v for k, v in cls.model_fields.items() if v.json_schema_extra[\"__dspy_field_type\"] == field_type}\n0245: "
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 325,
+   "end_line": 349,
+   "excerpt": "0325:     def prepend(cls, name, field, type_=None) -> type[\"Signature\"]:\n0326:         \"\"\"Insert a field at index 0 of the `inputs` or `outputs` section.\n0327: \n0328:         Args:\n0329:             name (str): Field name to add.\n0330:             field: `InputField` or `OutputField` instance to insert.\n0331:             type_ (type | None): Optional explicit type annotation. If `type_` is `None`, the effective type is\n0332:                 resolved by `insert`.\n0333: \n0334:         Returns:\n0335:             A new `Signature` class with the field inserted first.\n0336: \n0337:         Examples:\n0338:             ```python\n0339:             import dspy\n0340: \n0341:             class MySig(dspy.Signature):\n0342:                 input_text: str = dspy.InputField(desc=\"Input sentence\")\n0343:                 output_text: str = dspy.OutputField(desc=\"Translated sentence\")\n0344: \n0345:             NewSig = MySig.prepend(\"context\", dspy.InputField(desc=\"Context for translation\"))\n0346:             print(list(NewSig.fields.keys()))\n0347:             ```\n0348:         \"\"\"\n0349:         return cls.insert(0, name, field, type_)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 352,
+   "end_line": 376,
+   "excerpt": "0352:     def append(cls, name, field, type_=None) -> type[\"Signature\"]:\n0353:         \"\"\"Insert a field at the end of the `inputs` or `outputs` section.\n0354: \n0355:         Args:\n0356:             name (str): Field name to add.\n0357:             field: `InputField` or `OutputField` instance to insert.\n0358:             type_ (type | None): Optional explicit type annotation. If `type_` is `None`, the effective type is\n0359:                 resolved by `insert`.\n0360: \n0361:         Returns:\n0362:             A new Signature class with the field appended.\n0363: \n0364:         Examples:\n0365:             ```python\n0366:             import dspy\n0367: \n0368:             class MySig(dspy.Signature):\n0369:                 input_text: str = dspy.InputField(desc=\"Input sentence\")\n0370:                 output_text: str = dspy.OutputField(desc=\"Translated sentence\")\n0371: \n0372:             NewSig = MySig.append(\"confidence\", dspy.OutputField(desc=\"Translation confidence\"))\n0373:             print(list(NewSig.fields.keys()))\n0374:             ```\n0375:         \"\"\"\n0376:         return cls.insert(-1, name, field, type_)"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 414,
+   "end_line": 470,
+   "excerpt": "0414:     def insert(cls, index: int, name: str, field, type_: type | None = None) -> type[\"Signature\"]:\n0415:         \"\"\"Insert a field at a specific position among inputs or outputs.\n0416: \n0417:         Negative indices are supported (e.g., `-1` appends). If `type_` is omitted, the field's\n0418:         existing `annotation` is used; if that is missing, `str` is used.\n0419: \n0420:         Args:\n0421:             index (int): Insertion position within the chosen section; negatives append.\n0422:             name (str): Field name to add.\n0423:             field: InputField or OutputField instance to insert.\n0424:             type_ (type | None): Optional explicit type annotation.\n0425: \n0426:         Returns:\n0427:             A new Signature class with the field inserted.\n0428: \n0429:         Raises:\n0430:             ValueError: If `index` falls outside the valid range for the chosen section.\n0431: \n0432:         Examples:\n0433:             ```python\n0434:             import dspy\n0435: \n0436:             class MySig(dspy.Signature):\n0437:                 input_text: str = dspy.InputField(desc=\"Input sentence\")\n0438:                 output_text: str = dspy.OutputField(desc=\"Translated sentence\")\n0439: \n0440:             NewSig = MySig.insert(0, \"context\", dspy.InputField(desc=\"Context for translation\"))\n0441:             print(list(NewSig.fields.keys()))\n0442: \n0443:             NewSig2 = NewSig.insert(-1, \"confidence\", dspy.OutputField(desc=\"Translation confidence\"))\n0444:             print(list(NewSig2.fields.keys()))\n0445:             ```\n0446:         \"\"\"\n0447:         # It's possible to set the type as annotation=type in pydantic.Field(...)\n0448:         # But this may be annoying for users, so we allow them to pass the type\n0449:         if type_ is None:\n0450:             type_ = field.annotation\n0451:         if type_ is None:\n0452:             type_ = str\n0453: \n0454:         input_fields = list(cls.input_fields.items())\n0455:         output_fields = list(cls.output_fields.items())\n0456: \n0457:         # Choose the list to insert into based on the field type\n0458:         lst = input_fields if field.json_schema_extra[\"__dspy_field_type\"] == \"input\" else output_fields\n0459:         # We support negative insert indices\n0460:         if index < 0:\n0461:             index += len(lst) + 1\n0462:         if index < 0 or index > len(lst):\n0463:             raise ValueError(\n0464:                 f\"Invalid index to insert: {index}, index must be in the range of [{len(lst) - 1}, {len(lst)}] for \"\n0465:                 f\"{field.json_schema_extra['__dspy_field_type']} fields, but received: {index}.\",\n0466:             )\n0467:         lst.insert(index, (name, (type_, field)))\n0468: \n0469:         new_fields = dict(input_fields + output_fields)\n0470:         return Signature(new_fields, cls.instructions)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/base.py",
+   "start_line": 281,
+   "end_line": 309,
+   "excerpt": "0281:         messages = []\n0282:         system_message = self.format_system_message(signature)\n0283:         messages.append({\"role\": \"system\", \"content\": system_message})\n0284:         messages.extend(self.format_demos(signature, demos))\n0285:         if history_field_name:\n0286:             # Conversation history and current input\n0287:             content = self.format_user_message_content(signature_without_history, inputs_copy, main_request=True)\n0288:             messages.extend(conversation_history)\n0289:             messages.append({\"role\": \"user\", \"content\": content})\n0290:         else:\n0291:             # Only current input\n0292:             content = self.format_user_message_content(signature, inputs_copy, main_request=True)\n0293:             messages.append({\"role\": \"user\", \"content\": content})\n0294: \n0295:         messages = split_message_content_for_custom_types(messages)\n0296:         return messages\n0297: \n0298:     def format_system_message(self, signature: type[Signature]) -> str:\n0299:         \"\"\"Format the system message for the LM call.\n0300: \n0301: \n0302:         Args:\n0303:             signature: The DSPy signature for which to format the system message.\n0304:         \"\"\"\n0305:         return (\n0306:             f\"{self.format_field_description(signature)}\\n\"\n0307:             f\"{self.format_field_structure(signature)}\\n\"\n0308:             f\"{self.format_task_description(signature)}\"\n0309:         )"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Shows signature insertion changes rendered prompt order, not just Python-side metadata.",
+ "source_index": 4,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

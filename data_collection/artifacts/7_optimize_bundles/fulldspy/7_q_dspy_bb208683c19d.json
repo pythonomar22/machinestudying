@@ -1,0 +1,132 @@
+{
+ "id": "dspy_bb208683c19d",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm running the same program in parallel with per-example LM overrides inside the module. The thing I'm nervous about is cross-talk: one thread picking up another thread's LM or leaking its override back to the main thread.\n\nGive me a complete, runnable Python program that uses two different `DummyLM` instances offline, runs two calls through DSPy's parallel executor at the same time, and prints/asserts that each input gets the answer from its own LM while the main thread keeps the original default LM.",
+ "gold_answer": "```python\nimport time\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nglobal_lm = DummyLM({\"Germany\": {\"answer\": \"Berlin\"}})\nfrance_lm = DummyLM({\"France\": {\"answer\": \"Paris\"}})\ndspy.configure(lm=global_lm)\n\n\nclass CountryProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        if \"France\" in question:\n            with dspy.context(lm=france_lm):\n                time.sleep(0.2)\n                return self.predictor(question=question)\n        time.sleep(0.2)\n        return self.predictor(question=question)\n\n\nprogram = CountryProgram()\nparallel = dspy.Parallel(num_threads=2, disable_progress_bar=True)\nresults = parallel(\n    [\n        (program, {\"question\": \"What is the capital of France?\"}),\n        (program, {\"question\": \"What is the capital of Germany?\"}),\n    ]\n)\nanswers = [result.answer for result in results]\nprint(answers)\nprint(dspy.settings.lm is global_lm)\nassert answers == [\"Paris\", \"Berlin\"]\nassert dspy.settings.lm is global_lm\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Configures a default LM, then inside the module's `forward` chooses a separate LM for the France question and runs the predictor under `with dspy.context(lm=...)`.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Keeps execution inside the scoped LM override long enough, for example with `time.sleep`, so the two worker calls overlap while the override is active.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Runs two `(module, {\"question\": ...})` pairs through `dspy.Parallel`, relying on DSPy to unpack each dict into `module(**example)` and submit both items as separate worker tasks.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Checks that each concurrent request is serviced by its intended LM, with the France request using the override LM/model and the Germany request using the original default LM/model.",
+   "span_ids": [
+    "s1",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Checks that the LM override does not leak back to the caller thread, consistent with worker threads copying parent overrides and resetting their thread-local settings when the task finishes.",
+   "span_ids": [
+    "s6",
+    "s7",
+    "s8"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "tests/utils/test_settings.py",
+   "start_line": 57,
+   "end_line": 69,
+   "excerpt": "0057: def test_dspy_context_with_dspy_parallel():\n0058:     dspy.configure(lm=dspy.LM(\"openai/gpt-4o\", cache=False), adapter=dspy.ChatAdapter())\n0059: \n0060:     class MyModule(dspy.Module):\n0061:         def __init__(self):\n0062:             self.predict = dspy.Predict(\"question -> answer\")\n0063: \n0064:         def forward(self, question: str) -> str:\n0065:             lm = dspy.LM(\"openai/gpt-4o-mini\", cache=False) if \"France\" in question else dspy.settings.lm\n0066:             with dspy.context(lm=lm):\n0067:                 time.sleep(1)\n0068:                 assert dspy.settings.lm.model == lm.model\n0069:                 return self.predict(question=question)"
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/utils/test_settings.py",
+   "start_line": 66,
+   "end_line": 68,
+   "excerpt": "0066:             with dspy.context(lm=lm):\n0067:                 time.sleep(1)\n0068:                 assert dspy.settings.lm.model == lm.model"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/predict/parallel.py",
+   "start_line": 89,
+   "end_line": 111,
+   "excerpt": "0089:         def process_pair(pair):\n0090:             result = None\n0091:             module, example = pair\n0092: \n0093:             if isinstance(example, Example):\n0094:                 if self.access_examples:\n0095:                     result = module(**example.inputs())\n0096:                 else:\n0097:                     result = module(example)\n0098:             elif isinstance(example, dict):\n0099:                 result = module(**example)\n0100:             elif isinstance(example, list) and module.__class__.__name__ == \"Parallel\":\n0101:                 result = module(example)\n0102:             elif isinstance(example, tuple):\n0103:                 result = module(*example)\n0104:             else:\n0105:                 raise ValueError(\n0106:                     f\"Invalid example type: {type(example)}, only supported types are Example, dict, list and tuple\"\n0107:                 )\n0108:             return result\n0109: \n0110:         # Execute the processing function over the execution pairs\n0111:         results = executor.execute(process_pair, exec_pairs)"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/utils/test_settings.py",
+   "start_line": 77,
+   "end_line": 83,
+   "excerpt": "0077:         module = MyModule()\n0078:         parallelizer = dspy.Parallel()\n0079:         input_pairs = [\n0080:             (module, {\"question\": \"What is the capital of France?\"}),\n0081:             (module, {\"question\": \"What is the capital of Germany?\"}),\n0082:         ]\n0083:         parallelizer(input_pairs)"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/utils/test_settings.py",
+   "start_line": 85,
+   "end_line": 93,
+   "excerpt": "0085:         # Verify mock was called correctly\n0086:         assert mock_completion.call_count == 2\n0087:         for call_args in mock_completion.call_args_list:\n0088:             if \"France\" in call_args.kwargs[\"messages\"][-1][\"content\"]:\n0089:                 # France question uses gpt-4o-mini\n0090:                 assert call_args.kwargs[\"model\"] == \"openai/gpt-4o-mini\"\n0091:             else:\n0092:                 # Germany question uses gpt-4o\n0093:                 assert call_args.kwargs[\"model\"] == \"openai/gpt-4o\""
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/utils/parallelizer.py",
+   "start_line": 115,
+   "end_line": 136,
+   "excerpt": "0115:         def worker(parent_overrides, submission_id, index, item):\n0116:             if self.cancel_jobs.is_set():\n0117:                 return index, job_cancelled\n0118:             # Record actual start time\n0119:             with start_time_lock:\n0120:                 start_time_map[submission_id] = time.time()\n0121: \n0122:             # Apply parent's thread-local overrides\n0123:             from dspy.dsp.utils.settings import thread_local_overrides\n0124: \n0125:             original = thread_local_overrides.get()\n0126:             new_overrides = {**original, **parent_overrides.copy()}\n0127:             if new_overrides.get(\"usage_tracker\"):\n0128:                 # Usage tracker needs to be deep copied across threads so that each thread tracks its own usage\n0129:                 new_overrides[\"usage_tracker\"] = copy.deepcopy(new_overrides[\"usage_tracker\"])\n0130:             token = thread_local_overrides.set(new_overrides)\n0131: \n0132:             try:\n0133:                 return index, function(item)\n0134:             finally:\n0135:                 thread_local_overrides.reset(token)\n0136: "
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/utils/parallelizer.py",
+   "start_line": 156,
+   "end_line": 171,
+   "excerpt": "0156:         executor = ThreadPoolExecutor(max_workers=self.num_threads)\n0157:         try:\n0158:             with interrupt_manager():\n0159:                 from dspy.dsp.utils.settings import thread_local_overrides\n0160: \n0161:                 parent_overrides = thread_local_overrides.get().copy()\n0162: \n0163:                 futures_map = {}\n0164:                 futures_set = set()\n0165:                 submission_counter = 0\n0166: \n0167:                 for idx, item in enumerate(data):\n0168:                     f = executor.submit(worker, parent_overrides, submission_counter, idx, item)\n0169:                     futures_map[f] = (submission_counter, idx, item)\n0170:                     futures_set.add(f)\n0171:                     submission_counter += 1"
+  },
+  {
+   "span_id": "s8",
+   "path": "tests/utils/test_settings.py",
+   "start_line": 95,
+   "end_line": 96,
+   "excerpt": "0095:         # The main thread is not affected by the context\n0096:         assert dspy.settings.lm.model == \"openai/gpt-4o\""
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Strong parallelism item: it tests thread-local context isolation rather than merely faster execution.",
+ "source_index": 17,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}
