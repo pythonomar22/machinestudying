@@ -79,8 +79,52 @@ identical eval seeds to the paired baseline/cheatsheet runs.
 
 ## Results
 
-(pending)
+Study run `smalldspy-selfquiz1-20260721` (5 rounds; one mid-run resume after
+round 4 generation initially yielded 2/6 surviving questions — fixed by
+allowing a third corrective codex attempt, commit `f6d6e7d`; rounds 1–3
+replayed from cache). Per-round training verdicts: 0 correct anywhere;
+3 partial in round 1, 1 in round 2. Studier study compute: 232k generated
+tokens across attempts + 18k distillation (external teacher compute
+excluded, recorded in artifacts).
 
-## Interpretation
+Validation trajectory (mean lenient, 7 questions × 1 rollout — noisy):
 
-(pending)
+| round | 0 | 1 | 2 | 3 | 4 | 5 |
+|---|---:|---:|---:|---:|---:|---:|
+| direct | 0.00 | 5.71 | 0.00 | 2.86 | 0.00 | 2.86 |
+| k5 | 2.86 | **25.00** | 15.00 | 2.86 | 12.14 | 5.71 |
+
+Held-out test (GPT-5.4 paper judge, seeds exactly paired with both
+baselines; lenient accuracy / mean generated tokens):
+
+| Condition | direct | k5 | k20 | forced k20 | Expertise |
+|---|---:|---:|---:|---:|---:|
+| no-study | 7.13/4.0k | 14.80/4.5k | 16.07/6.5k | 26.47/25.1k | 12.35 |
+| cheatsheet | 15.40/2.8k | 15.13/4.2k | 19.73/5.3k | 29.13/21.4k | **19.18** |
+| selfquiz (final note) | 11.40/3.4k | 14.67/4.9k | 17.73/7.0k | 21.27/21.3k | 13.75 |
+
+## Interpretation (iteration 1, honest)
+
+The specified protocol — evolve for 5 rounds, evaluate the final note —
+**does not beat the exploration cheatsheet** (13.75 vs 19.18); it lands
+between baseline and cheatsheet. Two mechanisms visible in the artifacts:
+
+1. **Full-rewrite distillation is unstable.** The note is rewritten from
+   scratch each round at temperature 1.0; validation peaked at round 1 and
+   degraded as later rewrites dropped earlier content. The final note is
+   not the best note the loop produced.
+2. **Training difficulty outran the studier.** Verdict counts collapsed to
+   all-incorrect by rounds 3–5, so later rounds distilled from failures on
+   very hard questions rather than consolidating basics.
+3. At forced k20 the selfquiz note scores below even no-study (21.27 vs
+   26.47), consistent with the paper's observation that long search
+   amortizes notes away — and suggesting this note actively misdirects
+   long searches.
+
+**Selection variant (declared before running):** because round selection by
+*self-generated* validation score is test-blind and part of a legitimate
+studying algorithm, we also evaluate the validation-selected note
+(round 1, argmax of mean validation lenient across budgets: 15.4 vs ≤6.1
+for all other rounds) as `smalldspy-selfquiz1sel-20260721`. This is the
+second and final test-set evaluation of this method family in this
+iteration; both results are reported regardless of outcome.
