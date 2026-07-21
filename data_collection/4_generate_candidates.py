@@ -324,6 +324,21 @@ def smalldspy_files() -> frozenset[str]:
 
 
 PROGRAM_FENCE = re.compile(r"```python\n(.*?)```", re.DOTALL)
+QUESTION_MIN_CHARS = 400   # loose lower bound of the adopted register
+QUESTION_MIN_PARAS = 2     # setup/symptoms and the deliverable ask
+
+
+def question_violation(question: str) -> str | None:
+    """The support-thread register: multi-paragraph, substantial setup."""
+    if len(question) < QUESTION_MIN_CHARS:
+        return (f"question is {len(question)} chars; the support-thread "
+                f"register needs a real setup ({QUESTION_MIN_CHARS}+ chars)")
+    paragraphs = [p for p in question.split("\n\n") if p.strip()]
+    if len(paragraphs) < QUESTION_MIN_PARAS:
+        return (f"question has {len(paragraphs)} paragraph(s); it must read "
+                "like a support thread (setup / observed behavior / "
+                "deliverable ask in separate paragraphs)")
+    return None
 
 
 def program_violation(answer: str) -> str | None:
@@ -348,6 +363,8 @@ def violations(candidates: list[dict], repo: Path) -> list[str]:
     if len(set(questions)) != len(questions):
         problems.append("duplicate question text across candidates")
     for position, candidate in enumerate(candidates):
+        if problem := question_violation(candidate["question"]):
+            problems.append(f"candidate {position}: {problem}")
         if problem := program_violation(candidate["answer"]):
             problems.append(f"candidate {position}: {problem}")
         for evidence in candidate["code_evidence"]:
