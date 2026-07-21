@@ -317,3 +317,32 @@ first attempt (no retries, no derailments).
 - The two finalist sets diverge further than the candidate pools did:
   cross-scope mean max 3-gram Jaccard 0.010 (max 0.051), vs 0.024 (max
   0.163) at Stage 3a.
+
+## Stage 4 — private rubric construction (file `6_build_rubrics.py`)
+
+**Copied exactly from the paper:**
+- The A.4 rubric-builder template, verbatim (2–8 atomic claims,
+  core/supporting, weights sum to exactly 100, core carries most weight,
+  1–3 spans per claim, spans only from provided files, spans ≤300 lines).
+- GPT-5.4 as the builder; numbered file dumps of the evidence files
+  provided in the prompt.
+- One rubric per selected finalist; inputs are exactly the A.4 list:
+  question ID, label, question, gold answer, evidence references,
+  evidence file contents.
+
+**Our inferences (each a potential discrepancy):**
+
+| # | Paper says | We had to decide | Our choice |
+|---|---|---|---|
+| 1 | (IDs like `dspy_3a5e956e4421` appear in the released bundles; scheme unpublished) | question ID scheme | `dspy_` + first 12 hex of sha256(question text) — matches the released format, deterministic |
+| 2 | "numbered file dumps" | the dump format | `### <path>` header + `0006: <line>` rows, 1-indexed 4-digit zero-pad — matching the excerpt format observable in the released bundles |
+| 3 | output schema unpublished | the builder's schema | `rubric` (claim_id, claim_type, weight, statement, span_ids) + `evidence` (span_id, path, start_line, end_line) — exactly the released-bundle fields; `excerpt` is computed BY US from the checkout after validation, never copied from model output |
+| 4 | A.4 confines the builder to provided inputs; A.1 stages 3a/3b/5 name the Codex harness | the harness | same `codex exec` (gpt-5.4, xhigh, read-only, scope checkout) for consistency; the sandbox holds the same pinned checkout the dumps come from, so stray reading cannot introduce contradictory content |
+| 5 | "most weight assigned to core claims" | a checkable threshold | validation requires core weight > 50 (released rows carry 60–92) |
+| 6 | (nothing) | validation & retry | deterministic checks (weights sum 100, core majority, span IDs defined/unique, span paths ⊆ provided files, line ranges within the file and ≤300 lines), ≤1 corrective re-run; span definitions never cited by a claim are dropped |
+| 7 | (nothing) | concurrency | 3 codex sessions per scope in parallel; per-item failure isolation (a failed item is reported and retried on rerun, not fatal to the scope) |
+
+Output records match the released-bundle shape (id, topic, question,
+gold_answer, rubric, evidence-with-excerpts) plus our bookkeeping
+(difficulty, note, source_index, smalldspy_scope). Both scopes run, one
+rubric session per finalist (32 + 32).
