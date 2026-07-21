@@ -377,7 +377,7 @@ def _study(args, corpus, tools, url: str, root: Path, config: dict) -> tuple[str
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--task", required=True, choices=CORPORA)
-    parser.add_argument("--condition", required=True, choices=("baseline", "cheatsheet"))
+    parser.add_argument("--condition", required=True, choices=("baseline", "cheatsheet", "selfquiz"))
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--seed", required=True, type=int)
     parser.add_argument("--budgets", default=",".join(BUDGETS))
@@ -434,6 +434,17 @@ def main() -> None:
     )
 
     note, study = "", None
+    if args.condition == "selfquiz":
+        note_path, study_path = run_root / "cheatsheet.md", run_root / "study.json"
+        if not note_path.is_file() or not study_path.is_file():
+            raise SystemExit(
+                "selfquiz evaluation requires the cheatsheet.md and study.json "
+                f"written by studying.selfquiz under {run_root}"
+            )
+        note = note_path.read_text(encoding="utf-8")
+        if not note.strip():
+            raise SystemExit(f"selfquiz cheatsheet is empty: {note_path}")
+        study = {"kind": "selfquiz", "study_sha256": sha256_json(read_json(study_path))}
     if args.condition == "cheatsheet":
         study_config = {
             "schema_version": 2,

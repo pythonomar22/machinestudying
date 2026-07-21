@@ -1,16 +1,15 @@
 #!/bin/bash
-# Run SmallDSPy evaluation with Qwen3.5-9B. The default condition is baseline;
-# scripts/cheatsheet.sbatch reuses this exact launcher with study enabled.
-# Example:
-#   SB_RUN_ID=smalldspy-base SB_SEED=0 sbatch scripts/nostudying.sbatch
-#SBATCH --job-name=studybench-eval
+# Self-quizzing study on the pinned SmallDSPy corpus, then the same held-out
+# evaluation as the baseline and cheatsheet conditions. Example:
+#   SB_RUN_ID=smalldspy-selfquiz SB_SEED=20260715 sbatch scripts/selfquiz.sbatch
+#SBATCH --job-name=studybench-selfquiz
 #SBATCH --account=matx
 #SBATCH --partition=matx
 #SBATCH --nodes=1
 #SBATCH --gpus-per-node=l40s:4
 #SBATCH --cpus-per-gpu=8
 #SBATCH --mem=256G
-#SBATCH --time=12:00:00
+#SBATCH --time=24:00:00
 #SBATCH --output=logs/slurm/%x-%j.out
 #SBATCH --error=logs/slurm/%x-%j.out
 set -euo pipefail
@@ -19,12 +18,9 @@ cd "${SLURM_SUBMIT_DIR:?submit this job with sbatch}"
 
 RUN_ID=${SB_RUN_ID:?set SB_RUN_ID}
 SEED=${SB_SEED:?set SB_SEED}
-CONDITION=${SB_CONDITION:-baseline}
-BUDGETS=${SB_BUDGETS:-direct,k5,k20,k20f}
-ROLLOUTS=${SB_ROLLOUTS:-3}
-LIMIT=${SB_LIMIT:-0}
 SMOKE=${SB_SMOKE:-0}
 DEBUG=${SB_DEBUG:-0}
+STUDY_ONLY=${SB_STUDY_ONLY:-0}
 
 die() {
     echo "FATAL: $*" >&2
@@ -34,29 +30,20 @@ die() {
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$ ]] \
     || die "SB_RUN_ID must contain only letters, digits, '-' and '_'"
 [[ "$SEED" =~ ^-?[0-9]+$ ]] || die "SB_SEED must be an integer"
-[[ "$CONDITION" = baseline || "$CONDITION" = cheatsheet || "$CONDITION" = selfquiz ]] \
-    || die "SB_CONDITION must be baseline, cheatsheet, or selfquiz"
-[[ "$ROLLOUTS" =~ ^[1-9][0-9]*$ ]] || die "ROLLOUTS must be positive"
-[[ "$LIMIT" =~ ^[0-9]+$ ]] || die "LIMIT must be non-negative"
 [[ "$SMOKE" = 0 || "$SMOKE" = 1 ]] || die "SMOKE must be 0 or 1"
 [[ "$DEBUG" = 0 || "$DEBUG" = 1 ]] || die "DEBUG must be 0 or 1"
-if [[ "$SMOKE" = 1 && "$LIMIT" = 0 ]] || [[ "$SMOKE" = 0 && "$LIMIT" != 0 ]]; then
-    die "SB_SMOKE=1 requires a positive SB_LIMIT; full runs use neither"
-fi
-
-IFS=',' read -r -a BUDGET_LIST <<< "$BUDGETS"
-[ "${#BUDGET_LIST[@]}" -gt 0 ] || die "BUDGETS must not be empty"
-for budget in "${BUDGET_LIST[@]}"; do
-    [[ "$budget" = direct || "$budget" = k5 || "$budget" = k20 \
-        || "$budget" = k20f ]] || die "unsupported budget: $budget"
-done
+[[ "$STUDY_ONLY" = 0 || "$STUDY_ONLY" = 1 ]] || die "STUDY_ONLY must be 0 or 1"
 
 command -v curl >/dev/null || die "curl is required"
 command -v setsid >/dev/null || die "setsid is required"
+command -v codex >/dev/null || die "the codex CLI is required for the quizmaster"
 [ -x .venv-dspy/bin/python ] || die "run scripts/setup.sh first"
 [ -x .venv-vllm/bin/vllm ] || die "run scripts/setup.sh first"
+[ -f .env ] || die ".env with OPENAI_API_KEY is required"
+set -a; source .env; set +a
+[ -n "${OPENAI_API_KEY:-}" ] || die "OPENAI_API_KEY missing from .env"
 : "${CUDA_VISIBLE_DEVICES:?Slurm did not expose the allocated GPUs}"
-: "${SLURM_JOB_ID:?evaluation must run inside Slurm}"
+: "${SLURM_JOB_ID:?the study must run inside Slurm}"
 CUDA_HOME=${CUDA_HOME:-/usr/local/cuda-12.8}
 [ -x "$CUDA_HOME/bin/nvcc" ] || die "nvcc not found under CUDA_HOME=$CUDA_HOME"
 export CUDA_HOME
@@ -179,21 +166,38 @@ servers_alive || die "a vLLM server crashed after startup"
 BASE_URLS=$(IFS=,; printf '%s' "${URLS[*]}")
 echo "vLLM ready: $BASE_URLS"
 
-args=(
-    --task smalldspy
-    --condition "$CONDITION"
+study_args=(
     --run-id "$RUN_ID"
     --seed "$SEED"
-    --budgets "$BUDGETS"
-    --rollouts "$ROLLOUTS"
-    --limit "$LIMIT"
+    --base-urls "$BASE_URLS"
+)
+[ "$SMOKE" = 0 ] || study_args+=(--smoke)
+[ "$DEBUG" = 0 ] || study_args+=(--debug)
+.venv-dspy/bin/python -m studying.selfquiz "${study_args[@]}"
+servers_alive || die "a vLLM server crashed during the study"
+echo "self-quizzing study complete: runs/$RUN_ID/smalldspy"
+
+if [ "$STUDY_ONLY" = 1 ]; then
+    echo "SB_STUDY_ONLY=1: skipping the held-out evaluation"
+    exit 0
+fi
+
+eval_args=(
+    --task smalldspy
+    --condition selfquiz
+    --run-id "$RUN_ID"
+    --seed "$SEED"
     --base-urls "$BASE_URLS"
     --concurrency "$((8 * NSERVE))"
 )
-[ "$SMOKE" = 0 ] || args+=(--smoke)
-[ "$DEBUG" = 0 ] || args+=(--debug)
+if [ "$SMOKE" = 1 ]; then
+    eval_args+=(--budgets direct --rollouts 1 --limit 1 --smoke)
+else
+    eval_args+=(--budgets direct,k5,k20,k20f --rollouts 3)
+fi
+[ "$DEBUG" = 0 ] || eval_args+=(--debug)
 servers_alive || die "a vLLM server crashed before evaluation"
-.venv-dspy/bin/python -m studybench.react "${args[@]}"
+.venv-dspy/bin/python -m studybench.react "${eval_args[@]}"
 servers_alive || die "a vLLM server crashed during evaluation"
 
-echo "$CONDITION evaluation complete: runs/$RUN_ID/smalldspy"
+echo "selfquiz evaluation complete: runs/$RUN_ID/smalldspy"
