@@ -320,10 +320,11 @@ def revision_violations(result: dict, repo: Path) -> list[str]:
 
 
 def revise(bundle: dict, failures: list[str], repo: Path, scope_dir: Path,
-           tag: str) -> dict:
+           tag: str, scope: str) -> dict:
+    values = gen.values_for_scope(scope)
     prompt = REVISE_TEMPLATE.format(
-        library_name=gen.DSPY_VALUES["library_name"],
-        code_roots_inline=gen.DSPY_VALUES["code_roots_inline"],
+        library_name=values["library_name"],
+        code_roots_inline=values["code_roots_inline"],
         bundle_json=json.dumps(
             {k: bundle[k] for k in ("id", "topic", "question", "gold_answer",
                                     "rubric", "evidence")},
@@ -411,7 +412,7 @@ def optimize_bundle(bundle: dict, scope: str) -> dict:
         print(f"{scope}/{qid}: round {round_no} failures "
               f"({len(failures)}), revising ...", flush=True)
         bundle = revise(bundle, failures, repo, scope_dir,
-                        f"{qid}_revise_r{round_no}")
+                        f"{qid}_revise_r{round_no}", scope)
 
     dropped = {"id": qid, "dropped": True, "history": history}
     output_path.write_text(

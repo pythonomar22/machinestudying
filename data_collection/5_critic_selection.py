@@ -179,7 +179,7 @@ def run_codex(prompt: str, scope_dir: Path, repo: Path, slug: str, attempt: int)
     return json.loads(last_message.read_text(encoding="utf-8"))
 
 
-def critic_prompt(record: dict, sessions: dict[int, dict]) -> str:
+def critic_prompt(record: dict, sessions: dict[int, dict], scope: str) -> str:
     seeds = gen.seed_payload(record["seed_numbers"], sessions)
     candidates = [
         {"index": i, **{k: c[k] for k in ("question", "answer", "difficulty",
@@ -187,7 +187,7 @@ def critic_prompt(record: dict, sessions: dict[int, dict]) -> str:
         for i, c in enumerate(record["candidates"])
     ]
     return CRITIC_TEMPLATE.format(
-        **gen.DSPY_VALUES,
+        **gen.values_for_scope(scope),
         label=record["label"],
         label_description=record["label_description"],
         num_final=NUM_FINAL,
@@ -206,7 +206,7 @@ def select_topic(record: dict, sessions: dict[int, dict], scope: str) -> dict:
         print(f"{scope}/{slug}: output exists, skipping")
         return json.loads(output_path.read_text(encoding="utf-8"))
 
-    prompt = critic_prompt(record, sessions)
+    prompt = critic_prompt(record, sessions, scope)
     (scope_dir / f"prompt_{slug}.txt").write_text(prompt, encoding="utf-8")
 
     result, problems = None, ["not run"]

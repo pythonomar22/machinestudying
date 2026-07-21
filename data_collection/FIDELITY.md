@@ -251,7 +251,17 @@ one-time LLM judgment, archived).
 
 **Two-corpus design (user-directed):** generation runs twice with
 identical seeds, template, and harness, differing ONLY in the repository
-Codex can read — `fulldspy` (full checkout, source + tests + docs) and
+Codex can read — plus, since 2026-07-21, per-scope `code_roots`
+placeholder values (`SCOPE_VALUES`): the smalldspy prompt states
+truthfully that the corpus is a deliberately small subset (only
+`dspy/predict`, `dspy/adapters`, `dspy/primitives`, `tests/predict`) and
+warns that remembered full-DSPy files do not exist there. Motivated by an
+observed rev-2 failure mode: under the program register the generator
+cited out-of-scope files from parametric memory (`dspy/evaluate/...`,
+`dspy/clients/...`) through both attempts. Describing the corpus honestly
+to the generator is what the paper's own setup does implicitly (its
+generator's repo IS the answering agent's corpus); stages 3b and the
+optimizer inherit the same per-scope values — `fulldspy` (full checkout, source + tests + docs) and
 `smalldspy` (the 66-file corpus checkout; no docs in its working tree, and
 the read-only sandbox enforces scope because out-of-scope files do not
 exist there). This measures how corpus scope shapes the generated

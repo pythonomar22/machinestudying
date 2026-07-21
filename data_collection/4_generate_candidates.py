@@ -236,6 +236,38 @@ DSPY_VALUES = {
     ),
 }
 
+# Per-scope corrections to the shared values: the generator must be told the
+# truth about the corpus it is inside. For the sparse SmallDSPy checkout the
+# generic "dspy/ + tests/" description is misleading - the model fills the
+# gaps from its parametric memory of full DSPy and cites files that do not
+# exist here (observed failure mode, 2026-07-21).
+SCOPE_VALUES = {
+    "fulldspy": {},
+    "smalldspy": {
+        "code_roots_bullets": (
+            "- `dspy/` --- the DSPy library source. THIS CORPUS IS A "
+            "DELIBERATELY SMALL SUBSET: only `dspy/predict/`, "
+            "`dspy/adapters/`, and `dspy/primitives/` exist here.\n"
+            "- `tests/` --- its test suite: only `tests/predict/` exists "
+            "here.\n"
+            "- The full DSPy library you may remember from training has many "
+            "modules and files that do NOT exist in this checkout. Cite only "
+            "files you have verified exist here (list the directories "
+            "before citing); anchor every question on mechanisms whose "
+            "implementation is present in THIS corpus."
+        ),
+        "code_roots_inline": (
+            "`dspy/predict/`, `dspy/adapters/`, `dspy/primitives/`, "
+            "`tests/predict/`"
+        ),
+    },
+}
+
+
+def values_for_scope(scope: str) -> dict:
+    return {**DSPY_VALUES, **SCOPE_VALUES[scope]}
+
+
 OUTPUT_SCHEMA = {
     "type": "object",
     "properties": {
@@ -419,7 +451,7 @@ def generate_topic(topic: dict, sessions: dict[int, dict], scope: str) -> dict:
     seed_numbers = nearest_centroid_members(topic, sessions)
     payload = seed_payload(seed_numbers, sessions)
     prompt = GENERATOR_TEMPLATE.format(
-        **DSPY_VALUES,
+        **values_for_scope(scope),
         label=slug,
         label_description=topic["description"],
         num_candidates=NUM_CANDIDATES,
