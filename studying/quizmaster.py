@@ -241,7 +241,7 @@ def generate_questions(
 
     avoid = exemplars + prior_questions
     accepted, rejected, problems = [], [], ["not run"]
-    for attempt in range(2):
+    for attempt in range(3):
         attempt_prompt = prompt if attempt == 0 else (
             prompt + "\n\n## Corrections required\nYour previous output had "
             "these problems; fix them and return the complete JSON again:\n- "
