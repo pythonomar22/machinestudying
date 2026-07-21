@@ -291,3 +291,29 @@ under `artifacts/5_critic_selection/<scope>/`; per-topic records store
 `kept_indices` / `rejected_indices` / `selection_notes` so every
 rejection is auditable. Finalists are re-tagged `smalldspy_scope` after
 any critic rewrite of the evidence.
+
+**Stage 3b result (2026-07-20):** both scopes complete — 8 finalists x 4
+topics = 32 per scope, all questions unique, every session valid on its
+first attempt (no retries, no derailments).
+- The critic used its A.3 rewrite license on nearly every keep (fulldspy
+  32/32 questions and answers rewritten, 16/32 evidence lists changed;
+  smalldspy 31/32 questions). Spot-checks show sharpenings of the same
+  scenario, notably *removing* locator giveaways from question text
+  (kwarg names, provider brand lists) — the A.3 "keep the symbol in the
+  answer, not the question" rule applied to our generator's output.
+- Selection notes are substantive: keeps justified by subtopic
+  diversity, rejects named per index (seed paraphrase, overlap, one-grep
+  easiness, off-label drift).
+- Difficulty of finalists: fulldspy 14 hard / 18 very_hard, smalldspy
+  15/17 — mild enrichment vs the pools (35/80 and 30/80 very_hard), with
+  some relabeling by the critic (fulldspy sources of its finalists were
+  16/32 very_hard).
+- `5_fulldspy_finalists.json`: 5/32 inside SmallDSPy scope (candidate
+  pool was 11/80 — proportion roughly preserved). Evidence concentrates
+  in `dspy/clients` (31 citations), `dspy/adapters`, `dspy/predict`.
+- `5_smalldspy_finalists.json`: 32/32 in scope; evidence in
+  `dspy/adapters` (44), `dspy/predict` (30), `tests/predict` (20),
+  `dspy/primitives` (14).
+- The two finalist sets diverge further than the candidate pools did:
+  cross-scope mean max 3-gram Jaccard 0.010 (max 0.051), vs 0.024 (max
+  0.163) at Stage 3a.

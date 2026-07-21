@@ -1,0 +1,572 @@
+You are the final critic and selector for benchmark-grade DSPy expert QA.
+
+## About DSPy
+DSPy is a declarative framework for programming --- rather than prompting --- language models. Users compose typed modules (such as `dspy.Predict`, `dspy.ChainOfThought`, and `dspy.ReAct`) whose input/output behavior is declared by signatures; adapters translate signatures into provider-specific prompts and parse completions back into typed fields; optimizers tune prompts and demonstrations against metrics. Questions ask for a self-contained, runnable Python program alongside the explanation. Solutions must run offline with no API key --- whenever a language model is needed, use the offline LM stub the library itself ships for its own tests (`dspy.utils.dummies.DummyLM`) --- so that every reference answer can be executed and verified in a sandbox.
+
+## Benchmark reality
+- Target primary label: `module_composition_and_runtime_interoperability`
+- Label description: `Users are trying to compose DSPy programs from core abstractions—Signatures, Predictors, ReAct agents, retrievers, tools, and optimizers—and then execute, compile, save, or reload them reliably. The shared friction is in the core runtime’s interoperability layer: typed field/template handling, structured-output parsing, usage tracking, retriever/tool normalization, and serialized module state across components.`
+- You are selecting the final `8` items from a larger candidate set.
+- Treat docs as potentially unavailable at answer time even though you may have seen them during generation.
+
+## Selection criteria
+- Keep only candidates that are clearly answerable from the code roots alone (`dspy/`, `tests/`) --- no docs at answer time.
+- Reject anything based on exact wording from documentation.
+- Reject questions that are too easy, one-grep, or single-symbol lookups.
+- **Reject questions that give away the locator.** The benchmark tests an agent with grep/glob/read over the repo --- locating the right code is half the challenge. If the question names a method/attribute on a class, an internal handler/adapter/parser/helper class, an internal helper, a file path, a test-file name, or a `snake_case` dotted function, it's a closed-book question. Rewrite to describe the behavior / symptom / user goal, keeping the specific symbol only in the gold `answer` and `code_evidence`. If rewriting would require fabricating a question unsupported by the seed or code, reject outright.
+- **Reject "in the X example / tutorial / notebook / walkthrough / demo / README / guide" phrasings.** These are awkward and underspecified --- they point at an artifact as if a shared referent exists ("in the repo's multihop RAG example, ..."). A strong question stands on its own: rewrite to describe the *scenario* or *setup* itself (e.g., "in a multi-hop retrieval pipeline where the model refines its query across hops, ..."), or reject.
+- **OK to keep**: branded user-facing concept names at the granularity a user would type:
+- Public branded module and concept names a real user would type: `dspy.Predict`, `dspy.ChainOfThought`, `dspy.ReAct`, `dspy.Module`, `dspy.Signature`, `dspy.Example`, `dspy.Evaluate`, `dspy.LM`, `dspy.configure` / `dspy.context`, `DummyLM`.
+- User-facing concepts at brand granularity: signatures, input/output fields, demos, adapters (as a concept), optimizers / teleprompters (as a concept), metrics, tools, trajectories, conversation history, streaming, async, caching, saving/loading compiled programs.
+  The rule is "named the concept, not the attachment point." A branded class named as a concept is fine; the same class with a `.method` suffix is not.
+- **Reject questions that are too generic to have one locator** (e.g., "how does DSPy handle errors?" or "how does DSPy do retries?"). A valid question is one where, after reading the repo, a careful expert would converge on the same specific file/symbol as the answer. Tighten generic questions by adding behavioral constraints, not by naming the class.
+- **Reject questions whose gold answer rests on the seed's community answer as truth.** The community answers come from a weaker assistant and are frequently wrong. The gold answer must be supported by `code_evidence` pointing into actual DSPy source. If the only support is "the seed said so," reject.
+- Reject questions that copy or closely paraphrase sampled community questions.
+- Reject anything outside the target label or overly similar to another candidate.
+- Prefer diversity across subtopics within the label.
+- You may rewrite the question, answer, difficulty, evidence, and note to improve quality.
+- Keep final answers concise and well-grounded.
+- `code_evidence` must contain real repo files under one of the code roots (`dspy/`, `tests/`), and each filename must match the pattern `*.py`; reject candidates that cite files with other extensions.
+
+## Sampled community anchors
+These are the same sampled sessions used during generation. They are for distribution anchoring only.
+
+[
+  {
+    "number": 8366,
+    "question": "[Bug] Running optimizer example from website does not work\n\nWhen I try to run the optimizing example with a google model, I get this error:\nTraceback (most recent call last):\nFile \" \", line 198, in _run_module_as_main\nFile \" \", line 88, in _run_code\nFile \"C:\\Users\\stefa\\Desktop\\test_sglang\\test_inferretrieverank\\test_dspy.py\", line 40, in\noptimized = optimizer.compile(classify, trainset=trainset, teacher = classify.deepcopy())\n^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nFile \"C:\\Users\\stefa\\Desktop\\test_sglang\\.venv\\Lib\\site-packages\\dspy\\teleprompt\\bootstrap_finetune.py\", line 89, in compile\nlogger.info(f\"Using {len(train_data)} data points for fine-tuning the model: {pred.lm.model}\")\n^^^^^^^^^^^^^\nAttributeError: 'NoneType' object has no attribute 'model'\nThis is the following code that I am running: import random\nfrom typing import Literal\nimport dspy\nfrom dspy.datasets import DataLoader\nfrom datasets import load_dataset\nimport mlflow\nfrom dotenv import load_dotenv\nload_dotenv()\nmlflow.dspy.autolog(\nlog_compiles=True, # Track optimization process\nlog_evals=True, # Track evaluation results\nlog_traces_from_compile=True # Track program traces during optimization\n)\nexp_name = \"Optimize google simple with bootstrapping\"\nmlflow.set_tracking_uri(\"http://localhost:5000\") # Use local MLflow server\nmlflow.set_experiment(exp_name)\nCLASSES = load_dataset(\"PolyAI/banking77\", split=\"train\", trust_remote_code=True).features['label'].names\nkwargs = dict(fields=(\"text\", \"label\"), input_keys=(\"text\",), split=\"train\", trust_remote_code=True)\ntrainset = [\ndspy.Example(x, hint=CLASSES[x.label], label=CLASSES[x.label]).with_inputs(\"text\", \"hint\")\nfor x in DataLoader().from_huggingface(dataset_name=\"PolyAI/banking77\", **kwargs)[:5]\n]\nrandom.Random(0).shuffle(trainset)\ndspy.configure(lm=dspy.LM(\"gemini-2.0-flash-lite\"))\nif not dspy.settings.lm:\nraise AssertionError(\"No LM is loaded.\")\nsignature = dspy.Signature(\"text -> label\").with_updated_fields('label', type_=Literal[tuple(CLASSES)])\nclassify = dspy.ChainOfThoughtWithHint(signature)\noptimizer = dspy.BootstrapFinetune(metric=(lambda x, y, trace=None: x.label == y.label), num_threads=3)\noptimized = optimizer.compile(classify, trainset=trainset, teacher = classify.deepcopy())\noptimized(text=\"What does a pending cash withdrawal mean?\").\nFrom what I have debugged, it seems that probably this could be recreated with gpt-4o as well as the pred part of classify.predictors does not contain any .lm attribute, so it is set to None.\n2.6.27",
+    "community_answers": [
+      "@stefantaga24 Thanks for reporting the issue! \n\nWe don't support finetuning `dspy.configure(lm=dspy.LM(\"gemini-2.0-flash-lite\"))` now, to get `BootstrapFinetune ` to work, please use an OpenAI/Databricks model that can be finetuned. "
+    ]
+  },
+  {
+    "number": 9016,
+    "question": "[Bug] DSPy tool calling breaks on Python version 3.14\n\nWhen I try to execute tools that are defined in a DSPy program, it fails with \"AttributeError: 'str' object has no attribute 'tool_calls'\"\n1. Setup environment to use Python 3.14\n2. Try executing the code from DSPy docs [here](https://dspy.ai/learn/programming/tools/#approach-2-manual-tool-handling)\nNOTE: Attaching screenshot showing the difference in outputs for different Python versions\n<img width=\"743\" height=\"443\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/66028826-dbad-495c-a61c-af616f3ca85d\" />\n3.0.4b2",
+    "community_answers": [
+      "Currently `dspy` supports Python versions from `3.10` to `3.13` as can be seen at [uv.lock](<https://github.com/stanfordnlp/dspy/blob/main/uv.lock#L3>). Thus, using `Python3.14` will probably cause some bugs as it not yet supported! "
+    ]
+  },
+  {
+    "number": 7798,
+    "question": "[Bug] AttributeError: module 'dspy' has no attribute 'settings'\n\nwhen trying to run the simple examples from the dspy tutorials page I keep getting this error no matter what I try:\n\\site-packages\\dspy\\utils\\callback.py:230, in with_callbacks. .wrapper(instance, *args, **kwargs)\n[227](file:///C:/Users/rahepler/AppData/Local/Programs/Python/Python313/Lib/site-packages/dspy/utils/callback.py:227) @functools.wraps(fn)\n[228](file:///C:/Users/rahepler/AppData/Local/Programs/Python/Python313/Lib/site-packages/dspy/utils/callback.py:228) def wrapper(instance, *args, **kwargs):\n[229](file:///C:/Users/rahepler/AppData/Local/Programs/Python/Python313/Lib/site-packages/dspy/utils/callback.py:229) # Combine global and local (per-instance) callbacks.\n--> [230](file:///C:/Users/rahepler/AppData/Local/Programs/Python/Python313/Lib/site-packages/dspy/utils/callback.py:230) callbacks = dspy.settings.get(\"callbacks\", []) + getattr(instance, \"callbacks\", [])\n[232](file:///C:/Users/rahepler/AppData/Local/Programs/Python/Python313/Lib/site-packages/dspy/utils/callback.py:232) # If no callbacks are provided, just call the function\n[233](file:///C:/Users/rahepler/AppData/Local/Programs/Python/Python313/Lib/site-packages/dspy/utils/callback.py:233) if not callbacks:\nAttributeError: module 'dspy' has no attribute 'settings'\nCode here:\nimport dspy\nfrom dspy.datasets import HotPotQA\nlm = dspy.LM('openai/gpt-4o-mini')\ncolbert = dspy.ColBERTv2(url='http://20.102.90.50:2017/wiki17_abstracts')\ndspy.configure(lm=lm, rm=colbert)\nagent = dspy.ReAct(\"question -> answer\", tools=[dspy.Retrieve(k=1)])\nprediction = agent(question=\"Which baseball team does Shohei Ohtani play for?\")\nprint(prediction.answer)\npip install dspy, then simply copy and past the above code in and run it.\n2.6.2",
+    "community_answers": [
+      "@rahepler2 thanks for reporting the issue! I tried the code in a fresh environment and I am not seeing any issues. May I have your deps list? Or the output from `pip list | grep dspy`, thank you!",
+      "@rahepler2 this is weird, could you run `python3 -c \"import dspy;print(dspy.settings)` and see what that outputs? \n\nAlso it worth trying creating a fresh conda environment and reinstall dspy. ",
+      "Closing because we cannot reproduce"
+    ]
+  },
+  {
+    "number": 293,
+    "question": "TypeError: unsupported operand type(s) for +: 'NoneType' and 'int'\n\nHey,\nWhen I try the [Getting Started Notebook](https://github.com/stanfordnlp/dspy/blob/main/intro.ipynb) with Ollama, the first time I run one of the examples it works fine. But the next time it's maybe cached and throws an error around token use?\n[code]\nFirst time:\n[code]\nTry again:\n[code]",
+    "community_answers": [
+      "had the same issue. I _think_  ollama does not return the prompt_eval_count if you rerun it on exact same query (internal caching) : https://github.com/ollama/ollama/issues/2068\r\n",
+      "Ah interesting. So this is an issue in Ollama? Anyway adding caching in DSPy will probably resolve that, since it will avoid going to Ollama twice. Anyone up for it? There's an example for caching TGI and VLLM in the hf_clients.py file",
+      "Facing the same issue. @okhat I can take this up sent #309 for the same class previously.\r\n\r\nIn short, if we do not have `prompt_eval_count`, will use previous / last available `prompt_eval_count`. Let me know if it sounds good. For this I don't think we need caching, can do away with having a private variable that stores prev / last value `self._prev_prompt_eval_count`."
+    ]
+  },
+  {
+    "number": 9425,
+    "question": "[Bug] TypeError: issubclass() arg 1 must be a class when using ReAct with tools\n\nWhen using dspy.ReAct with tool functions, I'm getting a TypeError in the adapter's _call_preprocess method. The error occurs when DSPy tries to check issubclass(field.annotation, Type) but the annotation is not a class (likely a generic type like List[dict]).\nEnvironment:\nDSPy version: 3.1.3\nPython version: 3.x (miniconda)\nOS: Windows\nimport dspy\nfrom pydantic import BaseModel\ndspy.configure(lm=dspy.LM(\"groq/qwen/qwen3-32b\"))\nclass Date(BaseModel):\nyear: int\nmonth: int\nday: int\nhour: int\nclass UserProfile(BaseModel):\nuser_id: str\nname: str\nemail: str\ndef get_user_info(name: str):\n\"\"\"Fetch the user profile from database with given name.\"\"\"\nreturn UserProfile(user_id=\"1\", name=name, email=f\"{name}@example.com\")\nclass CustomerService(dspy.Signature):\n\"\"\"Handle user requests.\"\"\"\nuser_request: str = dspy.InputField()\nprocess_result: str = dspy.OutputField()\nreact = dspy.ReAct(CustomerService, tools=[get_user_info])\nresult = react(user_request=\"Help me, my name is Adam\") # TypeError here\n3.1.3",
+    "community_answers": [
+      "Thanks for the report. I tried to reproduce this locally.\n\nMy Setup:\n- uv with CPython 3.10.19\n- inspected the generated ReAct signature, especially next_tool_args\n- exercised the adapter preprocess path directly, since the reported TypeError should happen before the actual LM call\n- also checked the full react(...) path with a stubbed LM response path\n\nI could not reproduce the crash from the example as written.\n\nI think there is still some environment-specific detail missing from the repro, and I don't have a windows machine to check with.\n\nCould you share:\n1. the full traceback, not just the final exception line\n2. exact Python version, including patch version, from python --version\n\nThanks for the help!",
+      "This was a real issue on py 3.10 + pydantic 2.10.3"
+    ]
+  },
+  {
+    "number": 8793,
+    "question": "[Bug]  WARNING dspy.adapters.json_adapter: Failed to use structured output format, falling back to JSON mode.\n\nWhen i use meta-llama/Llama-3.3-70B-Instruct-Turbo, with a Predict module I am gettting a warning:\ndspy.adapters.json_adapter: Failed to use structured output format, falling back to JSON mode.\nI inspected the raw output and it is valid json, so I don't see how the output format is wrong. On top of that I executed the same script yesterday and had no problem.\n[code]\n[code]\n3.0.2",
+    "community_answers": [
+      "The warning is displayed when the LM api call fails by passing a Pydantic model to [json_schema](https://docs.litellm.ai/docs/completion/json_mode#2-check-if-model-supports-json_schema). @chenmoneygithub, can you help remind me when a request fails on a Pydantic model while passing with `response_format={ \"type\": \"json_object\" }`?",
+      "This is a weird one because it seems like this model actually supports `response_format` with a specific `json_schema` with a but the response format we are passing in is invalid.\n\nSpecifically, we get `Exception caught:  litellm.BadRequestError: Together_aiException - Input validation error: grammar is not valid: failed to compile grammar`",
+      "Hi @TomasQuintao, this issue appears to be isolated to \"together_ai/meta-llama/Meta-Llama-3.3-70B-Instruct-Turbo\".\n\nThe following request fails with the `failed to compile grammar` error approximately 10-30% of the time.\n\nI have submitted a support ticket to Together.ai for this.\n\nThe repro for a non-dspy version of this is below.\n```python\nfrom openai import OpenAI\n\nmessages = [\n    {\n        \"role\": \"system\",\n        \"content\": (\n            \"Given the fields `question`, produce the fields `answer`.\"\n        ),\n    },\n    {\n        \"role\": \"user\",\n        \"content\": (\n            \"What is the capital of france?\\n\\n\"\n            \"Respond with a JSON object in the following order of fields: `answer`.\"\n        ),\n    },\n]\n\nresponse_format = {\n    \"type\": \"json_schema\",\n    \"json_schema\": {\n        \"name\": \"QA\",\n        \"strict\": True,\n        \"schema\": {\n            \"title\": \"QA\",\n            \"type\": \"object\",\n            \"additionalProperties\": False,\n            \"properties\": {\n                \"answer\": {\"title\": \"Answer\", \"type\": \"string\"}\n            },\n            \"required\": [\"answer\"],\n        },\n    },\n}\n\nclient = OpenAI(api_key=api_key, base_url=api_base)\n\n\nimport concurrent.futures\nimport openai\n\ndef run_completion(model=\"meta-llama/Llama-3.3-70B-Instruct-Turbo\"):\n    try:\n        completion = client.chat.completions.create(\n            model=model,\n            messages=messages,\n            response_format=response_format,\n        )\n        content = completion.choices[0].message.content\n        # Optionally print or process content\n        return False  # No error\n    except openai.UnprocessableEntityError:\n        return True  # Error occurred\n\nnum_runs = 100\nmax_workers = 5\nnum_unprocessable = 0\n\n# meta-llama/Llama-3.2-3B-Instruct-Turbo\n# meta-llama/Llama-4-Maverick-17B-128E-Instruct-FP8\n# meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo\n\n\nwith concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:\n    futures = [executor.submit(run_com"
+    ]
+  },
+  {
+    "number": 9230,
+    "question": "[Bug] dspy.primitives.example.Example() got multiple values for keyword argument 'context' when using bootstrap\n\nWhen trying to use BootstrapFewShot, a ChainOfThought model, and a dataset that does not contain a context key, I ran into the following error message\n[Bug] dspy.primitives.example.Example() got multiple values for keyword argument 'context' when using bootstrap\nI output the context as part of the custom ChaintOfThought Module, as otherwise evaluation doesn't work. Evaluation works fine; bootstrapping does not.\nWorkaround is to do\ninput_output_dict = {**inputs, **outputs}\ndemo = dspy.Example(augmented=True, **input_output_dict)\non line 223 of bootstrap.py\n[code]\n3.1.2",
+    "community_answers": [
+      ">  I also don't know if the context should be added, but this was my workaround\n\nYou should modify your forward method like:\n```py\ndef forward(self, question: str, **kwargs):\n    context = get_context(question)\n    prediction = self.cot(question=question, context=context)\n    return dspy.Prediction(context=context, **prediction)\n```\n\nthe problem with your current method :\n```py\nprediction[\"context\"] = context  # modifies the trace's outputs dict\n```\nThus, when bootstrap tries to create demos, it sees context in both inputs and outputs which leads to the duplicate keyword error."
+    ]
+  },
+  {
+    "number": 135,
+    "question": "Fail to load state of compiled model\n\nWhen I try to load state of compiled model and call it I get exception here:\nhttps://github.com/stanfordnlp/dspy/blob/51e511115c961329223070cc50f5a5d0d61db58d/dsp/templates/template_v2.py#L196\ndemo is a dictionary, but seems that it should be dspy.Example\nI've tried to bypass that by loading state manually and converting state['generate_answer']['demos'] into dspy.Example, and it works, but instead of answer I've got **rationale** instead of **answer** itself.\nSeems that it's the case for ChainOfThought and I think it should work fine for just regular Predictor.\nExample to reproduce:\n[code]",
+    "community_answers": [
+      "Hi \r\n\r\nThank you for providing this example to reproduce! Couple of suggestions based on your use case:\r\n\r\nRegarding \"instead of answer I've got rationale instead of answer itself,\" I notice the MathSolverModule forward pass returns the predictor call itself (`self.generate_answer(**kwargs)`) which will indeed print out the Prediction object containing both rationale and answer. However, to meet your case of returning only answer, you would want to do `return dspy.Prediction(answer=prediction.answer)`. The RAG() module defined in the intro notebook is a great example for showing this!\r\n\r\nRegarding the AttributeError you encounter, this was likely due to some internal conversion error between how the module is being serialized and somehow not retaining the Example object while being deserialized. A quick fix for this is including this snippet to override the update method of dsp.Example (`dspy/dsp/primitives/demonstrate.py` class Example) to fix the data format inconsistencies after the module is loaded:\r\n\r\n```\r\ndef update(self, *args, **kwargs)\r\n\r\n    super().update(*args, **kwargs)\r\n\r\n    for key, value in self.items():\r\n\r\n        if isinstance(value, dict) and not isinstance(value, Example):\r\n\r\n            self[key] = Example(value)\r\n\r\n        elif isinstance(value, list):\r\n\r\n            self[key] = [Example(item) if isinstance(item, dict) and not isinstance(item, Example) else item for item in value]\r\n```\r\n\r\nHowever, this is something we will look further into as it seems to be a deeper bug in the loading of the saved module metadata correctly. Thank you for raising this error! Please let me know if you have any additional questions. ",
+      "This is now fixed on main, @Puzer!\r\n\r\nThanks for reporting. (The fix is on the main branch. It will be part of the next pip release too.)"
+    ]
+  },
+  {
+    "number": 1625,
+    "question": "dspy.configure lm error\n\nwhen i call this method dspy.configure(lm=lm), i am taking below error. dspy version is 2.5.7\nAttributeError\nThis cell raised an exception: AttributeError('module 'dspy' has no attribute 'configure'')\nSee the console area for a traceback.\nTraceback (most recent call last):\nFile \"C:\\Users\\bayaz\\OneDrive\\Masaüstü\\morimo\\morimo\\Lib\\site-packages\\marimo\\_runtime\\executor.py\", line 171, in execute_cell\nreturn eval(cell.last_expr, glbls)\n^^^^^^^^^^^^^^^^^^^^^^^^^^^\nCell marimo://C:\\Users\\bayaz\\OneDrive\\Masaüstü\\morimo\\gemini_agents.py#cell=cell-9, line 1, in\ndspy.configure(lm=lm)\n^^^^^^^^^^^^^^\nAttributeError: module 'dspy' has no attribute 'configure'",
+    "community_answers": [
+      "Hi @bayazknn , ~~you should do `dspy.settings.configure(lm = lm)`~~\r\n\r\ncan you try upgrading to dspy-ai==2.5.8 and importing dspy before running your code and seeing if this works? dspy.configure should work post 2.5 migration mb",
+      "@bayazknn we updated the response, please see above, let us know if not!"
+    ]
+  },
+  {
+    "number": 1534,
+    "question": "Error: 'Name' object has no attribute 'ops'\n\nWhen using ProgramOfThought and code is generated with named conditionals like this:\n[code]\nThe following error message is generated.\n`Error: 'Name' object has no attribute 'ops'`\nThis can be fixed by adding the 'elif isinstance(condition, ast.Name):' statement in `python_interpreter.py` as shown below.\n[code]",
+    "community_answers": [
+      "Hey @arthurgreef ! Thanks a lot. Do you want to open a PR with these improvements for the interpreter?"
+    ]
+  }
+]
+
+## Candidate set to review
+[
+  {
+    "index": 0,
+    "question": "I saved a small DSPy program with a compiled `dspy.Predict` inside it, moved the state to a fresh process, and loaded it back. My demos survived, but I do not want a serialized endpoint override to silently change where future calls go. What state is actually preserved, which LM settings are intentionally dropped unless I opt in, and show an offline round-trip that proves it.",
+    "answer": "`dspy.Predict.dump_state()` preserves `traces`, `train`, `demos`, the serialized signature, and the serialized LM. `load_state()` restores those, but it sanitizes three LM keys by default: `api_base`, `base_url`, and `model_list`. You only keep those if you pass `allow_unsafe_lm_state=True`. That behavior also propagates when an outer module delegates loading to inner predictors. Program:\nimport copy, dspy\np = dspy.Predict('q -> a')\np.demos = [dspy.Example(q='x', a='y').with_inputs('q')]\np.lm = dspy.LM('openai/gpt-4o-mini', temperature=0.3)\ns = copy.deepcopy(p.dump_state())\ns['lm']['api_base'] = 'http://override.local/v1'\nsafe = dspy.Predict('q -> a').load_state(s)\nunsafe = dspy.Predict('q -> a').load_state(s, allow_unsafe_lm_state=True)\nprint('api_base' in safe.lm.kwargs)\nprint(unsafe.lm.kwargs['api_base'])\nprint(safe.demos[0]['a'])",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict.dump_state"
+      },
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict.load_state"
+      },
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "_sanitize_lm_state"
+      },
+      {
+        "file": "dspy/primitives/base_module.py",
+        "symbol": "BaseModule.load_state"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_load_ignores_serialized_endpoint_override_by_default"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_load_allows_serialized_endpoint_override_with_opt_in"
+      }
+    ],
+    "note": "This candidate anchors save/load behavior to the predictor-level serialization contract and the program-level delegation path."
+  },
+  {
+    "index": 1,
+    "question": "I keep tripping over DSPy runtime setup: sometimes I forget to configure an LM at all, and sometimes I accidentally pass a model name string directly into `dspy.configure`. What exact checks happen before a predictor call, and can you give an offline repro of both failure modes plus the correct setup?",
+    "answer": "Before a predictor runs, DSPy resolves the LM from the call, then the predictor, then global settings. If that resolves to `None`, it raises a missing-LM `ValueError`. If it resolves to a plain string, it raises a second `ValueError` telling you to use `dspy.LM(...)` instead. Any other non-`BaseLM` object also raises. Program:\nimport dspy\nfrom dspy.utils.dummies import DummyLM\np = dspy.Predict('q -> a')\ndef show(fn):\n    try:\n        fn()\n    except Exception as e:\n        print(type(e).__name__, e)\nshow(lambda: p(q='hi'))\ndspy.configure(lm='openai/gpt-4o-mini')\nshow(lambda: p(q='hi'))\ndspy.configure(lm=DummyLM([{'a': 'ok'}]))\nprint(p(q='hi').a)",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict._forward_preprocess"
+      },
+      {
+        "file": "dspy/__init__.py",
+        "symbol": "configure"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_error_message_on_invalid_lm_setup"
+      }
+    ],
+    "note": "This candidate sharpens the common setup confusion into the exact runtime resolution order and error branches."
+  },
+  {
+    "index": 2,
+    "question": "I am wrapping predictors inside my own `dspy.Module` and want the normal runtime bookkeeping to keep working. What output shapes preserve DSPy’s prediction-level behavior, and what do I lose if I call `forward(...)` directly instead of `module(...)`? Show a runnable offline example.",
+    "answer": "DSPy’s wrapper logic lives in `Module.__call__` and `acall`, not in a direct `forward(...)` call. That wrapper is also where usage-tracking attachment happens, and it only knows how to attach usage when the module returns a `dspy.Prediction` or a tuple whose first element is a `Prediction`. Returning some other shape still works functionally, but it cannot carry that bookkeeping. Program:\nimport dspy\nfrom dspy.utils.dummies import DummyLM\nclass Good(dspy.Module):\n    def __init__(self): super().__init__(); self.p = dspy.Predict('q -> a')\n    def forward(self, q): return self.p(q=q)\nclass TupleGood(dspy.Module):\n    def __init__(self): super().__init__(); self.p = dspy.Predict('q -> a')\n    def forward(self, q): return self.p(q=q), {'meta': 1}\nclass Bad(dspy.Module):\n    def __init__(self): super().__init__(); self.p = dspy.Predict('q -> a')\n    def forward(self, q): return {'a': self.p(q=q).a}\ndspy.configure(lm=DummyLM([{'a': 'x'}, {'a': 'y'}, {'a': 'z'}, {'a': 'w'}]))\nprint(type(Good()(q='1')).__name__)\nprint(type(TupleGood()(q='2')[0]).__name__)\nprint(Bad()(q='3'))\nprint(Good().forward(q='4'))",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/primitives/module.py",
+        "symbol": "Module.__call__"
+      },
+      {
+        "file": "dspy/primitives/module.py",
+        "symbol": "Module._set_lm_usage"
+      },
+      {
+        "file": "dspy/primitives/module.py",
+        "symbol": "Module.__getattribute__"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_lm_usage"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_lm_usage_with_async"
+      }
+    ],
+    "note": "This candidate isolates the compositional contract for custom modules: the runtime wrapper expects `Prediction`-shaped outputs."
+  },
+  {
+    "index": 3,
+    "question": "I requested multiple generations from `dspy.Predict` but left everything else near-default. Does DSPy silently rewrite generation settings in that case, and can you show an offline proof?",
+    "answer": "Yes. During predictor preprocessing, if the effective temperature is unset or `<= 0.15` and the generation count is greater than 1, DSPy forces `temperature=0.7`. The goal is to avoid asking for multiple nearly deterministic generations. Program:\nimport dspy\nfrom dspy.utils.dummies import DummyLM\np = dspy.Predict('q -> a', n=2)\ndspy.configure(lm=DummyLM([{'a': 'first'}, {'a': 'second'}]))\nlm, config, signature, demos, kwargs = p._forward_preprocess(q='hi')\nprint(config['temperature'])\nout = p(q='hi')\nprint(out.completions.a)",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict._forward_preprocess"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_multi_output"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_multi_output2"
+      }
+    ],
+    "note": "This candidate focuses on a subtle runtime normalization that changes LM config without changing user code."
+  },
+  {
+    "index": 4,
+    "question": "I have typed input fields, some defaults, and some stray kwargs coming from an outer pipeline. I do not want the whole call to explode, but I do want to know what DSPy fills, ignores, and only warns about. What is the exact runtime policy, and show an offline example?",
+    "answer": "At call time, DSPy injects declared default input values, warns and ignores extra kwargs that are not input fields, and optionally warns on type mismatches instead of raising. Those checks are advisory unless required inputs are still missing. Program:\nimport logging, dspy\nfrom dspy.utils.dummies import DummyLM\nlogging.basicConfig(level=logging.WARNING)\nclass Sig(dspy.Signature):\n    context: str = dspy.InputField(default='DEFAULT_CONTEXT')\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\np = dspy.Predict(Sig)\ndspy.configure(lm=DummyLM([{'answer': 'ok'}]), warn_on_type_mismatch=True)\nprint(p(question=123, extra_field='ignored').answer)",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict._forward_preprocess"
+      },
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "_is_value_compatible_with_type"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_input_field_default_value"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_extra_fields_warning"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_type_mismatch_warning"
+      }
+    ],
+    "note": "This candidate captures the predictor’s input-normalization layer at the point where outer programs usually compose kwargs."
+  },
+  {
+    "index": 5,
+    "question": "My raw completion clearly contains the right output fields, but parsing still fails unless the shape is exactly right. How strict is DSPy when it parses JSON outputs back into a signature, and what repair steps does it try first? Give a runnable offline repro.",
+    "answer": "The JSON adapter is forgiving about malformed wrappers, but strict about the final field set. It first uses `json_repair`; if that does not yield an object, it searches the completion for an object-shaped substring and reparses. It then drops keys not declared in the output signature, casts surviving values to the annotated types, and finally requires the remaining keys to match the declared output fields exactly. Missing declared outputs still raise. Program:\nimport dspy\nfrom dspy.adapters.json_adapter import JSONAdapter\nadapter = JSONAdapter()\nsig = dspy.Signature('question -> answer, confidence:int')\nprint(adapter.parse(sig, '{\"answer\": \"Paris\", \"confidence\": \"7\", \"extra\": 1}'))\nprint(adapter.parse(sig, 'noise {\"answer\": \"Paris\", \"confidence\": 7} more noise'))\ntry:\n    adapter.parse(sig, '{\"answer\": \"Paris\"}')\nexcept Exception as e:\n    print(type(e).__name__)",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/json_adapter.py",
+        "symbol": "JSONAdapter.parse"
+      },
+      {
+        "file": "dspy/adapters/utils.py",
+        "symbol": "parse_value"
+      }
+    ],
+    "note": "This candidate tests whether the answering agent can locate the actual parse contract instead of guessing from high-level JSON wording."
+  },
+  {
+    "index": 6,
+    "question": "I saw a warning that DSPy failed to use structured outputs and fell back to plain JSON mode, but another case seemed to drop to JSON mode with no warning at all. When does each kind of fallback happen, and can you show an offline probe of the early path?",
+    "answer": "There are two different downgrade paths. DSPy silently chooses plain JSON mode before the model call if the signature has an open-ended mapping output, if native function calling is disabled while a tool-call output is present, or if the LM lacks response-schema support. The warning only appears in the later path, where DSPy actually tries the structured-output route and that attempt raises. Program:\nimport dspy\nfrom dspy.adapters.json_adapter import JSONAdapter\nclass LMStub:\n    supported_params = ['response_format']\n    supports_response_schema = True\nclass Sig(dspy.Signature):\n    q: str = dspy.InputField()\n    payload: dict[str, object] = dspy.OutputField()\nseen = {}\ndef fake_call(lm, kwargs, signature, demos, inputs):\n    seen['response_format'] = kwargs['response_format']\n    return 'fell back early'\nprint(JSONAdapter()._json_adapter_call_common(LMStub(), {}, Sig, [], {'q': 'hi'}, fake_call))\nprint(seen['response_format'])",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/json_adapter.py",
+        "symbol": "JSONAdapter._json_adapter_call_common"
+      },
+      {
+        "file": "dspy/adapters/json_adapter.py",
+        "symbol": "JSONAdapter.__call__"
+      },
+      {
+        "file": "dspy/adapters/json_adapter.py",
+        "symbol": "_get_structured_outputs_response_format"
+      }
+    ],
+    "note": "This candidate separates the silent pre-call downgrade from the warning-emitting post-attempt fallback."
+  },
+  {
+    "index": 7,
+    "question": "I have an output like `dict[str, Any]` and expected DSPy to use a provider-native structured schema automatically. Why does it refuse, and what schema policy does it enforce when the output type is closed enough to support that mode? Show a runnable offline example.",
+    "answer": "DSPy rejects structured-output mode for open-ended mappings because those do not enumerate a fixed property set. For closed output shapes, it builds a Pydantic model and then rewrites the generated schema so every object has a full `required` list and `additionalProperties = False`, recursively through nested objects and arrays. Program:\nimport dspy\nfrom dspy.adapters.json_adapter import _get_structured_outputs_response_format\nclass Closed(dspy.Signature):\n    q: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n    score: int = dspy.OutputField()\nprint(_get_structured_outputs_response_format(Closed).model_json_schema()['additionalProperties'])\nclass OpenEnded(dspy.Signature):\n    q: str = dspy.InputField()\n    payload: dict[str, object] = dspy.OutputField()\ntry:\n    _get_structured_outputs_response_format(OpenEnded)\nexcept Exception as e:\n    print(type(e).__name__, e)",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/json_adapter.py",
+        "symbol": "_has_open_ended_mapping"
+      },
+      {
+        "file": "dspy/adapters/json_adapter.py",
+        "symbol": "_get_structured_outputs_response_format"
+      }
+    ],
+    "note": "This candidate makes the agent reason from the schema-building code rather than from adapter marketing language."
+  },
+  {
+    "index": 8,
+    "question": "I want to understand what `dspy.ReAct` actually builds around my tools. How are plain Python callables normalized, what extra fields appear during the reasoning loop, and what shape does the final result have when the agent finishes? Give a runnable offline example.",
+    "answer": "`dspy.ReAct` wraps each callable in `dspy.Tool`, adds a synthetic `finish` tool, and builds an internal reasoning signature that includes the original inputs plus a `trajectory` input and three outputs: `next_thought`, `next_tool_name`, and `next_tool_args`. After the loop, it runs a separate extraction module and returns a final `dspy.Prediction` containing both the extracted outputs and the accumulated `trajectory`. Program:\nimport dspy\nfrom dspy.utils.dummies import DummyLM\ndef lookup(city: str) -> str: return f'Weather for {city}: sunny'\nreact = dspy.ReAct('question -> answer', tools=[lookup])\nlm = DummyLM([{'next_thought': 'Need the tool', 'next_tool_name': 'lookup', 'next_tool_args': {'city': 'Tokyo'}}, {'next_thought': 'Enough info', 'next_tool_name': 'finish', 'next_tool_args': {}}, {'reasoning': 'used tool output', 'answer': 'It is sunny.'}])\ndspy.configure(lm=lm)\npred = react(question='What is the weather in Tokyo?')\nprint(pred.answer)\nprint(sorted(pred.trajectory))",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/react.py",
+        "symbol": "ReAct.__init__"
+      },
+      {
+        "file": "dspy/predict/react.py",
+        "symbol": "ReAct.forward"
+      },
+      {
+        "file": "tests/predict/test_react.py",
+        "symbol": "test_tool_calling_without_typehint"
+      }
+    ],
+    "note": "This candidate targets the user-facing ReAct contract without naming the internal helpers that implement it."
+  },
+  {
+    "index": 9,
+    "question": "My ReAct trajectory got too long and I was not sure whether DSPy would trim it, fail hard, or still try to extract a final answer. What exactly happens by default, how many retries are attempted, and what do I see when there is only one tool call left to remove? Show an offline repro.",
+    "answer": "On context-window overflow, ReAct retries up to three times and each retry uses the truncation hook. The default hook removes the oldest four trajectory keys: one thought, one tool name, one tool-args record, and one observation. If truncation cannot remove a full tool-call block, it raises. If the repeated overflow eventually becomes a `ValueError`, `forward()` stops the loop and still runs the extraction step on the remaining trajectory. Program:\nimport dspy\nfrom dspy.utils.exceptions import ContextWindowExceededError\nreact = dspy.ReAct('input_text -> output_text', tools=[lambda text: text])\ndef always_overflow(**kwargs): raise ContextWindowExceededError()\nreact.react = always_overflow\nreact.extract = lambda **kwargs: dspy.Prediction(output_text='fallback')\nprint(react(input_text='x').trajectory)\ntry:\n    react.truncate_trajectory({'thought_0': 't', 'tool_name_0': 'finish', 'tool_args_0': {}, 'observation_0': 'done'})\nexcept Exception as e:\n    print(type(e).__name__, e)",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/react.py",
+        "symbol": "ReAct._call_with_potential_trajectory_truncation"
+      },
+      {
+        "file": "dspy/predict/react.py",
+        "symbol": "ReAct.truncate_trajectory"
+      },
+      {
+        "file": "tests/predict/test_react.py",
+        "symbol": "test_trajectory_truncation"
+      },
+      {
+        "file": "tests/predict/test_react.py",
+        "symbol": "test_context_window_exceeded_after_retries"
+      }
+    ],
+    "note": "This candidate forces the agent to combine the overflow retry loop with the truncation policy and the extraction fallback."
+  },
+  {
+    "index": 10,
+    "question": "I am using ReAct with tools whose schemas involve generic or nested typing constructs, and I want to know why that does not crash the adapter path even though those annotations are not ordinary classes. What guard is in place, and show an offline repro that would have failed without it.",
+    "answer": "DSPy only routes an annotation through the native-type path when it is actually a class of the expected kind. In `Adapter._call_preprocess` the check is `isinstance(annotation, type)` before `issubclass`, and in adapter utilities it uses `inspect.isclass(...)` before `issubclass`. That is why generic aliases such as the `next_tool_args` annotation in ReAct do not crash the runtime. Program:\nimport dspy, dspy.adapters.base as adapter_base, dspy.adapters.utils as adapter_utils\nfrom dspy.utils.dummies import DummyLM\ndef get_user_info(name: str): return {'name': name}\nclass Sig(dspy.Signature):\n    user_request: str = dspy.InputField()\n    process_result: str = dspy.OutputField()\nreact = dspy.ReAct(Sig, tools=[get_user_info])\nproblem = react.react.signature.output_fields['next_tool_args'].annotation\ndef guarded(cls, base):\n    if cls == problem: raise TypeError('issubclass() arg 1 must be a class')\n    return issubclass(cls, base)\nadapter_base.issubclass = guarded\nadapter_utils.issubclass = guarded\ndspy.configure(lm=DummyLM([{'next_thought': 'look up user', 'next_tool_name': 'get_user_info', 'next_tool_args': {'name': 'Adam'}}, {'next_thought': 'done', 'next_tool_name': 'finish', 'next_tool_args': {}}, {'reasoning': 'used tool output', 'process_result': 'Resolved Adam'}]))\nprint(react(user_request='Help me, my name is Adam').process_result)",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/base.py",
+        "symbol": "Adapter._call_preprocess"
+      },
+      {
+        "file": "dspy/adapters/utils.py",
+        "symbol": "_annotation_is_subclass"
+      },
+      {
+        "file": "tests/predict/test_react.py",
+        "symbol": "test_react_with_tools_skips_native_response_issubclass_for_generic_alias"
+      }
+    ],
+    "note": "This candidate checks whether the agent can connect ReAct’s typed tool loop to the generic-annotation safety checks in the adapter layer."
+  },
+  {
+    "index": 11,
+    "question": "I want to pass plain JSON-like tool arguments into DSPy and have the actual Python callable receive nested Pydantic objects, not raw dicts. How does that normalization work at runtime, and show an offline example.",
+    "answer": "`dspy.Tool` inspects the callable’s annotations, builds JSON-schema-compatible argument specs, validates incoming values against those specs, and then reparses each argument through a generated Pydantic wrapper model. That final reparse is what turns nested dicts back into real Pydantic objects before the callable runs. Program:\nimport dspy\nfrom pydantic import BaseModel\nclass Event(BaseModel):\n    name: str\n    date: str\ndef invite(event: Event):\n    return f'{type(event).__name__}:{event.name}:{event.date}'\ntool = dspy.Tool(invite)\nprint(tool(event={'name': 'Science Fair', 'date': 'Friday'}))",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/types/tool.py",
+        "symbol": "Tool._parse_function"
+      },
+      {
+        "file": "dspy/adapters/types/tool.py",
+        "symbol": "Tool._validate_and_parse_args"
+      },
+      {
+        "file": "tests/predict/test_react.py",
+        "symbol": "test_tool_calling_with_pydantic_args"
+      }
+    ],
+    "note": "This candidate targets the exact normalization boundary between LM-produced JSON and Python tool invocation."
+  },
+  {
+    "index": 12,
+    "question": "I save predictors that contain few-shot demos built from Pydantic models and other structured values. After reload, should I expect those demo values to come back as the original Python objects, or only as serialized content? Show a runnable offline round-trip.",
+    "answer": "DSPy preserves demo content structure, not full object identity. `dump_state()` recursively serializes Pydantic models, lists, tuples, and dicts into JSON-compatible data. `load_state()` restores that serialized data directly; it does not rebuild the original Pydantic objects for demos. Program:\nimport dspy\nfrom pydantic import BaseModel\nclass Item(BaseModel):\n    name: str\n    quantity: int\nclass Sig(dspy.Signature):\n    items: list[Item] = dspy.InputField()\n    total: int = dspy.OutputField()\np = dspy.Predict(Sig)\np.demos = [dspy.Example(items=[Item(name='apple', quantity=2)], total=2).with_inputs('items')]\nstate = p.dump_state()\nloaded = dspy.Predict(Sig).load_state(state)\nprint(state['demos'][0]['items'])\nprint(type(loaded.demos[0]['items'][0]).__name__)",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "serialize_object"
+      },
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict.dump_state"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_typed_demos_after_dump_and_load_state"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_dump_state_pydantic_non_primitive_types"
+      }
+    ],
+    "note": "This candidate makes the agent distinguish content preservation from object rehydration in saved demos."
+  },
+  {
+    "index": 13,
+    "question": "I batch `dspy.Example`s through a custom module and need failure handling to stay aligned with normal module calls. How does the batch path turn those examples into runnable invocations, and what extra information can it return besides successful results? Show an offline example.",
+    "answer": "`Module.batch()` turns each example into `(module, example.inputs())` and hands those pairs to `Parallel.forward()`. The work item still runs as an ordinary module call with keyword inputs. If `return_failed_examples=True`, DSPy returns a triple: results, the failed original examples, and their exceptions. Program:\nimport dspy\nclass FailingModule(dspy.Module):\n    def forward(self, value):\n        if value == 42: raise ValueError('bad')\n        return f'ok-{value}'\nexamples = [dspy.Example(value=1).with_inputs('value'), dspy.Example(value=42).with_inputs('value'), dspy.Example(value=3).with_inputs('value')]\nresults, failed, excs = FailingModule().batch(examples, return_failed_examples=True, provide_traceback=True)\nprint(results)\nprint(failed[0].inputs()['value'])\nprint(type(excs[0]).__name__, excs[0])",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/primitives/module.py",
+        "symbol": "Module.batch"
+      },
+      {
+        "file": "dspy/predict/parallel.py",
+        "symbol": "Parallel.forward"
+      },
+      {
+        "file": "tests/predict/test_parallel.py",
+        "symbol": "test_batch_with_failed_examples"
+      }
+    ],
+    "note": "This candidate focuses on the batch-to-parallel conversion boundary and the shape of the enriched return value."
+  },
+  {
+    "index": 14,
+    "question": "I added a `dspy.History` field to a predictor and was not sure whether DSPy would flatten that into one big blob or keep it as prior user/assistant turns before the current request. What does it actually do, and show an offline message capture.",
+    "answer": "DSPy treats `dspy.History` as prior conversation turns. It removes the history field from the working signature, formats each history entry as a user message plus an assistant message, and only then appends the current input as the final user turn. Program:\nimport dspy\nclass SpyLM(dspy.LM):\n    def __init__(self): super().__init__('dummy'); self.calls = []\n    def __call__(self, prompt=None, messages=None, **kwargs): self.calls.append(messages); return ['[[ ## answer ## ]]\\n100%!']\nclass Sig(dspy.Signature):\n    question: str = dspy.InputField()\n    history: dspy.History = dspy.InputField()\n    answer: str = dspy.OutputField()\nlm = SpyLM()\ndspy.configure(adapter=dspy.ChatAdapter(), lm=lm)\ndspy.Predict(Sig)(question='are you sure?', history=dspy.History(messages=[{'question': \"what's the capital of france?\", 'answer': 'paris'}]))\nmsgs = lm.calls[0]\nprint(len(msgs), msgs[1]['role'], msgs[2]['role'], msgs[3]['role'])",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/base.py",
+        "symbol": "Adapter.format"
+      },
+      {
+        "file": "dspy/adapters/base.py",
+        "symbol": "Adapter.format_conversation_history"
+      },
+      {
+        "file": "dspy/adapters/types/history.py",
+        "symbol": "History"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_call_predict_with_chat_history"
+      }
+    ],
+    "note": "This candidate tests whether the answering agent can locate the special-case handling for `History` in the adapter layer."
+  },
+  {
+    "index": 15,
+    "question": "An outer pipeline is passing a prediction-like payload into a predictor, and I heard DSPy treats one special shape differently from normal input fields. What input shape gets rerouted into the LM call itself, and can you show an offline probe?",
+    "answer": "If the input key is literally `prediction` and its value has the standard predicted-output shape `{'type': 'content', 'content': ...}`, DSPy removes it from the predictor inputs and forwards it into LM kwargs instead. Ordinary signature inputs named `prediction` are not treated that way unless they match that special shape. Program:\nimport dspy\nclass SpyLM(dspy.LM):\n    def __init__(self): super().__init__('dummy'); self.kwargs_seen = []\n    def __call__(self, prompt=None, messages=None, **kwargs): self.kwargs_seen.append(kwargs); return ['[[ ## answer ## ]]\\nok']\nlm = SpyLM()\ndspy.configure(lm=lm)\ndspy.Predict('question -> answer')(question='Why?', prediction={'type': 'content', 'content': 'A predicted answer'})\nprint(lm.kwargs_seen[0]['prediction'])",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict._forward_preprocess"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_predicted_outputs_piped_from_predict_to_lm_call"
+      }
+    ],
+    "note": "This candidate isolates a narrow but important passthrough rule at the predictor-to-LM boundary."
+  },
+  {
+    "index": 16,
+    "question": "I instantiated a predictor from one signature class, then loaded state that had been saved from another signature with different instructions and field metadata. Does DSPy merge those definitions or overwrite the current one entirely? Show a runnable in-memory round-trip.",
+    "answer": "Loading overwrites the in-memory signature state with the serialized one. DSPy does not merge descriptions, prefixes, or instructions from the current instance. It restores the saved signature and keeps using that. Program:\nimport dspy\nclass Sig1(dspy.Signature):\n    '''original instructions'''\n    sentence = dspy.InputField(desc='input one')\n    sentiment = dspy.OutputField()\nclass Sig2(dspy.Signature):\n    '''new instructions'''\n    sentence = dspy.InputField(desc='input two')\n    sentiment = dspy.OutputField(desc='output two', prefix='prefix')\nstate = dspy.Predict(Sig1).dump_state()\nloaded = dspy.Predict(Sig2).load_state(state)\nprint(loaded.signature.instructions)\nprint(loaded.signature.dump_state() == dspy.Predict(Sig1).signature.dump_state())",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict.load_state"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_instructions_after_dump_and_load_state"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_signature_fields_after_dump_and_load_state"
+      }
+    ],
+    "note": "This candidate makes the agent recover the load contract for signature metadata rather than guessing from class identity."
+  },
+  {
+    "index": 17,
+    "question": "I am composing async and sync tools in one DSPy agent and need to know whether DSPy will bridge that mismatch automatically or make me opt in. What is the runtime policy, and show an offline example.",
+    "answer": "Calling an async tool through the sync path is opt-in. `dspy.Tool.__call__` detects coroutine results and raises unless `allow_tool_async_sync_conversion` is enabled in settings or context. The async path, `acall`, can always run sync tools. Program:\nimport dspy, asyncio\nasync def plus_one(x: int): return x + 1\ntool = dspy.Tool(plus_one)\ntry:\n    print(tool(x=1))\nexcept Exception as e:\n    print(type(e).__name__, e)\nwith dspy.context(allow_tool_async_sync_conversion=True):\n    print(tool(x=1))\nprint(asyncio.run(tool.acall(x=2)))",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/types/tool.py",
+        "symbol": "Tool.__call__"
+      },
+      {
+        "file": "dspy/adapters/types/tool.py",
+        "symbol": "Tool.acall"
+      },
+      {
+        "file": "dspy/adapters/types/tool.py",
+        "symbol": "Tool._run_async_in_sync"
+      }
+    ],
+    "note": "This candidate focuses on the async/sync seam in DSPy tool execution, which often appears only after composing tools into agents."
+  },
+  {
+    "index": 18,
+    "question": "I have older Program-of-Thought generations that end with a normal assignment instead of calling the submission helper. Will DSPy still accept them, and what exact rewrite makes that work? Show an offline probe that does not require Deno.",
+    "answer": "Yes. In the code parser, if the last line is an assignment target like `result = ...`, DSPy appends a final line containing just that variable name. That turns older code such as `result = 1+1` into an executable snippet whose final expression evaluates to the value. Program:\nimport dspy\nclass Stub:\n    def execute(self, code): return code\n    def shutdown(self): pass\npot = dspy.ProgramOfThought('question -> answer', interpreter=Stub())\ncode, err = pot._parse_code({'generated_code': '```python\\nresult = 1+1\\n```'})\nprint(err)\nprint(code)",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/program_of_thought.py",
+        "symbol": "ProgramOfThought._parse_code"
+      },
+      {
+        "file": "dspy/predict/program_of_thought.py",
+        "symbol": "ProgramOfThought.forward"
+      },
+      {
+        "file": "tests/predict/test_program_of_thought.py",
+        "symbol": "test_old_style_pot"
+      },
+      {
+        "file": "tests/predict/test_program_of_thought.py",
+        "symbol": "test_pot_code_parse_error"
+      }
+    ],
+    "note": "This candidate asks for the backward-compatibility behavior without leaking the parser hook by name."
+  },
+  {
+    "index": 19,
+    "question": "I want to wrap a module in `dspy.BestOfN` and be confident that each trial is isolated, that stochastic settings are controlled, and that only the chosen run’s trace leaks back out. What exactly happens across those trials, and show an offline example.",
+    "answer": "`BestOfN` takes the module’s LM, clones it per attempt with a fresh `rollout_id` and `temperature=1.0`, deep-copies the module, and runs each attempt inside `dspy.context(trace=[])`. It keeps the best prediction and only extends the outer trace with that best run’s trace at the end. Program:\nimport dspy\nfrom dspy.utils.dummies import DummyLM\nclass M(dspy.Module):\n    def __init__(self): super().__init__(); self.p = dspy.Predict('question -> answer')\n    def forward(self, question): return self.p(question=question)\nlm = DummyLM([{'answer': 'Brussels'}, {'answer': 'City of Brussels'}, {'answer': 'Brussels'}])\ndspy.configure(lm=lm, trace=[])\nout = dspy.BestOfN(module=M(), N=3, reward_fn=lambda kwargs, pred: 1.0 if pred.answer == 'Brussels' else 0.0, threshold=2.0)(question='Capital of Belgium?')\nprint(out.answer)\nprint(len(dspy.settings.trace))",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/best_of_n.py",
+        "symbol": "BestOfN.forward"
+      },
+      {
+        "file": "tests/predict/test_best_of_n.py",
+        "symbol": "test_refine_forward_success_first_attempt"
+      },
+      {
+        "file": "tests/predict/test_best_of_n.py",
+        "symbol": "test_refine_module_custom_fail_count"
+      }
+    ],
+    "note": "This candidate targets higher-order module composition and the runtime isolation policy around repeated stochastic trials."
+  }
+]
+
+Return JSON that matches the provided schema and nothing else. If fewer than `8` candidates truly qualify, return fewer and explain the shortage in `selection_notes`.

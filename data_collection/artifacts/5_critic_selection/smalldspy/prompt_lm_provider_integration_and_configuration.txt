@@ -1,0 +1,525 @@
+You are the final critic and selector for benchmark-grade DSPy expert QA.
+
+## About DSPy
+DSPy is a declarative framework for programming --- rather than prompting --- language models. Users compose typed modules (such as `dspy.Predict`, `dspy.ChainOfThought`, and `dspy.ReAct`) whose input/output behavior is declared by signatures; adapters translate signatures into provider-specific prompts and parse completions back into typed fields; optimizers tune prompts and demonstrations against metrics. Questions ask for a self-contained, runnable Python program alongside the explanation. Solutions must run offline with no API key --- whenever a language model is needed, use the offline LM stub the library itself ships for its own tests (`dspy.utils.dummies.DummyLM`) --- so that every reference answer can be executed and verified in a sandbox.
+
+## Benchmark reality
+- Target primary label: `lm_provider_integration_and_configuration`
+- Label description: `Users are trying to connect DSPy to specific LM backends—local models, Hugging Face/vLLM servers, OpenAI-compatible APIs, Bedrock, Vertex, and custom endpoints—and make those clients work end to end. Their friction centers on DSPy's LM client wrappers: which providers and API modes are supported, and how endpoint, auth, and request-generation options such as max_tokens, headers, timeouts, regions, and other kwargs are passed through.`
+- You are selecting the final `8` items from a larger candidate set.
+- Treat docs as potentially unavailable at answer time even though you may have seen them during generation.
+
+## Selection criteria
+- Keep only candidates that are clearly answerable from the code roots alone (`dspy/`, `tests/`) --- no docs at answer time.
+- Reject anything based on exact wording from documentation.
+- Reject questions that are too easy, one-grep, or single-symbol lookups.
+- **Reject questions that give away the locator.** The benchmark tests an agent with grep/glob/read over the repo --- locating the right code is half the challenge. If the question names a method/attribute on a class, an internal handler/adapter/parser/helper class, an internal helper, a file path, a test-file name, or a `snake_case` dotted function, it's a closed-book question. Rewrite to describe the behavior / symptom / user goal, keeping the specific symbol only in the gold `answer` and `code_evidence`. If rewriting would require fabricating a question unsupported by the seed or code, reject outright.
+- **Reject "in the X example / tutorial / notebook / walkthrough / demo / README / guide" phrasings.** These are awkward and underspecified --- they point at an artifact as if a shared referent exists ("in the repo's multihop RAG example, ..."). A strong question stands on its own: rewrite to describe the *scenario* or *setup* itself (e.g., "in a multi-hop retrieval pipeline where the model refines its query across hops, ..."), or reject.
+- **OK to keep**: branded user-facing concept names at the granularity a user would type:
+- Public branded module and concept names a real user would type: `dspy.Predict`, `dspy.ChainOfThought`, `dspy.ReAct`, `dspy.Module`, `dspy.Signature`, `dspy.Example`, `dspy.Evaluate`, `dspy.LM`, `dspy.configure` / `dspy.context`, `DummyLM`.
+- User-facing concepts at brand granularity: signatures, input/output fields, demos, adapters (as a concept), optimizers / teleprompters (as a concept), metrics, tools, trajectories, conversation history, streaming, async, caching, saving/loading compiled programs.
+  The rule is "named the concept, not the attachment point." A branded class named as a concept is fine; the same class with a `.method` suffix is not.
+- **Reject questions that are too generic to have one locator** (e.g., "how does DSPy handle errors?" or "how does DSPy do retries?"). A valid question is one where, after reading the repo, a careful expert would converge on the same specific file/symbol as the answer. Tighten generic questions by adding behavioral constraints, not by naming the class.
+- **Reject questions whose gold answer rests on the seed's community answer as truth.** The community answers come from a weaker assistant and are frequently wrong. The gold answer must be supported by `code_evidence` pointing into actual DSPy source. If the only support is "the seed said so," reject.
+- Reject questions that copy or closely paraphrase sampled community questions.
+- Reject anything outside the target label or overly similar to another candidate.
+- Prefer diversity across subtopics within the label.
+- You may rewrite the question, answer, difficulty, evidence, and note to improve quality.
+- Keep final answers concise and well-grounded.
+- `code_evidence` must contain real repo files under one of the code roots (`dspy/`, `tests/`), and each filename must match the pattern `*.py`; reject candidates that cite files with other extensions.
+
+## Sampled community anchors
+These are the same sampled sessions used during generation. They are for distribution anchoring only.
+
+[
+  {
+    "number": 479,
+    "question": "How to use dspy.OpenAI() like langchain.llms.OpenAI()\n\nHey, I'm trying to use my LLM on vLLM server which is exposed as an API.\nUsually, I create an openai LLM instance with Langchain like below, and it works fine.\n[code]\nI want to use `dspy.OpenAI` module in similar way,\n[code]\nGetting the following error,\n[code]\nAny idea how to use dspy.OpenAI like above ?",
+    "community_answers": [
+      "Shooting in the open here:\r\n1. Does in work when you hit it via cURL?\r\n2. Can you try with stream disabled?",
+      "It's helpful to add debug logging so you can see where the requests are going. You probably also want to set the model to `chat`, which will append `/chat/completions` to your base uri, and use a chat format payload. The default is `text`, which will make a request to `/completions` with a `prompt` in the json body.\r\n\r\n\r\n```\r\nroot = logging.getLogger()\r\nroot.setLevel(logging.DEBUG)\r\n\r\nhandler = logging.StreamHandler(sys.stdout)\r\nhandler.setLevel(logging.INFO)\r\nformatter = logging.Formatter(\"%(asctime)s - %(name)s - %(levelname)s - %(message)s\")\r\nhandler.setFormatter(formatter)\r\nroot.addHandler(handler)\r\n\r\nllm_mistral = OpenAI(api_base = openai.api_base, \r\n             api_key='random_value',\r\n             model='Mistral-7B-Instruct-v0.1',\r\n             model_type=\"chat\"\r\n             )\r\n```\r\n\r\nI'm having some other issues that when optimizing, the model seems to revert to a `text` model  😭 ",
+      "My issue, using an openai compatible api server was the `api_base` missing a trailing `/` . Looking at `azure_openai_usage.log` made it more obvious:\r\n\r\n```shell\r\nHTTP Request: POST http://127.0.0.1:5000/v1chat/completions \"HTTP/1.1 404 Not Found\"\r\n```\r\n\r\nSomething like this:\r\n```\r\nopenai.api_base = \"https://our_url/api/\"  # use the IP or hostname of your instance\r\n```"
+    ]
+  },
+  {
+    "number": 1865,
+    "question": "How to use my own LM configuration.\n\n**Hello, I am a newbie to Dspy!**\nI'm going to use a model that isn't supported in LiteLLM ([\"Link\"](https://docs.litellm.ai/docs/providers/perplexity)) .\nHow do I adapt this code:\n[code]\n... into something like this:\n[code]\nHas anyone done this before?",
+    "community_answers": []
+  },
+  {
+    "number": 8541,
+    "question": "Is it possible to use Hugging Face and DSPY?\n\nGreetings. I am struggling to find information in the docs on using Hugging Face with DSPy.\nIs it possible to use it?\nIm struggling with Ollama as well:\n`# Ollama Configuration Cell\nimport dspy\ngemma_llm = dspy.LM(\"ollama_chat/gemma2:2b\", api_base=\"http://localhost:11434\")\ndspy.configure(lm=gemma_llm)\nprint(\"✅ Ollama configured with Gemma 2 2b model\")\nprint(\"Make sure you have:\")\nprint(\"1. Ollama running: ollama serve\")\nprint(\"2. Gemma 2 2b pulled: ollama pull gemma2:2b\")`",
+    "community_answers": [
+      "@adamaslan We use Litellm to talk to LM endpoints, you can follow this setup to get it to work: https://docs.litellm.ai/docs/providers/huggingface\n",
+      "That's the same as other providers, you just need `dspy.LM(\"huggingface/together/deepseek-ai/DeepSeek-R1\")`",
+      "https://docs.litellm.ai/docs/providers/ollama"
+    ]
+  },
+  {
+    "number": 1982,
+    "question": "how to serve model in vllm and use in dspy?\n\n[code]\nI have served my model using vllm\n[code]\nWhile trying to infer the served model in dspy using singature, i get this error\n[code]\nIt works while using openai client\n[code]\nCan anyone help me with this",
+    "community_answers": []
+  },
+  {
+    "number": 852,
+    "question": "How to use OpenAI compatible 3rd party APIs (e.g. tgi/OpenRouter/VLLM etc)?\n\nAppreciate any help with this.\nWhile looking at this documentation: https://dspy-docs.vercel.app/api/language_model_clients/OpenAI\nIt was not clear how to set api base URL/key etc (e.g. OPENROUTER key instead of OpenAI key)\nCopied from docs\n[code]",
+    "community_answers": [
+      "Feel free to check out [various compatible 3rd party LM APIs](https://dspy-docs.vercel.app/docs/category/language-model-clients). DSPy supports remote LMs, TGI, vLLM, etc. \r\n\r\n`dspy.OpenAI` is particularly for querying using OpenAI SDK.",
+      "The documentation explains it well! Just sharing a snippet for OpenRouter if anyone wants to use it directly https://gist.github.com/yash98/15753a7f2df1368a2e53825d37cb434b  ",
+      "@arnavsinghvi11 would you please mind updating the link to the documentation? it seems to be expired "
+    ]
+  },
+  {
+    "number": 8787,
+    "question": "Does the Dspy support the local models like qwen3-32B？\n\nhow to define a customized llm？any example in this repo？",
+    "community_answers": [
+      "There are instructions on the [homepage](https://dspy.ai/).\n\nThere is a box with \"Getting Started I: Install DSPy and set up your LM\" and several tabs, \"Local LMs on your laptop\" and \"Local LMs on a GPU server\" might be what you are looking for.\n\nIn general, you can certainly connect to any OpenAI-like server, such as the APIs provided by vLLM, SGLang, Ollama, llama.cpp's llam-server etc.\n\nFor the qwen32 model in particular, I think you might want to try disabling thinking, if you find it runs too slowly.",
+      "Yes, we certainly support local models. The configuration varies based on how you host your LM. In general, refer to LiteLLM's documentation for how to configure `model` and `api_base` for your use case."
+    ]
+  },
+  {
+    "number": 632,
+    "question": "how to connect my LM by a client?\n\nthis is one LM deployed in my company, and now i can use it by a grpc client. so how can i connect this LM with dspy? Thanks!",
+    "community_answers": [
+      "You can define your own class following the instructions in the documentation [docs](https://dspy-docs.vercel.app/docs/deep-dive/language_model_clients/custom-lm-client)."
+    ]
+  },
+  {
+    "number": 448,
+    "question": "Is it possible to use Llama-cpp-python with dspy?\n\nCan I use a model loaded with the Llama cpp for python library to power DSPy?",
+    "community_answers": [
+      "See https://github.com/stanfordnlp/dspy/issues/180",
+      "Closed by #1347 "
+    ]
+  },
+  {
+    "number": 1433,
+    "question": "Support of Wenxin's LLM\n\nHello everyone!\nThis framework is very useful, and I plan to use it in my project. My project intends to use Wenxin's large language model, and I hope to optimize the prompts based on it. Does anyone know if there's already an implementation for calling Wenxin's LLM? If not, I plan to work on this.\nThank you!",
+    "community_answers": [
+      "You should be able to use this by hosting on VLLM or SGLang and connecting via a dspy LM client"
+    ]
+  },
+  {
+    "number": 1018,
+    "question": "How to convert a AutoModelForCausalLM object to a dspy model object?\n\nimport dspy\nllm = dspy.HFModel(model='model')\nThis method takes a string as input for the model if i have a quantized model object of the class AutoModelForCausalLM How i can convert the model object to dspy object?\ndirect assignment gives error on inference\nllm = model #previously created as AutoModelForCausalLM class object\nllm(\"Testing testing, is anyone out there?\")\nError After Code Line 4 File /opt/conda/lib/python3.10/site-packages/transformers/models/llama/modeling_llama.py:623, in LlamaModel.forward(self, input_ids, attention_mask, position_ids, past_key_values, inputs_embeds, use_cache, output_attentions, output_hidden_states, return_dict) 621 raise ValueError(\"You cannot specify both decoder_input_ids and decoder_inputs_embeds at the same time\") 622 elif input_ids is not None: --> 623 batch_size, seq_length = input_ids.shape 624 elif inputs_embeds is not None: 625 batch_size, seq_length, _ = inputs_embeds.shape\nAttributeError: 'str' object has no attribute 'shape'",
+    "community_answers": [
+      "I see, but internally hf module internally uses AutoModel module to instantiate weights. So can you explain me why we require to use already loaded model to dspy instead of giving the weight path?",
+      "can you please share the full code for the loading process and your approach? Would appreciate this. ",
+      "Hey @pawanGithub10 I have started to raise a PR by seeing the issue that you faced. Here are some of the cases of loading models would look like:\r\n\r\n```python\r\n\r\nfrom dsp.modules.hf_new import HFLocalModel\r\nfrom transformers import AutoTokenizer, BitsAndBytesConfig \r\nfrom transformers import AutoModelForCausalLM\r\n\r\nmodel_path = \"../models/llama-2-7b-chat-hf\"\r\n\r\ntokenizer = AutoTokenizer.from_pretrained(\r\n    model_path,\r\n)\r\ntokenizer.pad_token = tokenizer.eos_token\r\ntokenizer.padding_side = \"right\"\r\n\r\n\r\ndef case1():\r\n    model = HFLocalModel(\r\n        model=model_path,\r\n        tokenizer=tokenizer, \r\n        load_in_4bit=True ,\r\n        bnb_config=BitsAndBytesConfig(\r\n            load_in_4bit=True,\r\n            bnb_4bit_quant_type=\"nf4\", \r\n            bnb_4bit_compute_dtype=\"float16\", \r\n            bnb_4bit_use_double_quant=False\r\n        )\r\n    )\r\n\r\n    response = model(\"hello\", do_sample=True)\r\n    print(response)\r\n\r\n\r\ndef case2():\r\n    model = AutoModelForCausalLM.from_pretrained(\r\n        model_path,\r\n        quantization_config=BitsAndBytesConfig(\r\n            load_in_4bit=True,\r\n            bnb_4bit_quant_type=\"nf4\", \r\n            bnb_4bit_compute_dtype=\"float16\", \r\n            bnb_4bit_use_double_quant=False\r\n        )\r\n    )\r\n\r\n    model_ = HFLocalModel(\r\n        model=model,\r\n        tokenizer=tokenizer, \r\n    )\r\n    response = model_(\"hello\", do_sample=True)\r\n    print(response)\r\n\r\nif __name__ == \"__main__\":\r\n    case1()\r\n    print(\"---------------------------\")\r\n    case2()\r\n```\r\n\r\nAdditionally, adding PEFT models are also now supported, with multi gpu support. Now the problem is, I would be able to test till PEFT, for multi gpu support, the tests are not possible, since have no access with multi gpu setting. "
+    ]
+  }
+]
+
+## Candidate set to review
+[
+  {
+    "index": 0,
+    "question": "I saved a predictor that was pointed at my company's OpenAI-compatible endpoint. After loading it in a fresh process, the model name came back but the custom base URL vanished. Is DSPy deliberately stripping endpoint settings from saved state, and how do I opt back in only for trusted checkpoints?",
+    "answer": "Yes. On load, DSPy sanitizes `api_base`, `base_url`, and `model_list` unless you explicitly pass `allow_unsafe_lm_state=True`. That is why the model name round-trips but the custom endpoint disappears on the safe path.\n\n```python\nimport copy\nimport dspy\n\np = dspy.Predict('q -> a')\np.lm = dspy.LM('openai/gpt-4o-mini')\nstate = p.dump_state()\nstate['lm']['api_base'] = 'http://override.local/v1'\n\nsafe = dspy.Predict('q -> a').load_state(copy.deepcopy(state))\ntrusted = dspy.Predict('q -> a').load_state(copy.deepcopy(state), allow_unsafe_lm_state=True)\n\nprint(safe.lm.kwargs.get('api_base'))\nprint(trusted.lm.kwargs.get('api_base'))\n```\n\nExpected output: `None` on the safe path and the override URL on the trusted path.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "_sanitize_lm_state"
+      },
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict.load_state"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_load_ignores_serialized_endpoint_override_by_default"
+      }
+    ],
+    "note": "The safe-load behavior also applies when loading from files via `BaseModule.load(...)`."
+  },
+  {
+    "index": 1,
+    "question": "I'm using a routed deployment list rather than a single endpoint. After a save/load round-trip, DSPy stopped calling the deployment list and went back to the ordinary completion path. What exactly is getting blocked, and what changes when I do the trusted-load opt-in?",
+    "answer": "`model_list` is treated as unsafe LM state, just like endpoint overrides. On the safe path it is removed, so DSPy falls back to the ordinary completion call. On the trusted path it is preserved, and the LM can route through the deployment list again.\n\n```python\nimport copy\nfrom unittest.mock import patch\nimport dspy\n\nclass FakeResp(dict):\n    cache_hit = False\n    usage = {}\n    def __init__(self):\n        super().__init__({'choices': []})\n\np = dspy.Predict('q -> a')\np.lm = dspy.LM('openai/gpt-4o-mini')\nstate = p.dump_state()\nstate['lm']['model_list'] = [\n    {\n        'model_name': 'openai/gpt-4o-mini',\n        'litellm_params': {'model': 'openai/gpt-4o-mini', 'api_base': 'http://override.local/v1'},\n    }\n]\n\nsafe = dspy.Predict('q -> a').load_state(copy.deepcopy(state))\nwith patch('litellm.batch_completion_models', return_value=FakeResp()) as batch_mock, patch('litellm.completion', return_value=FakeResp()) as completion_mock:\n    safe.lm.forward(prompt='hello', cache=False)\nprint(completion_mock.called, batch_mock.called)\n\ntrusted = dspy.Predict('q -> a').load_state(copy.deepcopy(state), allow_unsafe_lm_state=True)\nwith patch('litellm.batch_completion_models', return_value=FakeResp()) as batch_mock:\n    trusted.lm.forward(prompt='hello', cache=False)\nprint(batch_mock.call_args.kwargs['deployments'][0]['api_base'])\n```\n\nThe first print should show ordinary completion only; the second should print the preserved deployment endpoint.",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "UNSAFE_LM_STATE_KEYS"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_load_state_ignores_serialized_model_list_endpoint_override_by_default"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_load_blocks_serialized_model_list_unless_opted_in"
+      }
+    ],
+    "note": "This is a behavior of the saved-state loader, not of routing at initial LM construction time."
+  },
+  {
+    "index": 2,
+    "question": "I want a loaded DSPy program to pick up its API key from the environment, but I do not want serialized files to smuggle in endpoint overrides. In the current code, what happens on the safe load path versus the trusted load path?",
+    "answer": "The repo tests show the split clearly: the LM can still use an environment API key after load, but the safe path does not honor a serialized `api_base` override. If you opt into unsafe LM state, the endpoint override is preserved too.\n\n```python\nimport copy\nimport os\nfrom unittest.mock import patch\nimport dspy\n\nclass FakeResp(dict):\n    cache_hit = False\n    usage = {}\n    def __init__(self):\n        super().__init__({'choices': []})\n\nos.environ['openai_API_KEY'] = 'sk-live-test-secret'\n\np = dspy.Predict('q -> a')\np.lm = dspy.LM('openai/gpt-4o-mini', model_type='text')\nstate = p.dump_state()\nstate['lm']['api_base'] = 'http://override.local/v1'\n\ntrusted = dspy.Predict('q -> a').load_state(copy.deepcopy(state), allow_unsafe_lm_state=True)\nwith patch('litellm.text_completion', return_value=FakeResp()) as mock_text:\n    trusted.lm.forward(prompt='hello', cache=False)\nprint(mock_text.call_args.kwargs['api_key'])\nprint(mock_text.call_args.kwargs['api_base'])\n\nsafe = dspy.Predict('q -> a').load_state(copy.deepcopy(state))\nwith patch('litellm.text_completion', return_value=FakeResp()) as mock_text:\n    safe.lm.forward(prompt='hello', cache=False)\nprint(mock_text.call_args.kwargs['api_key'])\nprint(mock_text.call_args.kwargs['api_base'])\n```\n\nBoth calls use the environment key. Only the trusted load keeps the serialized endpoint override.",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict.load_state"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_load_uses_env_api_key_without_honoring_serialized_endpoint_override"
+      },
+      {
+        "file": "dspy/primitives/base_module.py",
+        "symbol": "BaseModule.load"
+      }
+    ],
+    "note": "The test coverage here is specifically for the text-completion path."
+  },
+  {
+    "index": 3,
+    "question": "I compiled a program, saved it, and loaded it elsewhere. The signature and demos survived, but I need to know exactly which LM settings are part of the round-tripped state and which endpoint-like settings are treated specially.",
+    "answer": "The LM state that is explicitly round-tripped in the tests is `model`, `model_type`, `temperature`, `max_tokens`, `num_retries`, `cache`, `finetuning_model`, `launch_kwargs`, and `train_kwargs`. `Predict.dump_state()` also carries the signature, demos, traces, and train data. Endpoint-like keys are treated separately and can be sanitized on load.\n\n```python\nimport dspy\n\np = dspy.Predict('q -> a')\np.lm = dspy.LM(\n    model='openai/gpt-4o-mini',\n    model_type='chat',\n    temperature=1,\n    max_tokens=100,\n    num_retries=10,\n)\n\nstate = p.dump_state()\nround_tripped = dspy.Predict('q -> a').load_state(state).dump_state()\nprint(round_tripped['lm'])\n```\n\nIf you also need saved endpoints or deployment lists, that is a separate trusted-load decision.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict.dump_state"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_lm_after_dump_and_load_state"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_lm_field_after_dump_and_load_state"
+      }
+    ],
+    "note": "The answer is intentionally limited to fields that are directly proven in the repo tests."
+  },
+  {
+    "index": 4,
+    "question": "I have one `dspy.Predict` object, but different calls need to hit different backends. Without rebuilding the program, what is the precedence between a per-call LM, an LM attached directly to the predictor, and the global LM from `dspy.configure`?",
+    "answer": "Call-time precedence is: `lm=` passed to the module call, then `predictor.lm`, then the global LM from `dspy.configure(...)`. So you can switch backends per call without rebuilding the program.\n\n```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\nqa = dspy.Predict('q -> a')\n\ndspy.configure(lm=DummyLM([{'a': 'global'}]))\nprint(qa(q='x').a)\n\nqa.lm = DummyLM([{'a': 'predictor'}])\nprint(qa(q='x').a)\n\nprint(qa(q='x', lm=DummyLM([{'a': 'per-call'}])).a)\n```\n\nThis should print `global`, then `predictor`, then `per-call`.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict._forward_preprocess"
+      },
+      {
+        "file": "dspy/primitives/module.py",
+        "symbol": "Module.set_lm"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_call_method"
+      }
+    ],
+    "note": "The actual precedence is encoded in one line inside `_forward_preprocess`: per-call override first, then instance LM, then global settings LM."
+  },
+  {
+    "index": 5,
+    "question": "I'm coming from libraries that let me configure a model with a plain string. Why does `dspy.configure(lm='openai/...')` fail later at call time, and what exact object does DSPy require instead?",
+    "answer": "DSPy does not treat a bare string as an LM client. `Predict` checks that the configured object is a `dspy.BaseLM` instance and raises a tailored error if you gave it a string. The fix is to wrap the model name in `dspy.LM(...)`.\n\n```python\nimport dspy\n\ntry:\n    dspy.configure(lm='openai/gpt-4o-mini')\n    dspy.Predict('q -> a')(q='hello')\nexcept ValueError as e:\n    print(e)\n\n# Correct:\ndspy.configure(lm=dspy.LM('openai/gpt-4o-mini'))\n```\n\nThe error message is intentionally specific because this is a common misconfiguration.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict._forward_preprocess"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_error_message_on_invalid_lm_setup"
+      }
+    ],
+    "note": "The same type check also rejects other non-LM objects, not just strings."
+  },
+  {
+    "index": 6,
+    "question": "I requested multiple generations from a local backend and saw DSPy quietly stop using my near-zero temperature. Is that intentional, and when does DSPy force a higher temperature?",
+    "answer": "Yes. If temperature is unset or `<= 0.15`, and the request asks for more than one generation, DSPy forces `temperature=0.7` to keep some randomness.\n\n```python\nimport dspy\n\nclass SpyLM(dspy.LM):\n    def __init__(self):\n        super().__init__('dummy')\n        self.calls = []\n    def __call__(self, prompt=None, messages=None, **kwargs):\n        self.calls.append(kwargs)\n        return ['[[ ## a ## ]]\\none', '[[ ## a ## ]]\\ntwo']\n\nlm = SpyLM()\ndspy.configure(lm=lm)\nqa = dspy.Predict('q -> a', n=2)\nqa(q='x')\nprint(lm.calls[0]['temperature'])\n```\n\nThat print should be `0.7`. If you explicitly set a temperature above `0.15`, DSPy leaves it alone.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict._forward_preprocess"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_multi_output"
+      }
+    ],
+    "note": "The generation count is taken from call config first, then LM kwargs, then defaults."
+  },
+  {
+    "index": 7,
+    "question": "I want a predictor to keep default LM kwargs most of the time, but override things like `rollout_id` or temperature for one call. Does DSPy merge per-call config with the predictor's defaults or replace them?",
+    "answer": "DSPy merges them. The predictor stores default config at construction time, then each call overlays `config={...}` on top of those defaults before the LM call is made.\n\n```python\nimport dspy\n\nclass SpyLM(dspy.LM):\n    def __init__(self):\n        super().__init__('dummy')\n        self.calls = []\n    def __call__(self, prompt=None, messages=None, **kwargs):\n        self.calls.append(kwargs)\n        return ['[[ ## a ## ]]\\nok']\n\nlm = SpyLM()\ndspy.configure(lm=lm)\nqa = dspy.Predict('q -> a', rollout_id=1, temperature=0.2)\nqa(q='x', config={'rollout_id': 7, 'temperature': 0.9})\nprint(lm.calls[0]['rollout_id'])\nprint(lm.calls[0]['temperature'])\n```\n\nThis prints `7` and `0.9`, proving the per-call config overrides the predictor defaults instead of replacing the whole config object.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict.__init__"
+      },
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict._forward_preprocess"
+      },
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict.update_config"
+      }
+    ],
+    "note": "Only the special `config` kwarg is merged this way; extra ordinary kwargs are treated as candidate signature inputs."
+  },
+  {
+    "index": 8,
+    "question": "I'm trying to use OpenAI-style predicted outputs with DSPy. If I pass a `prediction` object into a predictor, when does it get forwarded to the LM request, and when is it treated as just another normal input field?",
+    "answer": "DSPy only forwards it to the LM when `prediction` is a dict in the standard predicted-output shape with `type='content'` and a `content` key. Otherwise it stays a normal input field.\n\n```python\nimport dspy\n\nclass SpyLM(dspy.LM):\n    def __init__(self, reply):\n        super().__init__('dummy')\n        self.reply = reply\n        self.calls = []\n    def __call__(self, prompt=None, messages=None, **kwargs):\n        self.calls.append(kwargs)\n        return [self.reply]\n\nlm1 = SpyLM('[[ ## answer ## ]]\\nok')\ndspy.configure(lm=lm1)\ndspy.Predict('question -> answer')(\n    question='Why?',\n    prediction={'type': 'content', 'content': 'draft answer'},\n)\nprint(lm1.calls[0]['prediction'])\n\nlm2 = SpyLM('[[ ## judgement ## ]]\\nlooks good')\ndspy.Predict('question, prediction -> judgement')(question='Why?', prediction='draft answer', lm=lm2)\nprint('prediction' in lm2.calls[0])\n```\n\nThe first print shows the forwarded predicted-output payload; the second is `False` because `prediction` is a normal signature field there.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/predict/predict.py",
+        "symbol": "Predict._forward_preprocess"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_predicted_outputs_piped_from_predict_to_lm_call"
+      }
+    ],
+    "note": "The forwarding happens before input validation and before adapter formatting."
+  },
+  {
+    "index": 9,
+    "question": "I'm building a stateful chat wrapper and want prior turns to go back to the backend as real chat messages, not as one big blob. How does `dspy.History` get rendered when I use the chat or JSON adapter?",
+    "answer": "`dspy.History` is expanded into alternating user/assistant messages using the signature with the history field removed, and then the current input is appended as the next user turn. The repo test checks the same behavior for both the chat and JSON adapters.\n\n```python\nimport dspy\n\nclass SpyLM(dspy.LM):\n    def __init__(self):\n        super().__init__('dummy')\n        self.calls = []\n    def __call__(self, prompt=None, messages=None, **kwargs):\n        self.calls.append({'messages': messages, 'kwargs': kwargs})\n        return ['[[ ## answer ## ]]\\n100%']\n\nclass QA(dspy.Signature):\n    question: str = dspy.InputField()\n    history: dspy.History = dspy.InputField()\n    answer: str = dspy.OutputField()\n\nlm = SpyLM()\ndspy.configure(adapter=dspy.ChatAdapter(), lm=lm)\ndspy.Predict(QA)(\n    question='are you sure?',\n    history=dspy.History(messages=[{'question': 'capital of France?', 'answer': 'Paris'}]),\n)\n\nprint([m['role'] for m in lm.calls[0]['messages']])\n```\n\nThat role list should be `['system', 'user', 'assistant', 'user']`.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/base.py",
+        "symbol": "Adapter.format"
+      },
+      {
+        "file": "dspy/adapters/base.py",
+        "symbol": "Adapter.format_conversation_history"
+      },
+      {
+        "file": "tests/predict/test_predict.py",
+        "symbol": "test_call_predict_with_chat_history"
+      }
+    ],
+    "note": "Both adapters share the same history-expansion logic through `Adapter.format(...)`."
+  },
+  {
+    "index": 10,
+    "question": "My local OpenAI-compatible server often ignores DSPy's bracketed field format but can emit valid JSON. If I stay on the default adapter, will DSPy automatically recover from that format mismatch?",
+    "answer": "Usually yes. The default chat adapter first tries its own delimiter-based parser. If that fails, it retries the whole call through `JSONAdapter`, unless the error is a context-window overflow, you are already using `JSONAdapter`, or fallback is disabled. The tradeoff is that fallback means a second LM call.\n\n```python\nimport dspy\n\nclass JSONOnlyLM(dspy.LM):\n    def __init__(self):\n        super().__init__('dummy')\n        self.calls = 0\n    def __call__(self, prompt=None, messages=None, **kwargs):\n        self.calls += 1\n        return ['{\"answer\": \"Paris\"}']\n\nlm = JSONOnlyLM()\ndspy.configure(adapter=dspy.ChatAdapter(), lm=lm)\nout = dspy.Predict('question -> answer')(question='What is the capital of France?')\nprint(out.answer)\nprint(lm.calls)\n```\n\nThis should print `Paris` and then `2`, because the chat parse fails and DSPy retries through the JSON path.",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/chat_adapter.py",
+        "symbol": "ChatAdapter.__call__"
+      },
+      {
+        "file": "dspy/adapters/chat_adapter.py",
+        "symbol": "ChatAdapter.parse"
+      },
+      {
+        "file": "dspy/adapters/json_adapter.py",
+        "symbol": "JSONAdapter.parse"
+      }
+    ],
+    "note": "`ContextWindowExceededError` is explicitly not retried through JSON fallback."
+  },
+  {
+    "index": 11,
+    "question": "I expected `dspy.JSONAdapter` to use strict structured outputs for a typed mapping like `dict[str, int]`, but it still fell back to plain JSON mode. Is that actually what the current code does?",
+    "answer": "Yes. In the current code, `_has_open_ended_mapping(...)` returns true for any output field whose annotation has `dict` origin, not just `dict[str, Any]`. That means a typed mapping like `dict[str, int]` still forces `response_format={'type': 'json_object'}` instead of a strict structured schema.\n\n```python\nimport dspy\n\nclass SpyLM(dspy.LM):\n    def __init__(self):\n        super().__init__('dummy')\n        self.supported_params = {'response_format'}\n        self.supports_response_schema = True\n        self.calls = []\n    def __call__(self, prompt=None, messages=None, **kwargs):\n        self.calls.append(kwargs)\n        return ['{\"payload\": {\"a\": 1}}']\n\nclass MapOut(dspy.Signature):\n    q: str = dspy.InputField()\n    payload: dict[str, int] = dspy.OutputField()\n\nlm = SpyLM()\ndspy.configure(adapter=dspy.JSONAdapter(), lm=lm)\ndspy.Predict(MapOut)(q='x')\nprint(lm.calls[0]['response_format'])\n```\n\nThat print should be `{'type': 'json_object'}`.",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/json_adapter.py",
+        "symbol": "_has_open_ended_mapping"
+      },
+      {
+        "file": "dspy/adapters/json_adapter.py",
+        "symbol": "JSONAdapter._json_adapter_call_common"
+      },
+      {
+        "file": "dspy/adapters/json_adapter.py",
+        "symbol": "_get_structured_outputs_response_format"
+      }
+    ],
+    "note": "This is a precise implementation detail of the current code, and it is broader than the motivating docstring example."
+  },
+  {
+    "index": 12,
+    "question": "I want to run a reasoning-heavy model as the main backend, but it is bad at structured outputs. Can DSPy use one model for the free-form generation step and a second model just to extract the declared fields?",
+    "answer": "Yes. `TwoStepAdapter` exists for exactly that pattern. It sends a simpler prompt to the main LM, then passes the raw completion text into a second LM through `ChatAdapter` using a generated `text -> outputs` signature.\n\n```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\nmain_lm = DummyLM([{'text': 'The capital of France is Paris.'}])\nextract_lm = DummyLM([{'answer': 'Paris'}])\n\ndspy.configure(lm=main_lm, adapter=dspy.TwoStepAdapter(extract_lm))\nqa = dspy.Predict('question -> answer')\nprint(qa(question='What is the capital of France?').answer)\n```\n\nThe main model is responsible for the free-form answer; the extraction model is responsible for recovering the declared fields.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/two_step_adapter.py",
+        "symbol": "TwoStepAdapter.format"
+      },
+      {
+        "file": "dspy/adapters/two_step_adapter.py",
+        "symbol": "TwoStepAdapter.parse"
+      },
+      {
+        "file": "dspy/adapters/two_step_adapter.py",
+        "symbol": "TwoStepAdapter._create_extractor_signature"
+      }
+    ],
+    "note": "The extractor path uses no demos and builds a fresh extraction signature on the fly."
+  },
+  {
+    "index": 13,
+    "question": "If I declare an output as `dspy.Reasoning`, when does DSPy turn on a provider's native reasoning mode, and what cases deliberately disable that path even though the field is present?",
+    "answer": "If a `dspy.Reasoning` output field is present, DSPy defaults `reasoning_effort` to `'low'` and removes that field from the text-parsed signature so it can be filled from provider-native reasoning data. Native reasoning is deliberately skipped if you set `reasoning_effort=None`, if the LM says it does not support reasoning, or if the model name contains `gpt-5` while using chat mode.\n\n```python\nimport dspy\n\nclass SpyReasoningLM(dspy.LM):\n    def __init__(self):\n        super().__init__(model='anthropic/claude-3-7-sonnet-20250219', model_type='chat')\n        self.supports_reasoning = True\n        self.calls = []\n    def __call__(self, prompt=None, messages=None, **kwargs):\n        self.calls.append(kwargs)\n        return [{'text': '[[ ## answer ## ]]\\nParis', 'reasoning_content': 'Think step by step.'}]\n\nclass QA(dspy.Signature):\n    question: str = dspy.InputField()\n    reasoning: dspy.Reasoning = dspy.OutputField()\n    answer: str = dspy.OutputField()\n\nlm = SpyReasoningLM()\ndspy.configure(lm=lm)\nout = dspy.Predict(QA)(question='What is the capital of France?')\nprint(lm.calls[0]['reasoning_effort'])\nprint(out.reasoning.content)\nprint(out.answer)\n```\n\nThat prints `low`, then the native reasoning text, then `Paris`.",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/types/reasoning.py",
+        "symbol": "Reasoning.adapt_to_native_lm_feature"
+      },
+      {
+        "file": "dspy/adapters/types/reasoning.py",
+        "symbol": "Reasoning.parse_lm_response"
+      },
+      {
+        "file": "dspy/adapters/types/reasoning.py",
+        "symbol": "Reasoning.parse_stream_chunk"
+      }
+    ],
+    "note": "The GPT-5 chat exception is a LiteLLM workaround baked into DSPy's reasoning adaptation logic."
+  },
+  {
+    "index": 14,
+    "question": "I don't want DSPy to execute tools yet. I want the backend's tool-selection decision back as structured data so my own application can inspect or dispatch it. How do the adapters handle that workflow?",
+    "answer": "Use a signature that takes tools as input and returns a tool-call output field. With native function calling enabled and a function-calling-capable LM, the adapter injects LiteLLM-style tool schemas into the request, removes the tool fields from the text signature, and parses returned provider tool calls back into `dspy.ToolCalls`.\n\n```python\nimport json\nimport dspy\n\nclass ToolLM(dspy.LM):\n    def __init__(self):\n        super().__init__('dummy')\n        self.supports_function_calling = True\n        self.calls = []\n    def __call__(self, prompt=None, messages=None, **kwargs):\n        self.calls.append(kwargs)\n        return [{'text': '', 'tool_calls': [{'function': {'name': 'lookup', 'arguments': json.dumps({'query': 'Paris'})}}]}]\n\ndef lookup(query: str) -> str:\n    return f'lookup:{query}'\n\nclass WantsCalls(dspy.Signature):\n    question: str = dspy.InputField()\n    tools: list[dspy.Tool] = dspy.InputField()\n    calls: dspy.ToolCalls = dspy.OutputField()\n\nlm = ToolLM()\ndspy.configure(adapter=dspy.JSONAdapter(), lm=lm)\nout = dspy.Predict(WantsCalls)(question='Find Paris', tools=[dspy.Tool(lookup)])\nprint(lm.calls[0]['tools'][0]['function']['name'])\nprint(out.calls.tool_calls[0].name, out.calls.tool_calls[0].args)\n```\n\nIf you declare a tool-call output but do not provide tools as input, DSPy raises an error before the LM call.",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/base.py",
+        "symbol": "Adapter._call_preprocess"
+      },
+      {
+        "file": "dspy/adapters/base.py",
+        "symbol": "Adapter._call_postprocess"
+      },
+      {
+        "file": "dspy/adapters/types/tool.py",
+        "symbol": "Tool.format_as_litellm_function_call"
+      }
+    ],
+    "note": "This is the non-executing tool-call path; `dspy.ReAct` is a higher-level executing agent on top of separate logic."
+  },
+  {
+    "index": 15,
+    "question": "I'm wiring typed Python tools into a backend that supports native function calling. If a tool takes defaults and nested Pydantic models, what schema does DSPy expose to the model, and what validation happens before the Python function runs?",
+    "answer": "`dspy.Tool` inspects the Python callable, builds JSON schema for each argument, keeps defaults in the per-property schema, and reparses incoming kwargs through Pydantic before execution. One subtle detail: the provider-facing schema still lists every declared arg as required, even if the Python function has a default.\n\n```python\nimport dspy\nfrom pydantic import BaseModel\n\nclass Event(BaseModel):\n    name: str\n    date: str\n\ndef invite(person: str, event: Event, style: str = 'formal'):\n    return f'{person}:{event.name}:{style}'\n\ntool = dspy.Tool(invite)\nschema = tool.format_as_litellm_function_call()\nprint(schema['function']['parameters']['properties']['style']['default'])\nprint(schema['function']['parameters']['required'])\nprint(tool(person='Alice', event={'name': 'Science Fair', 'date': 'Friday'}))\n```\n\nThat last call works because DSPy reparses the nested dict into the annotated `Event` model before calling `invite(...)`.",
+    "difficulty": "very_hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/types/tool.py",
+        "symbol": "Tool._parse_function"
+      },
+      {
+        "file": "dspy/adapters/types/tool.py",
+        "symbol": "Tool._validate_and_parse_args"
+      },
+      {
+        "file": "dspy/adapters/types/tool.py",
+        "symbol": "Tool.format_as_litellm_function_call"
+      }
+    ],
+    "note": "Unknown kwargs are rejected unless the underlying callable accepts `**kwargs`."
+  },
+  {
+    "index": 16,
+    "question": "In a ReAct-style flow, the model returns nested JSON for tool arguments, but the actual Python tool expects a Pydantic model. Do I need a manual conversion layer, or will DSPy coerce the args for me?",
+    "answer": "You do not need a manual conversion layer. The tool wrapper reparses JSON-like kwargs into the annotated Python types before the tool is called. The repo tests this end to end with a nested `CalendarEvent` model inside `dspy.ReAct`.\n\n```python\nimport dspy\nfrom pydantic import BaseModel\nfrom dspy.utils.dummies import DummyLM\n\nclass CalendarEvent(BaseModel):\n    name: str\n    date: str\n    participants: dict[str, str]\n\ndef write_invitation_letter(participant_name: str, event_info: CalendarEvent):\n    return f\"Invite {participant_name} to {event_info.name} on {event_info.date}\"\n\nclass Invite(dspy.Signature):\n    participant_name: str = dspy.InputField()\n    event_info: CalendarEvent = dspy.InputField()\n    invitation_letter: str = dspy.OutputField()\n\nlm = DummyLM([\n    {'next_thought': 'use the tool', 'next_tool_name': 'write_invitation_letter', 'next_tool_args': {'participant_name': 'Alice', 'event_info': {'name': 'Science Fair', 'date': 'Friday', 'participants': {'Alice': 'f'}}}},\n    {'next_thought': 'finish', 'next_tool_name': 'finish', 'next_tool_args': {}},\n    {'reasoning': 'done', 'invitation_letter': 'Invite Alice to Science Fair on Friday'},\n])\n\ndspy.configure(lm=lm)\nreact = dspy.ReAct(Invite, tools=[write_invitation_letter])\nout = react(participant_name='Alice', event_info=CalendarEvent(name='Science Fair', date='Friday', participants={'Alice': 'f'}))\nprint(out.invitation_letter)\n```\n\nThat succeeds because DSPy converts the nested dict into `CalendarEvent` before the Python tool runs.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/types/tool.py",
+        "symbol": "Tool._validate_and_parse_args"
+      },
+      {
+        "file": "tests/predict/test_react.py",
+        "symbol": "test_tool_calling_with_pydantic_args"
+      },
+      {
+        "file": "tests/predict/test_react.py",
+        "symbol": "test_async_tool_calling_with_pydantic_args"
+      }
+    ],
+    "note": "The same coercion logic is shared by sync and async tool execution paths."
+  },
+  {
+    "index": 17,
+    "question": "I'm sending an image through DSPy to an OpenAI-compatible chat backend. Does DSPy leave it embedded inside text, or does it convert the request into multimodal content blocks?",
+    "answer": "It converts the user message into content blocks. DSPy serializes custom types into reserved markers, then rewrites user-message content into a list of text and media parts. For `dspy.Image`, the media part is an OpenAI-style `image_url` block.\n\n```python\nimport dspy\n\nclass SpyLM(dspy.LM):\n    def __init__(self):\n        super().__init__('dummy')\n        self.calls = []\n    def __call__(self, prompt=None, messages=None, **kwargs):\n        self.calls.append({'messages': messages, 'kwargs': kwargs})\n        return ['[[ ## answer ## ]]\\nok']\n\nlm = SpyLM()\ndspy.configure(lm=lm)\npred = dspy.Predict('question:dspy.Image -> answer')\npred(question=dspy.Image('https://example.com/cat.png'))\ncontent = lm.calls[0]['messages'][-1]['content']\nprint([part['type'] for part in content])\n```\n\nYou should see at least one `image_url` part in that final user message.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/types/base_type.py",
+        "symbol": "Type.serialize_model"
+      },
+      {
+        "file": "dspy/adapters/types/base_type.py",
+        "symbol": "split_message_content_for_custom_types"
+      },
+      {
+        "file": "dspy/adapters/types/image.py",
+        "symbol": "Image.format"
+      }
+    ],
+    "note": "The repo also tests the same content-part behavior when image objects show up inside ReAct tool observations."
+  },
+  {
+    "index": 18,
+    "question": "Some of my image URLs live behind internal HTTPS with self-signed certs. If I give one of those URLs to DSPy, will it pass the URL through unchanged or upload bytes, and how do `download` and SSL verification affect that?",
+    "answer": "By default, a remote image URL is passed through unchanged. If you construct `dspy.Image(..., download=True)`, DSPy downloads the image and rewrites it as a base64 data URI instead. The `verify` flag controls SSL verification on that download path, so `verify=False` is how the code handles self-signed internal certs.\n\n```python\nfrom unittest.mock import Mock, patch\nimport dspy\n\nprint(dspy.Image('https://internal.example/image.png').url)\n\nwith patch('dspy.adapters.types.image.requests.get') as mock_get:\n    resp = Mock()\n    resp.content = b'fake-image-bytes'\n    resp.headers = {'Content-Type': 'image/png'}\n    resp.raise_for_status = lambda: None\n    mock_get.return_value = resp\n\n    img = dspy.Image('https://internal.example/image.png', download=True, verify=False)\n    print(img.url.startswith('data:image/png;base64,'))\n    print(mock_get.call_args.kwargs['verify'])\n```\n\nThe first print is the original URL; the second path shows a data URI and `False` for SSL verification.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/types/image.py",
+        "symbol": "Image.__init__"
+      },
+      {
+        "file": "dspy/adapters/types/image.py",
+        "symbol": "encode_image"
+      },
+      {
+        "file": "dspy/adapters/types/image.py",
+        "symbol": "_encode_image_from_url"
+      }
+    ],
+    "note": "Local files, PIL images, raw bytes, and existing data URIs are handled through the same normalization logic."
+  },
+  {
+    "index": 19,
+    "question": "I need to send a file or uploaded file ID to an OpenAI-compatible chat backend through DSPy. What input forms does DSPy accept, and what does the outgoing message part look like?",
+    "answer": "`dspy.File` accepts local files, raw bytes, and uploaded file IDs. It normalizes them into `file_data`, `file_id`, and optional `filename`, and formats the provider message part as `{'type': 'file', 'file': ...}`.\n\n```python\nimport dspy\n\nf1 = dspy.File.from_bytes(b'hello', filename='note.txt', mime_type='text/plain')\nprint(f1.format())\n\nf2 = dspy.File.from_file_id('file-123', filename='note.txt')\nprint(f2.format())\n```\n\nA local path goes through the same idea as `from_bytes(...)`, except DSPy reads the file, guesses the MIME type, and base64-encodes the contents for you.",
+    "difficulty": "hard",
+    "code_evidence": [
+      {
+        "file": "dspy/adapters/types/file.py",
+        "symbol": "File.validate_input"
+      },
+      {
+        "file": "dspy/adapters/types/file.py",
+        "symbol": "File.format"
+      },
+      {
+        "file": "dspy/adapters/types/file.py",
+        "symbol": "File.from_path"
+      }
+    ],
+    "note": "The helper `encode_file_to_dict(...)` is the lower-level path that turns supported inputs into the normalized file payload."
+  }
+]
+
+Return JSON that matches the provided schema and nothing else. If fewer than `8` candidates truly qualify, return fewer and explain the shortage in `selection_notes`.
