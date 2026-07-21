@@ -33,6 +33,34 @@ style examples from unrelated software domains, and the stage was rerun
 (the leak could only have influenced label *naming*, not cluster
 membership, but the relabeled artifacts replace the old ones entirely).
 
+**Declared form-register exception (2026-07-20, user-directed).** The A.2
+`{placeholder}` values are unpublished, and our first reconstruction got
+the question/answer FORM wrong: the paper's released bundles are
+uniformly "give me a runnable offline program" questions whose gold
+answers ARE programs (30/30 Study-DSPy gold answers are a single fenced
+```python block; 27/30 questions say "runnable"; 10/30 name `DummyLM` —
+pipeline-injected vocabulary no real user writes), while our run produced
+explanation questions with prose answers, leaving the paper's Stage-5
+sandbox nothing to execute. Fix: the Stage-3a placeholder values now
+state the deliverable contract imperatively, and validators enforce the
+answer form. Scope of what was taken from released data: FORM conventions
+only (question register, answer-as-program, offline/DummyLM convention,
+support-thread structure) — read from the released bundles to
+reverse-engineer the paper's unpublished pipeline constants, which is
+replication of their construction tool, not test-content leakage. No test
+question's content, topic, or mechanism appears in any prompt. The
+underlying requirement was also independently declared in our Stage-3a
+library description before any released bundle was read (sandbox
+verifiability), so the prior itself is test-blind; what the released data
+supplied is the emphasis and placement our first attempt under-weighted.
+Retrospective on why we missed it: (a) the contract sat in flavor text
+("Questions ask for...") instead of being an imperative requirement;
+(b) our deterministic validators never checked the contract we ourselves
+declared — at any stage; (c) the paper's own OpenClaw set is built from
+GitHub issues like ours yet still yields 20/20 code-bearing gold answers,
+proving the register comes from their pipeline values, not the source
+genre — so the source substitution was never an excuse.
+
 ## Scope note: SmallDSPy vs the session source (2026-07-17)
 
 SmallDSPy was built for cheap iteration on studying baselines: the subset
@@ -215,10 +243,10 @@ one-time LLM judgment, archived).
 
 | # | Paper says | We had to decide | Our choice |
 |---|---|---|---|
-| 1 | all `{placeholder}` values in A.2 are unpublished | library description | factual description of DSPy plus a runnable-offline requirement: solutions must run with no API key using the corpus's own test stub (`dspy.utils.dummies.DummyLM`). Justified by sandbox verifiability (Stage 5 must execute reference answers), not by any test-set style |
-| 2 | " | ok-to-name / not-ok lists, bad/good example blocks | brand-level public API names drawn from the corpus itself; examples are behavioral and topic-neutral |
+| 1 | all `{placeholder}` values in A.2 are unpublished | library description | factual description of DSPy plus the deliverable contract (rev 2, 2026-07-20): every question must end by asking for a small self-contained runnable offline program (DummyLM, no API key) with printed/asserted proof; every gold answer must BE that program — exactly one fenced ```python block, nothing outside it; questions read like 2-4-paragraph support threads. Rev 1 stated this descriptively and the register drifted — see Principles (form-register exception) |
+| 2 | " | ok-to-name / not-ok lists, bad/good example blocks | brand-level public API names drawn from the corpus itself plus user-visible error names as pasted from tracebacks; examples are behavioral and topic-neutral, and (rev 2) both good examples end with the runnable-deliverable ask |
 | 3 | (nothing) | seed session payload | number + question_text (3,000 chars) + up to 3 non-author human comments (2,000 chars each) as untrusted community answers |
-| 4 | (nothing) | output enforcement | `--output-schema` JSON Schema (exactly 20 items, difficulty enum, >=2 evidence items); deterministic validation of evidence paths against the checkout; at most 1 corrective re-run per topic |
+| 4 | (nothing) | output enforcement | `--output-schema` JSON Schema (exactly 20 items, difficulty enum, >=2 evidence items); deterministic validation of evidence paths against the checkout; (rev 2) the deliverable contract is validated — exactly one fenced ```python block per answer, nothing outside it, and it must `compile()` — at Stage 3a AND (inherited via the shared validator) at Stage 3b, so the critic can never strip programs again; at most 1 corrective re-run per topic |
 | 5 | (nothing) | model account | the operator's ChatGPT/Codex login, model pinned to gpt-5.4, effort xhigh (the user config's default model/effort are overridden per run) |
 
 **Two-corpus design (user-directed):** generation runs twice with
@@ -237,7 +265,11 @@ Each candidate is tagged `smalldspy_scope` (all evidence files inside the
 66-file corpus) per the scope note above — trivially true for the
 smalldspy set, informative for the fulldspy set.
 
-**Stage 3a result (2026-07-17):** both sets complete — 4 topics x 20 = 80
+**Stage 3a result (2026-07-17) — SUPERSEDED (see the form-register
+exception in Principles): these candidates were explanation-register with
+prose gold answers and were regenerated on 2026-07-20 under the rev-2
+deliverable contract; artifacts deleted, recoverable at git `ea14242`.**
+Original record: both sets complete — 4 topics x 20 = 80
 candidates per scope, all questions unique within each set.
 - `4_fulldspy_candidates.json`: 11/80 fall inside the 66-file SmallDSPy
   scope (1/1/3/6 by topic, rising exactly along the corpus-overlap
@@ -292,7 +324,10 @@ under `artifacts/5_critic_selection/<scope>/`; per-topic records store
 rejection is auditable. Finalists are re-tagged `smalldspy_scope` after
 any critic rewrite of the evidence.
 
-**Stage 3b result (2026-07-20):** both scopes complete — 8 finalists x 4
+**Stage 3b result (2026-07-20, first run) — SUPERSEDED: built on the
+prose-register candidates; rerun after the rev-2 regeneration (artifacts
+deleted, recoverable at git `e6bc809`).** Original record: both scopes
+complete — 8 finalists x 4
 topics = 32 per scope, all questions unique, every session valid on its
 first attempt (no retries, no derailments).
 - The critic used its A.3 rewrite license on nearly every keep (fulldspy
@@ -347,7 +382,10 @@ gold_answer, rubric, evidence-with-excerpts) plus our bookkeeping
 (difficulty, note, source_index, smalldspy_scope). Both scopes run, one
 rubric session per finalist (32 + 32).
 
-**Stage 4 result (2026-07-20):** all 64 rubric bundles built, every codex
+**Stage 4 result (2026-07-20, first run) — SUPERSEDED: rubrics were built
+over the prose-register bundles; rerun after the rev-2 regeneration
+(artifacts deleted, recoverable at git `1e54e8c`).** Original record: all
+64 rubric bundles built, every codex
 session valid on its first attempt (no retries, no failures). Audit
 against the released-bundle invariants — all pass in both scopes:
 - weights sum to exactly 100 everywhere; core share min 70 / median 90 /

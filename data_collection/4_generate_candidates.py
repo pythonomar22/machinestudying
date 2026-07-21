@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import subprocess
 from pathlib import Path
 
@@ -155,12 +156,27 @@ DSPY_VALUES = {
         "input/output behavior is declared by signatures; adapters translate "
         "signatures into provider-specific prompts and parse completions back "
         "into typed fields; optimizers tune prompts and demonstrations "
-        "against metrics. Questions ask for a self-contained, runnable Python "
-        "program alongside the explanation. Solutions must run offline with "
-        "no API key --- whenever a language model is needed, use the offline "
-        "LM stub the library itself ships for its own tests "
-        "(`dspy.utils.dummies.DummyLM`) --- so that every reference answer "
-        "can be executed and verified in a sandbox."
+        "against metrics.\n\n"
+        "Deliverable contract (hard requirement for every candidate):\n"
+        "- Every question must END by explicitly asking for a small, "
+        "self-contained, RUNNABLE Python program (a repro, harness, working "
+        "example, or module) as its deliverable, phrased the way a real user "
+        "asks ('Give me a complete, runnable program that ...', 'Write the "
+        "metric plus a tiny harness that ...', 'Show me the idiomatic DSPy "
+        "program that ...'), and must ask for printed output or assertions "
+        "that PROVE the behavior in question.\n"
+        "- Questions should read like a real support thread: 2-4 short "
+        "paragraphs --- the setup and goal, what was tried and what was "
+        "observed (symptoms, error messages as the user saw them), then the "
+        "deliverable ask.\n"
+        "- Every gold `answer` must BE that program: exactly one fenced "
+        "```python block and NOTHING outside it, with any needed explanation "
+        "as inline comments, ending with the prints/assertions the question "
+        "demands.\n"
+        "- Programs must run offline with no API key --- whenever a language "
+        "model is needed, use the offline LM stub the library itself ships "
+        "for its own tests (`dspy.utils.dummies.DummyLM`) --- so that every "
+        "reference answer can be executed and verified in a sandbox."
     ),
     "code_roots_bullets": (
         "- `dspy/` --- the DSPy library source\n"
@@ -178,7 +194,9 @@ DSPY_VALUES = {
         "input/output fields, demos, adapters (as a concept), optimizers / "
         "teleprompters (as a concept), metrics, tools, trajectories, "
         "conversation history, streaming, async, caching, saving/loading "
-        "compiled programs."
+        "compiled programs.\n"
+        "- User-visible exception or error names exactly as they appear in a "
+        "traceback or error message the user would paste."
     ),
     "not_ok_examples_bullets": (
         "- Internal adapter/parser/formatter classes or their methods --- "
@@ -200,15 +218,20 @@ DSPY_VALUES = {
     "good_examples_block": (
         "- \"I compiled a program with an optimizer, saved it, and loaded it "
         "in a fresh process --- my demos came back, but a piece of my "
-        "configuration silently did not. What exactly does saving preserve, "
-        "and show a runnable round-trip that proves it.\" (behavioral "
-        "symptom; the agent must locate the persistence logic)\n"
+        "configuration silently did not. Give me a complete, runnable "
+        "round-trip program (save, then load in a fresh instance, offline "
+        "with `DummyLM`, no API key) that reproduces this and prints the "
+        "loaded program's state at the end, proving exactly what survives "
+        "the round-trip and what resets.\" (behavioral symptom; the agent "
+        "must locate the persistence logic; the deliverable is a program "
+        "that proves the answer)\n"
         "- \"Two of my output fields have similar names, and one sometimes "
         "comes back empty even though the raw completion clearly contains "
-        "the text. Walk me through how completions are parsed back into "
-        "typed fields, and give a minimal offline repro of the failure.\" "
+        "the text. Write a minimal offline repro --- a small signature plus "
+        "`DummyLM`-driven calls --- that triggers the failure, then prints "
+        "the parsed fields so the empty-field behavior is undeniable.\" "
         "(describes observed behavior; forces locating the parsing "
-        "mechanism)"
+        "mechanism; demands a runnable proof)"
     ),
 }
 
@@ -300,12 +323,33 @@ def smalldspy_files() -> frozenset[str]:
     )
 
 
+PROGRAM_FENCE = re.compile(r"```python\n(.*?)```", re.DOTALL)
+
+
+def program_violation(answer: str) -> str | None:
+    """The deliverable contract: the answer IS one fenced, compiling program."""
+    blocks = PROGRAM_FENCE.findall(answer)
+    if len(blocks) != 1:
+        return (f"answer has {len(blocks)} fenced ```python blocks; it must be "
+                "exactly one runnable program in a single fence")
+    if PROGRAM_FENCE.sub("", answer).strip():
+        return ("answer has prose outside the fenced program; explanation "
+                "belongs in inline comments inside the single fence")
+    try:
+        compile(blocks[0], "<answer>", "exec")
+    except SyntaxError as error:
+        return f"answer program does not compile: {error}"
+    return None
+
+
 def violations(candidates: list[dict], repo: Path) -> list[str]:
     problems = []
     questions = [candidate["question"].strip() for candidate in candidates]
     if len(set(questions)) != len(questions):
         problems.append("duplicate question text across candidates")
     for position, candidate in enumerate(candidates):
+        if problem := program_violation(candidate["answer"]):
+            problems.append(f"candidate {position}: {problem}")
         for evidence in candidate["code_evidence"]:
             file = evidence["file"]
             if not file.endswith(".py"):
