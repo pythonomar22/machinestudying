@@ -1,0 +1,78 @@
+{
+ "id": "dspy_153b51968a9a",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I compiled a reusable subprogram once, inserted it into a larger `dspy.Module`, and later optimized the outer program. The nested predictors never changed. What tells DSPy to stop descending into that child?",
+ "gold_answer": "`BaseModule.named_parameters()` stops recursing into child `dspy.Module` instances once they carry `_compiled=True`. Teleprompters set that flag on compiled students, so later optimizers traverse around that subtree and leave its predictors frozen.\n```python\nimport dspy\n\nclass Inner(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.p = dspy.Predict('q -> a')\n\nclass Outer(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.inner = Inner()\n        self.p2 = dspy.Predict('q -> b')\n\nouter = Outer()\nprint([name for name, _ in outer.named_parameters()])\nouter.inner._compiled = True\nprint([name for name, _ in outer.named_parameters()])\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 70,
+   "statement": "`BaseModule.named_parameters()` uses a child module's `_compiled` flag as the recursion gate: if a child `dspy.Module` has `_compiled=True`, the method does not descend into that child's parameters.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Both `BootstrapFewShot.compile()` and `BootstrapFinetune.compile()` explicitly set `_compiled = True` on the student they return.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "`named_sub_modules(..., skip_compiled=True)` follows the same convention by stopping traversal at modules whose `_compiled` flag is true.",
+   "span_ids": [
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/primitives/base_module.py",
+   "start_line": 34,
+   "end_line": 45,
+   "excerpt": "0034:         def add_parameter(param_name, param_value):\n0035:             if isinstance(param_value, Parameter):\n0036:                 if id(param_value) not in visited:\n0037:                     visited.add(id(param_value))\n0038:                     named_parameters.append((param_name, param_value))\n0039: \n0040:             elif isinstance(param_value, dspy.Module):\n0041:                 # When a sub-module is pre-compiled, keep it frozen.\n0042:                 if not getattr(param_value, \"_compiled\", False):\n0043:                     for sub_name, param in param_value.named_parameters():\n0044:                         add_parameter(f\"{param_name}.{sub_name}\", param)\n0045: "
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/primitives/base_module.py",
+   "start_line": 49,
+   "end_line": 57,
+   "excerpt": "0049:         for name, value in self.__dict__.items():\n0050:             if isinstance(value, Parameter):\n0051:                 add_parameter(name, value)\n0052: \n0053:             elif isinstance(value, dspy.Module):\n0054:                 # When a sub-module is pre-compiled, keep it frozen.\n0055:                 if not getattr(value, \"_compiled\", False):\n0056:                     for sub_name, param in value.named_parameters():\n0057:                         add_parameter(f\"{name}.{sub_name}\", param)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/bootstrap.py",
+   "start_line": 84,
+   "end_line": 94,
+   "excerpt": "0084:     def compile(self, student, *, teacher=None, trainset):\n0085:         self.trainset = trainset\n0086: \n0087:         self._prepare_student_and_teacher(student, teacher)\n0088:         self._prepare_predictor_mappings()\n0089:         self._bootstrap()\n0090: \n0091:         self.student = self._train()\n0092:         self.student._compiled = True\n0093: \n0094:         return self.student"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/teleprompt/bootstrap_finetune.py",
+   "start_line": 119,
+   "end_line": 134,
+   "excerpt": "0119:         logger.info(\"Updating the student program with the fine-tuned LMs...\")\n0120:         for pred_ind, pred in enumerate(student.predictors()):\n0121:             data_pred_ind = None if self.multitask else pred_ind\n0122:             training_key = (pred.lm, data_pred_ind)\n0123:             finetuned_lm = key_to_lm[training_key]\n0124:             if isinstance(finetuned_lm, Exception):\n0125:                 raise RuntimeError(f\"Finetuned LM for predictor {pred_ind} failed.\") from finetuned_lm\n0126:             pred.lm = finetuned_lm\n0127:             # TODO: What should the correct behavior be here? Should\n0128:             # BootstrapFinetune modify the prompt demos according to the\n0129:             # train data?\n0130:             pred.demos = [] if self.exclude_demos else pred.demos\n0131: \n0132:         logger.info(\"BootstrapFinetune has finished compiling the student program\")\n0133:         student._compiled = True\n0134:         return student"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/primitives/base_module.py",
+   "start_line": 93,
+   "end_line": 97,
+   "excerpt": "0093:             if isinstance(item, BaseModule):\n0094:                 if skip_compiled and getattr(item, \"_compiled\", False):\n0095:                     continue\n0096:                 for sub_name, sub_item in item.__dict__.items():\n0097:                     add_to_queue(f\"{name}.{sub_name}\", sub_item)"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Use an uncompiled copy if you want a later optimizer to descend into that subtree again.",
+ "source_index": 3,
+ "smalldspy_scope": false
+}

@@ -1,0 +1,98 @@
+{
+ "id": "dspy_16c0f1ebc869",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I need one LLM-graded metric to behave like a continuous score during evaluation but like a stricter pass/fail gate during demo selection. Is there already a built-in DSPy pattern for that?",
+ "gold_answer": "Yes. The built-in auto-evaluation metrics already do this by branching on `trace`. `SemanticF1` and `CompleteAndGrounded` return `Prediction(score=<float>)` when `trace is None`, but return `Prediction(score=<bool>)` when a trace is present, using the configured threshold. That is the repo's built-in pattern for 'numeric in evaluation, boolean during bootstrapping'.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "`SemanticF1.forward` branches on `trace`: without a trace it returns the raw numeric `score` in `Prediction.score`, and with a trace it returns the boolean result of `score >= self.threshold`.",
+   "span_ids": [
+    "s1",
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "`CompleteAndGrounded.forward` uses the same `trace`-based branch: no trace returns the raw numeric `score`, while a present trace returns the boolean result of `score >= self.threshold`.",
+   "span_ids": [
+    "s2",
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The numeric score being switched between continuous and boolean modes is an F1-style aggregate: `SemanticF1` computes F1 from LLM-produced precision and recall, and `CompleteAndGrounded` computes F1 from groundedness and completeness.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 20,
+   "statement": "In both built-in metrics, the gate is controlled by a configurable `threshold` constructor argument that defaults to `0.66` and is documented as the minimum score accepted during optimization.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/evaluate/auto_evaluation.py",
+   "start_line": 42,
+   "end_line": 62,
+   "excerpt": "0042: class SemanticF1(Module):\n0043:     \"\"\"Computes semantic F1 between a prediction and ground truth via LLM-based precision/recall.\n0044: \n0045:     Args:\n0046:         threshold: Minimum F1 score to accept during optimization. Defaults to 0.66.\n0047:         decompositional: If True, uses DecompositionalSemanticRecallPrecision. Defaults to False.\n0048:     \"\"\"\n0049: \n0050:     def __init__(self, threshold=0.66, decompositional=False):\n0051:         self.threshold = threshold\n0052: \n0053:         if decompositional:\n0054:             self.module = ChainOfThought(DecompositionalSemanticRecallPrecision)\n0055:         else:\n0056:             self.module = ChainOfThought(SemanticRecallPrecision)\n0057: \n0058:     def forward(self, example, pred, trace=None):\n0059:         scores = self.module(question=example.question, ground_truth=example.response, system_response=pred.response)\n0060:         score = f1_score(scores.precision, scores.recall)\n0061: \n0062:         return Prediction(score=score if trace is None else score >= self.threshold)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/evaluate/auto_evaluation.py",
+   "start_line": 102,
+   "end_line": 123,
+   "excerpt": "0102: class CompleteAndGrounded(Module):\n0103:     \"\"\"Combines answer completeness and groundedness into a single score.\n0104: \n0105:     Args:\n0106:         threshold: Minimum score to accept during optimization. Defaults to 0.66.\n0107:     \"\"\"\n0108: \n0109:     def __init__(self, threshold=0.66):\n0110:         self.threshold = threshold\n0111:         self.completeness_module = ChainOfThought(AnswerCompleteness)\n0112:         self.groundedness_module = ChainOfThought(AnswerGroundedness)\n0113: \n0114:     def forward(self, example, pred, trace=None):\n0115:         completeness = self.completeness_module(\n0116:             question=example.question, ground_truth=example.response, system_response=pred.response\n0117:         )\n0118:         groundedness = self.groundedness_module(\n0119:             question=example.question, retrieved_context=pred.context, system_response=pred.response\n0120:         )\n0121:         score = f1_score(groundedness.groundedness, completeness.completeness)\n0122: \n0123:         return Prediction(score=score if trace is None else score >= self.threshold)"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/evaluate/test_auto_evaluation.py",
+   "start_line": 7,
+   "end_line": 32,
+   "excerpt": "0007: def test_semantic_f1_returns_prediction_without_trace():\n0008:     # Configure with a dummy LM that returns precision and recall values\n0009:     # ChainOfThought adds a \"reasoning\" field to the output\n0010:     dspy.configure(\n0011:         lm=DummyLM(\n0012:             [\n0013:                 {\n0014:                     \"reasoning\": \"Comparing the responses\",\n0015:                     \"precision\": 1.0,\n0016:                     \"recall\": 1.0,\n0017:                 }\n0018:             ]\n0019:         )\n0020:     )\n0021: \n0022:     # Create example and prediction\n0023:     example = dspy.Example(question=\"What is 1+1?\", response=\"2\")\n0024:     pred = dspy.Prediction(response=\"2\")\n0025: \n0026:     # Test SemanticF1\n0027:     metric = SemanticF1()\n0028:     result = metric(example, pred)\n0029: \n0030:     assert isinstance(result, Prediction)\n0031:     assert hasattr(result, \"score\")\n0032:     assert isinstance(result.score, (int, float, bool))"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/evaluate/test_auto_evaluation.py",
+   "start_line": 35,
+   "end_line": 59,
+   "excerpt": "0035: def test_semantic_f1_returns_prediction_with_trace():\n0036:     # Configure with a dummy LM\n0037:     dspy.configure(\n0038:         lm=DummyLM(\n0039:             [\n0040:                 {\n0041:                     \"reasoning\": \"Comparing the responses\",\n0042:                     \"precision\": 1.0,\n0043:                     \"recall\": 1.0,\n0044:                 }\n0045:             ]\n0046:         )\n0047:     )\n0048: \n0049:     # Create example and prediction\n0050:     example = dspy.Example(question=\"What is 1+1?\", response=\"2\")\n0051:     pred = dspy.Prediction(response=\"2\")\n0052: \n0053:     # Test SemanticF1 with trace\n0054:     metric = SemanticF1(threshold=0.5)\n0055:     result = metric(example, pred, trace=True)\n0056: \n0057:     assert isinstance(result, Prediction)\n0058:     assert hasattr(result, \"score\")\n0059:     assert isinstance(result.score, bool)"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/evaluate/test_auto_evaluation.py",
+   "start_line": 89,
+   "end_line": 121,
+   "excerpt": "0089: def test_complete_and_grounded_returns_prediction_without_trace():\n0090:     # Configure with a dummy LM\n0091:     dspy.configure(\n0092:         lm=DummyLM(\n0093:             [\n0094:                 {\n0095:                     \"reasoning\": \"Analyzing completeness\",\n0096:                     \"ground_truth_key_ideas\": \"the answer is 2\",\n0097:                     \"system_response_key_ideas\": \"the answer is 2\",\n0098:                     \"discussion\": \"both match\",\n0099:                     \"completeness\": 1.0,\n0100:                 },\n0101:                 {\n0102:                     \"reasoning\": \"Analyzing groundedness\",\n0103:                     \"system_response_claims\": \"1+1=2\",\n0104:                     \"discussion\": \"supported by context\",\n0105:                     \"groundedness\": 1.0,\n0106:                 },\n0107:             ]\n0108:         )\n0109:     )\n0110: \n0111:     # Create example and prediction with context\n0112:     example = dspy.Example(question=\"What is 1+1?\", response=\"2\")\n0113:     pred = dspy.Prediction(response=\"2\", context=\"context\")\n0114: \n0115:     # Test CompleteAndGrounded\n0116:     metric = CompleteAndGrounded()\n0117:     result = metric(example, pred)\n0118: \n0119:     assert isinstance(result, Prediction)\n0120:     assert hasattr(result, \"score\")\n0121:     assert isinstance(result.score, (int, float, bool))"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/evaluate/test_auto_evaluation.py",
+   "start_line": 124,
+   "end_line": 156,
+   "excerpt": "0124: def test_complete_and_grounded_returns_prediction_with_trace():\n0125:     # Configure with a dummy LM\n0126:     dspy.configure(\n0127:         lm=DummyLM(\n0128:             [\n0129:                 {\n0130:                     \"reasoning\": \"Analyzing completeness\",\n0131:                     \"ground_truth_key_ideas\": \"the answer is 2\",\n0132:                     \"system_response_key_ideas\": \"the answer is 2\",\n0133:                     \"discussion\": \"both match\",\n0134:                     \"completeness\": 0.9,\n0135:                 },\n0136:                 {\n0137:                     \"reasoning\": \"Analyzing groundedness\",\n0138:                     \"system_response_claims\": \"1+1=2\",\n0139:                     \"discussion\": \"supported by context\",\n0140:                     \"groundedness\": 0.8,\n0141:                 },\n0142:             ]\n0143:         )\n0144:     )\n0145: \n0146:     # Create example and prediction with context\n0147:     example = dspy.Example(question=\"What is 1+1?\", response=\"2\")\n0148:     pred = dspy.Prediction(response=\"2\", context=\"context\")\n0149: \n0150:     # Test CompleteAndGrounded with trace\n0151:     metric = CompleteAndGrounded(threshold=0.7)\n0152:     result = metric(example, pred, trace=True)\n0153: \n0154:     assert isinstance(result, Prediction)\n0155:     assert hasattr(result, \"score\")\n0156:     assert isinstance(result.score, bool)"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "High-quality built-in-pattern question with a non-obvious trace-sensitive branch.",
+ "source_index": 6,
+ "smalldspy_scope": false
+}

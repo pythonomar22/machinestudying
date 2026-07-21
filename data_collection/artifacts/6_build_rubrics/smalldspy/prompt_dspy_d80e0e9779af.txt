@@ -1,0 +1,757 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_d80e0e9779af`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `When I batch a module over a list of `dspy.Example`s and ask DSPy to return failures instead of aborting, the failed items seem to have lost their labels and metadata. Is that expected? Why?`
+- Gold answer:
+Yes. `Module.batch` strips each example down to `example.inputs()` before it queues work, so the execution pairs carry plain input dicts rather than the original full `Example`s. In failure-return mode, `Parallel` hands those queued payloads back as `failed_examples`, so you keep the failing inputs but not labels or extra fields.
+
+## Evidence references
+[
+  {
+    "file": "dspy/primitives/module.py",
+    "symbol": "Module.batch"
+  },
+  {
+    "file": "dspy/predict/parallel.py",
+    "symbol": "Parallel.forward"
+  },
+  {
+    "file": "tests/predict/test_parallel.py",
+    "symbol": "test_batch_with_failed_examples"
+  }
+]
+
+## Full evidence files
+### dspy/primitives/module.py
+0001: import inspect
+0002: import logging
+0003: from typing import Any, TextIO
+0004: 
+0005: from dspy.dsp.utils.settings import settings
+0006: from dspy.predict.parallel import Parallel
+0007: from dspy.primitives.base_module import BaseModule
+0008: from dspy.primitives.example import Example
+0009: from dspy.primitives.prediction import Prediction
+0010: from dspy.utils import magicattr
+0011: from dspy.utils.callback import with_callbacks
+0012: from dspy.utils.inspect_history import pretty_print_history
+0013: from dspy.utils.usage_tracker import track_usage
+0014: 
+0015: logger = logging.getLogger(__name__)
+0016: 
+0017: 
+0018: class ProgramMeta(type):
+0019:     """Metaclass ensuring every ``dspy.Module`` instance is properly initialised."""
+0020: 
+0021:     def __call__(cls, *args, **kwargs):
+0022:         # Create the instance without invoking ``__init__`` so we can inject
+0023:         # the base initialization beforehand.
+0024:         obj = cls.__new__(cls, *args, **kwargs)
+0025:         if isinstance(obj, cls):
+0026:             # ``_base_init`` sets attributes that should exist on all modules
+0027:             # even when a subclass forgets to call ``super().__init__``.
+0028:             Module._base_init(obj)
+0029:             cls.__init__(obj, *args, **kwargs)
+0030: 
+0031:             # Guarantee existence of critical attributes if ``__init__`` didn't
+0032:             # create them.
+0033:             if not hasattr(obj, "callbacks"):
+0034:                 obj.callbacks = []
+0035:             if not hasattr(obj, "history"):
+0036:                 obj.history = []
+0037:         return obj
+0038: 
+0039: 
+0040: class Module(BaseModule, metaclass=ProgramMeta):
+0041:     """Base class for all DSPy modules (programs).
+0042: 
+0043:     A Module is a building block for DSPy programs that can contain predictors,
+0044:     sub-modules, and custom logic. Modules can be composed together to create
+0045:     complex pipelines and can be optimized using DSPy's teleprompters.
+0046: 
+0047:     All DSPy programs should inherit from this class and implement a ``forward``
+0048:     method that defines the program's logic.
+0049: 
+0050:     Args:
+0051:         callbacks: Optional list of callback handlers for instrumentation
+0052:             and monitoring.
+0053: 
+0054:     Attributes:
+0055:         callbacks: List of registered callback handlers.
+0056:         history: List of LM call history for this module.
+0057: 
+0058:     Examples:
+0059:         >>> import dspy
+0060:         >>> class MyProgram(dspy.Module):
+0061:         ...     def __init__(self):
+0062:         ...         super().__init__()
+0063:         ...         self.predictor = dspy.Predict("question -> answer")
+0064:         ...
+0065:         ...     def forward(self, question):
+0066:         ...         return self.predictor(question=question)
+0067:     """
+0068: 
+0069:     def _base_init(self):
+0070:         self._compiled = False
+0071:         self.callbacks = []
+0072:         self.history = []
+0073: 
+0074:     def __init__(self, callbacks=None):
+0075:         self.callbacks = callbacks or []
+0076:         self._compiled = False
+0077:         # LM calling history of the module.
+0078:         self.history = []
+0079: 
+0080:     def __getstate__(self):
+0081:         state = self.__dict__.copy()
+0082:         state.pop("history", None)
+0083:         state.pop("callbacks", None)
+0084:         return state
+0085: 
+0086:     def __setstate__(self, state):
+0087:         self.__dict__.update(state)
+0088:         if not hasattr(self, "history"):
+0089:             self.history = []
+0090:         if not hasattr(self, "callbacks"):
+0091:             self.callbacks = []
+0092: 
+0093:     @with_callbacks
+0094:     def __call__(self, *args, **kwargs) -> Prediction:
+0095:         from dspy.dsp.utils.settings import thread_local_overrides
+0096: 
+0097:         caller_modules = settings.caller_modules or []
+0098:         caller_modules = list(caller_modules)
+0099:         caller_modules.append(self)
+0100: 
+0101:         with settings.context(caller_modules=caller_modules):
+0102:             if settings.track_usage and thread_local_overrides.get().get("usage_tracker") is None:
+0103:                 with track_usage() as usage_tracker:
+0104:                     output = self.forward(*args, **kwargs)
+0105:                 tokens = usage_tracker.get_total_tokens()
+0106:                 self._set_lm_usage(tokens, output)
+0107: 
+0108:                 return output
+0109: 
+0110:             return self.forward(*args, **kwargs)
+0111: 
+0112:     @with_callbacks
+0113:     async def acall(self, *args, **kwargs) -> Prediction:
+0114:         from dspy.dsp.utils.settings import thread_local_overrides
+0115: 
+0116:         caller_modules = settings.caller_modules or []
+0117:         caller_modules = list(caller_modules)
+0118:         caller_modules.append(self)
+0119: 
+0120:         with settings.context(caller_modules=caller_modules):
+0121:             if settings.track_usage and thread_local_overrides.get().get("usage_tracker") is None:
+0122:                 with track_usage() as usage_tracker:
+0123:                     output = await self.aforward(*args, **kwargs)
+0124:                     tokens = usage_tracker.get_total_tokens()
+0125:                     self._set_lm_usage(tokens, output)
+0126: 
+0127:                     return output
+0128: 
+0129:             return await self.aforward(*args, **kwargs)
+0130: 
+0131:     def named_predictors(self):
+0132:         """Return all named Predict modules in this module.
+0133: 
+0134:         Iterates through all parameters and returns those that are instances
+0135:         of ``dspy.Predict``, along with their names.
+0136: 
+0137:         Returns:
+0138:             list[tuple[str, Predict]]: A list of (name, predictor) tuples
+0139:                 where name is the attribute path and predictor is the
+0140:                 Predict instance.
+0141: 
+0142:         Examples:
+0143:             >>> import dspy
+0144:             >>> class MyProgram(dspy.Module):
+0145:             ...     def __init__(self):
+0146:             ...         super().__init__()
+0147:             ...         self.qa = dspy.Predict("question -> answer")
+0148:             ...         self.summarize = dspy.Predict("text -> summary")
+0149:             ...
+0150:             >>> program = MyProgram()
+0151:             >>> for name, p in program.named_predictors():
+0152:             ...     print(name)
+0153:             qa
+0154:             summarize
+0155:         """
+0156:         from dspy.predict.predict import Predict
+0157: 
+0158:         return [(name, param) for name, param in self.named_parameters() if isinstance(param, Predict)]
+0159: 
+0160:     def predictors(self):
+0161:         """Return all Predict modules in this module.
+0162: 
+0163:         Returns:
+0164:             list[Predict]: A list of all Predict instances in this module.
+0165: 
+0166:         Examples:
+0167:             >>> import dspy
+0168:             >>> class MyProgram(dspy.Module):
+0169:             ...     def __init__(self):
+0170:             ...         super().__init__()
+0171:             ...         self.qa = dspy.Predict("question -> answer")
+0172:             ...
+0173:             >>> program = MyProgram()
+0174:             >>> len(program.predictors())
+0175:             1
+0176:         """
+0177:         return [param for _, param in self.named_predictors()]
+0178: 
+0179:     def set_lm(self, lm):
+0180:         """Set the language model for all predictors in this module.
+0181: 
+0182:         This method recursively sets the language model for all Predict
+0183:         instances contained within this module.
+0184: 
+0185:         Args:
+0186:             lm: The language model instance to use for all predictors.
+0187: 
+0188:         Examples:
+0189:             >>> import dspy
+0190:             >>> lm = dspy.LM("openai/gpt-4o-mini")
+0191:             >>> program = dspy.Predict("question -> answer")
+0192:             >>> program.set_lm(lm)
+0193:         """
+0194:         for _, param in self.named_predictors():
+0195:             param.lm = lm
+0196: 
+0197:     def get_lm(self):
+0198:         """Get the language model used by this module's predictors.
+0199: 
+0200:         Returns the language model if all predictors use the same LM.
+0201:         Raises an error if multiple different LMs are in use.
+0202: 
+0203:         Returns:
+0204:             The language model instance used by this module's predictors.
+0205: 
+0206:         Raises:
+0207:             ValueError: If multiple different language models are being
+0208:                 used by the predictors in this module.
+0209:         """
+0210:         all_used_lms = [param.lm for _, param in self.named_predictors()]
+0211: 
+0212:         if len(set(all_used_lms)) == 1:
+0213:             return all_used_lms[0]
+0214: 
+0215:         raise ValueError("Multiple LMs are being used in the module. There's no unique LM to return.")
+0216: 
+0217:     def __repr__(self):
+0218:         s = []
+0219: 
+0220:         for name, param in self.named_predictors():
+0221:             s.append(f"{name} = {param}")
+0222: 
+0223:         return "\n".join(s)
+0224: 
+0225:     def map_named_predictors(self, func):
+0226:         """Apply a function to all named predictors in this module.
+0227: 
+0228:         This method iterates through all Predict instances in the module
+0229:         and applies the given function to each, replacing the original
+0230:         predictor with the function's return value.
+0231: 
+0232:         Args:
+0233:             func: A callable that takes a Predict instance and returns
+0234:                 a new Predict instance (or compatible object).
+0235: 
+0236:         Returns:
+0237:             Module: Returns self for method chaining.
+0238: 
+0239:         Examples:
+0240:             >>> import dspy
+0241:             >>> class MyProgram(dspy.Module):
+0242:             ...     def __init__(self):
+0243:             ...         super().__init__()
+0244:             ...         self.qa = dspy.Predict("question -> answer")
+0245:             ...
+0246:             >>> program = MyProgram()
+0247:             >>> program.map_named_predictors(lambda p: p)
+0248:         """
+0249:         for name, predictor in self.named_predictors():
+0250:             set_attribute_by_name(self, name, func(predictor))
+0251:         return self
+0252: 
+0253:     def inspect_history(self, n: int = 1, file: "TextIO | None" = None) -> None:
+0254:         """Display the LM call history for this module.
+0255: 
+0256:         Prints a formatted view of the most recent language model calls
+0257:         made by this module, useful for debugging and understanding
+0258:         the module's behavior.
+0259: 
+0260:         Args:
+0261:             n: The number of recent history entries to display.
+0262:                 Defaults to 1.
+0263:             file: An optional file-like object to write output to. When
+0264:                 provided, ANSI color codes are automatically disabled.
+0265:                 Defaults to `None` (prints to stdout).
+0266:         """
+0267:         pretty_print_history(self.history, n, file=file)
+0268: 
+0269:     def batch(
+0270:         self,
+0271:         examples: list[Example],
+0272:         num_threads: int | None = None,
+0273:         max_errors: int | None = None,
+0274:         return_failed_examples: bool = False,
+0275:         provide_traceback: bool | None = None,
+0276:         disable_progress_bar: bool = False,
+0277:         timeout: int = 120,
+0278:         straggler_limit: int = 3,
+0279:     ) -> list[Example] | tuple[list[Example], list[Example], list[Exception]]:
+0280:         """
+0281:         Processes a list of dspy.Example instances in parallel using the Parallel module.
+0282: 
+0283:         Args:
+0284:             examples: List of dspy.Example instances to process.
+0285:             num_threads: Number of threads to use for parallel processing.
+0286:             max_errors: Maximum number of errors allowed before stopping execution.
+0287:                 If ``None``, inherits from ``dspy.settings.max_errors``.
+0288:             return_failed_examples: Whether to return failed examples and exceptions.
+0289:             provide_traceback: Whether to include traceback information in error logs.
+0290:             disable_progress_bar: Whether to display the progress bar.
+0291:             timeout: Seconds before a straggler task is resubmitted. Set to 0 to disable.
+0292:             straggler_limit: Only check for stragglers when this many or fewer tasks remain.
+0293: 
+0294:         Returns:
+0295:             List of results, and optionally failed examples and exceptions.
+0296:         """
+0297:         # Create a list of execution pairs (self, example)
+0298:         exec_pairs = [(self, example.inputs()) for example in examples]
+0299: 
+0300:         # Create an instance of Parallel
+0301:         parallel_executor = Parallel(
+0302:             num_threads=num_threads,
+0303:             max_errors=max_errors,
+0304:             return_failed_examples=return_failed_examples,
+0305:             provide_traceback=provide_traceback,
+0306:             disable_progress_bar=disable_progress_bar,
+0307:             timeout=timeout,
+0308:             straggler_limit=straggler_limit,
+0309:         )
+0310: 
+0311:         # Execute the forward method of Parallel
+0312:         if return_failed_examples:
+0313:             results, failed_examples, exceptions = parallel_executor.forward(exec_pairs)
+0314:             return results, failed_examples, exceptions
+0315:         else:
+0316:             results = parallel_executor.forward(exec_pairs)
+0317:             return results
+0318: 
+0319:     def _set_lm_usage(self, tokens: dict[str, Any], output: Any):
+0320:         # Some optimizers (e.g., GEPA bootstrap tracing) temporarily patch
+0321:         # module.forward to return a tuple: (prediction, trace).
+0322:         # When usage tracking is enabled, ensure we attach usage to the
+0323:         # prediction object if present.
+0324:         prediction_in_output = None
+0325:         if isinstance(output, Prediction):
+0326:             prediction_in_output = output
+0327:         elif isinstance(output, tuple) and len(output) > 0 and isinstance(output[0], Prediction):
+0328:             prediction_in_output = output[0]
+0329:         if prediction_in_output:
+0330:             prediction_in_output.set_lm_usage(tokens)
+0331:         else:
+0332:             logger.warning("Failed to set LM usage. Please return `dspy.Prediction` object from dspy.Module to enable usage tracking.")
+0333: 
+0334: 
+0335:     def __getattribute__(self, name):
+0336:         attr = super().__getattribute__(name)
+0337: 
+0338:         if name == "forward" and callable(attr):
+0339:             # Check if forward is called through __call__ or directly
+0340:             stack = inspect.stack()
+0341:             forward_called_directly = len(stack) <= 1 or stack[1].function != "__call__"
+0342: 
+0343:             if forward_called_directly:
+0344:                 logger.warning(
+0345:                     f"Calling module.forward(...) on {self.__class__.__name__} directly is discouraged. "
+0346:                     f"Please use module(...) instead."
+0347:                 )
+0348: 
+0349:         return attr
+0350: 
+0351: 
+0352: def set_attribute_by_name(obj, name, value):
+0353:     magicattr.set(obj, name, value)
+
+### dspy/predict/parallel.py
+0001: import threading
+0002: from typing import Any
+0003: 
+0004: from dspy.dsp.utils.settings import settings
+0005: from dspy.primitives.example import Example
+0006: from dspy.utils.parallelizer import ParallelExecutor
+0007: 
+0008: 
+0009: class Parallel:
+0010:     def __init__(
+0011:         self,
+0012:         num_threads: int | None = None,
+0013:         max_errors: int | None = None,
+0014:         access_examples: bool = True,
+0015:         return_failed_examples: bool = False,
+0016:         provide_traceback: bool | None = None,
+0017:         disable_progress_bar: bool = False,
+0018:         timeout: int = 120,
+0019:         straggler_limit: int = 3,
+0020:     ):
+0021:         """
+0022:         A utility class for parallel, multi-threaded execution of (module, example) pairs.
+0023:         Supports various example formats (e.g., `Example`, dict, tuple, list), robust error handling,
+0024:         optional progress tracking, and can optionally return failed examples and exceptions.
+0025: 
+0026:         Args:
+0027:             num_threads (Optional[int]): The number of threads to use. Defaults to `settings.num_threads`.
+0028:             max_errors (Optional[int]): The maximum number of errors allowed before raising an exception. Defaults to `settings.max_errors`.
+0029:             access_examples (bool): Whether to unpack `Example` objects via `.inputs()`. Defaults to True.
+0030:             return_failed_examples (bool): Whether to return failed examples. Defaults to False.
+0031:             provide_traceback (Optional[bool]): Whether to provide traceback. Defaults to None.
+0032:             disable_progress_bar (bool): Whether to disable progress bar. Defaults to False.
+0033: 
+0034:         Example:
+0035:             ```python
+0036:             import dspy
+0037:             from dspy import Parallel
+0038:             lm = dspy.LM("openai/gpt-4o-mini")
+0039:             dspy.configure(lm=lm)
+0040: 
+0041:             examples = [
+0042:                 {"question": "What is the capital of Spain?"},
+0043:                 {"question": "What is 3 * 4?"},
+0044:                 {"question": "Who wrote Hamlet?"},
+0045:             ]
+0046: 
+0047:             module = dspy.Predict("question->answer")
+0048:             exec_pairs = [(module, example) for example in examples]
+0049:             parallel = Parallel(num_threads=3, disable_progress_bar=False)
+0050:             results = parallel(exec_pairs)
+0051:             for i, result in enumerate(results):
+0052:                 print(f"Result {i+1}: {result.answer}")
+0053: 
+0054:             # Expected Output:
+0055:             # Result 1: Madrid
+0056:             # Result 2: 12
+0057:             # Result 3: William Shakespeare
+0058:             ```
+0059:         """
+0060: 
+0061:         super().__init__()
+0062:         self.num_threads = num_threads or settings.num_threads
+0063:         self.max_errors = settings.max_errors if max_errors is None else max_errors
+0064:         self.access_examples = access_examples
+0065:         self.return_failed_examples = return_failed_examples
+0066:         self.provide_traceback = provide_traceback
+0067:         self.disable_progress_bar = disable_progress_bar
+0068:         self.timeout = timeout
+0069:         self.straggler_limit = straggler_limit
+0070: 
+0071:         self.error_count = 0
+0072:         self.error_lock = threading.Lock()
+0073:         self.cancel_jobs = threading.Event()
+0074:         self.failed_examples = []
+0075:         self.exceptions = []
+0076: 
+0077:     def forward(self, exec_pairs: list[tuple[Any, Example]], num_threads: int | None = None) -> list[Any]:
+0078:         num_threads = num_threads if num_threads is not None else self.num_threads
+0079: 
+0080:         executor = ParallelExecutor(
+0081:             num_threads=num_threads,
+0082:             max_errors=self.max_errors,
+0083:             provide_traceback=self.provide_traceback,
+0084:             disable_progress_bar=self.disable_progress_bar,
+0085:             timeout=self.timeout,
+0086:             straggler_limit=self.straggler_limit,
+0087:         )
+0088: 
+0089:         def process_pair(pair):
+0090:             result = None
+0091:             module, example = pair
+0092: 
+0093:             if isinstance(example, Example):
+0094:                 if self.access_examples:
+0095:                     result = module(**example.inputs())
+0096:                 else:
+0097:                     result = module(example)
+0098:             elif isinstance(example, dict):
+0099:                 result = module(**example)
+0100:             elif isinstance(example, list) and module.__class__.__name__ == "Parallel":
+0101:                 result = module(example)
+0102:             elif isinstance(example, tuple):
+0103:                 result = module(*example)
+0104:             else:
+0105:                 raise ValueError(
+0106:                     f"Invalid example type: {type(example)}, only supported types are Example, dict, list and tuple"
+0107:                 )
+0108:             return result
+0109: 
+0110:         # Execute the processing function over the execution pairs
+0111:         results = executor.execute(process_pair, exec_pairs)
+0112: 
+0113:         # Populate failed examples and exceptions from the executor
+0114:         if self.return_failed_examples:
+0115:             for failed_idx in executor.failed_indices:
+0116:                 if failed_idx < len(exec_pairs):
+0117:                     _, original_example = exec_pairs[failed_idx]
+0118:                     self.failed_examples.append(original_example)
+0119:                     if exception := executor.exceptions_map.get(failed_idx):
+0120:                         self.exceptions.append(exception)
+0121: 
+0122:             return results, self.failed_examples, self.exceptions
+0123:         else:
+0124:             return results
+0125: 
+0126:     def __call__(self, *args: Any, **kwargs: Any) -> Any:
+0127:         return self.forward(*args, **kwargs)
+
+### tests/predict/test_parallel.py
+0001: import dspy
+0002: from dspy.utils.dummies import DummyLM
+0003: 
+0004: 
+0005: def test_parallel_module():
+0006:     lm = DummyLM(
+0007:         [
+0008:             {"output": "test output 1"},
+0009:             {"output": "test output 2"},
+0010:             {"output": "test output 3"},
+0011:             {"output": "test output 4"},
+0012:             {"output": "test output 5"},
+0013:         ]
+0014:     )
+0015:     dspy.configure(lm=lm)
+0016: 
+0017:     class MyModule(dspy.Module):
+0018:         def __init__(self):
+0019:             super().__init__()
+0020:             self.predictor = dspy.Predict("input -> output")
+0021:             self.predictor2 = dspy.Predict("input -> output")
+0022: 
+0023:             self.parallel = dspy.Parallel(num_threads=2)
+0024: 
+0025:         def forward(self, input):
+0026:             return self.parallel(
+0027:                 [
+0028:                     (self.predictor, input),
+0029:                     (self.predictor2, input),
+0030:                     (self.predictor, input),
+0031:                     (self.predictor2, input),
+0032:                     (self.predictor, input),
+0033:                 ]
+0034:             )
+0035: 
+0036:     output = MyModule()(dspy.Example(input="test input").with_inputs("input"))
+0037: 
+0038:     expected_outputs = {f"test output {i}" for i in range(1, 6)}
+0039:     assert {r.output for r in output} == expected_outputs
+0040: 
+0041: 
+0042: def test_batch_module():
+0043:     lm = DummyLM(
+0044:         [
+0045:             {"output": "test output 1"},
+0046:             {"output": "test output 2"},
+0047:             {"output": "test output 3"},
+0048:             {"output": "test output 4"},
+0049:             {"output": "test output 5"},
+0050:         ]
+0051:     )
+0052:     res_lm = DummyLM(
+0053:         [
+0054:             {"output": "test output 1", "reasoning": "test reasoning 1"},
+0055:             {"output": "test output 2", "reasoning": "test reasoning 2"},
+0056:             {"output": "test output 3", "reasoning": "test reasoning 3"},
+0057:             {"output": "test output 4", "reasoning": "test reasoning 4"},
+0058:             {"output": "test output 5", "reasoning": "test reasoning 5"},
+0059:         ]
+0060:     )
+0061: 
+0062:     class MyModule(dspy.Module):
+0063:         def __init__(self):
+0064:             super().__init__()
+0065:             self.predictor = dspy.Predict("input -> output")
+0066:             self.predictor2 = dspy.Predict("input -> output, reasoning")
+0067: 
+0068:             self.parallel = dspy.Parallel(num_threads=2)
+0069: 
+0070:         def forward(self, input):
+0071:             with dspy.context(lm=lm):
+0072:                 res1 = self.predictor.batch([input] * 5)
+0073: 
+0074:             with dspy.context(lm=res_lm):
+0075:                 res2 = self.predictor2.batch([input] * 5)
+0076: 
+0077:             return (res1, res2)
+0078: 
+0079:     result, reason_result = MyModule()(dspy.Example(input="test input").with_inputs("input"))
+0080: 
+0081:     # Check that we got all expected outputs without caring about order
+0082:     expected_outputs = {f"test output {i}" for i in range(1, 6)}
+0083:     assert {r.output for r in result} == expected_outputs
+0084:     assert {r.output for r in reason_result} == expected_outputs
+0085: 
+0086:     # Check that reasoning matches outputs for reason_result
+0087:     for r in reason_result:
+0088:         num = r.output.split()[-1]  # get the number from "test output X"
+0089:         assert r.reasoning == f"test reasoning {num}"
+0090: 
+0091: 
+0092: def test_nested_parallel_module():
+0093:     lm = DummyLM(
+0094:         [
+0095:             {"output": "test output 1"},
+0096:             {"output": "test output 2"},
+0097:             {"output": "test output 3"},
+0098:             {"output": "test output 4"},
+0099:             {"output": "test output 5"},
+0100:         ]
+0101:     )
+0102:     dspy.configure(lm=lm)
+0103: 
+0104:     class MyModule(dspy.Module):
+0105:         def __init__(self):
+0106:             super().__init__()
+0107:             self.predictor = dspy.Predict("input -> output")
+0108:             self.predictor2 = dspy.Predict("input -> output")
+0109: 
+0110:             self.parallel = dspy.Parallel(num_threads=2)
+0111: 
+0112:         def forward(self, input):
+0113:             return self.parallel(
+0114:                 [
+0115:                     (self.predictor, input),
+0116:                     (self.predictor2, input),
+0117:                     (
+0118:                         self.parallel,
+0119:                         [
+0120:                             (self.predictor2, input),
+0121:                             (self.predictor, input),
+0122:                         ],
+0123:                     ),
+0124:                 ]
+0125:             )
+0126: 
+0127:     output = MyModule()(dspy.Example(input="test input").with_inputs("input"))
+0128: 
+0129:     # For nested structure, check first two outputs and nested outputs separately
+0130:     assert {output[0].output, output[1].output} <= {f"test output {i}" for i in range(1, 5)}
+0131:     assert {output[2][0].output, output[2][1].output} <= {f"test output {i}" for i in range(1, 5)}
+0132:     all_outputs = {output[0].output, output[1].output, output[2][0].output, output[2][1].output}
+0133:     assert len(all_outputs) == 4
+0134: 
+0135: 
+0136: def test_nested_batch_method():
+0137:     lm = DummyLM(
+0138:         [
+0139:             {"output": "test output 1"},
+0140:             {"output": "test output 2"},
+0141:             {"output": "test output 3"},
+0142:             {"output": "test output 4"},
+0143:             {"output": "test output 5"},
+0144:         ]
+0145:     )
+0146:     dspy.configure(lm=lm)
+0147: 
+0148:     class MyModule(dspy.Module):
+0149:         def __init__(self):
+0150:             super().__init__()
+0151:             self.predictor = dspy.Predict("input -> output")
+0152: 
+0153:         def forward(self, input):
+0154:             res = self.predictor.batch([dspy.Example(input=input).with_inputs("input")] * 2)
+0155: 
+0156:             return res
+0157: 
+0158:     result = MyModule().batch([dspy.Example(input="test input").with_inputs("input")] * 2)
+0159: 
+0160:     assert {result[0][0].output, result[0][1].output, result[1][0].output, result[1][1].output} == {
+0161:         "test output 1",
+0162:         "test output 2",
+0163:         "test output 3",
+0164:         "test output 4",
+0165:     }
+0166: 
+0167: 
+0168: def test_batch_with_failed_examples():
+0169:     class FailingModule(dspy.Module):
+0170:         def forward(self, value: int) -> str:
+0171:             if value == 42:
+0172:                 raise ValueError("test error")
+0173:             return f"success-{value}"
+0174: 
+0175:     module = FailingModule()
+0176: 
+0177:     examples = [
+0178:         dspy.Example(value=1).with_inputs("value"),
+0179:         dspy.Example(value=42).with_inputs("value"),  # This will fail
+0180:         dspy.Example(value=3).with_inputs("value"),
+0181:     ]
+0182: 
+0183:     results, failed_examples, exceptions = module.batch(
+0184:         examples,
+0185:         return_failed_examples=True,
+0186:         provide_traceback=True,
+0187:     )
+0188: 
+0189:     assert results == ["success-1", None, "success-3"]
+0190: 
+0191:     assert len(failed_examples) == 1
+0192:     assert failed_examples[0].inputs()["value"] == 42
+0193: 
+0194:     assert len(exceptions) == 1
+0195:     assert isinstance(exceptions[0], ValueError)
+0196:     assert str(exceptions[0]) == "test error"
+0197: 
+0198: 
+0199: def test_parallel_timeout_and_straggler_limit_params():
+0200:     parallel_default = dspy.Parallel()
+0201:     assert parallel_default.timeout == 120
+0202:     assert parallel_default.straggler_limit == 3
+0203: 
+0204:     parallel_custom = dspy.Parallel(timeout=0, straggler_limit=5)
+0205:     assert parallel_custom.timeout == 0
+0206:     assert parallel_custom.straggler_limit == 5
+0207: 
+0208: 
+0209: def test_batch_timeout_and_straggler_limit_params():
+0210:     class SimpleModule(dspy.Module):
+0211:         def forward(self, value: int) -> int:
+0212:             return value * 2
+0213: 
+0214:     module = SimpleModule()
+0215:     examples = [
+0216:         dspy.Example(value=1).with_inputs("value"),
+0217:         dspy.Example(value=2).with_inputs("value"),
+0218:         dspy.Example(value=3).with_inputs("value"),
+0219:     ]
+0220: 
+0221:     results = module.batch(examples, timeout=0, straggler_limit=5)
+0222: 
+0223:     assert results == [2, 4, 6]
+
+Return JSON that matches the schema exactly.

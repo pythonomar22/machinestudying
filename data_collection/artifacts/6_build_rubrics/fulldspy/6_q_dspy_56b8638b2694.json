@@ -1,0 +1,98 @@
+{
+ "id": "dspy_56b8638b2694",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I want one metric to return both a numeric score and feedback text so I can reuse it for evaluation and for an optimizer that wants critique. Can plain `dspy.Evaluate` aggregate that directly, or do I need to collapse it to a float first?",
+ "gold_answer": "`dspy.Evaluate` can aggregate it directly. The per-example metric object is kept in `results`, and aggregation works because `dspy.Prediction` supports numeric conversion and addition through its `score` field. So a metric can return `dspy.Prediction(score=..., feedback=...)`; `Evaluate` will still compute the overall score, and the feedback remains accessible on each stored metric result.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "`Evaluate.__call__` stores the metric's raw per-example return value as the third element of each `(example, prediction, score)` tuple and returns that tuple list in `EvaluationResult.results`.",
+   "span_ids": [
+    "s1",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "`Evaluate.__call__` aggregates by passing the stored per-example score objects directly into `sum(score for *_, score in results)` and then converts that total into the overall percentage score.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "`Prediction.__float__` defines the numeric value of a `Prediction` from its `score` field and raises an error if the `score` field is missing.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "`Prediction.__add__` and `__radd__` allow a `Prediction` to participate in addition with ints, floats, and other `Prediction` objects, which is the arithmetic behavior needed for `sum(...)` during evaluation.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "A `Prediction`-based metric result can carry extra nonnumeric fields without blocking aggregation, because `Evaluate` preserves the full object in `results` while numeric conversion uses only its `score` field.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 170,
+   "end_line": 179,
+   "excerpt": "0170:         def process_item(example):\n0171:             prediction = program(**example.inputs())\n0172:             score = metric(example, prediction)\n0173:             return prediction, score\n0174: \n0175:         results = executor.execute(process_item, devset)\n0176:         assert len(devset) == len(results)\n0177: \n0178:         results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]\n0179:         results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results, strict=False)]"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 178,
+   "end_line": 182,
+   "excerpt": "0178:         results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]\n0179:         results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results, strict=False)]\n0180:         ncorrect, ntotal = sum(score for *_, score in results), len(devset)\n0181: \n0182:         logger.info(f\"Average Metric: {ncorrect} / {ntotal} ({round(100 * ncorrect / ntotal, 1)}%)\")"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 223,
+   "end_line": 226,
+   "excerpt": "0223:         return EvaluationResult(\n0224:             score=round(100 * ncorrect / ntotal, 2),\n0225:             results=results,\n0226:         )"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/primitives/prediction.py",
+   "start_line": 53,
+   "end_line": 56,
+   "excerpt": "0053:     def __float__(self):\n0054:         if \"score\" not in self._store:\n0055:             raise ValueError(\"Prediction object does not have a 'score' field to convert to float.\")\n0056:         return float(self._store[\"score\"])"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/primitives/prediction.py",
+   "start_line": 58,
+   "end_line": 70,
+   "excerpt": "0058:     def __add__(self, other):\n0059:         if isinstance(other, (float, int)):\n0060:             return self.__float__() + other\n0061:         elif isinstance(other, Prediction):\n0062:             return self.__float__() + float(other)\n0063:         raise TypeError(f\"Unsupported type for addition: {type(other)}\")\n0064: \n0065:     def __radd__(self, other):\n0066:         if isinstance(other, (float, int)):\n0067:             return other + self.__float__()\n0068:         elif isinstance(other, Prediction):\n0069:             return float(other) + self.__float__()\n0070:         raise TypeError(f\"Unsupported type for addition: {type(other)}\")"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Good synthesis question: it requires connecting Evaluate's aggregation to Prediction's numeric protocol.",
+ "source_index": 1,
+ "smalldspy_scope": false
+}

@@ -1,0 +1,114 @@
+{
+ "id": "dspy_967684efd2b6",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "When I pass tools to a predictor, a prompt preview built from plain signature formatting shows tool descriptions in-band. In a real run against a tool-capable model, when does DSPy keep those descriptions in the prompt and when does it strip them out and send tool schemas separately?",
+ "gold_answer": "A formatting preview is only half the story. On a real call, DSPy first preprocesses the signature. If native function calling is enabled, the LM supports it, and the signature has both a tools input and a `ToolCalls` output, DSPy moves the tool schema into `lm_kwargs['tools']` and deletes the tool fields from the signature before formatting. Otherwise the tool descriptions stay in-band.\n\n```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\ndef lookup_weather(city: str) -> str:\n    return f'sunny in {city}'\n\nclass ToolCapableDummy(DummyLM):\n    @property\n    def supports_function_calling(self):\n        return True\n\nclass QA(dspy.Signature):\n    question: str = dspy.InputField()\n    tools: list[dspy.Tool] = dspy.InputField()\n    answer: str = dspy.OutputField()\n    tool_calls: dspy.ToolCalls = dspy.OutputField()\n\ntools = [dspy.Tool(lookup_weather)]\nadapter = dspy.JSONAdapter(use_native_function_calling=True)\nlm = ToolCapableDummy([{'answer': 'done'}], adapter=dspy.JSONAdapter())\n\nkwargs = {}\nprocessed = adapter._call_preprocess(lm, kwargs, QA, {'question': 'How is Tokyo?', 'tools': tools})\npreview = adapter.format(QA, [], {'question': 'How is Tokyo?', 'tools': tools})\nlive_preview = adapter.format(processed, [], {'question': 'How is Tokyo?'})\n\nassert kwargs['tools'][0]['function']['name'] == 'lookup_weather'\nassert 'tools' not in processed.input_fields\nassert 'tool_calls' not in processed.output_fields\nassert 'lookup_weather' in str(preview[-1]['content'])\nassert 'lookup_weather' not in str(live_preview[-1]['content'])\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "A live DSPy adapter call does not format the raw signature directly: `Adapter.__call__` first runs `_call_preprocess()` and then formats the returned `processed_signature`, so a manual preview of the original signature can differ from the real prompt.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "A plain `format()` call on a signature that still contains the `tools` field keeps tool information inline in the prompt; `Tool.__str__` is built from the tool name, description, and args, and the JSON adapter test checks that tool names and argument schemas appear in the user message.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "DSPy only takes the native tool-calling path when `use_native_function_calling` is enabled, the signature contains both a tool input (`Tool` or `list[Tool]`) and a `ToolCalls` output, and the LM reports `supports_function_calling`.",
+   "span_ids": [
+    "s1",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "On the native tool-calling path, DSPy converts each `dspy.Tool` into a LiteLLM/OpenAI-style function schema and places the resulting list in `lm_kwargs[\"tools\"]` for the LM call.",
+   "span_ids": [
+    "s1",
+    "s4",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "When that native path fires, DSPy deletes both the tool input field and the `ToolCalls` output field from the signature before prompt formatting; otherwise the signature is returned unchanged and tool details remain in-band when formatted.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/base.py",
+   "start_line": 73,
+   "end_line": 108,
+   "excerpt": "0073:         if self.use_native_function_calling:\n0074:             tool_call_input_field_name = self._get_tool_call_input_field_name(signature)\n0075:             tool_call_output_field_name = self._get_tool_call_output_field_name(signature)\n0076: \n0077:             if tool_call_output_field_name and tool_call_input_field_name is None:\n0078:                 raise ValueError(\n0079:                     f\"You provided an output field {tool_call_output_field_name} to receive the tool calls information, \"\n0080:                     \"but did not provide any tools as the input. Please provide a list of tools as the input by adding an \"\n0081:                     \"input field with type `list[dspy.Tool]`.\"\n0082:                 )\n0083: \n0084:             if tool_call_output_field_name and lm.supports_function_calling:\n0085:                 tools = inputs[tool_call_input_field_name]\n0086:                 tools = tools if isinstance(tools, list) else [tools]\n0087: \n0088:                 lm_tools = [tool.format_as_litellm_function_call() for tool in tools]\n0089: \n0090:                 lm_kwargs[\"tools\"] = lm_tools\n0091: \n0092:                 signature_for_native_function_calling = signature.delete(tool_call_output_field_name)\n0093:                 signature_for_native_function_calling = signature_for_native_function_calling.delete(\n0094:                     tool_call_input_field_name\n0095:                 )\n0096: \n0097:                 return signature_for_native_function_calling\n0098: \n0099:         # Handle custom types that use native LM features, e.g., reasoning, citations, etc.\n0100:         for name, field in signature.output_fields.items():\n0101:             if (\n0102:                 isinstance(field.annotation, type)\n0103:                 and field.annotation in self.native_response_types\n0104:                 and issubclass(field.annotation, Type)\n0105:             ):\n0106:                 signature = field.annotation.adapt_to_native_lm_feature(signature, name, lm, lm_kwargs)\n0107: \n0108:         return signature"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/base.py",
+   "start_line": 202,
+   "end_line": 206,
+   "excerpt": "0202:         processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)\n0203:         inputs = self.format(processed_signature, demos, inputs)\n0204: \n0205:         outputs = lm(messages=inputs, **lm_kwargs)\n0206:         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/base.py",
+   "start_line": 464,
+   "end_line": 478,
+   "excerpt": "0464:     def _get_tool_call_input_field_name(self, signature: type[Signature]) -> bool:\n0465:         for name, field in signature.input_fields.items():\n0466:             # Look for annotation `list[dspy.Tool]` or `dspy.Tool`\n0467:             origin = get_origin(field.annotation)\n0468:             if origin is list and field.annotation.__args__[0] == Tool:\n0469:                 return name\n0470:             if field.annotation == Tool:\n0471:                 return name\n0472:         return None\n0473: \n0474:     def _get_tool_call_output_field_name(self, signature: type[Signature]) -> bool:\n0475:         for name, field in signature.output_fields.items():\n0476:             if field.annotation == ToolCalls:\n0477:                 return name\n0478:         return None"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/types/tool.py",
+   "start_line": 151,
+   "end_line": 163,
+   "excerpt": "0151:     def format_as_litellm_function_call(self):\n0152:         return {\n0153:             \"type\": \"function\",\n0154:             \"function\": {\n0155:                 \"name\": self.name,\n0156:                 \"description\": self.desc,\n0157:                 \"parameters\": {\n0158:                     \"type\": \"object\",\n0159:                     \"properties\": self.args,\n0160:                     \"required\": list(self.args.keys()),\n0161:                 },\n0162:             },\n0163:         }"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/types/tool.py",
+   "start_line": 253,
+   "end_line": 259,
+   "excerpt": "0253:     def __repr__(self):\n0254:         return f\"Tool(name={self.name}, desc={self.desc}, args={self.args})\"\n0255: \n0256:     def __str__(self):\n0257:         desc = f\", whose description is <desc>{self.desc}</desc>.\".replace(\"\\n\", \"  \") if self.desc else \".\"\n0258:         arg_desc = f\"It takes arguments {self.args}.\"\n0259:         return f\"{self.name}{desc} {arg_desc}\""
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 410,
+   "end_line": 425,
+   "excerpt": "0410:     adapter = dspy.JSONAdapter()\n0411:     messages = adapter.format(MySignature, [], {\"question\": \"What is the weather in Tokyo?\", \"tools\": tools})\n0412: \n0413:     assert len(messages) == 2\n0414: \n0415:     # The output field type description should be included in the system message even if the output field is nested\n0416:     assert dspy.ToolCalls.description() in messages[0][\"content\"]\n0417: \n0418:     # The user message should include the question and the tools\n0419:     assert \"What is the weather in Tokyo?\" in messages[1][\"content\"]\n0420:     assert \"get_weather\" in messages[1][\"content\"]\n0421:     assert \"get_population\" in messages[1][\"content\"]\n0422: \n0423:     # Tool arguments format should be included in the user message\n0424:     assert \"{'city': {'type': 'string'}}\" in messages[1][\"content\"]\n0425:     assert \"{'country': {'type': 'string'}, 'year': {'type': 'integer'}}\" in messages[1][\"content\"]"
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 431,
+   "end_line": 470,
+   "excerpt": "0431:     mock_completion.assert_called_once()\n0432:     _, call_kwargs = mock_completion.call_args\n0433: \n0434:     # Assert tool calls are included in the `tools` arg\n0435:     assert len(call_kwargs[\"tools\"]) > 0\n0436:     assert call_kwargs[\"tools\"][0] == {\n0437:         \"type\": \"function\",\n0438:         \"function\": {\n0439:             \"name\": \"get_weather\",\n0440:             \"description\": \"Get the weather for a city\",\n0441:             \"parameters\": {\n0442:                 \"type\": \"object\",\n0443:                 \"properties\": {\n0444:                     \"city\": {\n0445:                         \"type\": \"string\",\n0446:                     },\n0447:                 },\n0448:                 \"required\": [\"city\"],\n0449:             },\n0450:         },\n0451:     }\n0452:     assert call_kwargs[\"tools\"][1] == {\n0453:         \"type\": \"function\",\n0454:         \"function\": {\n0455:             \"name\": \"get_population\",\n0456:             \"description\": \"Get the population for a country\",\n0457:             \"parameters\": {\n0458:                 \"type\": \"object\",\n0459:                 \"properties\": {\n0460:                     \"country\": {\n0461:                         \"type\": \"string\",\n0462:                     },\n0463:                     \"year\": {\n0464:                         \"type\": \"integer\",\n0465:                     },\n0466:                 },\n0467:                 \"required\": [\"country\", \"year\"],\n0468:             },\n0469:         },\n0470:     }"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Distinguishes pure prompt preview from the live native-tool-calling request path.",
+ "source_index": 14,
+ "smalldspy_scope": false
+}

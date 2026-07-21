@@ -1,0 +1,677 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_560facbe2d68`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I want a scalar score plus extra per-example metadata inside an optimizer, not just critique text. Which built-in optimizer path keeps the extra fields from a `dspy.Prediction` metric, and where do they end up?`
+- Gold answer:
+`SIMBA` keeps them. Its metric wrapper accepts either a plain number or a `dspy.Prediction` with a `score` field. The `score` becomes the optimization signal, and every other field from that `Prediction` is copied into `output_metadata`. Later, SIMBA's rule-generation path feeds that metadata back into prompts as the 'better' and 'worse' reward info side channel.
+
+## Evidence references
+[
+  {
+    "file": "dspy/teleprompt/simba_utils.py",
+    "symbol": "wrap_program"
+  },
+  {
+    "file": "dspy/teleprompt/simba_utils.py",
+    "symbol": "append_a_rule"
+  },
+  {
+    "file": "dspy/teleprompt/simba.py",
+    "symbol": "SIMBA.compile"
+  }
+]
+
+## Full evidence files
+### dspy/teleprompt/simba_utils.py
+0001: import inspect
+0002: import logging
+0003: import textwrap
+0004: from typing import Callable
+0005: 
+0006: import orjson
+0007: 
+0008: import dspy
+0009: from dspy.adapters.utils import get_field_description_string
+0010: from dspy.signatures import InputField, OutputField
+0011: 
+0012: logger = logging.getLogger(__name__)
+0013: 
+0014: def prepare_models_for_resampling(program: dspy.Module, n: int, teacher_settings: dict | None = None):
+0015:     lm = program.get_lm() or dspy.settings.lm
+0016: 
+0017:     start_rollout_id = lm.kwargs.get("rollout_id", 0)
+0018:     rollout_ids = [start_rollout_id + i for i in range(n)]
+0019: 
+0020: 
+0021:     start_rollout_idx, models = 0, []
+0022:     # If we have a teacher model, use this as the first model
+0023:     if teacher_settings:
+0024:         teacher_lm = teacher_settings.get("lm") or lm
+0025:         teacher_lm.kwargs["rollout_id"] = rollout_ids[start_rollout_idx]
+0026:         models.append(teacher_lm)
+0027:         start_rollout_idx += 1
+0028: 
+0029:     # The rest of the models are just copies of the base model
+0030:     models.extend([lm.copy(rollout_id=r, temperature=1.0) for r in rollout_ids[start_rollout_idx:]])
+0031: 
+0032:     return models
+0033: 
+0034: def wrap_program(program: dspy.Module, metric: Callable):
+0035:     def wrapped_program(example):
+0036:         with dspy.context(trace=[]):
+0037:             prediction, trace, score = None, None, 0.0
+0038:             try:
+0039:                 prediction = program(**example.inputs())
+0040:             except Exception as e:
+0041:                 logger.warning(e)
+0042:             trace = dspy.settings.trace.copy()
+0043: 
+0044:         output = None
+0045:         score = 0.0
+0046:         output_metadata = {}
+0047: 
+0048:         try:
+0049:             output = metric(example, prediction)
+0050:             if isinstance(output, (int, float)):
+0051:                 score = output
+0052:             elif isinstance(output, dspy.Prediction):
+0053:                 if not hasattr(output, "score"):
+0054:                     raise ValueError("When `metric` returns a `dspy.Prediction`, it must contain a `score` field.")
+0055:                 score = output.score
+0056:                 # Extract fields from the output dspy.Prediction, excluding `score``
+0057:                 output_metadata = {
+0058:                     k: v for k, v in output.items() if k != "score"
+0059:                 }
+0060:         except Exception as e:
+0061:             logger.warning(e)
+0062: 
+0063:         return {
+0064:             "prediction": prediction,
+0065:             "trace": trace,
+0066:             "score": score,
+0067:             "example": example,
+0068:             "output_metadata": output_metadata
+0069:         }
+0070: 
+0071:     return wrapped_program
+0072: 
+0073: def append_a_demo(demo_input_field_maxlen):
+0074:     def append_a_demo_(bucket, system, **kwargs):
+0075:         predictor2name, name2predictor = kwargs["predictor2name"], kwargs["name2predictor"]
+0076:         batch_10p_score = kwargs["batch_10p_score"]
+0077: 
+0078:         good = bucket[0]
+0079:         trace = good["trace"]
+0080:         name2demo = {}
+0081: 
+0082:         if good["score"] <= batch_10p_score:
+0083:             logger.info(f"Skipping appending a demo as good score {good['score']} is at or below the 10th percentile.")
+0084:             return False
+0085: 
+0086:         for step in trace:
+0087:             predictor, _inputs, _outputs = step
+0088: 
+0089:             for k, v in _inputs.items():
+0090:                 if demo_input_field_maxlen and len(str(v)) > demo_input_field_maxlen:
+0091:                     _inputs[k] = f"{str(v)[:demo_input_field_maxlen]}\n\t\t... <TRUNCATED FOR BREVITY>"
+0092: 
+0093:             demo = dspy.Example(augmented=True, **_inputs, **_outputs)
+0094:             name = predictor2name[id(predictor)]
+0095:             name2demo[name] = demo  # keep the last demo for each predictor
+0096:         for name, demo in name2demo.items():
+0097:             predictor = name2predictor[name]
+0098:             predictor.demos.append(demo)
+0099: 
+0100:         logger.info(f"Added {len(name2demo)} demos (one each) across all predictors.")
+0101:         return True
+0102: 
+0103:     return append_a_demo_
+0104: 
+0105: 
+0106: def append_a_rule(bucket, system, **kwargs):
+0107:     predictor2name = kwargs["predictor2name"]
+0108:     batch_10p_score, batch_90p_score = kwargs["batch_10p_score"], kwargs["batch_90p_score"]
+0109:     prompt_model = kwargs["prompt_model"] or dspy.settings.lm
+0110: 
+0111:     module_names = [name for name, _ in system.named_predictors()]
+0112:     good, bad = bucket[0], bucket[-1]
+0113:     example = good["example"]
+0114: 
+0115:     if good["score"] <= batch_10p_score or bad["score"] >= batch_90p_score:
+0116:         logger.info(f"Skipping rule generation as good score {good['score']} is at or below the 10th percentile "
+0117:                     f"*or* bad score {bad['score']} is at or above the 90th percentile.")
+0118:         return False
+0119: 
+0120:     if good["score"] <= bad["score"]:
+0121:         if good["score"] > batch_90p_score:
+0122:             bad["trace"] = []
+0123:             bad["score"] = "N/A"
+0124:             bad["prediction"] = {"N/A": "Prediction not available"}
+0125:         else:
+0126:             good["trace"] = []
+0127:             good["score"] = "N/A"
+0128:             good["prediction"] = {"N/A": "Prediction not available"}
+0129: 
+0130:     better_trajectory = [
+0131:         {"module_name": predictor2name[id(p)], "inputs": i, "outputs": dict(o)}
+0132:         for p, i, o in good["trace"]
+0133:     ]
+0134:     worse_trajectory = [
+0135:         {"module_name": predictor2name[id(p)], "inputs": i, "outputs": dict(o)}
+0136:         for p, i, o in bad["trace"]
+0137:     ]
+0138: 
+0139:     kwargs = {
+0140:         "program_code": inspect.getsource(system.__class__),
+0141:         "modules_defn": inspect_modules(system),
+0142:         "program_inputs": {**example.inputs()},
+0143:         "oracle_metadata": {**example.labels()},
+0144:         "better_program_trajectory": better_trajectory,
+0145:         "better_program_outputs": dict(good["prediction"]),
+0146:         "worse_program_trajectory": worse_trajectory,
+0147:         "worse_program_outputs": dict(bad["prediction"] or {}),
+0148:         "worse_reward_value": bad["score"],
+0149:         "better_reward_value": good["score"],
+0150:         "worse_reward_info": bad["output_metadata"],
+0151:         "better_reward_info": good["output_metadata"],
+0152:         "module_names": module_names,
+0153:     }
+0154: 
+0155:     kwargs = {k: v if isinstance(v, str) else orjson.dumps(recursive_mask(v), option=orjson.OPT_INDENT_2).decode()
+0156:               for k, v in kwargs.items()}
+0157: 
+0158:     with dspy.context(trace=[], lm=prompt_model):
+0159:         advice_program = dspy.Predict(OfferFeedback)
+0160:         advice = advice_program(**kwargs).module_advice
+0161: 
+0162:     for name, predictor in system.named_predictors():
+0163:         if name in advice:
+0164:             logger.info(f"Advice for {name}: {advice[name]}")
+0165:             instructions = predictor.signature.instructions + "\n\n" + advice[name]
+0166:             predictor.signature = predictor.signature.with_instructions(instructions)
+0167: 
+0168:     return True
+0169: 
+0170: class OfferFeedback(dspy.Signature):
+0171:     """
+0172:     You will be given two trajectories of an LLM-driven program's execution. Your goal is to help the program's modules
+0173:     build up experience on how to maximize the reward value assigned to the program's outputs if it were to receive
+0174:     similar inputs in the future.
+0175: 
+0176:     The module won't see its own history. It will rely on your advice balancing being concrete and being generalizable.
+0177: 
+0178:     In your advice:
+0179:     - Avoid boilerplate. Offer advice that would change the module's behavior for the better in the future.
+0180:     - Ensure that advice offered to a module M is specific to that M's specific sub-task, not the overall program.
+0181:     - Rely on contrasting the behavior of the worse trajectory against the better trajectory in making recommendations.
+0182:     - Ensure each unique module name appears exactly once as a key in the advice dictionary.
+0183:     """
+0184: 
+0185:     program_code: str = InputField(desc="The code of the program that we are analyzing")
+0186:     modules_defn: str = InputField(desc="The definition of each module in the program, including its I/O")
+0187:     program_inputs: str = InputField(desc="The inputs to the program that we are analyzing")
+0188:     oracle_metadata: str = InputField(desc="Any (hidden) metadata about the training set instance we're analyzing")
+0189:     worse_program_trajectory: str = InputField(
+0190:         desc="The trajectory of the program's execution, showing each module's I/O"
+0191:     )
+0192:     worse_program_outputs: str = InputField(desc="The outputs of the program that we are analyzing")
+0193:     worse_reward_value: float = InputField(desc="The reward value assigned to the program's outputs")
+0194:     worse_reward_info: str = InputField(desc="Additional information that might be helpful to understanding the assigned reward value.")
+0195:     better_program_trajectory: str = InputField(
+0196:         desc="The trajectory of the program's execution, showing each module's I/O"
+0197:     )
+0198:     better_program_outputs: str = InputField(desc="The outputs of the program that we are analyzing")
+0199:     better_reward_value: float = InputField(desc="The reward value assigned to the program's outputs")
+0200:     better_reward_info: str = InputField(desc="Additional information that might be helpful to understanding the assigned reward value.")
+0201:     module_names: list[str] = InputField(desc="The names of the modules in the program, for which we seek advice")
+0202:     discussion: str = OutputField(desc="Discussing blame of where each module went wrong, if it did")
+0203:     module_advice: dict[str, str] = OutputField(
+0204:         desc="For each module, describe very concretely: If the module receives ${description of input or patterns "
+0205:         "therein}, then it should ${description of content, behavior, or strategies to adopt and/or others to avoid}. "
+0206:         "Basically, your advice be such that if the module has access to your tip, it would be much more likely to act "
+0207:         "like the successful trajectory rather than the lower-scoring trajectory."
+0208:     )
+0209: 
+0210: def inspect_modules(program):
+0211:     separator = "-" * 80
+0212:     output = [separator]
+0213: 
+0214:     for name, predictor in program.named_predictors():
+0215:         signature = predictor.signature
+0216:         instructions = textwrap.dedent(signature.instructions)
+0217:         instructions = ("\n" + "\t" * 2).join([""] + instructions.splitlines())
+0218: 
+0219:         output.append(f"Module {name}")
+0220:         output.append("\n\tInput Fields:")
+0221:         output.append(("\n" + "\t" * 2).join([""] + get_field_description_string(signature.input_fields).splitlines()))
+0222:         output.append("\tOutput Fields:")
+0223:         output.append(("\n" + "\t" * 2).join([""] + get_field_description_string(signature.output_fields).splitlines()))
+0224:         output.append(f"\tOriginal Instructions: {instructions}")
+0225:         output.append(separator)
+0226: 
+0227:     return "\n".join([o.strip("\n") for o in output])
+0228: 
+0229: 
+0230: def recursive_mask(o):
+0231:     # If the object is already serializable, return it.
+0232:     try:
+0233:         orjson.dumps(o)
+0234:         return o
+0235:     except (TypeError, orjson.JSONEncodeError):
+0236:         pass
+0237: 
+0238:     # If it's a dictionary, apply recursively to its values.
+0239:     if isinstance(o, dict):
+0240:         return {k: recursive_mask(v) for k, v in o.items()}
+0241:     # If it's a list, apply recursively.
+0242:     elif isinstance(o, list):
+0243:         return [recursive_mask(v) for v in o]
+0244:     # If it's a tuple, apply recursively.
+0245:     elif isinstance(o, tuple):
+0246:         return tuple(recursive_mask(v) for v in o)
+0247:     # Otherwise, replace it with a placeholder string (or use repr(o)).
+0248:     else:
+0249:         return f"<non-serializable: {type(o).__name__}>"
+
+### dspy/teleprompt/simba.py
+0001: from __future__ import annotations
+0002: 
+0003: import logging
+0004: import random
+0005: from typing import Any, Callable
+0006: 
+0007: import numpy as np
+0008: 
+0009: import dspy
+0010: from dspy.teleprompt.simba_utils import append_a_demo, append_a_rule, prepare_models_for_resampling, wrap_program
+0011: from dspy.teleprompt.teleprompt import Teleprompter
+0012: 
+0013: logger = logging.getLogger(__name__)
+0014: 
+0015: 
+0016: class SIMBA(Teleprompter):
+0017:     """
+0018:     SIMBA (Stochastic Introspective Mini-Batch Ascent) optimizer for DSPy.
+0019:     
+0020:     SIMBA is a DSPy optimizer that uses the LLM to analyze its own performance and 
+0021:     generate improvement rules. It samples mini-batches, identifies challenging examples 
+0022:     with high output variability, then either creates self-reflective rules or adds 
+0023:     successful examples as demonstrations.
+0024:     
+0025:     For more details, see: https://dspy.ai/api/optimizers/SIMBA/
+0026:     """
+0027: 
+0028:     def __init__(
+0029:         self,
+0030:         *,
+0031:         metric: Callable[[dspy.Example, dict[str, Any]], float],
+0032:         bsize: int = 32,
+0033:         num_candidates: int = 6,
+0034:         max_steps: int = 8,
+0035:         max_demos: int = 4,
+0036:         prompt_model: dspy.LM | None = None,
+0037:         teacher_settings: dict | None = None,
+0038:         demo_input_field_maxlen: int = 100_000,
+0039:         num_threads: int | None = None,
+0040:         temperature_for_sampling: float = 0.2,
+0041:         temperature_for_candidates: float = 0.2,
+0042:     ) -> None:
+0043:         """
+0044:         Initializes SIMBA.
+0045: 
+0046:         Args:
+0047:             metric: A function that takes an Example and a prediction_dict
+0048:                 as input and returns a float.
+0049:             bsize: Mini-batch size. Defaults to 32.
+0050:             num_candidates: Number of new candidate programs to produce
+0051:                 per iteration. Defaults to 6.
+0052:             max_steps: Number of optimization steps to run. Defaults to 8.
+0053:             max_demos: Maximum number of demos a predictor can hold
+0054:                 before dropping some. Defaults to 4.
+0055:             prompt_model: The model to use to evolve the program. When `prompt_model is None`, the globally configured
+0056:                 lm is used.
+0057:             teacher_settings: Settings for the teacher model. Defaults to None.
+0058:             demo_input_field_maxlen: Maximum number of characters to keep
+0059:                 in an input field when building a new demo. Defaults to 100,000.
+0060:             num_threads: Number of threads for parallel execution.
+0061:                 Defaults to None.
+0062:             temperature_for_sampling: Temperature used for picking
+0063:                 programs during the trajectory-sampling step. Defaults to 0.2.
+0064:             temperature_for_candidates: Temperature used for picking
+0065:                 the source program for building new candidates. Defaults to 0.2.
+0066:         """
+0067:         self.metric = metric
+0068:         self.bsize = bsize
+0069:         self.num_candidates = num_candidates
+0070:         self.max_steps = max_steps
+0071:         self.max_demos = max_demos
+0072:         self.prompt_model = prompt_model or dspy.settings.lm
+0073:         self.teacher_settings = teacher_settings
+0074:         self.demo_input_field_maxlen = demo_input_field_maxlen
+0075:         self.num_threads = num_threads
+0076: 
+0077:         self.temperature_for_sampling = temperature_for_sampling
+0078:         self.temperature_for_candidates = temperature_for_candidates
+0079: 
+0080:         if self.max_demos > 0:
+0081:             self.strategies = [append_a_demo(demo_input_field_maxlen), append_a_rule]
+0082:         else:
+0083:             self.strategies = [append_a_rule]
+0084: 
+0085:     def compile(
+0086:         self,
+0087:         student: dspy.Module,
+0088:         *,
+0089:         trainset: list[dspy.Example],
+0090:         seed: int = 0
+0091:     ) -> dspy.Module:
+0092:         """
+0093:         Compile and optimize the student module using SIMBA.
+0094:         
+0095:         Args:
+0096:             student: The module to optimize
+0097:             trainset: Training examples for optimization
+0098:             seed: Random seed for reproducibility
+0099:             
+0100:         Returns:
+0101:             The optimized module with candidate_programs and trial_logs attached
+0102:         """
+0103:         # Basic checks
+0104:         assert len(trainset) >= self.bsize, f"Trainset too small: {len(trainset)} < {self.bsize}"
+0105: 
+0106:         # Initialize RNG
+0107:         rng = random.Random(seed)
+0108:         rng_np = np.random.default_rng(seed)
+0109: 
+0110:         programs = []
+0111:         program_scores = {}
+0112:         next_program_idx = 0
+0113: 
+0114:         # Helper functions
+0115:         def calc_average_score(prog_idx: int) -> float:
+0116:             scores = program_scores.get(prog_idx, [])
+0117:             if not scores:
+0118:                 return 0.0
+0119:             return sum(scores) / len(scores)
+0120: 
+0121:         def top_k_plus_baseline(k: int) -> list[int]:
+0122:             # Sort all programs by descending average score
+0123:             scored_programs = sorted(programs, key=lambda p: calc_average_score(p.simba_idx), reverse=True)
+0124:             top_k = [p.simba_idx for p in scored_programs[:k]]
+0125:             # Ensure baseline=0 is in there:
+0126:             if 0 not in top_k and len(top_k) > 0:
+0127:                 top_k[-1] = 0
+0128:             return list(dict.fromkeys(top_k))
+0129: 
+0130:         def softmax_sample(rng_obj: random.Random, program_idxs: list[int], temperature: float) -> int:
+0131:             if not program_idxs:
+0132:                 raise ValueError("No programs available for softmax sampling.")
+0133: 
+0134:             # Unnormalized weights
+0135:             scores = [calc_average_score(idx) for idx in program_idxs]
+0136:             exps = [np.exp(s / temperature) for s in scores]
+0137:             sum_exps = sum(exps)
+0138:             if sum_exps <= 0:
+0139:                 # Fallback: uniform if all exps are zero
+0140:                 return rng_obj.choice(program_idxs)
+0141: 
+0142:             # Weighted random choice
+0143:             probs = [val / sum_exps for val in exps]
+0144:             return rng_obj.choices(program_idxs, weights=probs, k=1)[0]
+0145: 
+0146:         def register_new_program(prog: dspy.Module, score_list: list[float]) -> None:
+0147:             nonlocal next_program_idx
+0148:             next_program_idx += 1
+0149:             new_idx = next_program_idx
+0150:             prog.simba_idx = new_idx
+0151:             programs.append(prog)
+0152:             program_scores[new_idx] = score_list
+0153: 
+0154:         # Initialize the baseline program: index=0
+0155:         student = student.deepcopy()
+0156:         student.simba_idx = 0
+0157:         programs.append(student)
+0158:         program_scores[0] = []
+0159: 
+0160:         winning_programs = [student]
+0161: 
+0162:         # Data shuffling
+0163:         data_indices = list(range(len(trainset)))
+0164:         rng.shuffle(data_indices)
+0165:         instance_idx = 0
+0166: 
+0167:         # Parallel runner
+0168:         run_parallel = dspy.Parallel(access_examples=False, num_threads=self.num_threads)
+0169: 
+0170:         trial_logs = {}
+0171:         for batch_idx in range(self.max_steps):
+0172:             trial_logs[batch_idx] = {}
+0173: 
+0174:             logger.info(f"Starting batch {batch_idx+1} of {self.max_steps}.")
+0175: 
+0176:             # STEP 1: Get next batch
+0177:             if instance_idx + self.bsize > len(trainset):
+0178:                 rng.shuffle(data_indices)
+0179:                 instance_idx = 0
+0180: 
+0181:             batch_indices = data_indices[instance_idx : instance_idx + self.bsize]
+0182:             batch = [trainset[i] for i in batch_indices]
+0183:             instance_idx += self.bsize
+0184: 
+0185:             # We'll generate (program, model) pairs for the trajectory sampling.
+0186:             # Prepare distinct LMs (with different temperatures, etc.) from the baseline=programs[0].
+0187:             models = prepare_models_for_resampling(programs[0], self.num_candidates, self.teacher_settings)
+0188:             top_programs = top_k_plus_baseline(self.num_candidates)
+0189: 
+0190:             exec_pairs = []
+0191:             predictor2name = {}
+0192: 
+0193:             # For each model, for each example, pick a program from the pool via softmax
+0194:             for model in models:
+0195:                 for example in batch:
+0196:                     chosen_prog_idx = softmax_sample(rng, top_programs, self.temperature_for_sampling)
+0197:                     candidate_system = programs[chosen_prog_idx].deepcopy()
+0198:                     candidate_system.set_lm(model)
+0199: 
+0200:                     for name, predictor in candidate_system.named_predictors():
+0201:                         predictor2name[id(predictor)] = name
+0202: 
+0203:                     # Use the special wrap that includes the 'example' in the output
+0204:                     wrapped_candidate_system = wrap_program(candidate_system, self.metric)
+0205:                     exec_pairs.append((wrapped_candidate_system, example))
+0206: 
+0207:             # STEP 2: Execute
+0208:             logger.info(f"Sampling program trajectories on {self.bsize} examples x {self.num_candidates} samples.")
+0209:             outputs = run_parallel(exec_pairs)
+0210:             assert len(outputs) == len(exec_pairs) == self.bsize * self.num_candidates
+0211: 
+0212:             # STEP 3: Sort the training buckets by (max-to-min gap, max score, and max-to-avg gap).
+0213:             buckets = []
+0214:             largest_max_to_avg_gap = float("-inf")
+0215:             batch_10th_percentile_score = np.percentile([float(o["score"]) for o in outputs], 10)
+0216:             batch_90th_percentile_score = np.percentile([float(o["score"]) for o in outputs], 90)
+0217: 
+0218:             # We'll chunk `outputs` by example index, each chunk has length = num_candidates
+0219:             for idx, _ in enumerate(batch):
+0220:                 # gather all results for this example
+0221:                 bucket = [outputs[i] for i in range(idx, len(outputs), self.bsize)]
+0222:                 bucket.sort(key=lambda x: x["score"], reverse=True)
+0223: 
+0224:                 max_score = float(bucket[0]["score"])
+0225:                 min_score = float(bucket[-1]["score"])
+0226:                 avg_score = sum(x["score"] for x in bucket) / len(bucket)
+0227:                 max_to_min_gap = max_score - min_score
+0228:                 max_to_avg_gap = max_score - avg_score
+0229:                 if max_to_avg_gap > largest_max_to_avg_gap:
+0230:                     largest_max_to_avg_gap = max_to_avg_gap
+0231: 
+0232:                 buckets.append((bucket, (max_to_min_gap, max_score, max_to_avg_gap)))
+0233: 
+0234:             # sort the buckets
+0235:             buckets.sort(key=lambda x: x[1], reverse=True)
+0236: 
+0237:             # Baseline for the batch is just the average of all runs
+0238:             all_scores_in_this_batch = [o["score"] for o in outputs]
+0239:             baseline_score = sum(all_scores_in_this_batch) / len(all_scores_in_this_batch)
+0240:             logger.info(f"Batch {batch_idx+1}: Baseline mini-batch score: {baseline_score}\n")
+0241: 
+0242:             # STEP 4: Build new candidate programs by applying a strategy to some top buckets.
+0243:             system_candidates = []
+0244:             for bucket_idx, (bucket, bucket_stats) in enumerate(buckets):
+0245:                 max_to_min_gap, max_score, max_to_avg_gap = bucket_stats
+0246:                 logger.info(
+0247:                     f"Batch {batch_idx+1}: Processing bucket #{bucket_idx+1}, with max score {max_score}, "
+0248:                     f"max-to-min gap {max_to_min_gap}, and max-to-avg gap {max_to_avg_gap}."
+0249:                 )
+0250: 
+0251:                 # pick source program
+0252:                 src_prog_idx = softmax_sample(
+0253:                     rng, top_k_plus_baseline(self.num_candidates), self.temperature_for_candidates
+0254:                 )
+0255:                 system_candidate = programs[src_prog_idx].deepcopy()
+0256: 
+0257:                 # Drop some demos from each predictor
+0258:                 name2predictor = {}
+0259:                 num_demos_list = []
+0260: 
+0261:                 max_demos_tmp = self.max_demos if self.max_demos > 0 else 3
+0262: 
+0263:                 for name, predictor in system_candidate.named_predictors():
+0264:                     name2predictor[name] = predictor
+0265:                     num_demos_list.append(len(predictor.demos))
+0266: 
+0267:                 num_demos = max(num_demos_list) if num_demos_list else 0
+0268:                 num_demos_to_drop = max(rng_np.poisson(num_demos / max_demos_tmp), int(num_demos >= max_demos_tmp))
+0269:                 num_demos_to_drop = min(num_demos_to_drop, num_demos)
+0270:                 demos_to_drop = [rng.randrange(num_demos) for _ in range(num_demos_to_drop)]
+0271: 
+0272:                 for _, predictor in name2predictor.items():
+0273:                     predictor.demos = [demo for idxd, demo in enumerate(predictor.demos) if idxd not in demos_to_drop]
+0274: 
+0275:                 # Pick a strategy
+0276:                 strategy = rng.choice(self.strategies)
+0277:                 logger.info(
+0278:                     f"Batch {batch_idx+1}: Invoking strategy: {strategy.__name__}"
+0279:                     + (f", having dropped {num_demos_to_drop} demos per predictor" if num_demos_to_drop else "")
+0280:                 )
+0281: 
+0282:                 try:
+0283:                     strategy(
+0284:                         bucket,
+0285:                         system_candidate,
+0286:                         predictor2name=predictor2name,
+0287:                         name2predictor=name2predictor,
+0288:                         batch_10p_score=batch_10th_percentile_score,
+0289:                         batch_90p_score=batch_90th_percentile_score,
+0290:                         prompt_model=self.prompt_model,
+0291:                     )
+0292:                 except Exception as e:
+0293:                     logger.error(f"Strategy failed with error: {e}")
+0294:                     continue
+0295: 
+0296:                 system_candidates.append(system_candidate)
+0297:                 logger.info("\n")
+0298: 
+0299:                 if len(system_candidates) >= self.num_candidates + 1:
+0300:                     break
+0301: 
+0302:             # STEP 5: Evaluate these new system_candidates on the same mini-batch
+0303:             logger.info(f"Batch {batch_idx+1}: Evaluating {len(system_candidates)} programs on {self.bsize} examples.")
+0304: 
+0305:             exec_pairs = [(wrap_program(sys, self.metric), ex) for sys in system_candidates for ex in batch]
+0306:             outputs = run_parallel(exec_pairs)
+0307:             assert len(outputs) == len(exec_pairs) == len(system_candidates) * self.bsize
+0308: 
+0309:             # STEP 6: Compute average mini-batch scores for each new candidate
+0310:             candidate_scores = []
+0311:             for idx_cand, _ in enumerate(system_candidates):
+0312:                 start = idx_cand * self.bsize
+0313:                 end = (idx_cand + 1) * self.bsize
+0314:                 sys_scores = [outputs[i]["score"] for i in range(start, end)]
+0315:                 avg_sys_score = sum(sys_scores) / len(sys_scores)
+0316:                 candidate_scores.append(avg_sys_score)
+0317: 
+0318:             logger.info(
+0319:                 f"Scores after {batch_idx+1} batches: {candidate_scores}, "
+0320:                 f"Best: {max(candidate_scores) if candidate_scores else 'N/A'}\n"
+0321:             )
+0322: 
+0323:             # STEP 7: Select the best among these new ones for "winning" record
+0324:             if candidate_scores:
+0325:                 best_idx_among_candidates = candidate_scores.index(max(candidate_scores))
+0326:                 best_program = system_candidates[best_idx_among_candidates]
+0327:                 winning_programs.append(best_program.deepcopy())
+0328: 
+0329:             # STEP 8: Register all new candidate systems in our global pool
+0330:             for idx_cand, cand_sys in enumerate(system_candidates):
+0331:                 start = idx_cand * self.bsize
+0332:                 end = (idx_cand + 1) * self.bsize
+0333:                 sys_scores = [outputs[i]["score"] for i in range(start, end)]
+0334:                 register_new_program(cand_sys, sys_scores)
+0335: 
+0336:         M = len(winning_programs) - 1  # noqa: N806
+0337:         N = self.num_candidates + 1  # noqa: N806
+0338:         if M < 1:
+0339:             program_idxs = [0] * N
+0340:         else:
+0341:             program_idxs = [round(i * M / (N - 1)) for i in range(N)]
+0342: 
+0343:         program_idxs = list(dict.fromkeys(program_idxs))
+0344: 
+0345:         candidate_programs = [winning_programs[i].deepcopy() for i in program_idxs]
+0346:         logger.info(f"VALIDATION: Evaluating {len(candidate_programs)} programs on the full trainset.")
+0347:         exec_pairs = [(wrap_program(sys, self.metric), ex) for sys in candidate_programs for ex in trainset]
+0348:         outputs = run_parallel(exec_pairs)
+0349: 
+0350:         scores = []
+0351:         for idx_prog, _ in enumerate(candidate_programs):
+0352:             start = idx_prog * len(trainset)
+0353:             end = (idx_prog + 1) * len(trainset)
+0354:             sys_scores = [outputs[i]["score"] for i in range(start, end)]
+0355:             avg_score = sum(sys_scores) / len(sys_scores) if sys_scores else 0.0
+0356:             scores.append(avg_score)
+0357:             if idx_prog != 0:
+0358:                 trial_logs[idx_prog - 1]["train_score"] = avg_score
+0359: 
+0360:         # Build sorted list of {"score", "program"} dicts
+0361:         assert len(scores) == len(candidate_programs)
+0362:         candidate_data = [{"score": s, "program": p} for s, p in zip(scores, candidate_programs, strict=False)]
+0363:         candidate_data.sort(key=lambda x: x["score"], reverse=True)
+0364: 
+0365:         best_idx = scores.index(max(scores)) if scores else 0
+0366:         best_program = candidate_programs[best_idx].deepcopy()
+0367:         logger.info(
+0368:             f"Final trainset scores: {scores}, Best: {max(scores) if scores else 'N/A'} "
+0369:             f"(at index {best_idx if scores else 'N/A'})\n\n\n"
+0370:         )
+0371: 
+0372:         # Attach sorted, scored candidates & logs
+0373:         best_program.candidate_programs = candidate_data
+0374:         best_program.trial_logs = trial_logs
+0375: 
+0376:         return best_program
+
+Return JSON that matches the schema exactly.

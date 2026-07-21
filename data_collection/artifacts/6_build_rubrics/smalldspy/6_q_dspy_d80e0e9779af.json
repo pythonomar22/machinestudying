@@ -1,0 +1,73 @@
+{
+ "id": "dspy_d80e0e9779af",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "When I batch a module over a list of `dspy.Example`s and ask DSPy to return failures instead of aborting, the failed items seem to have lost their labels and metadata. Is that expected? Why?",
+ "gold_answer": "Yes. `Module.batch` strips each example down to `example.inputs()` before it queues work, so the execution pairs carry plain input dicts rather than the original full `Example`s. In failure-return mode, `Parallel` hands those queued payloads back as `failed_examples`, so you keep the failing inputs but not labels or extra fields.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "`Module.batch` constructs its work queue as `(self, example.inputs())` for each item, so it does not queue the original full `Example` objects.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "When `return_failed_examples=True`, `Module.batch` returns the `failed_examples` produced by `Parallel.forward`, and `Parallel.forward` populates that list by appending `exec_pairs[failed_idx][1]` for each failed index.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The loss of labels or other non-input fields is expected from this implementation, because failed batch items are returned from the already-transformed `example.inputs()` payloads rather than from the original examples.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The failure-path test shows non-aborting batch behavior: the results list keeps successful outputs with `None` in the failed slot, and the returned failed item is checked only via its failing input value (`42`) plus the captured `ValueError`.",
+   "span_ids": [
+    "s3"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/primitives/module.py",
+   "start_line": 297,
+   "end_line": 314,
+   "excerpt": "0297:         # Create a list of execution pairs (self, example)\n0298:         exec_pairs = [(self, example.inputs()) for example in examples]\n0299: \n0300:         # Create an instance of Parallel\n0301:         parallel_executor = Parallel(\n0302:             num_threads=num_threads,\n0303:             max_errors=max_errors,\n0304:             return_failed_examples=return_failed_examples,\n0305:             provide_traceback=provide_traceback,\n0306:             disable_progress_bar=disable_progress_bar,\n0307:             timeout=timeout,\n0308:             straggler_limit=straggler_limit,\n0309:         )\n0310: \n0311:         # Execute the forward method of Parallel\n0312:         if return_failed_examples:\n0313:             results, failed_examples, exceptions = parallel_executor.forward(exec_pairs)\n0314:             return results, failed_examples, exceptions"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/parallel.py",
+   "start_line": 113,
+   "end_line": 123,
+   "excerpt": "0113:         # Populate failed examples and exceptions from the executor\n0114:         if self.return_failed_examples:\n0115:             for failed_idx in executor.failed_indices:\n0116:                 if failed_idx < len(exec_pairs):\n0117:                     _, original_example = exec_pairs[failed_idx]\n0118:                     self.failed_examples.append(original_example)\n0119:                     if exception := executor.exceptions_map.get(failed_idx):\n0120:                         self.exceptions.append(exception)\n0121: \n0122:             return results, self.failed_examples, self.exceptions\n0123:         else:"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/predict/test_parallel.py",
+   "start_line": 169,
+   "end_line": 196,
+   "excerpt": "0169:     class FailingModule(dspy.Module):\n0170:         def forward(self, value: int) -> str:\n0171:             if value == 42:\n0172:                 raise ValueError(\"test error\")\n0173:             return f\"success-{value}\"\n0174: \n0175:     module = FailingModule()\n0176: \n0177:     examples = [\n0178:         dspy.Example(value=1).with_inputs(\"value\"),\n0179:         dspy.Example(value=42).with_inputs(\"value\"),  # This will fail\n0180:         dspy.Example(value=3).with_inputs(\"value\"),\n0181:     ]\n0182: \n0183:     results, failed_examples, exceptions = module.batch(\n0184:         examples,\n0185:         return_failed_examples=True,\n0186:         provide_traceback=True,\n0187:     )\n0188: \n0189:     assert results == [\"success-1\", None, \"success-3\"]\n0190: \n0191:     assert len(failed_examples) == 1\n0192:     assert failed_examples[0].inputs()[\"value\"] == 42\n0193: \n0194:     assert len(exceptions) == 1\n0195:     assert isinstance(exceptions[0], ValueError)\n0196:     assert str(exceptions[0]) == \"test error\""
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Worth keeping because the answer requires following data shape changes across both batch layers.",
+ "source_index": 9,
+ "smalldspy_scope": true
+}

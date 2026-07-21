@@ -1,0 +1,111 @@
+{
+ "id": "dspy_560facbe2d68",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I want a scalar score plus extra per-example metadata inside an optimizer, not just critique text. Which built-in optimizer path keeps the extra fields from a `dspy.Prediction` metric, and where do they end up?",
+ "gold_answer": "`SIMBA` keeps them. Its metric wrapper accepts either a plain number or a `dspy.Prediction` with a `score` field. The `score` becomes the optimization signal, and every other field from that `Prediction` is copied into `output_metadata`. Later, SIMBA's rule-generation path feeds that metadata back into prompts as the 'better' and 'worse' reward info side channel.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "A correct answer identifies `SIMBA`, specifically `SIMBA.compile`, as the built-in optimizer path that routes example evaluation through `wrap_program(..., self.metric)`.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "`wrap_program` accepts metric outputs that are either plain numeric values or a `dspy.Prediction`; in the `dspy.Prediction` case, the object must contain a `score` field.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "When the metric returns a `dspy.Prediction`, `wrap_program` uses `output.score` as the run's scalar `score`, copies every non-`score` field into `output_metadata`, and SIMBA later uses those `score` values to rank buckets and candidate programs.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "SIMBA's rule-generation path uses `append_a_rule`, which passes `bad[\"output_metadata\"]` and `good[\"output_metadata\"]` into the feedback prompt as `worse_reward_info` and `better_reward_info`.",
+   "span_ids": [
+    "s6",
+    "s7",
+    "s8"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/simba.py",
+   "start_line": 16,
+   "end_line": 18,
+   "excerpt": "0016: class SIMBA(Teleprompter):\n0017:     \"\"\"\n0018:     SIMBA (Stochastic Introspective Mini-Batch Ascent) optimizer for DSPy."
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/simba.py",
+   "start_line": 85,
+   "end_line": 91,
+   "excerpt": "0085:     def compile(\n0086:         self,\n0087:         student: dspy.Module,\n0088:         *,\n0089:         trainset: list[dspy.Example],\n0090:         seed: int = 0\n0091:     ) -> dspy.Module:"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/simba.py",
+   "start_line": 203,
+   "end_line": 205,
+   "excerpt": "0203:                     # Use the special wrap that includes the 'example' in the output\n0204:                     wrapped_candidate_system = wrap_program(candidate_system, self.metric)\n0205:                     exec_pairs.append((wrapped_candidate_system, example))"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/teleprompt/simba_utils.py",
+   "start_line": 48,
+   "end_line": 69,
+   "excerpt": "0048:         try:\n0049:             output = metric(example, prediction)\n0050:             if isinstance(output, (int, float)):\n0051:                 score = output\n0052:             elif isinstance(output, dspy.Prediction):\n0053:                 if not hasattr(output, \"score\"):\n0054:                     raise ValueError(\"When `metric` returns a `dspy.Prediction`, it must contain a `score` field.\")\n0055:                 score = output.score\n0056:                 # Extract fields from the output dspy.Prediction, excluding `score``\n0057:                 output_metadata = {\n0058:                     k: v for k, v in output.items() if k != \"score\"\n0059:                 }\n0060:         except Exception as e:\n0061:             logger.warning(e)\n0062: \n0063:         return {\n0064:             \"prediction\": prediction,\n0065:             \"trace\": trace,\n0066:             \"score\": score,\n0067:             \"example\": example,\n0068:             \"output_metadata\": output_metadata\n0069:         }"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/teleprompt/simba.py",
+   "start_line": 212,
+   "end_line": 239,
+   "excerpt": "0212:             # STEP 3: Sort the training buckets by (max-to-min gap, max score, and max-to-avg gap).\n0213:             buckets = []\n0214:             largest_max_to_avg_gap = float(\"-inf\")\n0215:             batch_10th_percentile_score = np.percentile([float(o[\"score\"]) for o in outputs], 10)\n0216:             batch_90th_percentile_score = np.percentile([float(o[\"score\"]) for o in outputs], 90)\n0217: \n0218:             # We'll chunk `outputs` by example index, each chunk has length = num_candidates\n0219:             for idx, _ in enumerate(batch):\n0220:                 # gather all results for this example\n0221:                 bucket = [outputs[i] for i in range(idx, len(outputs), self.bsize)]\n0222:                 bucket.sort(key=lambda x: x[\"score\"], reverse=True)\n0223: \n0224:                 max_score = float(bucket[0][\"score\"])\n0225:                 min_score = float(bucket[-1][\"score\"])\n0226:                 avg_score = sum(x[\"score\"] for x in bucket) / len(bucket)\n0227:                 max_to_min_gap = max_score - min_score\n0228:                 max_to_avg_gap = max_score - avg_score\n0229:                 if max_to_avg_gap > largest_max_to_avg_gap:\n0230:                     largest_max_to_avg_gap = max_to_avg_gap\n0231: \n0232:                 buckets.append((bucket, (max_to_min_gap, max_score, max_to_avg_gap)))\n0233: \n0234:             # sort the buckets\n0235:             buckets.sort(key=lambda x: x[1], reverse=True)\n0236: \n0237:             # Baseline for the batch is just the average of all runs\n0238:             all_scores_in_this_batch = [o[\"score\"] for o in outputs]\n0239:             baseline_score = sum(all_scores_in_this_batch) / len(all_scores_in_this_batch)"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/teleprompt/simba.py",
+   "start_line": 80,
+   "end_line": 83,
+   "excerpt": "0080:         if self.max_demos > 0:\n0081:             self.strategies = [append_a_demo(demo_input_field_maxlen), append_a_rule]\n0082:         else:\n0083:             self.strategies = [append_a_rule]"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/teleprompt/simba_utils.py",
+   "start_line": 139,
+   "end_line": 160,
+   "excerpt": "0139:     kwargs = {\n0140:         \"program_code\": inspect.getsource(system.__class__),\n0141:         \"modules_defn\": inspect_modules(system),\n0142:         \"program_inputs\": {**example.inputs()},\n0143:         \"oracle_metadata\": {**example.labels()},\n0144:         \"better_program_trajectory\": better_trajectory,\n0145:         \"better_program_outputs\": dict(good[\"prediction\"]),\n0146:         \"worse_program_trajectory\": worse_trajectory,\n0147:         \"worse_program_outputs\": dict(bad[\"prediction\"] or {}),\n0148:         \"worse_reward_value\": bad[\"score\"],\n0149:         \"better_reward_value\": good[\"score\"],\n0150:         \"worse_reward_info\": bad[\"output_metadata\"],\n0151:         \"better_reward_info\": good[\"output_metadata\"],\n0152:         \"module_names\": module_names,\n0153:     }\n0154: \n0155:     kwargs = {k: v if isinstance(v, str) else orjson.dumps(recursive_mask(v), option=orjson.OPT_INDENT_2).decode()\n0156:               for k, v in kwargs.items()}\n0157: \n0158:     with dspy.context(trace=[], lm=prompt_model):\n0159:         advice_program = dspy.Predict(OfferFeedback)\n0160:         advice = advice_program(**kwargs).module_advice"
+  },
+  {
+   "span_id": "s8",
+   "path": "dspy/teleprompt/simba_utils.py",
+   "start_line": 193,
+   "end_line": 200,
+   "excerpt": "0193:     worse_reward_value: float = InputField(desc=\"The reward value assigned to the program's outputs\")\n0194:     worse_reward_info: str = InputField(desc=\"Additional information that might be helpful to understanding the assigned reward value.\")\n0195:     better_program_trajectory: str = InputField(\n0196:         desc=\"The trajectory of the program's execution, showing each module's I/O\"\n0197:     )\n0198:     better_program_outputs: str = InputField(desc=\"The outputs of the program that we are analyzing\")\n0199:     better_reward_value: float = InputField(desc=\"The reward value assigned to the program's outputs\")\n0200:     better_reward_info: str = InputField(desc=\"Additional information that might be helpful to understanding the assigned reward value.\")"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Excellent optimizer-specific metric question; the hidden side channel is easy to miss.",
+ "source_index": 17,
+ "smalldspy_scope": false
+}

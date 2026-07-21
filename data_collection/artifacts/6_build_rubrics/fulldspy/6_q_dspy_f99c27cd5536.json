@@ -1,0 +1,71 @@
+{
+ "id": "dspy_f99c27cd5536",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I reused one `dspy.Signature` class in two predictors, changed the instructions on one for an experiment, and the other predictor's prompt changed too. Why does that leak happen, and what is the safe way to make a one-off variant?",
+ "gold_answer": "A DSPy signature is a class object, and `dspy.Predict` keeps a reference to that class. Changing `signature.instructions` mutates the class docstring in place, so every predictor sharing that signature sees the new instructions. If you want a predictor-specific variant, replace the signature with a fresh class from `with_instructions(...)` instead of mutating the shared one.\n\n```python\nimport dspy\n\nclass QA(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\nQA.instructions = 'Original instruction.'\n\np1 = dspy.Predict(QA)\np2 = dspy.Predict(QA)\n\np1.signature.instructions = 'Mutated in place.'\nassert p2.signature.instructions == 'Mutated in place.'\n\np2.signature = p2.signature.with_instructions('Only for p2.')\nassert p1.signature.instructions == 'Mutated in place.'\nassert p2.signature.instructions == 'Only for p2.'\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "Each `dspy.Predict` stores the provided `Signature` class on `self.signature` without cloning it: `Predict.__init__` assigns `ensure_signature(signature)`, and `ensure_signature` returns an existing signature class unchanged.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "Changing `signature.instructions` mutates the shared signature class in place, because the `instructions` setter writes to `cls.__doc__` and the getter reads instructions back from that class docstring.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "`Signature.with_instructions(...)` is the safe one-off customization path because it creates and returns a new `Signature` class with the same fields and new instructions instead of mutating `cls`; using that returned class as one predictor's `signature` isolates the change.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/predict.py",
+   "start_line": 58,
+   "end_line": 63,
+   "excerpt": "0058:     def __init__(self, signature: str | type[Signature], callbacks: list[BaseCallback] | None = None, **config):\n0059:         super().__init__(callbacks=callbacks)\n0060:         self.stage = random.randbytes(8).hex()\n0061:         self.signature = ensure_signature(signature)\n0062:         self.config = config\n0063:         self.reset()"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 511,
+   "end_line": 518,
+   "excerpt": "0511: def ensure_signature(signature: str | type[Signature], instructions=None) -> None | type[Signature]:\n0512:     if signature is None:\n0513:         return None\n0514:     if isinstance(signature, str):\n0515:         return Signature(signature, instructions)\n0516:     if instructions is not None:\n0517:         raise ValueError(\"Don't specify instructions when initializing with a Signature\")\n0518:     return signature"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 215,
+   "end_line": 222,
+   "excerpt": "0215:     @property\n0216:     def instructions(cls) -> str:\n0217:         return inspect.cleandoc(getattr(cls, \"__doc__\", \"\"))\n0218: \n0219:     @instructions.setter\n0220:     def instructions(cls, instructions: str) -> None:\n0221:         cls.__doc__ = instructions\n0222: "
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 269,
+   "end_line": 297,
+   "excerpt": "0269:     @classmethod\n0270:     def with_instructions(cls, instructions: str) -> type[\"Signature\"]:\n0271:         \"\"\"Return a new Signature class with identical fields and new instructions.\n0272: \n0273:         This method does not mutate `cls`. It constructs a fresh Signature\n0274:         class using the current fields and the provided `instructions`.\n0275: \n0276:         Args:\n0277:             instructions (str): Instruction text to attach to the new signature.\n0278: \n0279:         Returns:\n0280:             A new Signature class whose fields match `cls.fields`\n0281:             and whose instructions equal `instructions`.\n0282: \n0283:         Examples:\n0284:             ```python\n0285:             import dspy\n0286: \n0287:             class MySig(dspy.Signature):\n0288:                 input_text: str = dspy.InputField(desc=\"Input text\")\n0289:                 output_text: str = dspy.OutputField(desc=\"Output text\")\n0290: \n0291:             NewSig = MySig.with_instructions(\"Translate to French.\")\n0292:             assert NewSig is not MySig\n0293:             assert NewSig.instructions == \"Translate to French.\"\n0294:             ```\n0295:         \"\"\"\n0296:         return Signature(cls.fields, instructions)\n0297: "
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Surfaces the class-level mutation semantics behind shared prompt changes.",
+ "source_index": 3,
+ "smalldspy_scope": false
+}

@@ -1,0 +1,72 @@
+{
+ "id": "dspy_7ebaf5709199",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "My metric is a callable object with internal state, not a plain function. When DSPy asks another model to generate retry advice from that metric, what source code does it actually embed?",
+ "gold_answer": "At construction time, the feedback-generating retry wrapper first tries `inspect.getsource(reward_fn)`. If that raises `TypeError`, it falls back to `inspect.getsource(reward_fn.__class__)`, which is the usual path for callable instances. On retry, that captured string is passed into the advice model as `reward_code`.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "`Refine.__init__` tries to capture the metric's source code by calling `inspect.getsource(reward_fn)` and storing the result in `self.reward_fn_code`.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "If direct source lookup raises `TypeError`, `Refine.__init__` falls back to `inspect.getsource(reward_fn.__class__)`, so callable-object metrics contribute their class source code.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "When generating retry feedback, `Refine.forward` inserts the previously captured `self.reward_fn_code` into the `reward_code` field and passes it to `dspy.Predict(OfferFeedback)`.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "`OfferFeedback` defines `reward_code` as an input field representing the code of the reward function being analyzed.",
+   "span_ids": [
+    "s3"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/refine.py",
+   "start_line": 93,
+   "end_line": 96,
+   "excerpt": "0093:         try:\n0094:             self.reward_fn_code = inspect.getsource(reward_fn)\n0095:         except TypeError:\n0096:             self.reward_fn_code = inspect.getsource(reward_fn.__class__)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/refine.py",
+   "start_line": 155,
+   "end_line": 167,
+   "excerpt": "0155:                 reward = {\n0156:                     \"reward_code\": self.reward_fn_code,\n0157:                     \"target_threshold\": self.threshold,\n0158:                     \"reward_value\": reward,\n0159:                 }\n0160: \n0161:                 advise_kwargs = dict(**modules, **trajectory, **reward, module_names=module_names)\n0162:                 # only dumps if it's a list or dict\n0163:                 advise_kwargs = {\n0164:                     k: v if isinstance(v, str) else orjson.dumps(recursive_mask(v), option=orjson.OPT_INDENT_2).decode()\n0165:                     for k, v in advise_kwargs.items()\n0166:                 }\n0167:                 advice = dspy.Predict(OfferFeedback)(**advise_kwargs).advice"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/predict/refine.py",
+   "start_line": 24,
+   "end_line": 31,
+   "excerpt": "0024:     program_code: str = InputField(desc=\"The code of the program that we are analyzing\")\n0025:     modules_defn: str = InputField(desc=\"The definition of each module in the program, including its I/O\")\n0026:     program_inputs: str = InputField(desc=\"The inputs to the program that we are analyzing\")\n0027:     program_trajectory: str = InputField(desc=\"The trajectory of the program's execution, showing each module's I/O\")\n0028:     program_outputs: str = InputField(desc=\"The outputs of the program that we are analyzing\")\n0029:     reward_code: str = InputField(desc=\"The code of the reward function that we are analyzing\")\n0030:     target_threshold: float = InputField(desc=\"The target threshold for the reward function\")\n0031:     reward_value: float = InputField(desc=\"The reward value assigned to the program's outputs\")"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Fits the callable-metric part of the target label without naming the internal attachment point in the question.",
+ "source_index": 8,
+ "smalldspy_scope": true
+}

@@ -202,6 +202,18 @@ def rubric_violations(result: dict, paths: list[str], repo: Path) -> list[str]:
     return problems
 
 
+def normalize_ids(rubric: list[dict], evidence: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Rename claim/span IDs to the released bundles' c1../s1.. style."""
+    span_map = {span["span_id"]: f"s{i}" for i, span in enumerate(evidence, start=1)}
+    claims = [
+        {**claim, "claim_id": f"c{i}",
+         "span_ids": [span_map[sid] for sid in claim["span_ids"]]}
+        for i, claim in enumerate(rubric, start=1)
+    ]
+    spans = [{**span, "span_id": span_map[span["span_id"]]} for span in evidence]
+    return claims, spans
+
+
 def run_codex(prompt: str, scope_dir: Path, repo: Path, qid: str, attempt: int) -> dict:
     last_message = scope_dir / f"last_message_{qid}_a{attempt}.json"
     events_path = scope_dir / f"events_{qid}_a{attempt}.jsonl"
@@ -249,12 +261,14 @@ def build_rubric(finalist: dict, scope: str) -> dict:
     (scope_dir / f"prompt_{qid}.txt").write_text(prompt, encoding="utf-8")
 
     result, problems = None, ["not run"]
-    salvage = scope_dir / f"last_message_{qid}_a0.json"
-    if salvage.exists():  # a completed archived attempt survives a crash/rerun
-        result = json.loads(salvage.read_text(encoding="utf-8"))
-        problems = rubric_violations(result, paths, repo)
-        if not problems:
-            print(f"{scope}/{qid}: salvaged valid archived attempt a0")
+    for archived in range(gen.MAX_RETRIES, -1, -1):  # latest archived attempt wins
+        salvage = scope_dir / f"last_message_{qid}_a{archived}.json"
+        if salvage.exists():
+            result = json.loads(salvage.read_text(encoding="utf-8"))
+            problems = rubric_violations(result, paths, repo)
+            if not problems:
+                print(f"{scope}/{qid}: salvaged valid archived attempt a{archived}")
+                break
     for attempt in range(gen.MAX_RETRIES + 1):
         if not problems:
             break
@@ -272,10 +286,10 @@ def build_rubric(finalist: dict, scope: str) -> dict:
         raise RuntimeError(f"{scope}/{qid}: unresolved violations after retries: {problems}")
 
     used = {sid for claim in result["rubric"] for sid in claim["span_ids"]}
+    cited = [span for span in result["evidence"] if span["span_id"] in used]
+    rubric, spans = normalize_ids(result["rubric"], cited)
     evidence = []
-    for span in result["evidence"]:
-        if span["span_id"] not in used:
-            continue  # defined but never cited - dropped for cleanliness
+    for span in spans:
         lines = (repo / span["path"]).read_text(encoding="utf-8").splitlines()
         excerpt = "\n".join(
             f"{i:04d}: {lines[i - 1]}"
@@ -288,7 +302,7 @@ def build_rubric(finalist: dict, scope: str) -> dict:
         "topic": finalist["topic"],
         "question": finalist["question"],
         "gold_answer": finalist["answer"],
-        "rubric": result["rubric"],
+        "rubric": rubric,
         "evidence": evidence,
         "difficulty": finalist["difficulty"],
         "note": finalist["note"],

@@ -1,0 +1,126 @@
+{
+ "id": "dspy_a27434ae6bf2",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I want DSPy to start a local model server for me instead of talking to an existing endpoint. What does the local launch flow normalize from the model name, how does it boot the server, and why is nothing launched unless I opt into the right provider?",
+ "gold_answer": "Local launching is provider-driven, not inferred from the model string. You must construct the LM with a local provider; otherwise `launch()` just hits the base provider's no-op. In `LocalProvider.launch`, DSPy strips leading `openai/`, `local:`, and `huggingface/`, picks a free port, starts `python -m sglang.launch_server --model-path ... --port ... --host 0.0.0.0`, waits for `/v1/models`, then writes `api_base=http://localhost:<port>/v1` and `api_key='local'` back onto the LM. The command is built as a list, so spaces and shell-looking text stay literal.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 32,
+   "statement": "`LM.launch()` only delegates to the current provider, and DSPy does not infer `LocalProvider` from the model string: `infer_provider()` auto-selects `OpenAIProvider` only for OpenAI models and otherwise falls back to the base `Provider`, whose `launch()` method is a no-op. A local server is therefore launched only if the caller explicitly uses a provider with launch logic such as `LocalProvider`.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 18,
+   "statement": "`LocalProvider.launch()` normalizes the model name before launch by stripping a leading `openai/`, `local:`, or `huggingface/` prefix and then using the remainder as the model path.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 23,
+   "statement": "For local launch, DSPy grabs a free localhost port and starts an SGLang server with `subprocess.Popen` using the argument vector `python -m sglang.launch_server --model-path <model> --port <port> --host 0.0.0.0`.",
+   "span_ids": [
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "After spawning the process, DSPy waits for readiness by polling `http://localhost:<port>/v1/models`; once the server is ready, it rewrites the LM to use `api_base = http://localhost:<port>/v1` and `api_key = \"local\"`.",
+   "span_ids": [
+    "s6",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 7,
+   "statement": "The launch command is built and passed as a list, so model strings containing spaces or shell-looking text stay literal as the single value after `--model-path` rather than being split into extra CLI arguments.",
+   "span_ids": [
+    "s8",
+    "s9"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 241,
+   "end_line": 243,
+   "excerpt": "0241:     def launch(self, launch_kwargs: dict[str, Any] | None = None):\n0242:         self.provider.launch(self, launch_kwargs)\n0243: "
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 307,
+   "end_line": 310,
+   "excerpt": "0307:     def infer_provider(self) -> Provider:\n0308:         if OpenAIProvider.is_provider_model(self.model):\n0309:             return OpenAIProvider()\n0310:         return Provider()"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/provider.py",
+   "start_line": 234,
+   "end_line": 248,
+   "excerpt": "0234:     @staticmethod\n0235:     def launch(lm: \"LM\", launch_kwargs: dict[str, Any] | None = None):\n0236:         \"\"\"Launch a language model instance.\n0237: \n0238:         This method should be implemented by subclasses to start a language model\n0239:         instance. Note that this method might be called even if there is already\n0240:         a launched LM, so implementations should be resilient to such cases.\n0241: \n0242:         Args:\n0243:             lm: The language model instance to launch.\n0244:             launch_kwargs: Additional keyword arguments for launching the model.\n0245:                 The `lm.launch_kwargs` dictionary will contain the necessary\n0246:                 information for the provider to launch the LM.\n0247:         \"\"\"\n0248:         pass"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/lm_local.py",
+   "start_line": 46,
+   "end_line": 53,
+   "excerpt": "0046:         model = lm.model\n0047:         if model.startswith(\"openai/\"):\n0048:             model = model[7:]\n0049:         if model.startswith(\"local:\"):\n0050:             model = model[6:]\n0051:         if model.startswith(\"huggingface/\"):\n0052:             model = model[len(\"huggingface/\") :]\n0053: "
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/lm_local.py",
+   "start_line": 54,
+   "end_line": 76,
+   "excerpt": "0054:         logger.info(f\"Grabbing a free port to launch an SGLang server for model {model}\")\n0055:         logger.info(f\"We see that CUDA_VISIBLE_DEVICES is {os.environ.get('CUDA_VISIBLE_DEVICES', 'unset')}\")\n0056:         port = get_free_port()\n0057:         timeout = launch_kwargs.get(\"timeout\", 1800)\n0058:         command = [\n0059:             \"python\",\n0060:             \"-m\",\n0061:             \"sglang.launch_server\",\n0062:             \"--model-path\",\n0063:             model,\n0064:             \"--port\",\n0065:             str(port),\n0066:             \"--host\",\n0067:             \"0.0.0.0\",\n0068:         ]\n0069: \n0070:         # We will manually stream & capture logs.\n0071:         process = subprocess.Popen(\n0072:             command,\n0073:             text=True,\n0074:             stdout=subprocess.PIPE,  # We'll read from pipe\n0075:             stderr=subprocess.STDOUT,  # Merge stderr into stdout\n0076:         )"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/clients/lm_local.py",
+   "start_line": 104,
+   "end_line": 128,
+   "excerpt": "0104:         # Wait until the server is ready (or times out)\n0105:         base_url = f\"http://localhost:{port}\"\n0106:         try:\n0107:             wait_for_server(base_url, timeout=timeout)\n0108:         except TimeoutError:\n0109:             # If the server doesn't come up, we might want to kill it:\n0110:             process.kill()\n0111:             raise\n0112: \n0113:         # Once server is ready, we tell the thread to stop printing further lines.\n0114:         stop_printing_event.set()\n0115: \n0116:         # A convenience getter so the caller can see all logs so far (and future).\n0117:         def get_logs() -> str:\n0118:             # Join them all into a single string, or you might return a list\n0119:             return \"\".join(logs_buffer)\n0120: \n0121:         # Let the user know server is up\n0122:         logger.info(f\"Server ready on random port {port}! Logs are available via lm.get_logs() method on returned lm.\")\n0123: \n0124:         lm.kwargs[\"api_base\"] = f\"http://localhost:{port}/v1\"\n0125:         lm.kwargs[\"api_key\"] = \"local\"\n0126:         lm.get_logs = get_logs\n0127:         lm.process = process\n0128:         lm.thread = thread"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/clients/lm_local.py",
+   "start_line": 335,
+   "end_line": 353,
+   "excerpt": "0335: def wait_for_server(base_url: str, timeout: int | None = None) -> None:\n0336:     \"\"\"\n0337:     Wait for the server to be ready by polling the /v1/models endpoint.\n0338: \n0339:     Args:\n0340:         base_url: The base URL of the server (e.g. http://localhost:1234)\n0341:         timeout: Maximum time to wait in seconds. None means wait forever.\n0342:     \"\"\"\n0343:     start_time = time.time()\n0344:     while True:\n0345:         try:\n0346:             response = requests.get(\n0347:                 f\"{base_url}/v1/models\",\n0348:                 headers={\"Authorization\": \"Bearer None\"},\n0349:             )\n0350:             if response.status_code == 200:\n0351:                 # A small extra sleep to ensure server is fully up.\n0352:                 time.sleep(5)\n0353:                 break"
+  },
+  {
+   "span_id": "s8",
+   "path": "tests/clients/test_lm_local.py",
+   "start_line": 41,
+   "end_line": 64,
+   "excerpt": "0041: def test_command_construction_prevents_injection(mock_wait, mock_port, mock_popen, mock_thread):\n0042:     mock_port.return_value = 8000\n0043:     mock_process = mock.Mock()\n0044:     mock_process.pid = 12345\n0045:     mock_process.stdout.readline.return_value = \"\"\n0046:     mock_process.poll.return_value = 0\n0047:     mock_popen.return_value = mock_process\n0048: \n0049:     lm = mock.Mock(spec=[])\n0050:     lm.model = \"model --trust-remote-code\"\n0051:     lm.launch_kwargs = {}\n0052:     lm.kwargs = {}\n0053: \n0054:     with mock.patch.dict(\"sys.modules\", {\"sglang\": mock.Mock(), \"sglang.utils\": mock.Mock()}):\n0055:         LocalProvider.launch(lm, launch_kwargs={})\n0056: \n0057:         assert mock_popen.called\n0058:         call_args = mock_popen.call_args\n0059:         command = call_args[0][0]\n0060: \n0061:         assert isinstance(command, list)\n0062:         assert \"--model-path\" in command\n0063:         model_index = command.index(\"--model-path\")\n0064:         assert command[model_index + 1] == \"model --trust-remote-code\""
+  },
+  {
+   "span_id": "s9",
+   "path": "tests/clients/test_lm_local.py",
+   "start_line": 11,
+   "end_line": 34,
+   "excerpt": "0011: def test_command_with_spaces_in_path(mock_wait, mock_port, mock_popen, mock_thread):\n0012:     mock_port.return_value = 8000\n0013:     mock_process = mock.Mock()\n0014:     mock_process.pid = 12345\n0015:     mock_process.stdout.readline.return_value = \"\"\n0016:     mock_process.poll.return_value = 0\n0017:     mock_popen.return_value = mock_process\n0018: \n0019:     lm = mock.Mock(spec=[])\n0020:     lm.model = \"/path/to/my models/llama\"\n0021:     lm.launch_kwargs = {}\n0022:     lm.kwargs = {}\n0023: \n0024:     with mock.patch.dict(\"sys.modules\", {\"sglang\": mock.Mock(), \"sglang.utils\": mock.Mock()}):\n0025:         LocalProvider.launch(lm, launch_kwargs={})\n0026: \n0027:         assert mock_popen.called\n0028:         call_args = mock_popen.call_args\n0029:         command = call_args[0][0]\n0030: \n0031:         assert isinstance(command, list)\n0032:         assert \"--model-path\" in command\n0033:         model_index = command.index(\"--model-path\")\n0034:         assert command[model_index + 1] == \"/path/to/my models/llama\""
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Covers the local-model launch path rather than a pre-hosted endpoint.",
+ "source_index": 6,
+ "smalldspy_scope": false
+}

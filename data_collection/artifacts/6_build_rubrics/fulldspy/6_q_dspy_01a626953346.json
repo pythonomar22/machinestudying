@@ -1,0 +1,94 @@
+{
+ "id": "dspy_01a626953346",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I compiled with an instruction optimizer that says it also improved an output prefix, but I cannot find that prefix in the prompts I inspect now. What does DSPy actually mutate, and which of those mutations still affect the built-in prompt builders?",
+ "gold_answer": "These optimizers mutate signature objects, not a hidden template. In this repo, COPRO rewrites the signature instructions and also writes a new `prefix` into the last output field's metadata. GEPA rewrites instructions only. The built-in chat/json prompt builders render visible field headers from field names plus descriptions/type info, not from `prefix`, so an optimized prefix survives in metadata and saved state but does not appear in today's rendered prompt unless you write an adapter that reads it.\n\n```python\nimport dspy\n\nsig = dspy.Signature('question -> answer')\noptimized = sig.with_instructions('Optimized instruction').with_updated_fields(\n    'answer',\n    prefix='Optimized Prefix',\n)\n\nsystem = dspy.ChatAdapter().format_system_message(optimized)\nassert 'Optimized instruction' in system\nassert optimized.output_fields['answer'].json_schema_extra['prefix'] == 'Optimized Prefix'\nassert 'Optimized Prefix' not in system\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "`COPRO.compile` reads the existing `prefix` from the final field's `json_schema_extra` and applies the best candidate by assigning a new signature that changes both the instructions and that field's `prefix`.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "`DspyAdapter.build_program` for GEPA only reassigns matching predictors with `pred.signature.with_instructions(candidate[name])`; it does not perform a corresponding field-prefix update there.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "`ChatAdapter.format_task_description` renders the prompt objective directly from `signature.instructions`, so instruction mutations still affect the built prompt text.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "In the shown `ChatAdapter` field-description and field-structure builders, visible field text is assembled from field names plus helper-derived description/type information (`get_field_description_string` and `translate_field_type`); `get_field_description_string` uses annotations, `desc`, custom type descriptions, and constraints rather than any `prefix`. A prefix-only mutation therefore is not surfaced in those rendered prompt sections.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/copro_optimizer.py",
+   "start_line": 155,
+   "end_line": 157,
+   "excerpt": "0155:             *_, last_key = self._get_signature(predictor).fields.keys()\n0156:             basic_instruction = self._get_signature(predictor).instructions\n0157:             basic_prefix = self._get_signature(predictor).fields[last_key].json_schema_extra[\"prefix\"]"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/copro_optimizer.py",
+   "start_line": 261,
+   "end_line": 268,
+   "excerpt": "0261:                 best_candidate = max(evaluated_candidates[id(p_old)].values(), key=lambda candidate: candidate[\"score\"])\n0262:                 *_, last_key = self._get_signature(p_old).fields.keys()\n0263:                 updated_signature = (\n0264:                     self._get_signature(p_new)\n0265:                     .with_instructions(best_candidate[\"instruction\"])\n0266:                     .with_updated_fields(last_key, prefix=best_candidate[\"prefix\"])\n0267:                 )\n0268:                 self._set_signature(p_new, updated_signature)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/gepa/gepa_utils.py",
+   "start_line": 136,
+   "end_line": 142,
+   "excerpt": "0136:     def build_program(self, candidate: dict[str, str]):\n0137:         new_prog = self.student.deepcopy()\n0138: \n0139:         for name, pred in new_prog.named_predictors():\n0140:             if name in candidate:\n0141:                 pred.signature = pred.signature.with_instructions(candidate[name])\n0142: "
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 139,
+   "end_line": 142,
+   "excerpt": "0139:     def format_task_description(self, signature: type[Signature]) -> str:\n0140:         instructions = textwrap.dedent(signature.instructions)\n0141:         objective = (\"\\n\" + \" \" * 8).join([\"\"] + instructions.splitlines())\n0142:         return f\"In adhering to this structure, your objective is: {objective}\""
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 111,
+   "end_line": 137,
+   "excerpt": "0111:     def format_field_description(self, signature: type[Signature]) -> str:\n0112:         return (\n0113:             f\"Your input fields are:\\n{get_field_description_string(signature.input_fields)}\\n\"\n0114:             f\"Your output fields are:\\n{get_field_description_string(signature.output_fields)}\"\n0115:         )\n0116: \n0117:     def format_field_structure(self, signature: type[Signature]) -> str:\n0118:         \"\"\"\n0119:         `ChatAdapter` requires input and output fields to be in their own sections, with section header using markers\n0120:         `[[ ## field_name ## ]]`. An arbitrary field `completed` ([[ ## completed ## ]]) is added to the end of the\n0121:         output fields section to indicate the end of the output fields.\n0122:         \"\"\"\n0123:         parts = []\n0124:         parts.append(\"All interactions will be structured in the following way, with the appropriate values filled in.\")\n0125: \n0126:         def format_signature_fields_for_instructions(fields: dict[str, FieldInfo]):\n0127:             return self.format_field_with_value(\n0128:                 fields_with_values={\n0129:                     FieldInfoWithName(name=field_name, info=field_info): translate_field_type(field_name, field_info)\n0130:                     for field_name, field_info in fields.items()\n0131:                 },\n0132:             )\n0133: \n0134:         parts.append(format_signature_fields_for_instructions(signature.input_fields))\n0135:         parts.append(format_signature_fields_for_instructions(signature.output_fields))\n0136:         parts.append(\"[[ ## completed ## ]]\\n\")\n0137:         return \"\\n\\n\".join(parts).strip()"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/adapters/utils.py",
+   "start_line": 225,
+   "end_line": 242,
+   "excerpt": "0225: def get_field_description_string(fields: dict) -> str:\n0226:     field_descriptions = []\n0227:     for idx, (k, v) in enumerate(fields.items()):\n0228:         field_message = f\"{idx + 1}. `{k}`\"\n0229:         field_message += f\" ({get_annotation_name(v.annotation)})\"\n0230:         desc = v.json_schema_extra[\"desc\"] if v.json_schema_extra[\"desc\"] != f\"${{{k}}}\" else \"\"\n0231: \n0232:         custom_types = DspyType.extract_custom_type_from_annotation(v.annotation)\n0233:         for custom_type in custom_types:\n0234:             if len(custom_type.description()) > 0:\n0235:                 desc += f\"\\n    Type description of {get_annotation_name(custom_type)}: {custom_type.description()}\"\n0236: \n0237:         field_message += f\": {desc}\"\n0238:         field_message += (\n0239:             f\"\\nConstraints: {v.json_schema_extra['constraints']}\" if v.json_schema_extra.get(\"constraints\") else \"\"\n0240:         )\n0241:         field_descriptions.append(field_message)\n0242:     return \"\\n\".join(field_descriptions).strip()"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Connects optimizer mutations to the current adapter rendering path.",
+ "source_index": 4,
+ "smalldspy_scope": false
+}

@@ -336,7 +336,7 @@ first attempt (no retries, no derailments).
 |---|---|---|---|
 | 1 | (IDs like `dspy_3a5e956e4421` appear in the released bundles; scheme unpublished) | question ID scheme | `dspy_` + first 12 hex of sha256(question text) — matches the released format, deterministic |
 | 2 | "numbered file dumps" | the dump format | `### <path>` header + `0006: <line>` rows, 1-indexed 4-digit zero-pad — matching the excerpt format observable in the released bundles |
-| 3 | output schema unpublished | the builder's schema | `rubric` (claim_id, claim_type, weight, statement, span_ids) + `evidence` (span_id, path, start_line, end_line) — exactly the released-bundle fields; `excerpt` is computed BY US from the checkout after validation, never copied from model output |
+| 3 | output schema unpublished | the builder's schema | `rubric` (claim_id, claim_type, weight, statement, span_ids) + `evidence` (span_id, path, start_line, end_line) — exactly the released-bundle fields; `excerpt` is computed BY US from the checkout after validation, never copied from model output; claim/span IDs deterministically renamed to the released `c1..`/`s1..` style |
 | 4 | A.4 confines the builder to provided inputs; A.1 stages 3a/3b/5 name the Codex harness | the harness | same `codex exec` (gpt-5.4, xhigh, read-only, scope checkout) for consistency; the sandbox holds the same pinned checkout the dumps come from, so stray reading cannot introduce contradictory content |
 | 5 | "most weight assigned to core claims" | a checkable threshold | validation requires core weight > 50 (released rows carry 60–92) |
 | 6 | (nothing) | validation & retry | deterministic checks (weights sum 100, core majority, span IDs defined/unique, span paths ⊆ provided files, line ranges within the file and ≤300 lines), ≤1 corrective re-run; span definitions never cited by a claim are dropped |
@@ -346,3 +346,21 @@ Output records match the released-bundle shape (id, topic, question,
 gold_answer, rubric, evidence-with-excerpts) plus our bookkeeping
 (difficulty, note, source_index, smalldspy_scope). Both scopes run, one
 rubric session per finalist (32 + 32).
+
+**Stage 4 result (2026-07-20):** all 64 rubric bundles built, every codex
+session valid on its first attempt (no retries, no failures). Audit
+against the released-bundle invariants — all pass in both scopes:
+- weights sum to exactly 100 everywhere; core share min 70 / median 90 /
+  max 100 (released rows: 60–92). A few rubrics are all-core with no
+  supporting claims — A.4 does not mandate supporting claims, but this
+  runs slightly hotter than the released rows.
+- claims per rubric 3–7 (median 5), matching the released 5–6 register.
+- spans: 204 (fulldspy, 46 distinct files) / 179 (smalldspy, 24 distinct
+  files); lengths median 13 lines, max 108 — inside the paper's 300 cap
+  (released max 74).
+- every excerpt is byte-identical to recomputation from the pinned
+  checkout (they are generated from it, never taken from model output),
+  claim/span IDs are canonical `c1..`/`s1..`, and no rubric cites an
+  undefined or unused span.
+Records were rebuilt once from the archived raw last-messages after
+adding ID normalization (salvage path; zero additional codex sessions).

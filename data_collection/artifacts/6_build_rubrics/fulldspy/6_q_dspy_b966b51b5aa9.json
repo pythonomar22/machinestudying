@@ -1,0 +1,111 @@
+{
+ "id": "dspy_b966b51b5aa9",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm not trying to thread a whole batch; I want to `await` many DSPy program calls inside my own async code. What does DSPy's async wrapper preserve, and what actually limits its concurrency?",
+ "gold_answer": "`dspy.asyncify` captures the current DSPy context at call time, runs the wrapped callable in worker threads, and restores those overrides inside the worker before invoking the program. Concurrency is throttled by a process-global `CapacityLimiter` whose size tracks `dspy.settings.async_max_workers` (default `8`). The limiter object is reused across calls; only its token count changes when the setting changes.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Each invocation of the function returned by `asyncify` copies the caller's current `thread_local_overrides`, so DSPy configuration is captured at call time rather than only when the wrapper is created.",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The worker-side wrapper merges the captured overrides onto the worker thread's existing overrides for the `program(*a, **kw)` call and resets the prior override state in a `finally` block afterward.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "`asyncify` executes the program by awaiting an `asyncer.asyncify(wrapped_program, ...)` callable, matching the source's worker-thread wrapper model instead of running the program inline in the async function body.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Concurrency is gated by the `CapacityLimiter` returned by `get_limiter()`, and `get_limiter()` keeps a module-level singleton limiter whose `total_tokens` is updated to match `dspy.settings.async_max_workers` instead of constructing a new limiter each time.",
+   "span_ids": [
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Tests pin the default limiter size at 8, require the same limiter object to be reused across `async_max_workers` changes, and check that elapsed time scales with `number_of_tasks / capacity` when many asyncified calls are awaited together.",
+   "span_ids": [
+    "s6",
+    "s7"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/utils/asyncify.py",
+   "start_line": 30,
+   "end_line": 42,
+   "excerpt": "0030: def asyncify(program: \"Module\") -> Callable[[Any, Any], Awaitable[Any]]:\n0031:     \"\"\"\n0032:     Wraps a DSPy program so that it can be called asynchronously. This is useful for running a\n0033:     program in parallel with another task (e.g., another DSPy program).\n0034: \n0035:     This implementation propagates the current thread's configuration context to the worker thread.\n0036: \n0037:     Args:\n0038:         program: The DSPy program to be wrapped for asynchronous execution.\n0039: \n0040:     Returns:\n0041:         An async function: An async function that, when awaited, runs the program in a worker thread.\n0042:             The current thread's configuration context is inherited for each call."
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/utils/asyncify.py",
+   "start_line": 45,
+   "end_line": 50,
+   "excerpt": "0045:     async def async_program(*args, **kwargs) -> Any:\n0046:         # Capture the current overrides at call-time.\n0047:         from dspy.dsp.utils.settings import thread_local_overrides\n0048: \n0049:         parent_overrides = thread_local_overrides.get().copy()\n0050: "
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/utils/asyncify.py",
+   "start_line": 51,
+   "end_line": 59,
+   "excerpt": "0051:         def wrapped_program(*a, **kw):\n0052:             from dspy.dsp.utils.settings import thread_local_overrides\n0053: \n0054:             original_overrides = thread_local_overrides.get()\n0055:             token = thread_local_overrides.set({**original_overrides, **parent_overrides.copy()})\n0056:             try:\n0057:                 return program(*a, **kw)\n0058:             finally:\n0059:                 thread_local_overrides.reset(token)"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/utils/asyncify.py",
+   "start_line": 61,
+   "end_line": 63,
+   "excerpt": "0061:         # Create a fresh asyncified callable each time, ensuring the latest context is used.\n0062:         call_async = asyncer.asyncify(wrapped_program, abandon_on_cancel=True, limiter=get_limiter())\n0063:         return await call_async(*args, **kwargs)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/utils/asyncify.py",
+   "start_line": 12,
+   "end_line": 27,
+   "excerpt": "0012: def get_async_max_workers():\n0013:     import dspy\n0014: \n0015:     return dspy.settings.async_max_workers\n0016: \n0017: \n0018: def get_limiter():\n0019:     async_max_workers = get_async_max_workers()\n0020: \n0021:     global _limiter\n0022:     if _limiter is None:\n0023:         _limiter = CapacityLimiter(async_max_workers)\n0024:     elif _limiter.total_tokens != async_max_workers:\n0025:         _limiter.total_tokens = async_max_workers\n0026: \n0027:     return _limiter"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/utils/test_asyncify.py",
+   "start_line": 12,
+   "end_line": 20,
+   "excerpt": "0012: async def test_async_limiter():\n0013:     limiter = get_limiter()\n0014:     assert limiter.total_tokens == 8, \"Default async capacity should be 8\"\n0015:     assert get_limiter() == limiter, \"AsyncLimiter should be a singleton\"\n0016: \n0017:     with dspy.context(async_max_workers=16):\n0018:         assert get_limiter() == limiter, \"AsyncLimiter should be a singleton\"\n0019:         assert get_limiter().total_tokens == 16, \"Async capacity should be 16\"\n0020:         assert get_limiter() == get_limiter(), \"AsyncLimiter should be a singleton\""
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/utils/test_asyncify.py",
+   "start_line": 31,
+   "end_line": 52,
+   "excerpt": "0031:     async def run_n_tasks(n: int, wait: float):\n0032:         await asyncio.gather(*[ask_the_question(wait) for _ in range(n)])\n0033: \n0034:     async def verify_asyncify(capacity: int, number_of_tasks: int, wait: float = 0.5):\n0035:         with dspy.context(async_max_workers=capacity):\n0036:             start = time()\n0037:             await run_n_tasks(number_of_tasks, wait)\n0038:             end = time()\n0039:             total_time = end - start\n0040: \n0041:         # If asyncify is working correctly, the total time should be less than the total number of loops\n0042:         # `(number_of_tasks / capacity)` times wait time, plus the computational overhead. The lower bound should\n0043:         # be `math.floor(number_of_tasks * 1.0 / capacity) * wait` because there are more than\n0044:         # `math.floor(number_of_tasks * 1.0 / capacity)` loops.\n0045:         lower_bound = math.floor(number_of_tasks * 1.0 / capacity) * wait\n0046:         upper_bound = math.ceil(number_of_tasks * 1.0 / capacity) * wait + 2 * wait  # 2*wait for buffer\n0047: \n0048:         assert lower_bound < total_time < upper_bound\n0049: \n0050:     await verify_asyncify(4, 10)\n0051:     await verify_asyncify(8, 15)\n0052:     await verify_asyncify(8, 30)"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Good async/concurrency question combining context propagation with the global worker cap.",
+ "source_index": 11,
+ "smalldspy_scope": false
+}

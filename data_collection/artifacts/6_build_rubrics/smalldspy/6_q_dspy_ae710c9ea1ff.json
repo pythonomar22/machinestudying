@@ -1,0 +1,79 @@
+{
+ "id": "dspy_ae710c9ea1ff",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "My OpenAI-compatible server often ignores DSPy’s bracketed field format but can emit valid JSON. If I stay on the default adapter, will DSPy automatically recover from that mismatch, and what are the exceptions?",
+ "gold_answer": "Usually yes. The default `ChatAdapter` retries the whole call through `JSONAdapter` when the chat-format path fails. It does not do that for `ContextWindowExceededError`, when the adapter is already `JSONAdapter`, or when JSON fallback is disabled. Because the retry is a second adapter invocation, it means a second LM call.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The default ChatAdapter has JSON fallback enabled by default and, if its normal call path raises, it retries the full adapter call by invoking JSONAdapter with the same LM, kwargs, signature, demos, and inputs.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "ChatAdapter.parse only recognizes output fields introduced by the `[[ ## field ## ]]` header pattern and raises AdapterParseError when a required output field is missing or a field value cannot be parsed.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The automatic JSON fallback is explicitly bypassed for ContextWindowExceededError, when the adapter instance is already JSONAdapter, or when use_json_adapter_fallback is disabled; in those cases the original exception is re-raised.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 20,
+   "statement": "JSONAdapter.parse can accept JSON-object responses by loading or repairing JSON, optionally extracting a JSON object substring, then filtering to declared output fields, coercing values to the signature annotations, and requiring that all output fields be present.",
+   "span_ids": [
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 28,
+   "end_line": 55,
+   "excerpt": "0028: class ChatAdapter(Adapter):\n0029:     \"\"\"Default Adapter for most language models.\n0030: \n0031:     The ChatAdapter formats DSPy signatures into a format compatible with most language models.\n0032:     It uses delimiter patterns like `[[ ## field_name ## ]]` to clearly separate input and output fields in\n0033:     the message content.\n0034: \n0035:     Key features:\n0036:         - Structures inputs and outputs using field header markers for clear field delineation.\n0037:         - Provides automatic fallback to JSONAdapter if the chat format fails.\n0038:     \"\"\"\n0039: \n0040:     def __init__(\n0041:         self,\n0042:         callbacks: list[BaseCallback] | None = None,\n0043:         use_native_function_calling: bool = False,\n0044:         native_response_types: list[type[type]] | None = None,\n0045:         use_json_adapter_fallback: bool = True,\n0046:     ):\n0047:         \"\"\"\n0048:         Args:\n0049:             callbacks: List of callback functions to execute during adapter methods.\n0050:             use_native_function_calling: Whether to enable native function calling capabilities.\n0051:             native_response_types: List of output field types handled by native LM features.\n0052:             use_json_adapter_fallback: Whether to automatically fallback to JSONAdapter if the ChatAdapter fails.\n0053:                 If True, when an error occurs (except ContextWindowExceededError), the adapter will retry using\n0054:                 JSONAdapter. Defaults to True.\n0055:         \"\"\""
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 63,
+   "end_line": 85,
+   "excerpt": "0063:     def __call__(\n0064:         self,\n0065:         lm: BaseLM,\n0066:         lm_kwargs: dict[str, Any],\n0067:         signature: type[Signature],\n0068:         demos: list[dict[str, Any]],\n0069:         inputs: dict[str, Any],\n0070:     ) -> list[dict[str, Any]]:\n0071:         try:\n0072:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)\n0073:         except Exception as e:\n0074:             # fallback to JSONAdapter\n0075:             from dspy.adapters.json_adapter import JSONAdapter\n0076: \n0077:             if (\n0078:                 isinstance(e, ContextWindowExceededError)\n0079:                 or isinstance(self, JSONAdapter)\n0080:                 or not self.use_json_adapter_fallback\n0081:             ):\n0082:                 # On context window exceeded error, already using JSONAdapter, or use_json_adapter_fallback is False\n0083:                 # we don't want to retry with a different adapter. Raise the original error instead of the fallback error.\n0084:                 raise e\n0085:             return JSONAdapter()(lm, lm_kwargs, signature, demos, inputs)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 211,
+   "end_line": 246,
+   "excerpt": "0211:     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:\n0212:         sections = [(None, [])]\n0213: \n0214:         for line in completion.splitlines():\n0215:             match = field_header_pattern.match(line.strip())\n0216:             if match:\n0217:                 # If the header pattern is found, split the rest of the line as content\n0218:                 header = match.group(1)\n0219:                 remaining_content = line[match.end() :].strip()\n0220:                 sections.append((header, [remaining_content] if remaining_content else []))\n0221:             else:\n0222:                 sections[-1][1].append(line)\n0223: \n0224:         sections = [(k, \"\\n\".join(v).strip()) for k, v in sections]\n0225: \n0226:         fields = {}\n0227:         for k, v in sections:\n0228:             if (k not in fields) and (k in signature.output_fields):\n0229:                 try:\n0230:                     fields[k] = parse_value(v, signature.output_fields[k].annotation)\n0231:                 except Exception as e:\n0232:                     raise AdapterParseError(\n0233:                         adapter_name=\"ChatAdapter\",\n0234:                         signature=signature,\n0235:                         lm_response=completion,\n0236:                         message=f\"Failed to parse field {k} with value {v} from the LM response. Error message: {e}\",\n0237:                     )\n0238:         if fields.keys() != signature.output_fields.keys():\n0239:             raise AdapterParseError(\n0240:                 adapter_name=\"ChatAdapter\",\n0241:                 signature=signature,\n0242:                 lm_response=completion,\n0243:                 parsed_result=fields,\n0244:             )\n0245: \n0246:         return fields"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 148,
+   "end_line": 181,
+   "excerpt": "0148:     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:\n0149:         fields = json_repair.loads(completion)\n0150: \n0151:         if not isinstance(fields, dict):\n0152:             pattern = r\"\\{(?:[^{}]|(?R))*\\}\"\n0153:             match = regex.search(pattern, completion, regex.DOTALL)\n0154:             if match:\n0155:                 completion = match.group(0)\n0156:                 fields = json_repair.loads(completion)\n0157: \n0158:         if not isinstance(fields, dict):\n0159:             raise AdapterParseError(\n0160:                 adapter_name=\"JSONAdapter\",\n0161:                 signature=signature,\n0162:                 lm_response=completion,\n0163:                 message=\"LM response cannot be serialized to a JSON object.\",\n0164:             )\n0165: \n0166:         fields = {k: v for k, v in fields.items() if k in signature.output_fields}\n0167: \n0168:         # Attempt to cast each value to type signature.output_fields[k].annotation.\n0169:         for k, v in fields.items():\n0170:             if k in signature.output_fields:\n0171:                 fields[k] = parse_value(v, signature.output_fields[k].annotation)\n0172: \n0173:         if fields.keys() != signature.output_fields.keys():\n0174:             raise AdapterParseError(\n0175:                 adapter_name=\"JSONAdapter\",\n0176:                 signature=signature,\n0177:                 lm_response=completion,\n0178:                 parsed_result=fields,\n0179:             )\n0180: \n0181:         return fields"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Strong backend-compatibility question that is answerable from adapter code alone.",
+ "source_index": 10,
+ "smalldspy_scope": true
+}

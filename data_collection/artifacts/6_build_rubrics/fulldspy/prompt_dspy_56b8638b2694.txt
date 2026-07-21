@@ -1,0 +1,624 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_56b8638b2694`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I want one metric to return both a numeric score and feedback text so I can reuse it for evaluation and for an optimizer that wants critique. Can plain `dspy.Evaluate` aggregate that directly, or do I need to collapse it to a float first?`
+- Gold answer:
+`dspy.Evaluate` can aggregate it directly. The per-example metric object is kept in `results`, and aggregation works because `dspy.Prediction` supports numeric conversion and addition through its `score` field. So a metric can return `dspy.Prediction(score=..., feedback=...)`; `Evaluate` will still compute the overall score, and the feedback remains accessible on each stored metric result.
+
+## Evidence references
+[
+  {
+    "file": "dspy/evaluate/evaluate.py",
+    "symbol": "Evaluate.__call__"
+  },
+  {
+    "file": "dspy/primitives/prediction.py",
+    "symbol": "Prediction.__float__"
+  },
+  {
+    "file": "dspy/primitives/prediction.py",
+    "symbol": "Prediction.__radd__"
+  }
+]
+
+## Full evidence files
+### dspy/evaluate/evaluate.py
+0001: import csv
+0002: import importlib
+0003: import json
+0004: import logging
+0005: import types
+0006: from typing import TYPE_CHECKING, Any, Callable
+0007: 
+0008: if TYPE_CHECKING:
+0009:     import pandas as pd
+0010: 
+0011: import tqdm
+0012: 
+0013: import dspy
+0014: from dspy.primitives.prediction import Prediction
+0015: from dspy.utils.callback import with_callbacks
+0016: from dspy.utils.parallelizer import ParallelExecutor
+0017: 
+0018: try:
+0019:     from IPython.display import HTML
+0020:     from IPython.display import display as display
+0021: 
+0022: except ImportError:
+0023: 
+0024:     def display(obj: Any):
+0025:         """
+0026:         Display the specified Python object in the console.
+0027: 
+0028:         :param obj: The Python object to display.
+0029:         """
+0030:         print(obj)
+0031: 
+0032:     def HTML(x: str) -> str:  # noqa: N802
+0033:         """
+0034:         Obtain the HTML representation of the specified string.
+0035:         """
+0036:         # NB: This method exists purely for code compatibility with the IPython HTML() function in
+0037:         # environments where IPython is not available. In such environments where IPython is not
+0038:         # available, this method will simply return the input string.
+0039:         return x
+0040: 
+0041: 
+0042: # TODO: Counting failures and having a max_failure count. When that is exceeded (also just at the end),
+0043: # we print the number of failures, the first N examples that failed, and the first N exceptions raised.
+0044: 
+0045: logger = logging.getLogger(__name__)
+0046: 
+0047: 
+0048: class EvaluationResult(Prediction):
+0049:     """
+0050:     A class that represents the result of an evaluation.
+0051:     It is a subclass of `dspy.Prediction` that contains the following fields
+0052: 
+0053:     - score: An float value (e.g., 67.30) representing the overall performance
+0054:     - results: a list of (example, prediction, score) tuples for each example in devset
+0055:     """
+0056: 
+0057:     def __init__(self, score: float, results: list[tuple["dspy.Example", "dspy.Example", Any]]):
+0058:         super().__init__(score=score, results=results)
+0059: 
+0060:     def __repr__(self):
+0061:         return f"EvaluationResult(score={self.score}, results=<list of {len(self.results)} results>)"
+0062: 
+0063: 
+0064: class Evaluate:
+0065:     """DSPy Evaluate class.
+0066: 
+0067:     This class is used to evaluate the performance of a DSPy program. Users need to provide a evaluation dataset and
+0068:     a metric function in order to use this class. This class supports parallel evaluation on the provided dataset.
+0069:     """
+0070: 
+0071:     def __init__(
+0072:         self,
+0073:         *,
+0074:         devset: list["dspy.Example"],
+0075:         metric: Callable | None = None,
+0076:         num_threads: int | None = None,
+0077:         display_progress: bool = False,
+0078:         display_table: bool | int = False,
+0079:         max_errors: int | None = None,
+0080:         provide_traceback: bool | None = None,
+0081:         failure_score: float = 0.0,
+0082:         save_as_csv: str | None = None,
+0083:         save_as_json: str | None = None,
+0084:         **kwargs,
+0085:     ):
+0086:         """
+0087:         Args:
+0088:             devset (list[dspy.Example]): the evaluation dataset.
+0089:             metric (Callable): The metric function to use for evaluation.
+0090:             num_threads (Optional[int]): The number of threads to use for parallel evaluation.
+0091:             display_progress (bool): Whether to display progress during evaluation.
+0092:             display_table (Union[bool, int]): Whether to display the evaluation results in a table.
+0093:                 If a number is passed, the evaluation results will be truncated to that number before displayed.
+0094:             max_errors (Optional[int]): The maximum number of errors to allow before
+0095:                 stopping evaluation. If ``None``, inherits from ``dspy.settings.max_errors``.
+0096:             provide_traceback (Optional[bool]): Whether to provide traceback information during evaluation.
+0097:             failure_score (float): The default score to use if evaluation fails due to an exception.
+0098:             save_as_csv (Optional[str]): The file name where the csv will be saved.
+0099:             save_as_json (Optional[str]): The file name where the json will be saved.
+0100: 
+0101:         """
+0102:         self.devset = devset
+0103:         self.metric = metric
+0104:         self.num_threads = num_threads
+0105:         self.display_progress = display_progress
+0106:         self.display_table = display_table
+0107:         self.max_errors = max_errors
+0108:         self.provide_traceback = provide_traceback
+0109:         self.failure_score = failure_score
+0110:         self.save_as_csv = save_as_csv
+0111:         self.save_as_json = save_as_json
+0112: 
+0113:         if "return_outputs" in kwargs:
+0114:             raise ValueError("`return_outputs` is no longer supported. Results are always returned inside the `results` field of the `EvaluationResult` object.")
+0115: 
+0116:     @with_callbacks
+0117:     def __call__(
+0118:         self,
+0119:         program: "dspy.Module",
+0120:         metric: Callable | None = None,
+0121:         devset: list["dspy.Example"] | None = None,
+0122:         num_threads: int | None = None,
+0123:         display_progress: bool | None = None,
+0124:         display_table: bool | int | None = None,
+0125:         callback_metadata: dict[str, Any] | None = None,
+0126:         save_as_csv: str | None = None,
+0127:         save_as_json: str | None = None,
+0128:     ) -> EvaluationResult:
+0129:         """
+0130:         Args:
+0131:             program (dspy.Module): The DSPy program to evaluate.
+0132:             metric (Callable): The metric function to use for evaluation. if not provided, use `self.metric`.
+0133:             devset (list[dspy.Example]): the evaluation dataset. if not provided, use `self.devset`.
+0134:             num_threads (Optional[int]): The number of threads to use for parallel evaluation. if not provided, use
+0135:                 `self.num_threads`.
+0136:             display_progress (bool): Whether to display progress during evaluation. if not provided, use
+0137:                 `self.display_progress`.
+0138:             display_table (Union[bool, int]): Whether to display the evaluation results in a table. if not provided, use
+0139:                 `self.display_table`. If a number is passed, the evaluation results will be truncated to that number before displayed.
+0140:             callback_metadata (dict): Metadata to be used for evaluate callback handlers.
+0141: 
+0142:         Returns:
+0143:             The evaluation results are returned as a dspy.EvaluationResult object containing the following attributes:
+0144: 
+0145:             - score: A float percentage score (e.g., 67.30) representing overall performance
+0146: 
+0147:             - results: a list of (example, prediction, score) tuples for each example in devset
+0148:         """
+0149:         metric = metric if metric is not None else self.metric
+0150:         devset = devset if devset is not None else self.devset
+0151:         num_threads = num_threads if num_threads is not None else self.num_threads
+0152:         display_progress = display_progress if display_progress is not None else self.display_progress
+0153:         display_table = display_table if display_table is not None else self.display_table
+0154:         save_as_csv = save_as_csv if save_as_csv is not None else self.save_as_csv
+0155:         save_as_json = save_as_json if save_as_json is not None else self.save_as_json
+0156: 
+0157:         if callback_metadata:
+0158:             logger.debug(f"Evaluate is called with callback metadata: {callback_metadata}")
+0159: 
+0160:         tqdm.tqdm._instances.clear()
+0161: 
+0162:         executor = ParallelExecutor(
+0163:             num_threads=num_threads,
+0164:             disable_progress_bar=not display_progress,
+0165:             max_errors=(self.max_errors if self.max_errors is not None else dspy.settings.max_errors),
+0166:             provide_traceback=self.provide_traceback,
+0167:             compare_results=True,
+0168:         )
+0169: 
+0170:         def process_item(example):
+0171:             prediction = program(**example.inputs())
+0172:             score = metric(example, prediction)
+0173:             return prediction, score
+0174: 
+0175:         results = executor.execute(process_item, devset)
+0176:         assert len(devset) == len(results)
+0177: 
+0178:         results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]
+0179:         results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results, strict=False)]
+0180:         ncorrect, ntotal = sum(score for *_, score in results), len(devset)
+0181: 
+0182:         logger.info(f"Average Metric: {ncorrect} / {ntotal} ({round(100 * ncorrect / ntotal, 1)}%)")
+0183: 
+0184:         if display_table:
+0185:             if importlib.util.find_spec("pandas") is not None:
+0186:                 # Rename the 'correct' column to the name of the metric object
+0187:                 metric_name = metric.__name__ if isinstance(metric, types.FunctionType) else metric.__class__.__name__
+0188:                 # Construct a pandas DataFrame from the results
+0189:                 result_df = self._construct_result_table(results, metric_name)
+0190: 
+0191:                 self._display_result_table(result_df, display_table, metric_name)
+0192:             else:
+0193:                 logger.warning("Skipping table display since `pandas` is not installed.")
+0194: 
+0195:         if save_as_csv:
+0196:             metric_name = (
+0197:                 metric.__name__
+0198:                 if isinstance(metric, types.FunctionType)
+0199:                 else metric.__class__.__name__
+0200:             )
+0201:             data = self._prepare_results_output(results, metric_name)
+0202: 
+0203:             with open(save_as_csv, "w", newline="") as csvfile:
+0204:                 fieldnames = data[0].keys()
+0205:                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+0206: 
+0207:                 writer.writeheader()
+0208:                 for row in data:
+0209:                     writer.writerow(row)
+0210:         if save_as_json:
+0211:             metric_name = (
+0212:                 metric.__name__
+0213:                 if isinstance(metric, types.FunctionType)
+0214:                 else metric.__class__.__name__
+0215:             )
+0216:             data = self._prepare_results_output(results, metric_name)
+0217:             with open(
+0218:                     save_as_json,
+0219:                     "w",
+0220:             ) as f:
+0221:                 json.dump(data, f)
+0222: 
+0223:         return EvaluationResult(
+0224:             score=round(100 * ncorrect / ntotal, 2),
+0225:             results=results,
+0226:         )
+0227: 
+0228:     @staticmethod
+0229:     def _prepare_results_output(
+0230:             results: list[tuple["dspy.Example", "dspy.Example", Any]], metric_name: str
+0231:     ):
+0232:         return [
+0233:             (
+0234:                 merge_dicts(example, prediction) | {metric_name: score}
+0235:                 if prediction_is_dictlike(prediction)
+0236:                 else example.toDict() | {"prediction": prediction, metric_name: score}
+0237:             )
+0238:             for example, prediction, score in results
+0239:         ]
+0240: 
+0241:     def _construct_result_table(
+0242:         self, results: list[tuple["dspy.Example", "dspy.Example", Any]], metric_name: str
+0243:     ) -> "pd.DataFrame":
+0244:         """
+0245:         Construct a pandas DataFrame from the specified result list.
+0246:         Let's not try to change the name of this method as it may be patched by external tracing tools.
+0247: 
+0248:         Args:
+0249:             results: The list of results to construct the result DataFrame from.
+0250:             metric_name: The name of the metric used for evaluation.
+0251: 
+0252:         Returns:
+0253:             The constructed pandas DataFrame.
+0254:         """
+0255:         import pandas as pd
+0256: 
+0257:         data = self._prepare_results_output(results, metric_name)
+0258: 
+0259:         # Truncate every cell in the DataFrame (DataFrame.applymap was renamed to DataFrame.map in Pandas 2.1.0)
+0260:         result_df = pd.DataFrame(data)
+0261:         result_df = result_df.map(truncate_cell) if hasattr(result_df, "map") else result_df.applymap(truncate_cell)
+0262: 
+0263:         return result_df.rename(columns={"correct": metric_name})
+0264: 
+0265:     def _display_result_table(self, result_df: "pd.DataFrame", display_table: bool | int, metric_name: str):
+0266:         """
+0267:         Display the specified result DataFrame in a table format.
+0268: 
+0269:         Args:
+0270:             result_df: The result DataFrame to display.
+0271:             display_table: Whether to display the evaluation results in a table.
+0272:                 If a number is passed, the evaluation results will be truncated to that number before displayed.
+0273:             metric_name: The name of the metric used for evaluation.
+0274:         """
+0275:         if isinstance(display_table, bool):
+0276:             df_to_display = result_df.copy()
+0277:             truncated_rows = 0
+0278:         else:
+0279:             df_to_display = result_df.head(display_table).copy()
+0280:             truncated_rows = len(result_df) - display_table
+0281: 
+0282:         df_to_display = stylize_metric_name(df_to_display, metric_name)
+0283: 
+0284:         display_dataframe(df_to_display)
+0285: 
+0286:         if truncated_rows > 0:
+0287:             # Simplified message about the truncated rows
+0288:             message = f"""
+0289:             <div style='
+0290:                 text-align: center;
+0291:                 font-size: 16px;
+0292:                 font-weight: bold;
+0293:                 color: #555;
+0294:                 margin: 10px 0;'>
+0295:                 ... {truncated_rows} more rows not displayed ...
+0296:             </div>
+0297:             """
+0298:             display(HTML(message))
+0299: 
+0300: 
+0301: def prediction_is_dictlike(prediction):
+0302:     # Downstream logic for displaying dictionary-like predictions depends solely on the predictions
+0303:     # having a method called `items()` for iterating through key/value pairs
+0304:     return hasattr(prediction, "items") and callable(prediction.items)
+0305: 
+0306: 
+0307: def merge_dicts(d1, d2) -> dict:
+0308:     # Convert to dict if objects have toDict method (e.g., Example objects)
+0309:     if hasattr(d1, "toDict"):
+0310:         d1 = d1.toDict()
+0311:     if hasattr(d2, "toDict"):
+0312:         d2 = d2.toDict()
+0313: 
+0314:     merged = {}
+0315:     for k, v in d1.items():
+0316:         if k in d2:
+0317:             merged[f"example_{k}"] = v
+0318:         else:
+0319:             merged[k] = v
+0320: 
+0321:     for k, v in d2.items():
+0322:         if k in d1:
+0323:             merged[f"pred_{k}"] = v
+0324:         else:
+0325:             merged[k] = v
+0326: 
+0327:     return merged
+0328: 
+0329: 
+0330: def truncate_cell(content) -> str:
+0331:     """Truncate content of a cell to 25 words."""
+0332:     words = str(content).split()
+0333:     if len(words) > 25:
+0334:         return " ".join(words[:25]) + "..."
+0335:     return content
+0336: 
+0337: 
+0338: def stylize_metric_name(df: "pd.DataFrame", metric_name: str) -> "pd.DataFrame":
+0339:     """
+0340:     Stylize the cell contents of a pandas DataFrame corresponding to the specified metric name.
+0341: 
+0342:     :param df: The pandas DataFrame for which to stylize cell contents.
+0343:     :param metric_name: The name of the metric for which to stylize DataFrame cell contents.
+0344:     """
+0345:     def format_metric(x):
+0346:         if isinstance(x, float):
+0347:             return f"✔️ [{x:.3f}]"
+0348:         elif x is not None:
+0349:             return f"✔️ [{x}]"
+0350:         else:
+0351:             return ""
+0352:     df[metric_name] = df[metric_name].apply(format_metric)
+0353:     return df
+0354: 
+0355: 
+0356: def display_dataframe(df: "pd.DataFrame"):
+0357:     """
+0358:     Display the specified Pandas DataFrame in the console.
+0359: 
+0360:     :param df: The Pandas DataFrame to display.
+0361:     """
+0362:     import pandas as pd
+0363: 
+0364:     if is_in_ipython_notebook_environment():
+0365:         display(configure_dataframe_for_ipython_notebook_display(df))
+0366:     else:
+0367:         # Pretty print the DataFrame to the console
+0368:         with pd.option_context(
+0369:             "display.max_rows", None, "display.max_columns", None
+0370:         ):  # more options can be specified also
+0371:             print(df)
+0372: 
+0373: 
+0374: def configure_dataframe_for_ipython_notebook_display(df: "pd.DataFrame") -> "pd.DataFrame":
+0375:     """Set various pandas display options for DataFrame in an IPython notebook environment."""
+0376:     import pandas as pd
+0377: 
+0378:     pd.options.display.max_colwidth = 70
+0379:     return df
+0380: 
+0381: 
+0382: def is_in_ipython_notebook_environment():
+0383:     """
+0384:     Check if the current environment is an IPython notebook environment.
+0385: 
+0386:     :return: True if the current environment is an IPython notebook environment, False otherwise.
+0387:     """
+0388:     try:
+0389:         from IPython import get_ipython
+0390: 
+0391:         # This is a best-effort check to see if we are in an IPython notebook environment
+0392:         return "IPKernelApp" in getattr(get_ipython(), "config", {})
+0393:     except ImportError:
+0394:         return False
+0395: 
+0396: 
+0397: # FIXME: TODO: The merge_dicts stuff above is way too quick and dirty.
+0398: # TODO: the display_table can't handle False but can handle 0!
+0399: # Not sure how it works with True exactly, probably fails too.
+
+### dspy/primitives/prediction.py
+0001: from dspy.primitives.example import Example
+0002: 
+0003: 
+0004: class Prediction(Example):
+0005:     """A prediction object that contains the output of a DSPy module.
+0006:     
+0007:     Prediction inherits from Example.
+0008:     
+0009:     To allow feedback-augmented scores, Prediction supports comparison operations
+0010:     (<, >, <=, >=) for Predictions with a `score` field. The comparison operations
+0011:     compare the 'score' values as floats. For equality comparison, Predictions are equal
+0012:     if their underlying data stores are equal (inherited from Example).
+0013:     
+0014:     Arithmetic operations (+, /, etc.) are also supported for Predictions with a 'score'
+0015:     field, operating on the score value.
+0016:     """
+0017: 
+0018:     def __init__(self, *args, **kwargs):
+0019:         super().__init__(*args, **kwargs)
+0020: 
+0021:         del self._demos
+0022:         del self._input_keys
+0023: 
+0024:         self._completions = None
+0025:         self._lm_usage = None
+0026: 
+0027:     def get_lm_usage(self):
+0028:         return self._lm_usage
+0029: 
+0030:     def set_lm_usage(self, value):
+0031:         self._lm_usage = value
+0032: 
+0033:     @classmethod
+0034:     def from_completions(cls, list_or_dict, signature=None):
+0035:         obj = cls()
+0036:         obj._completions = Completions(list_or_dict, signature=signature)
+0037:         obj._store = {k: v[0] for k, v in obj._completions.items()}
+0038: 
+0039:         return obj
+0040: 
+0041:     def __repr__(self):
+0042:         store_repr = ",\n    ".join(f"{k}={v!r}" for k, v in self._store.items())
+0043: 
+0044:         if self._completions is None or len(self._completions) == 1:
+0045:             return f"Prediction(\n    {store_repr}\n)"
+0046: 
+0047:         num_completions = len(self._completions)
+0048:         return f"Prediction(\n    {store_repr},\n    completions=Completions(...)\n) ({num_completions-1} completions omitted)"
+0049: 
+0050:     def __str__(self):
+0051:         return self.__repr__()
+0052: 
+0053:     def __float__(self):
+0054:         if "score" not in self._store:
+0055:             raise ValueError("Prediction object does not have a 'score' field to convert to float.")
+0056:         return float(self._store["score"])
+0057: 
+0058:     def __add__(self, other):
+0059:         if isinstance(other, (float, int)):
+0060:             return self.__float__() + other
+0061:         elif isinstance(other, Prediction):
+0062:             return self.__float__() + float(other)
+0063:         raise TypeError(f"Unsupported type for addition: {type(other)}")
+0064: 
+0065:     def __radd__(self, other):
+0066:         if isinstance(other, (float, int)):
+0067:             return other + self.__float__()
+0068:         elif isinstance(other, Prediction):
+0069:             return float(other) + self.__float__()
+0070:         raise TypeError(f"Unsupported type for addition: {type(other)}")
+0071: 
+0072:     def __truediv__(self, other):
+0073:         if isinstance(other, (float, int)):
+0074:             return self.__float__() / other
+0075:         elif isinstance(other, Prediction):
+0076:             return self.__float__() / float(other)
+0077:         raise TypeError(f"Unsupported type for division: {type(other)}")
+0078: 
+0079:     def __rtruediv__(self, other):
+0080:         if isinstance(other, (float, int)):
+0081:             return other / self.__float__()
+0082:         elif isinstance(other, Prediction):
+0083:             return float(other) / self.__float__()
+0084:         raise TypeError(f"Unsupported type for division: {type(other)}")
+0085: 
+0086:     def __lt__(self, other):
+0087:         if isinstance(other, (float, int)):
+0088:             return self.__float__() < other
+0089:         elif isinstance(other, Prediction):
+0090:             return self.__float__() < float(other)
+0091:         raise TypeError(f"Unsupported type for comparison: {type(other)}")
+0092: 
+0093:     def __le__(self, other):
+0094:         if isinstance(other, (float, int)):
+0095:             return self.__float__() <= other
+0096:         elif isinstance(other, Prediction):
+0097:             return self.__float__() <= float(other)
+0098:         raise TypeError(f"Unsupported type for comparison: {type(other)}")
+0099: 
+0100:     def __gt__(self, other):
+0101:         if isinstance(other, (float, int)):
+0102:             return self.__float__() > other
+0103:         elif isinstance(other, Prediction):
+0104:             return self.__float__() > float(other)
+0105:         raise TypeError(f"Unsupported type for comparison: {type(other)}")
+0106: 
+0107:     def __ge__(self, other):
+0108:         if isinstance(other, (float, int)):
+0109:             return self.__float__() >= other
+0110:         elif isinstance(other, Prediction):
+0111:             return self.__float__() >= float(other)
+0112:         raise TypeError(f"Unsupported type for comparison: {type(other)}")
+0113: 
+0114:     @property
+0115:     def completions(self):
+0116:         return self._completions
+0117: 
+0118: 
+0119: class Completions:
+0120:     def __init__(self, list_or_dict, signature=None):
+0121:         self.signature = signature
+0122: 
+0123:         if isinstance(list_or_dict, list):
+0124:             kwargs = {}
+0125:             for arg in list_or_dict:
+0126:                 for k, v in arg.items():
+0127:                     kwargs.setdefault(k, []).append(v)
+0128:         else:
+0129:             kwargs = list_or_dict
+0130: 
+0131:         assert all(isinstance(v, list) for v in kwargs.values()), "All values must be lists"
+0132: 
+0133:         if kwargs:
+0134:             length = len(next(iter(kwargs.values())))
+0135:             assert all(len(v) == length for v in kwargs.values()), "All lists must have the same length"
+0136: 
+0137:         self._completions = kwargs
+0138: 
+0139:     def items(self):
+0140:         return self._completions.items()
+0141: 
+0142:     def __getitem__(self, key):
+0143:         if isinstance(key, int):
+0144:             if key < 0 or key >= len(self):
+0145:                 raise IndexError("Index out of range")
+0146: 
+0147:             return Prediction(**{k: v[key] for k, v in self._completions.items()})
+0148: 
+0149:         return self._completions[key]
+0150: 
+0151:     def __getattr__(self, name):
+0152:         if name == "_completions":
+0153:             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+0154:         if name in self._completions:
+0155:             return self._completions[name]
+0156: 
+0157:         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+0158: 
+0159:     def __len__(self):
+0160:         # Return the length of the list for one of the keys
+0161:         # It assumes all lists have the same length
+0162:         return len(next(iter(self._completions.values())))
+0163: 
+0164:     def __contains__(self, key):
+0165:         return key in self._completions
+0166: 
+0167:     def __repr__(self):
+0168:         items_repr = ",\n    ".join(f"{k}={v!r}" for k, v in self._completions.items())
+0169:         return f"Completions(\n    {items_repr}\n)"
+0170: 
+0171:     def __str__(self):
+0172:         # return str(self._completions)
+0173:         return self.__repr__()
+
+Return JSON that matches the schema exactly.

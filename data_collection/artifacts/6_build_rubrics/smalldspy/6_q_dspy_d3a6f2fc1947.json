@@ -1,0 +1,95 @@
+{
+ "id": "dspy_d3a6f2fc1947",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "When a predictor is using DSPy’s JSON adapter, my raw completion can visibly contain the right fields and still fail to parse unless the shape is exact. How strict is the parser about the final output field set, and what repair steps does it try before giving up?",
+ "gold_answer": "The JSON adapter first runs `json_repair.loads`. If that does not produce an object, it searches the completion for a balanced `{...}` substring and reparses that. Once it has a dict, it drops undeclared keys, casts declared ones through `parse_value(...)`, and then requires the remaining key set to match the signature’s output fields exactly; missing declared outputs still raise `AdapterParseError`.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "`JSONAdapter.parse` first tries `json_repair.loads(completion)`. If that does not yield a dict, it searches the completion for a balanced `{...}` substring and retries `json_repair.loads` on that substring.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "If those parse attempts still do not produce a dict, the adapter raises `AdapterParseError` instead of accepting a non-object result.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "Once a dict is obtained, the adapter discards any keys that are not declared in `signature.output_fields`.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "For each retained declared output field, the adapter replaces the value with `parse_value(v, signature.output_fields[k].annotation)`.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "After filtering, the remaining keys must exactly match `signature.output_fields.keys()`. Missing declared outputs still trigger `AdapterParseError`, even though undeclared extra keys were already dropped.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 148,
+   "end_line": 156,
+   "excerpt": "0148:     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:\n0149:         fields = json_repair.loads(completion)\n0150: \n0151:         if not isinstance(fields, dict):\n0152:             pattern = r\"\\{(?:[^{}]|(?R))*\\}\"\n0153:             match = regex.search(pattern, completion, regex.DOTALL)\n0154:             if match:\n0155:                 completion = match.group(0)\n0156:                 fields = json_repair.loads(completion)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 158,
+   "end_line": 164,
+   "excerpt": "0158:         if not isinstance(fields, dict):\n0159:             raise AdapterParseError(\n0160:                 adapter_name=\"JSONAdapter\",\n0161:                 signature=signature,\n0162:                 lm_response=completion,\n0163:                 message=\"LM response cannot be serialized to a JSON object.\",\n0164:             )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 166,
+   "end_line": 166,
+   "excerpt": "0166:         fields = {k: v for k, v in fields.items() if k in signature.output_fields}"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 168,
+   "end_line": 171,
+   "excerpt": "0168:         # Attempt to cast each value to type signature.output_fields[k].annotation.\n0169:         for k, v in fields.items():\n0170:             if k in signature.output_fields:\n0171:                 fields[k] = parse_value(v, signature.output_fields[k].annotation)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 173,
+   "end_line": 179,
+   "excerpt": "0173:         if fields.keys() != signature.output_fields.keys():\n0174:             raise AdapterParseError(\n0175:                 adapter_name=\"JSONAdapter\",\n0176:                 signature=signature,\n0177:                 lm_response=completion,\n0178:                 parsed_result=fields,\n0179:             )"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Clear parse-contract question that forces the agent to combine repair, key filtering, coercion, and the final exact-field check.",
+ "source_index": 5,
+ "smalldspy_scope": true
+}

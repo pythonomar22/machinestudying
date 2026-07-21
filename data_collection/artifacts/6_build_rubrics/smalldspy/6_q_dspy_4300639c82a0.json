@@ -1,0 +1,105 @@
+{
+ "id": "dspy_4300639c82a0",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "Why doesn't switching to a reasoning-capable LM automatically make `dspy.ChainOfThought` use the provider's native reasoning channel?",
+ "gold_answer": "`dspy.ChainOfThought` defaults to an ordinary `reasoning` output field, so DSPy still renders and parses that field as normal structured output even on a reasoning-capable model. Native reasoning only activates when the output field itself is typed as `dspy.Reasoning`; then the adapter can remove that field from the rendered signature, set `reasoning_effort`, and later repopulate it from `reasoning_content`. GPT-5 chat models are explicitly excluded from that native path in the current code because the response payload does not expose `reasoning_content` there.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "`dspy.ChainOfThought` prepends a `reasoning` output field as a regular `dspy.OutputField` and defaults that field's type to `str`, so its default signature does not automatically use `dspy.Reasoning`.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "DSPy's adapter only enables native LM response handling for output fields whose annotation is a registered native `Type`; `Reasoning` is on that default list, so merely switching to an LM with `supports_reasoning` does nothing for a plain string `reasoning` field.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "When an output field is typed as `dspy.Reasoning`, `Reasoning.adapt_to_native_lm_feature` is what activates the native path: it chooses or defaults `reasoning_effort` and removes that field from the signature before rendering the LM call.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "DSPy parses ordinary text output with `Adapter.parse`, and only afterwards repopulates native response types separately; for `dspy.Reasoning`, that repopulation comes from `reasoning_content` via `parse_lm_response`.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The current code explicitly disables the native reasoning path for GPT-5 chat models, because that response path does not expose `reasoning_content`, which is the payload `dspy.Reasoning` parsing depends on.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/chain_of_thought.py",
+   "start_line": 13,
+   "end_line": 35,
+   "excerpt": "0013:     def __init__(\n0014:         self,\n0015:         signature: str | type[Signature],\n0016:         rationale_field: FieldInfo | None = None,\n0017:         rationale_field_type: type = str,\n0018:         **config: dict[str, Any],\n0019:     ):\n0020:         \"\"\"\n0021:         A module that reasons step by step in order to predict the output of a task.\n0022: \n0023:         Args:\n0024:             signature (Type[dspy.Signature]): The signature of the module.\n0025:             rationale_field (Optional[Union[dspy.OutputField, pydantic.fields.FieldInfo]]): The field that will contain the reasoning.\n0026:             rationale_field_type (Type): The type of the rationale field.\n0027:             **config: The configuration for the module.\n0028:         \"\"\"\n0029:         super().__init__()\n0030:         signature = ensure_signature(signature)\n0031:         desc = \"${reasoning}\"\n0032:         rationale_field_type = rationale_field.annotation if rationale_field else rationale_field_type\n0033:         rationale_field = rationale_field if rationale_field else dspy.OutputField(desc=desc)\n0034:         extended_signature = signature.prepend(name=\"reasoning\", field=rationale_field, type_=rationale_field_type)\n0035:         self.predict = dspy.Predict(extended_signature, **config)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/base.py",
+   "start_line": 18,
+   "end_line": 57,
+   "excerpt": "0018: _DEFAULT_NATIVE_RESPONSE_TYPES = [Citations, Reasoning]\n0019: \n0020: \n0021: class Adapter:\n0022:     \"\"\"Base Adapter class.\n0023: \n0024:     The Adapter serves as the interface layer between DSPy module/signature and Language Models (LMs). It handles the\n0025:     complete transformation pipeline from DSPy inputs to LM calls and back to structured outputs.\n0026: \n0027:     Key responsibilities:\n0028:         - Transform user inputs and signatures into properly formatted LM prompts, which also instructs the LM to format\n0029:             the response in a specific format.\n0030:         - Parse LM outputs into dictionaries matching the signature's output fields.\n0031:         - Enable/disable native LM features (function calling, citations, etc.) based on configuration.\n0032:         - Handle conversation history, few-shot examples, and custom type processing.\n0033: \n0034:     The adapter pattern allows DSPy to work with different LM interfaces while maintaining a consistent programming\n0035:     model for users.\n0036:     \"\"\"\n0037: \n0038:     def __init__(\n0039:         self,\n0040:         callbacks: list[BaseCallback] | None = None,\n0041:         use_native_function_calling: bool = False,\n0042:         native_response_types: list[type[Type]] | None = None,\n0043:     ):\n0044:         \"\"\"\n0045:         Args:\n0046:             callbacks: List of callback functions to execute during `format()` and `parse()` methods. Callbacks can be\n0047:                 used for logging, monitoring, or custom processing. Defaults to None (empty list).\n0048:             use_native_function_calling: Whether to enable native function calling capabilities when the LM supports it.\n0049:                 If True, the adapter will automatically configure function calling when input fields contain `dspy.Tool`\n0050:                 or `list[dspy.Tool]` types. Defaults to False.\n0051:             native_response_types: List of output field types that should be handled by native LM features rather than\n0052:                 adapter parsing. For example, `dspy.Citations` can be populated directly by citation APIs\n0053:                 (e.g., Anthropic's citation feature). Defaults to `[Citations]`.\n0054:         \"\"\"\n0055:         self.callbacks = callbacks or []\n0056:         self.use_native_function_calling = use_native_function_calling\n0057:         self.native_response_types = native_response_types or _DEFAULT_NATIVE_RESPONSE_TYPES"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/base.py",
+   "start_line": 99,
+   "end_line": 107,
+   "excerpt": "0099:         # Handle custom types that use native LM features, e.g., reasoning, citations, etc.\n0100:         for name, field in signature.output_fields.items():\n0101:             if (\n0102:                 isinstance(field.annotation, type)\n0103:                 and field.annotation in self.native_response_types\n0104:                 and issubclass(field.annotation, Type)\n0105:             ):\n0106:                 signature = field.annotation.adapt_to_native_lm_feature(signature, name, lm, lm_kwargs)\n0107: "
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/types/reasoning.py",
+   "start_line": 45,
+   "end_line": 77,
+   "excerpt": "0045:     @classmethod\n0046:     def adapt_to_native_lm_feature(\n0047:         cls,\n0048:         signature: type[\"Signature\"],\n0049:         field_name: str,\n0050:         lm: BaseLM,\n0051:         lm_kwargs: dict[str, Any],\n0052:     ) -> type[\"Signature\"]:\n0053:         if \"reasoning_effort\" in lm_kwargs:\n0054:             # `lm_kwargs` overrides `lm.kwargs`.\n0055:             reasoning_effort = lm_kwargs[\"reasoning_effort\"]\n0056:         elif \"reasoning_effort\" in lm.kwargs:\n0057:             reasoning_effort = lm.kwargs[\"reasoning_effort\"]\n0058:         else:\n0059:             # Turn on the native reasoning explicitly if Reasoning field is present in the signature and no explicit\n0060:             # reasoning effort is set in `lm_kwargs` or `lm.kwargs`.\n0061:             reasoning_effort = \"low\"\n0062: \n0063:         if reasoning_effort is None or not lm.supports_reasoning:\n0064:             # If users explicitly set `reasoning_effort` to None or the LM doesn't support reasoning, we don't enable\n0065:             # native reasoning.\n0066:             return signature\n0067: \n0068:         if \"gpt-5\" in lm.model and lm.model_type == \"chat\":\n0069:             # There is a caveat of Litellm as 1.79.0 that when using the chat completion API on GPT-5 family models,\n0070:             # the reasoning content is not available in the response. As a workaround, we don't enable the native\n0071:             # reasoning feature for GPT-5 family models when using the chat completion API.\n0072:             # Litellm issue: https://github.com/BerriAI/litellm/issues/14748\n0073:             return signature\n0074: \n0075:         lm_kwargs[\"reasoning_effort\"] = reasoning_effort\n0076:         # Delete the reasoning field from the signature to use the native reasoning feature.\n0077:         return signature.delete(field_name)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/base.py",
+   "start_line": 132,
+   "end_line": 169,
+   "excerpt": "0132:             if text:\n0133:                 value = self.parse(processed_signature, text)\n0134:                 for field_name in original_signature.output_fields.keys():\n0135:                     if field_name not in value:\n0136:                         # We need to set the field not present in the processed signature to None for consistency.\n0137:                         value[field_name] = None\n0138:             elif tool_calls and tool_call_output_field_name:\n0139:                 value = {}\n0140:                 for field_name in original_signature.output_fields.keys():\n0141:                     value[field_name] = None\n0142:             else:\n0143:                 raise AdapterParseError(\n0144:                     adapter_name=type(self).__name__,\n0145:                     signature=original_signature,\n0146:                     lm_response=str(output),\n0147:                     message=\"The LM returned an empty or null response.\",\n0148:                 )\n0149: \n0150:             if tool_calls and tool_call_output_field_name:\n0151:                 tool_calls = [\n0152:                     {\n0153:                         \"name\": v[\"function\"][\"name\"],\n0154:                         \"args\": json_repair.loads(v[\"function\"][\"arguments\"]),\n0155:                     }\n0156:                     for v in tool_calls\n0157:                 ]\n0158:                 value[tool_call_output_field_name] = ToolCalls.from_dict_list(tool_calls)\n0159: \n0160:             # Parse custom types that does not rely on the `Adapter.parse()` method\n0161:             for name, field in original_signature.output_fields.items():\n0162:                 if (\n0163:                     isinstance(field.annotation, type)\n0164:                     and field.annotation in self.native_response_types\n0165:                     and issubclass(field.annotation, Type)\n0166:                 ):\n0167:                     parsed_value = field.annotation.parse_lm_response(output)\n0168:                     if parsed_value is not None:\n0169:                         value[name] = parsed_value"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/adapters/types/reasoning.py",
+   "start_line": 80,
+   "end_line": 84,
+   "excerpt": "0080:     def parse_lm_response(cls, response: str | dict[str, Any]) -> Optional[\"Reasoning\"]:\n0081:         \"\"\"Parse the LM response into a Reasoning object.\"\"\"\n0082:         if \"reasoning_content\" in response:\n0083:             return Reasoning(content=response[\"reasoning_content\"])\n0084:         return None"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Strong discriminator between model capability and signature-driven prompt/parse behavior.",
+ "source_index": 11,
+ "smalldspy_scope": true
+}

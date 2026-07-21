@@ -1,0 +1,86 @@
+{
+ "id": "dspy_dedf083b2363",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I want to use a reasoning-heavy model as the main backend, but it is bad at structured outputs. Can DSPy use one model for the free-form generation step and a second model only for extracting the declared fields?",
+ "gold_answer": "Yes. `dspy.TwoStepAdapter` is built for that pattern. It prompts the main LM with a looser format, then creates a temporary `text -> outputs` signature and runs `ChatAdapter` on a second LM to extract the declared output fields from the raw completion text.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "`dspy.TwoStepAdapter` is designed for a two-stage setup where the main LM handles the task response, especially for reasoning models that struggle with structured outputs, and a separate `extraction_model` LM is configured for the extraction step.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "`TwoStepAdapter.format()` builds the first-stage request as ordinary chat messages for the main LM and explicitly does not require a rigid output structure for that step.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "`TwoStepAdapter.parse()` performs the second stage by creating an extractor signature and invoking `ChatAdapter` on `self.extraction_model` with `inputs={\"text\": completion}`, so the second LM extracts fields from the raw completion text of the first LM.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 20,
+   "statement": "`_create_extractor_signature()` creates a temporary signature whose single input is `text` and whose outputs are the original signature's output fields, with instructions to extract each field value verbatim from the text.",
+   "span_ids": [
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/two_step_adapter.py",
+   "start_line": 22,
+   "end_line": 28,
+   "excerpt": "0022:     \"\"\"\n0023:     A two-stage adapter that:\n0024:         1. Uses a simpler, more natural prompt for the main LM\n0025:         2. Uses a smaller LM with chat adapter to extract structured data from the response of main LM\n0026:     This adapter uses a common __call__ logic defined in base Adapter class.\n0027:     This class is particularly useful when interacting with reasoning models as the main LM since reasoning models\n0028:     are known to struggle with structured outputs."
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/two_step_adapter.py",
+   "start_line": 42,
+   "end_line": 46,
+   "excerpt": "0042:     def __init__(self, extraction_model: BaseLM, **kwargs):\n0043:         super().__init__(**kwargs)\n0044:         if not isinstance(extraction_model, BaseLM):\n0045:             raise ValueError(\"extraction_model must be an instance of dspy.BaseLM\")\n0046:         self.extraction_model = extraction_model"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/two_step_adapter.py",
+   "start_line": 48,
+   "end_line": 75,
+   "excerpt": "0048:     def format(\n0049:         self, signature: type[Signature], demos: list[dict[str, Any]], inputs: dict[str, Any]\n0050:     ) -> list[dict[str, Any]]:\n0051:         \"\"\"\n0052:         Format a prompt for the first stage with the main LM.\n0053:         This no specific structure is required for the main LM, we customize the format method\n0054:         instead of format_field_description or format_field_structure.\n0055: \n0056:         Args:\n0057:             signature: The signature of the original task\n0058:             demos: A list of demo examples\n0059:             inputs: The current input\n0060: \n0061:         Returns:\n0062:             A list of messages to be passed to the main LM.\n0063:         \"\"\"\n0064:         messages = []\n0065: \n0066:         # Create a task description for the main LM\n0067:         task_description = self.format_task_description(signature)\n0068:         messages.append({\"role\": \"system\", \"content\": task_description})\n0069: \n0070:         messages.extend(self.format_demos(signature, demos))\n0071: \n0072:         # Format the current input\n0073:         messages.append({\"role\": \"user\", \"content\": self.format_user_message_content(signature, inputs)})\n0074: \n0075:         return messages"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/two_step_adapter.py",
+   "start_line": 77,
+   "end_line": 101,
+   "excerpt": "0077:     def parse(self, signature: Signature, completion: str) -> dict[str, Any]:\n0078:         \"\"\"\n0079:         Use a smaller LM (extraction_model) with chat adapter to extract structured data\n0080:         from the raw completion text of the main LM.\n0081: \n0082:         Args:\n0083:             signature: The signature of the original task\n0084:             completion: The completion from the main LM\n0085: \n0086:         Returns:\n0087:             A dictionary containing the extracted structured data.\n0088:         \"\"\"\n0089:         # The signature is supposed to be \"text -> {original output fields}\"\n0090:         extractor_signature = self._create_extractor_signature(signature)\n0091: \n0092:         try:\n0093:             # Call the smaller LM to extract structured data from the raw completion text with ChatAdapter\n0094:             parsed_result = ChatAdapter()(\n0095:                 lm=self.extraction_model,\n0096:                 lm_kwargs={},\n0097:                 signature=extractor_signature,\n0098:                 demos=[],\n0099:                 inputs={\"text\": completion},\n0100:             )\n0101:             return parsed_result[0]"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/two_step_adapter.py",
+   "start_line": 207,
+   "end_line": 229,
+   "excerpt": "0207:     def _create_extractor_signature(\n0208:         self,\n0209:         original_signature: type[Signature],\n0210:     ) -> type[Signature]:\n0211:         \"\"\"Create a new signature containing a new 'text' input field and all output fields.\n0212: \n0213:         Args:\n0214:             original_signature: The original signature to extract output fields from\n0215: \n0216:         Returns:\n0217:             A new Signature type with a text input field and all output fields\n0218:         \"\"\"\n0219:         # Create new fields dict with 'text' input field and all output fields\n0220:         new_fields = {\n0221:             \"text\": (str, InputField()),\n0222:             **{name: (field.annotation, field) for name, field in original_signature.output_fields.items()},\n0223:         }\n0224: \n0225:         outputs_str = \", \".join([f\"`{field}`\" for field in original_signature.output_fields])\n0226:         instructions = f\"The input is a text that should contain all the necessary information to produce the fields {outputs_str}. \\\n0227:             Your job is to extract the fields from the text verbatim. Extract precisely the appropriate value (content) for each field.\"\n0228: \n0229:         return make_signature(new_fields, instructions)"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Useful multi-backend configuration question with a single clear implementation locus.",
+ "source_index": 12,
+ "smalldspy_scope": true
+}

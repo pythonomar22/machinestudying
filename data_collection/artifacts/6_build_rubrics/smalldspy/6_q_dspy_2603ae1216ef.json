@@ -1,0 +1,63 @@
+{
+ "id": "dspy_2603ae1216ef",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I expected `dspy.JSONAdapter` to use strict structured outputs for a typed mapping like `dict[str, int]`, but it still fell back to plain JSON mode. Is that actually what the current code does?",
+ "gold_answer": "Yes. In the current implementation, any output field whose annotation has `dict` origin is treated as incompatible with structured-output schemas. So even `dict[str, int]` triggers the fallback path, and `JSONAdapter` sets `response_format = {'type': 'json_object'}` instead of using a strict structured response schema.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 40,
+   "statement": "Any output field whose annotation has `dict` as its origin is classified as an open-ended mapping, without distinguishing constrained cases such as `dict[str, int]` from `dict[str, Any]`.",
+   "span_ids": [
+    "s1",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 40,
+   "statement": "When `response_format` is supported, `JSONAdapter._json_adapter_call_common` checks for that mapping condition and immediately sets `lm_kwargs[\"response_format\"]` to `{\"type\": \"json_object\"}` before calling the LM, rather than using a structured-output schema.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "supporting",
+   "weight": 20,
+   "statement": "Structured-output schema generation independently rejects any `dict`-origin output field by raising `ValueError`, so such signatures are not eligible for the strict structured response format even if the early fallback were bypassed.",
+   "span_ids": [
+    "s3"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 27,
+   "end_line": 37,
+   "excerpt": "0027: def _has_open_ended_mapping(signature: SignatureMeta) -> bool:\n0028:     \"\"\"\n0029:     Check whether any output field in the signature has an open-ended mapping type,\n0030:     such as dict[str, Any]. Structured Outputs require explicit properties, so such fields\n0031:     are incompatible.\n0032:     \"\"\"\n0033:     for field in signature.output_fields.values():\n0034:         annotation = field.annotation\n0035:         if get_origin(annotation) is dict:\n0036:             return True\n0037:     return False"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 45,
+   "end_line": 56,
+   "excerpt": "0045:     def _json_adapter_call_common(self, lm, lm_kwargs, signature, demos, inputs, call_fn):\n0046:         \"\"\"Common call logic to be used for both sync and async calls.\"\"\"\n0047:         if \"response_format\" not in lm.supported_params:\n0048:             return call_fn(lm, lm_kwargs, signature, demos, inputs)\n0049: \n0050:         has_tool_calls = any(field.annotation == ToolCalls for field in signature.output_fields.values())\n0051: \n0052:         if _has_open_ended_mapping(signature) or (not self.use_native_function_calling and has_tool_calls) or not lm.supports_response_schema:\n0053:             # We found that structured output mode doesn't work well with dspy.ToolCalls as output field.\n0054:             # So we fall back to json mode if native function calling is disabled and ToolCalls is present.\n0055:             lm_kwargs[\"response_format\"] = {\"type\": \"json_object\"}\n0056:             return call_fn(lm, lm_kwargs, signature, demos, inputs)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 212,
+   "end_line": 231,
+   "excerpt": "0212: def _get_structured_outputs_response_format(\n0213:     signature: SignatureMeta,\n0214:     use_native_function_calling: bool = True,\n0215: ) -> type[pydantic.BaseModel]:\n0216:     \"\"\"\n0217:     Builds a Pydantic model from a DSPy signature's output_fields and ensures the generated JSON schema\n0218:     is compatible with OpenAI Structured Outputs (all objects have a \"required\" key listing every property,\n0219:     and additionalProperties is always false).\n0220: \n0221:     IMPORTANT: If any field's annotation is an open-ended mapping (e.g. dict[str, Any]), then a structured\n0222:     schema cannot be generated since all properties must be explicitly declared. In that case, an exception\n0223:     is raised so that the caller can fall back to using a plain \"json_object\" response_format.\n0224:     \"\"\"\n0225:     # Although we've already performed an early check, we keep this here as a final guard.\n0226:     for name, field in signature.output_fields.items():\n0227:         annotation = field.annotation\n0228:         if get_origin(annotation) is dict:\n0229:             raise ValueError(\n0230:                 f\"Field '{name}' has an open-ended mapping type which is not supported by Structured Outputs.\"\n0231:             )"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "High-value subtlety: the implementation is broader than the motivating 'open-ended mapping' wording suggests.",
+ "source_index": 11,
+ "smalldspy_scope": true
+}

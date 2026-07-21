@@ -1,0 +1,103 @@
+{
+ "id": "dspy_e1cb4fbf2c6d",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "Some examples in a large offline run can raise exceptions. I want one path that still finishes with a score, and another path that tells me exactly which examples failed and what exceptions they raised. Which DSPy path gives me which behavior?",
+ "gold_answer": "Use `dspy.Evaluate` when you want scoring to survive failures: failed items are turned into `(Prediction(), failure_score)` in the per-example results. Use `module.batch(..., return_failed_examples=True)` or `dspy.Parallel(..., return_failed_examples=True)` when you need the failing inputs and exception objects back; those paths collect `failed_examples` and `exceptions` from `ParallelExecutor` instead of just substituting a fallback score.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "`dspy.Evaluate.__call__` runs the devset through `ParallelExecutor.execute` and replaces each `None` result with `(dspy.Prediction(), self.failure_score)` before building the per-example `(example, prediction, score)` results list.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "After that substitution, `dspy.Evaluate.__call__` sums the per-example scores and returns `EvaluationResult(score=..., results=...)`, so failed items still contribute a fallback score to a completed evaluation result.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "`Module.batch` is the wrapper path for failure details: it accepts `return_failed_examples`, constructs `Parallel` with that flag, and returns `(results, failed_examples, exceptions)` when the flag is true, but only `results` when it is false.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "`Parallel` provides the direct failure-reporting path: `return_failed_examples` is a constructor option stored on the instance, and `forward` uses `executor.failed_indices` plus `executor.exceptions_map` to return the original failed examples and exception objects alongside `results`.",
+   "span_ids": [
+    "s5",
+    "s6",
+    "s7"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 162,
+   "end_line": 182,
+   "excerpt": "0162:         executor = ParallelExecutor(\n0163:             num_threads=num_threads,\n0164:             disable_progress_bar=not display_progress,\n0165:             max_errors=(self.max_errors if self.max_errors is not None else dspy.settings.max_errors),\n0166:             provide_traceback=self.provide_traceback,\n0167:             compare_results=True,\n0168:         )\n0169: \n0170:         def process_item(example):\n0171:             prediction = program(**example.inputs())\n0172:             score = metric(example, prediction)\n0173:             return prediction, score\n0174: \n0175:         results = executor.execute(process_item, devset)\n0176:         assert len(devset) == len(results)\n0177: \n0178:         results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]\n0179:         results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results, strict=False)]\n0180:         ncorrect, ntotal = sum(score for *_, score in results), len(devset)\n0181: \n0182:         logger.info(f\"Average Metric: {ncorrect} / {ntotal} ({round(100 * ncorrect / ntotal, 1)}%)\")"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 223,
+   "end_line": 226,
+   "excerpt": "0223:         return EvaluationResult(\n0224:             score=round(100 * ncorrect / ntotal, 2),\n0225:             results=results,\n0226:         )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/primitives/module.py",
+   "start_line": 269,
+   "end_line": 296,
+   "excerpt": "0269:     def batch(\n0270:         self,\n0271:         examples: list[Example],\n0272:         num_threads: int | None = None,\n0273:         max_errors: int | None = None,\n0274:         return_failed_examples: bool = False,\n0275:         provide_traceback: bool | None = None,\n0276:         disable_progress_bar: bool = False,\n0277:         timeout: int = 120,\n0278:         straggler_limit: int = 3,\n0279:     ) -> list[Example] | tuple[list[Example], list[Example], list[Exception]]:\n0280:         \"\"\"\n0281:         Processes a list of dspy.Example instances in parallel using the Parallel module.\n0282: \n0283:         Args:\n0284:             examples: List of dspy.Example instances to process.\n0285:             num_threads: Number of threads to use for parallel processing.\n0286:             max_errors: Maximum number of errors allowed before stopping execution.\n0287:                 If ``None``, inherits from ``dspy.settings.max_errors``.\n0288:             return_failed_examples: Whether to return failed examples and exceptions.\n0289:             provide_traceback: Whether to include traceback information in error logs.\n0290:             disable_progress_bar: Whether to display the progress bar.\n0291:             timeout: Seconds before a straggler task is resubmitted. Set to 0 to disable.\n0292:             straggler_limit: Only check for stragglers when this many or fewer tasks remain.\n0293: \n0294:         Returns:\n0295:             List of results, and optionally failed examples and exceptions.\n0296:         \"\"\""
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/primitives/module.py",
+   "start_line": 297,
+   "end_line": 317,
+   "excerpt": "0297:         # Create a list of execution pairs (self, example)\n0298:         exec_pairs = [(self, example.inputs()) for example in examples]\n0299: \n0300:         # Create an instance of Parallel\n0301:         parallel_executor = Parallel(\n0302:             num_threads=num_threads,\n0303:             max_errors=max_errors,\n0304:             return_failed_examples=return_failed_examples,\n0305:             provide_traceback=provide_traceback,\n0306:             disable_progress_bar=disable_progress_bar,\n0307:             timeout=timeout,\n0308:             straggler_limit=straggler_limit,\n0309:         )\n0310: \n0311:         # Execute the forward method of Parallel\n0312:         if return_failed_examples:\n0313:             results, failed_examples, exceptions = parallel_executor.forward(exec_pairs)\n0314:             return results, failed_examples, exceptions\n0315:         else:\n0316:             results = parallel_executor.forward(exec_pairs)\n0317:             return results"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/predict/parallel.py",
+   "start_line": 10,
+   "end_line": 19,
+   "excerpt": "0010:     def __init__(\n0011:         self,\n0012:         num_threads: int | None = None,\n0013:         max_errors: int | None = None,\n0014:         access_examples: bool = True,\n0015:         return_failed_examples: bool = False,\n0016:         provide_traceback: bool | None = None,\n0017:         disable_progress_bar: bool = False,\n0018:         timeout: int = 120,\n0019:         straggler_limit: int = 3,"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/predict/parallel.py",
+   "start_line": 61,
+   "end_line": 66,
+   "excerpt": "0061:         super().__init__()\n0062:         self.num_threads = num_threads or settings.num_threads\n0063:         self.max_errors = settings.max_errors if max_errors is None else max_errors\n0064:         self.access_examples = access_examples\n0065:         self.return_failed_examples = return_failed_examples\n0066:         self.provide_traceback = provide_traceback"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/predict/parallel.py",
+   "start_line": 110,
+   "end_line": 124,
+   "excerpt": "0110:         # Execute the processing function over the execution pairs\n0111:         results = executor.execute(process_pair, exec_pairs)\n0112: \n0113:         # Populate failed examples and exceptions from the executor\n0114:         if self.return_failed_examples:\n0115:             for failed_idx in executor.failed_indices:\n0116:                 if failed_idx < len(exec_pairs):\n0117:                     _, original_example = exec_pairs[failed_idx]\n0118:                     self.failed_examples.append(original_example)\n0119:                     if exception := executor.exceptions_map.get(failed_idx):\n0120:                         self.exceptions.append(exception)\n0121: \n0122:             return results, self.failed_examples, self.exceptions\n0123:         else:\n0124:             return results"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Useful contrast between score-preserving evaluation and failure-reporting batch execution.",
+ "source_index": 8,
+ "smalldspy_scope": false
+}

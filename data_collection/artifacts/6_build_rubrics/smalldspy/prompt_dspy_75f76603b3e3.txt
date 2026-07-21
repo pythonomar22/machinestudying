@@ -1,0 +1,701 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_75f76603b3e3`
+- Label: `prompt_compilation_customization_and_inspection`
+- Question: `If I wrap a program in a module that samples several rollouts and then keeps only the best one, why can the final DSPy trace show just one candidate run, and which run is preserved?`
+- Gold answer:
+`dspy.Predict` traces each underlying predictor call, but `BestOfN` and the rollout loop inside `Refine` deliberately isolate each candidate under a temporary `trace=[]`, copy that rollout's trace, score it, and only splice back the currently best rollout at the end. So you do not get a concatenated trace of every candidate run. In `Refine`, helper predictor calls outside that temporary context can still appear separately, while reward-function tracing is excluded because the rollout trace is copied before scoring.
+
+## Evidence references
+[
+  {
+    "file": "dspy/predict/predict.py",
+    "symbol": "Predict._forward_postprocess"
+  },
+  {
+    "file": "dspy/predict/best_of_n.py",
+    "symbol": "BestOfN.forward"
+  },
+  {
+    "file": "dspy/predict/refine.py",
+    "symbol": "Refine.forward"
+  }
+]
+
+## Full evidence files
+### dspy/predict/predict.py
+0001: import logging
+0002: import random
+0003: from typing import Any, Literal, get_args, get_origin
+0004: 
+0005: from pydantic import BaseModel
+0006: from pydantic_core import PydanticUndefined
+0007: from typeguard import TypeCheckError, check_type
+0008: 
+0009: from dspy.adapters.chat_adapter import ChatAdapter
+0010: from dspy.clients.base_lm import BaseLM
+0011: from dspy.clients.lm import LM
+0012: from dspy.dsp.utils.settings import settings
+0013: from dspy.predict.parameter import Parameter
+0014: from dspy.primitives.module import Module
+0015: from dspy.primitives.prediction import Prediction
+0016: from dspy.signatures.signature import Signature, ensure_signature
+0017: from dspy.utils.callback import BaseCallback
+0018: from dspy.utils.constants import IS_TYPE_UNDEFINED
+0019: 
+0020: logger = logging.getLogger(__name__)
+0021: 
+0022: UNSAFE_LM_STATE_KEYS = {"api_base", "base_url", "model_list"}
+0023: 
+0024: 
+0025: def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
+0026:     if allow_unsafe_lm_state:
+0027:         return lm_state
+0028: 
+0029:     unsafe_keys = sorted(UNSAFE_LM_STATE_KEYS.intersection(lm_state))
+0030: 
+0031:     if not unsafe_keys:
+0032:         return lm_state
+0033: 
+0034:     sanitized_lm_state = {k: v for k, v in lm_state.items() if k not in UNSAFE_LM_STATE_KEYS}
+0035:     logger.warning(
+0036:         "Ignoring unsafe LM config key(s) during state load: %s. "
+0037:         "Pass allow_unsafe_lm_state=True to preserve these keys for trusted files.",
+0038:         unsafe_keys,
+0039:     )
+0040:     return sanitized_lm_state
+0041: 
+0042: 
+0043: class Predict(Module, Parameter):
+0044:     """Basic DSPy module that maps inputs to outputs using a language model.
+0045: 
+0046:     Args:
+0047:         signature: The input/output signature describing the task.
+0048:         callbacks: Optional list of callbacks for instrumentation.
+0049:         **config: Default keyword arguments forwarded to the underlying
+0050:             language model. These values can be overridden for a single
+0051:             invocation by passing a ``config`` dictionary when calling the
+0052:             module. For example::
+0053: 
+0054:                 predict = dspy.Predict("q -> a", rollout_id=1, temperature=1.0)
+0055:                 predict(q="What is 1 + 52?", config={"rollout_id": 2, "temperature": 1.0})
+0056:     """
+0057: 
+0058:     def __init__(self, signature: str | type[Signature], callbacks: list[BaseCallback] | None = None, **config):
+0059:         super().__init__(callbacks=callbacks)
+0060:         self.stage = random.randbytes(8).hex()
+0061:         self.signature = ensure_signature(signature)
+0062:         self.config = config
+0063:         self.reset()
+0064: 
+0065:     def reset(self):
+0066:         self.lm = None
+0067:         self.traces = []
+0068:         self.train = []
+0069:         self.demos = []
+0070: 
+0071:     def dump_state(self, json_mode=True):
+0072:         state_keys = ["traces", "train"]
+0073:         state = {k: getattr(self, k) for k in state_keys}
+0074: 
+0075:         state["demos"] = []
+0076:         for demo in self.demos:
+0077:             demo = demo.copy()
+0078: 
+0079:             for field in demo:
+0080:                 # FIXME: Saving BaseModels as strings in examples doesn't matter because you never re-access as an object
+0081:                 demo[field] = serialize_object(demo[field])
+0082: 
+0083:             if isinstance(demo, dict) or not json_mode:
+0084:                 state["demos"].append(demo)
+0085:             else:
+0086:                 state["demos"].append(demo.toDict())
+0087: 
+0088:         state["signature"] = self.signature.dump_state()
+0089:         state["lm"] = self.lm.dump_state() if self.lm else None
+0090:         return state
+0091: 
+0092:     def load_state(self, state: dict, *, allow_unsafe_lm_state: bool = False) -> "Predict":
+0093:         """Load the saved state of a `Predict` object.
+0094: 
+0095:         Args:
+0096:             state: The saved state of a `Predict` object.
+0097:             allow_unsafe_lm_state: If True, preserves `api_base`, `base_url`, and `model_list` from
+0098:                 serialized LM state. Enable only when loading trusted files.
+0099: 
+0100:         Returns:
+0101:             Self to allow method chaining.
+0102:         """
+0103:         excluded_keys = ["signature", "extended_signature", "lm"]
+0104:         for name, value in state.items():
+0105:             # `excluded_keys` are fields that go through special handling.
+0106:             if name not in excluded_keys:
+0107:                 setattr(self, name, value)
+0108: 
+0109:         self.signature = self.signature.load_state(state["signature"])
+0110:         sanitized_lm_state = _sanitize_lm_state(state["lm"], allow_unsafe_lm_state) if state["lm"] else None
+0111:         self.lm = LM(**sanitized_lm_state) if sanitized_lm_state else None
+0112: 
+0113:         if "extended_signature" in state:  # legacy, up to and including 2.5, for CoT.
+0114:             raise NotImplementedError("Loading extended_signature is no longer supported in DSPy 2.6+")
+0115: 
+0116:         return self
+0117: 
+0118:     def _get_positional_args_error_message(self):
+0119:         input_fields = list(self.signature.input_fields.keys())
+0120:         return (
+0121:             "Positional arguments are not allowed when calling `dspy.Predict`, must use keyword arguments "
+0122:             f"that match your signature input fields: '{', '.join(input_fields)}'. For example: "
+0123:             f"`predict({input_fields[0]}=input_value, ...)`."
+0124:         )
+0125: 
+0126:     def __call__(self, *args, **kwargs):
+0127:         if args:
+0128:             raise ValueError(self._get_positional_args_error_message())
+0129: 
+0130:         return super().__call__(**kwargs)
+0131: 
+0132:     async def acall(self, *args, **kwargs):
+0133:         if args:
+0134:             raise ValueError(self._get_positional_args_error_message())
+0135: 
+0136:         return await super().acall(**kwargs)
+0137: 
+0138:     def _forward_preprocess(self, **kwargs):
+0139:         # Extract the three privileged keyword arguments.
+0140:         assert "new_signature" not in kwargs, "new_signature is no longer a valid keyword argument."
+0141:         signature = ensure_signature(kwargs.pop("signature", self.signature))
+0142:         demos = kwargs.pop("demos", self.demos)
+0143:         config = {**self.config, **kwargs.pop("config", {})}
+0144: 
+0145:         # Get the right LM to use.
+0146:         lm = kwargs.pop("lm", self.lm) or settings.lm
+0147: 
+0148:         if lm is None:
+0149:             raise ValueError(
+0150:                 "No LM is loaded. Please configure the LM using `dspy.configure(lm=dspy.LM(...))`. e.g, "
+0151:                 "`dspy.configure(lm=dspy.LM('openai/gpt-4o-mini'))`"
+0152:             )
+0153: 
+0154:         if isinstance(lm, str):
+0155:             # Many users mistakenly use `dspy.configure(lm="openai/gpt-4o-mini")` instead of
+0156:             # `dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))`, so we are providing a specific error message.
+0157:             raise ValueError(
+0158:                 f"LM must be an instance of `dspy.BaseLM`, not a string. Instead of using a string like "
+0159:                 f"'dspy.configure(lm=\"{lm}\")', please configure the LM like 'dspy.configure(lm=dspy.LM(\"{lm}\"))'"
+0160:             )
+0161:         elif not isinstance(lm, BaseLM):
+0162:             raise ValueError(f"LM must be an instance of `dspy.BaseLM`, not {type(lm)}. Received `lm={lm}`.")
+0163: 
+0164:         # If temperature is unset or <=0.15, and n > 1, set temperature to 0.7 to keep randomness.
+0165:         temperature = config.get("temperature") or lm.kwargs.get("temperature")
+0166:         num_generations = config.get("n") or lm.kwargs.get("n") or lm.kwargs.get("num_generations") or 1
+0167: 
+0168:         if (temperature is None or temperature <= 0.15) and num_generations > 1:
+0169:             config["temperature"] = 0.7
+0170: 
+0171:         if "prediction" in kwargs:
+0172:             if (
+0173:                 isinstance(kwargs["prediction"], dict)
+0174:                 and kwargs["prediction"].get("type") == "content"
+0175:                 and "content" in kwargs["prediction"]
+0176:             ):
+0177:                 # If the `prediction` is the standard predicted outputs format
+0178:                 # (https://platform.openai.com/docs/guides/predicted-outputs), we remove it from input kwargs and add it
+0179:                 # to the lm kwargs.
+0180:                 config["prediction"] = kwargs.pop("prediction")
+0181: 
+0182:         # Populate default values for missing input fields.
+0183:         for k, v in signature.input_fields.items():
+0184:             if k not in kwargs and v.default is not PydanticUndefined:
+0185:                 kwargs[k] = v.default
+0186: 
+0187:         # Check and warn for extra fields not in signature
+0188:         extra_fields = [k for k in kwargs if k not in signature.input_fields]
+0189:         if extra_fields:
+0190:             logger.warning(
+0191:                 "Input contains fields not in signature. These fields will be ignored: %s. "
+0192:                 "Expected fields: %s.",
+0193:                 extra_fields,
+0194:                 list(signature.input_fields.keys()),
+0195:             )
+0196: 
+0197:         # Validate input field types match signature
+0198:         if settings.warn_on_type_mismatch:
+0199:             for field_name, field_info in signature.input_fields.items():
+0200:                 if field_name in kwargs:
+0201:                     value = kwargs[field_name]
+0202:                     expected_type: type = field_info.annotation
+0203: 
+0204:                     if value is None or field_info.json_schema_extra.get(IS_TYPE_UNDEFINED, False):
+0205:                         continue
+0206: 
+0207:                     if not _is_value_compatible_with_type(value, expected_type):
+0208:                         logger.warning(
+0209:                             "Type mismatch for field '%s': expected %s based on given Signature, "
+0210:                             "but the provided value is incompatible: %s.",
+0211:                             field_name,
+0212:                             _get_type_name(expected_type),
+0213:                             value,
+0214:                         )
+0215: 
+0216:         if not all(k in kwargs for k in signature.input_fields):
+0217:             present = [k for k in signature.input_fields if k in kwargs]
+0218:             missing = [k for k in signature.input_fields if k not in kwargs]
+0219:             logger.warning(
+0220:                 "Not all input fields were provided to module. Present: %s. Missing: %s.",
+0221:                 present,
+0222:                 missing,
+0223:             )
+0224:         return lm, config, signature, demos, kwargs
+0225: 
+0226:     def _forward_postprocess(self, completions, signature, **kwargs):
+0227:         pred = Prediction.from_completions(completions, signature=signature)
+0228:         if kwargs.pop("_trace", True) and settings.trace is not None and settings.max_trace_size > 0:
+0229:             trace = settings.trace
+0230:             if len(trace) >= settings.max_trace_size:
+0231:                 trace.pop(0)
+0232:             trace.append((self, {**kwargs}, pred))
+0233:         return pred
+0234: 
+0235:     def _should_stream(self):
+0236:         stream_listeners = settings.stream_listeners or []
+0237:         should_stream = settings.send_stream is not None
+0238:         if should_stream and len(stream_listeners) > 0:
+0239:             should_stream = any(stream_listener.predict == self for stream_listener in stream_listeners)
+0240: 
+0241:         return should_stream
+0242: 
+0243:     def forward(self, **kwargs):
+0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+0245: 
+0246:         adapter = settings.adapter or ChatAdapter()
+0247: 
+0248:         if self._should_stream():
+0249:             with settings.context(caller_predict=self):
+0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0251:         else:
+0252:             with settings.context(send_stream=None):
+0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0254: 
+0255:         return self._forward_postprocess(completions, signature, **kwargs)
+0256: 
+0257:     async def aforward(self, **kwargs):
+0258:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+0259: 
+0260:         adapter = settings.adapter or ChatAdapter()
+0261:         if self._should_stream():
+0262:             with settings.context(caller_predict=self):
+0263:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0264:         else:
+0265:             with settings.context(send_stream=None):
+0266:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0267: 
+0268:         return self._forward_postprocess(completions, signature, **kwargs)
+0269: 
+0270:     def update_config(self, **kwargs):
+0271:         self.config = {**self.config, **kwargs}
+0272: 
+0273:     def get_config(self):
+0274:         return self.config
+0275: 
+0276:     def __repr__(self):
+0277:         return f"{self.__class__.__name__}({self.signature})"
+0278: 
+0279: def _get_type_name(type_annotation) -> str:
+0280:     """Helper method to get the name for a type annotation."""
+0281: 
+0282:     origin = get_origin(type_annotation)
+0283:     args = get_args(type_annotation)
+0284: 
+0285:     if origin is None:
+0286:         # Primitives like str, int, etc.
+0287:         if hasattr(type_annotation, "__name__"):
+0288:             return type_annotation.__name__
+0289:         return str(type_annotation)
+0290: 
+0291:     # Handle Literal types
+0292:     if origin is Literal:
+0293:         literal_values = ", ".join(repr(arg) for arg in args)
+0294:         return f"Literal[{literal_values}]"
+0295: 
+0296:     # Types like list[str], dict[str, int], generics, etc.
+0297:     if args:
+0298:         # Handle Ellipsis in tuples (e.g., tuple[int, ...])
+0299:         args_str = ", ".join("..." if arg is ... else _get_type_name(arg) for arg in args)
+0300:         origin_name = getattr(origin, "__name__", str(origin))
+0301:         return f"{origin_name}[{args_str}]"
+0302: 
+0303:     return getattr(origin, "__name__", str(origin))
+0304: 
+0305: def _is_value_compatible_with_type(value: Any, expected: type) -> bool:
+0306:     """Return True if the value matches the expected type hint."""
+0307:     try:
+0308:         # Special handle list[str] because we allow setting input type to str, however, invoking with a list thereof.
+0309:         if expected is str and isinstance(value, list):
+0310:             if all(isinstance(item, str) for item in value):
+0311:                 return True
+0312: 
+0313:         check_type(value, expected)
+0314:         return True
+0315:     except TypeCheckError:
+0316:         return False
+0317: 
+0318: def serialize_object(obj):
+0319:     """
+0320:     Recursively serialize a given object into a JSON-compatible format.
+0321:     Supports Pydantic models, lists, dicts, and primitive types.
+0322:     """
+0323:     if isinstance(obj, BaseModel):
+0324:         # Use model_dump with mode="json" to ensure all fields (including HttpUrl, datetime, etc.)
+0325:         # are converted to JSON-serializable types (strings)
+0326:         return obj.model_dump(mode="json")
+0327:     elif isinstance(obj, list):
+0328:         return [serialize_object(item) for item in obj]
+0329:     elif isinstance(obj, tuple):
+0330:         return tuple(serialize_object(item) for item in obj)
+0331:     elif isinstance(obj, dict):
+0332:         return {key: serialize_object(value) for key, value in obj.items()}
+0333:     else:
+0334:         return obj
+0335: 
+0336: 
+0337: # # TODO: FIXME: Hmm, I guess expected behavior is that contexts can
+0338: # affect execution. Well, we need to determine whether context dominates, __init__ demoninates, or forward dominates.
+0339: # Generally, unless overwritten, we'd see n=None, temperature=None.
+0340: # That will eventually mean we have to learn them.
+
+### dspy/predict/best_of_n.py
+0001: from typing import Callable
+0002: 
+0003: import dspy
+0004: from dspy.predict.predict import Module, Prediction
+0005: 
+0006: 
+0007: class BestOfN(Module):
+0008:     def __init__(
+0009:         self,
+0010:         module: Module,
+0011:         N: int,  # noqa: N803
+0012:         reward_fn: Callable[[dict, Prediction], float],
+0013:         threshold: float,
+0014:         fail_count: int | None = None,
+0015:     ):
+0016:         """
+0017:         Runs a module up to `N` times with different rollout IDs at `temperature=1.0` and
+0018:         returns the best prediction out of `N` attempts or the first prediction that passes the
+0019:         `threshold`.
+0020: 
+0021:         Args:
+0022:             module (Module): The module to run.
+0023:             N (int): The number of times to run the module.
+0024:             reward_fn (Callable[[dict, Prediction], float]): The reward function which takes in the args passed to the module, the resulting prediction, and returns a scalar reward.
+0025:             threshold (float): The threshold for the reward function.
+0026:             fail_count (Optional[int], optional): The number of times the module can fail before raising an error. Defaults to N if not provided.
+0027: 
+0028:         Examples:
+0029:             ```python
+0030:             import dspy
+0031: 
+0032:             dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
+0033: 
+0034:             # Define a QA module with chain of thought
+0035:             qa = dspy.ChainOfThought("question -> answer")
+0036: 
+0037:             # Define a reward function that checks for one-word answers
+0038:             def one_word_answer(args, pred):
+0039:                 return 1.0 if len(pred.answer.split()) == 1 else 0.0
+0040: 
+0041:             # Create a refined module that tries up to 3 times
+0042:             best_of_3 = dspy.BestOfN(module=qa, N=3, reward_fn=one_word_answer, threshold=1.0)
+0043: 
+0044:             # Use the refined module
+0045:             result = best_of_3(question="What is the capital of Belgium?").answer
+0046:             # Returns: Brussels
+0047:             ```
+0048:         """
+0049:         self.module = module
+0050:         self.reward_fn = lambda *args: reward_fn(*args)  # to prevent this from becoming a parameter
+0051:         self.threshold = threshold
+0052:         self.N = N
+0053:         self.fail_count = fail_count or N  # default to N if fail_count is not provided
+0054: 
+0055:     def forward(self, **kwargs):
+0056:         lm = self.module.get_lm() or dspy.settings.lm
+0057:         start = lm.kwargs.get("rollout_id", 0)
+0058:         rollout_ids = [start + i for i in range(self.N)]
+0059:         best_pred, best_trace, best_reward = None, None, -float("inf")
+0060: 
+0061:         for idx, rid in enumerate(rollout_ids):
+0062:             lm_ = lm.copy(rollout_id=rid, temperature=1.0)
+0063:             mod = self.module.deepcopy()
+0064:             mod.set_lm(lm_)
+0065: 
+0066:             try:
+0067:                 with dspy.context(trace=[]):
+0068:                     pred = mod(**kwargs)
+0069:                     trace = dspy.settings.trace.copy()
+0070: 
+0071:                     # NOTE: Not including the trace of reward_fn.
+0072:                     reward = self.reward_fn(kwargs, pred)
+0073: 
+0074:                 if reward > best_reward:
+0075:                     best_reward, best_pred, best_trace = reward, pred, trace
+0076: 
+0077:                 if reward >= self.threshold:
+0078:                     break
+0079: 
+0080:             except Exception as e:
+0081:                 print(f"BestOfN: Attempt {idx + 1} failed with rollout id {rid}: {e}")
+0082:                 if idx > self.fail_count:
+0083:                     raise e
+0084:                 self.fail_count -= 1
+0085: 
+0086:         if best_trace:
+0087:             dspy.settings.trace.extend(best_trace)
+0088:         return best_pred
+
+### dspy/predict/refine.py
+0001: import inspect
+0002: import textwrap
+0003: from typing import Callable
+0004: 
+0005: import orjson
+0006: 
+0007: import dspy
+0008: from dspy.adapters.utils import get_field_description_string
+0009: from dspy.predict.predict import Prediction
+0010: from dspy.signatures import InputField, OutputField, Signature
+0011: 
+0012: from .predict import Module
+0013: 
+0014: 
+0015: class OfferFeedback(Signature):
+0016:     """
+0017:     In the discussion, assign blame to each module that contributed to the final reward being below the threshold, if
+0018:     any. Then, prescribe concrete advice of how the module should act on its future input when we retry the process, if
+0019:     it were to receive the same or similar inputs. If a module is not to blame, the advice should be N/A.
+0020:     The module will not see its own history, so it needs to rely on entirely concrete and actionable advice from you
+0021:     to avoid the same mistake on the same or similar inputs.
+0022:     """
+0023: 
+0024:     program_code: str = InputField(desc="The code of the program that we are analyzing")
+0025:     modules_defn: str = InputField(desc="The definition of each module in the program, including its I/O")
+0026:     program_inputs: str = InputField(desc="The inputs to the program that we are analyzing")
+0027:     program_trajectory: str = InputField(desc="The trajectory of the program's execution, showing each module's I/O")
+0028:     program_outputs: str = InputField(desc="The outputs of the program that we are analyzing")
+0029:     reward_code: str = InputField(desc="The code of the reward function that we are analyzing")
+0030:     target_threshold: float = InputField(desc="The target threshold for the reward function")
+0031:     reward_value: float = InputField(desc="The reward value assigned to the program's outputs")
+0032:     module_names: list[str] = InputField(desc="The names of the modules in the program, for which we seek advice")
+0033:     discussion: str = OutputField(desc="Discussing blame of where each module went wrong, if it did")
+0034:     advice: dict[str, str] = OutputField(
+0035:         desc="For each module, describe very concretely, in this order: the specific scenarios in which it has made "
+0036:         "mistakes in the past and what each mistake was, followed by what it should do differently in that kind of"
+0037:         "scenario in the future. If the module is not to blame, write N/A."
+0038:     )
+0039: 
+0040: 
+0041: class Refine(Module):
+0042:     def __init__(
+0043:         self,
+0044:         module: Module,
+0045:         N: int,  # noqa: N803
+0046:         reward_fn: Callable[[dict, Prediction], float],
+0047:         threshold: float,
+0048:         fail_count: int | None = None,
+0049:     ):
+0050:         """
+0051:         Refines a module by running it up to N times with different rollout IDs at `temperature=1.0`
+0052:         and returns the best prediction.
+0053: 
+0054:         This module runs the provided module multiple times with varying rollout identifiers and selects
+0055:         either the first prediction that exceeds the specified threshold or the one with the highest reward.
+0056:         If no prediction meets the threshold, it automatically generates feedback to improve future predictions.
+0057: 
+0058: 
+0059:         Args:
+0060:             module (Module): The module to refine.
+0061:             N (int): The number of times to run the module. must
+0062:             reward_fn (Callable): The reward function.
+0063:             threshold (float): The threshold for the reward function.
+0064:             fail_count (Optional[int], optional): The number of times the module can fail before raising an error
+0065: 
+0066:         Examples:
+0067:             ```python
+0068:             import dspy
+0069: 
+0070:             dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
+0071: 
+0072:             # Define a QA module with chain of thought
+0073:             qa = dspy.ChainOfThought("question -> answer")
+0074: 
+0075:             # Define a reward function that checks for one-word answers
+0076:             def one_word_answer(args, pred):
+0077:                 return 1.0 if len(pred.answer.split()) == 1 else 0.0
+0078: 
+0079:             # Create a refined module that tries up to 3 times
+0080:             best_of_3 = dspy.Refine(module=qa, N=3, reward_fn=one_word_answer, threshold=1.0)
+0081: 
+0082:             # Use the refined module
+0083:             result = best_of_3(question="What is the capital of Belgium?").answer
+0084:             # Returns: Brussels
+0085:             ```
+0086:         """
+0087:         self.module = module
+0088:         self.reward_fn = lambda *args: reward_fn(*args)  # to prevent this from becoming a parameter
+0089:         self.threshold = threshold
+0090:         self.N = N
+0091:         self.fail_count = fail_count or N  # default to N if fail_count is not provided
+0092:         self.module_code = inspect.getsource(module.__class__)
+0093:         try:
+0094:             self.reward_fn_code = inspect.getsource(reward_fn)
+0095:         except TypeError:
+0096:             self.reward_fn_code = inspect.getsource(reward_fn.__class__)
+0097: 
+0098:     def forward(self, **kwargs):
+0099:         lm = self.module.get_lm() or dspy.settings.lm
+0100:         start = lm.kwargs.get("rollout_id", 0)
+0101:         rollout_ids = [start + i for i in range(self.N)]
+0102:         best_pred, best_trace, best_reward = None, None, -float("inf")
+0103:         advice = None
+0104:         adapter = dspy.settings.adapter or dspy.ChatAdapter()
+0105: 
+0106:         for idx, rid in enumerate(rollout_ids):
+0107:             lm_ = lm.copy(rollout_id=rid, temperature=1.0)
+0108:             mod = self.module.deepcopy()
+0109:             mod.set_lm(lm_)
+0110: 
+0111:             predictor2name = {predictor: name for name, predictor in mod.named_predictors()}
+0112:             signature2name = {predictor.signature: name for name, predictor in mod.named_predictors()}
+0113:             module_names = [name for name, _ in mod.named_predictors()]
+0114: 
+0115:             try:
+0116:                 with dspy.context(trace=[]):
+0117:                     if not advice:
+0118:                         outputs = mod(**kwargs)
+0119:                     else:
+0120: 
+0121:                         class WrapperAdapter(adapter.__class__):
+0122:                             def __call__(self, lm, lm_kwargs, signature, demos, inputs):
+0123:                                 inputs["hint_"] = advice.get(signature2name[signature], "N/A")  # noqa: B023
+0124:                                 signature = signature.append(
+0125:                                     "hint_", InputField(desc="A hint to the module from an earlier run")
+0126:                                 )
+0127:                                 return adapter(lm, lm_kwargs, signature, demos, inputs)
+0128: 
+0129:                         with dspy.context(adapter=WrapperAdapter()):
+0130:                             outputs = mod(**kwargs)
+0131: 
+0132:                     trace = dspy.settings.trace.copy()
+0133: 
+0134:                     # TODO: Remove the hint from the trace, if it's there.
+0135: 
+0136:                     # NOTE: Not including the trace of reward_fn.
+0137:                     reward = self.reward_fn(kwargs, outputs)
+0138: 
+0139:                 if reward > best_reward:
+0140:                     best_reward, best_pred, best_trace = reward, outputs, trace
+0141: 
+0142:                 if self.threshold is not None and reward >= self.threshold:
+0143:                     break
+0144: 
+0145:                 if idx == self.N - 1:
+0146:                     break
+0147: 
+0148:                 modules = {"program_code": self.module_code, "modules_defn": inspect_modules(mod)}
+0149:                 trajectory = [{"module_name": predictor2name[p], "inputs": i, "outputs": dict(o)} for p, i, o in trace]
+0150:                 trajectory = {
+0151:                     "program_inputs": kwargs,
+0152:                     "program_trajectory": trajectory,
+0153:                     "program_outputs": dict(outputs),
+0154:                 }
+0155:                 reward = {
+0156:                     "reward_code": self.reward_fn_code,
+0157:                     "target_threshold": self.threshold,
+0158:                     "reward_value": reward,
+0159:                 }
+0160: 
+0161:                 advise_kwargs = dict(**modules, **trajectory, **reward, module_names=module_names)
+0162:                 # only dumps if it's a list or dict
+0163:                 advise_kwargs = {
+0164:                     k: v if isinstance(v, str) else orjson.dumps(recursive_mask(v), option=orjson.OPT_INDENT_2).decode()
+0165:                     for k, v in advise_kwargs.items()
+0166:                 }
+0167:                 advice = dspy.Predict(OfferFeedback)(**advise_kwargs).advice
+0168:                 # print(f"Advice for each module: {advice}")
+0169: 
+0170:             except Exception as e:
+0171:                 print(f"Refine: Attempt failed with rollout id {rid}: {e}")
+0172:                 if idx > self.fail_count:
+0173:                     raise e
+0174:                 self.fail_count -= 1
+0175:         if best_trace:
+0176:             dspy.settings.trace.extend(best_trace)
+0177:         return best_pred
+0178: 
+0179: 
+0180: def inspect_modules(program):
+0181:     separator = "-" * 80
+0182:     output = [separator]
+0183: 
+0184:     for _, (name, predictor) in enumerate(program.named_predictors()):
+0185:         signature = predictor.signature
+0186:         instructions = textwrap.dedent(signature.instructions)
+0187:         instructions = ("\n" + "\t" * 2).join([""] + instructions.splitlines())
+0188: 
+0189:         output.append(f"Module {name}")
+0190:         output.append("\n\tInput Fields:")
+0191:         output.append(("\n" + "\t" * 2).join([""] + get_field_description_string(signature.input_fields).splitlines()))
+0192:         output.append("\tOutput Fields:")
+0193:         output.append(("\n" + "\t" * 2).join([""] + get_field_description_string(signature.output_fields).splitlines()))
+0194:         output.append(f"\tOriginal Instructions: {instructions}")
+0195:         output.append(separator)
+0196: 
+0197:     return "\n".join([o.strip("\n") for o in output])
+0198: 
+0199: 
+0200: def recursive_mask(o):
+0201:     # If the object is already serializable, return it.
+0202:     try:
+0203:         orjson.dumps(o)
+0204:         return o
+0205:     except TypeError:
+0206:         pass
+0207: 
+0208:     # If it's a dictionary, apply recursively to its values.
+0209:     if isinstance(o, dict):
+0210:         return {k: recursive_mask(v) for k, v in o.items()}
+0211:     # If it's a list, apply recursively.
+0212:     elif isinstance(o, list):
+0213:         return [recursive_mask(v) for v in o]
+0214:     # If it's a tuple, apply recursively.
+0215:     elif isinstance(o, tuple):
+0216:         return tuple(recursive_mask(v) for v in o)
+0217:     # Otherwise, replace it with a placeholder string (or use repr(o)).
+0218:     else:
+0219:         return f"<non-serializable: {type(o).__name__}>"
+
+Return JSON that matches the schema exactly.

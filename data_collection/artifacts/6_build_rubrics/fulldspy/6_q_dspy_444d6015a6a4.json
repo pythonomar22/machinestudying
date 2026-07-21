@@ -1,0 +1,87 @@
+{
+ "id": "dspy_444d6015a6a4",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I reloaded predictor state into another typed signature with the same field names but different annotations. The instructions and field text changed, but the annotation stayed local. Which parts of a signature actually survive serialization?",
+ "gold_answer": "Yes. `Signature.dump_state()` stores the instructions plus each field's `prefix` and `desc`, not the field annotations or defaults. `Signature.load_state()` starts from the receiver's current fields and overlays only that metadata, so the receiving signature keeps its own types.\n```python\nimport dspy\n\nclass SavedSig(dspy.Signature):\n    x: int = dspy.InputField()\n    y: str = dspy.OutputField()\n\nclass ReceiverSig(dspy.Signature):\n    x: str = dspy.InputField(desc='different type, different desc')\n    y: str = dspy.OutputField()\n\nstate = dspy.Predict(SavedSig).dump_state()\nq = dspy.Predict(ReceiverSig).load_state(state)\nprint(q.signature.instructions == SavedSig.instructions)\nprint(q.signature.input_fields['x'].annotation is str)\nprint(q.signature.dump_state())\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "`Signature.dump_state()` serializes the signature instructions and, for each field, only the field's `prefix` and `desc` metadata (with `desc` written under the `description` key).",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 40,
+   "statement": "`Signature.load_state()` starts from a deep copy of the receiving signature's current fields and only overwrites `instructions`, `prefix`, and `desc`, so serialized state does not replace other field properties such as the receiver's annotations/types or defaults.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "`Predict.load_state()` restores the signature by calling `self.signature.load_state(state[\"signature\"])` on the predictor's existing signature, so loading into another predictor/signature uses the receiver signature as the base rather than reconstructing the saved signature class.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The tests confirm that when a saved predictor/signature is loaded into a different signature class, changed instructions and field text/prefix are overwritten until the receiving signature's dumped state matches the original saved metadata.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 487,
+   "end_line": 497,
+   "excerpt": "0487:     def dump_state(cls):\n0488:         state = {\"instructions\": cls.instructions, \"fields\": []}\n0489:         for field in cls.fields:\n0490:             state[\"fields\"].append(\n0491:                 {\n0492:                     \"prefix\": cls.fields[field].json_schema_extra[\"prefix\"],\n0493:                     \"description\": cls.fields[field].json_schema_extra[\"desc\"],\n0494:                 }\n0495:             )\n0496: \n0497:         return state"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 499,
+   "end_line": 508,
+   "excerpt": "0499:     @classmethod\n0500:     def load_state(cls, state):\n0501:         signature_copy = Signature(deepcopy(cls.fields), cls.instructions)\n0502: \n0503:         signature_copy.instructions = state[\"instructions\"]\n0504:         for field, saved_field in zip(signature_copy.fields.values(), state[\"fields\"], strict=False):\n0505:             field.json_schema_extra[\"prefix\"] = saved_field[\"prefix\"]\n0506:             field.json_schema_extra[\"desc\"] = saved_field[\"description\"]\n0507: \n0508:         return signature_copy"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/predict/predict.py",
+   "start_line": 103,
+   "end_line": 111,
+   "excerpt": "0103:         excluded_keys = [\"signature\", \"extended_signature\", \"lm\"]\n0104:         for name, value in state.items():\n0105:             # `excluded_keys` are fields that go through special handling.\n0106:             if name not in excluded_keys:\n0107:                 setattr(self, name, value)\n0108: \n0109:         self.signature = self.signature.load_state(state[\"signature\"])\n0110:         sanitized_lm_state = _sanitize_lm_state(state[\"lm\"], allow_unsafe_lm_state) if state[\"lm\"] else None\n0111:         self.lm = LM(**sanitized_lm_state) if sanitized_lm_state else None"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 79,
+   "end_line": 85,
+   "excerpt": "0079: def test_instructions_after_dump_and_load_state():\n0080:     predict_instance = Predict(Signature(\"input -> output\", \"original instructions\"))\n0081:     dumped_state = predict_instance.dump_state()\n0082:     new_instance = Predict(Signature(\"input -> output\", \"new instructions\"))\n0083:     new_instance.load_state(dumped_state)\n0084:     assert new_instance.signature.instructions == \"original instructions\"\n0085: "
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 215,
+   "end_line": 236,
+   "excerpt": "0215: def test_signature_fields_after_dump_and_load_state(tmp_path):\n0216:     class CustomSignature(dspy.Signature):\n0217:         \"\"\"I am just an instruction.\"\"\"\n0218: \n0219:         sentence = dspy.InputField(desc=\"I am an innocent input!\")\n0220:         sentiment = dspy.OutputField()\n0221: \n0222:     file_path = tmp_path / \"tmp.json\"\n0223:     original_instance = Predict(CustomSignature)\n0224:     original_instance.save(file_path)\n0225: \n0226:     class CustomSignature2(dspy.Signature):\n0227:         \"\"\"I am not a pure instruction.\"\"\"\n0228: \n0229:         sentence = dspy.InputField(desc=\"I am a malicious input!\")\n0230:         sentiment = dspy.OutputField(desc=\"I am a malicious output!\", prefix=\"I am a prefix!\")\n0231: \n0232:     new_instance = Predict(CustomSignature2)\n0233:     assert new_instance.signature.dump_state() != original_instance.signature.dump_state()\n0234:     # After loading, the fields should be the same.\n0235:     new_instance.load(file_path)\n0236:     assert new_instance.signature.dump_state() == original_instance.signature.dump_state()"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Annotations and defaults come from the receiving signature class, not the saved state.",
+ "source_index": 1,
+ "smalldspy_scope": false
+}

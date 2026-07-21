@@ -1,0 +1,90 @@
+{
+ "id": "dspy_03d3a17e51d3",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "An outer pipeline is passing a prediction-like payload into a predictor, and one input shape seems to bypass normal signature handling. Which shape gets forwarded into the LM call itself instead of being treated as an ordinary predictor input?",
+ "gold_answer": "DSPy only does this for an input key literally named `prediction` whose value is a dict shaped like `{'type': 'content', 'content': ...}`. In that case `_forward_preprocess()` removes it from the predictor inputs and inserts it into LM kwargs as `prediction`; any other `prediction` value, including a normal signature field, stays in ordinary signature handling.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The only input key that gets special routing is a keyword literally named `prediction`.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "That special routing activates only when `prediction` is a dict whose `type` is `'content'` and that contains a `content` key.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "For a matching `prediction` payload, `_forward_preprocess()` removes it from normal predictor kwargs and puts it into `config['prediction']`, and `forward()` sends that config as LM kwargs.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 20,
+   "statement": "Any other `prediction` value, including a plain string passed through a signature field named `prediction`, is not forwarded as an LM kwarg and instead remains in the ordinary predictor input path.",
+   "span_ids": [
+    "s1",
+    "s3",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/predict.py",
+   "start_line": 171,
+   "end_line": 176,
+   "excerpt": "0171:         if \"prediction\" in kwargs:\n0172:             if (\n0173:                 isinstance(kwargs[\"prediction\"], dict)\n0174:                 and kwargs[\"prediction\"].get(\"type\") == \"content\"\n0175:                 and \"content\" in kwargs[\"prediction\"]\n0176:             ):"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/predict.py",
+   "start_line": 177,
+   "end_line": 180,
+   "excerpt": "0177:                 # If the `prediction` is the standard predicted outputs format\n0178:                 # (https://platform.openai.com/docs/guides/predicted-outputs), we remove it from input kwargs and add it\n0179:                 # to the lm kwargs.\n0180:                 config[\"prediction\"] = kwargs.pop(\"prediction\")"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/predict/predict.py",
+   "start_line": 243,
+   "end_line": 253,
+   "excerpt": "0243:     def forward(self, **kwargs):\n0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)\n0245: \n0246:         adapter = settings.adapter or ChatAdapter()\n0247: \n0248:         if self._should_stream():\n0249:             with settings.context(caller_predict=self):\n0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0251:         else:\n0252:             with settings.context(send_stream=None):\n0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 898,
+   "end_line": 907,
+   "excerpt": "0898:     with patch(\"litellm.completion\") as mock_completion:\n0899:         program(\n0900:             question=\"Why did a chicken cross the kitchen?\",\n0901:             prediction={\"type\": \"content\", \"content\": \"A chicken crossing the kitchen\"},\n0902:         )\n0903: \n0904:         assert mock_completion.call_args[1][\"prediction\"] == {\n0905:             \"type\": \"content\",\n0906:             \"content\": \"A chicken crossing the kitchen\",\n0907:         }"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 909,
+   "end_line": 915,
+   "excerpt": "0909:     # If the signature has prediction as an input field, and the prediction is not set as the standard predicted output\n0910:     # format, it should not be passed to the LM.\n0911:     program = Predict(\"question, prediction -> judgement\")\n0912:     with patch(\"litellm.completion\") as mock_completion:\n0913:         program(question=\"Why did a chicken cross the kitchen?\", prediction=\"To get to the other side!\")\n0914: \n0915:     assert \"prediction\" not in mock_completion.call_args[1]"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Narrow but high-signal LM-boundary passthrough rule where locating the hidden special shape is part of the challenge.",
+ "source_index": 15,
+ "smalldspy_scope": true
+}

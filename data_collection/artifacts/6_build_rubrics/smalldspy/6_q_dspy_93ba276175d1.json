@@ -1,0 +1,102 @@
+{
+ "id": "dspy_93ba276175d1",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "If I declare an output as `dspy.Reasoning`, when does DSPy turn on a provider’s native reasoning mode, and what cases deliberately disable that path even though the field is present?",
+ "gold_answer": "A `dspy.Reasoning` output field turns on native reasoning only if the LM supports reasoning and `reasoning_effort` is not `None`; if you did not set it, DSPy defaults it to `'low'`. DSPy deliberately skips the native path when `reasoning_effort=None`, when `lm.supports_reasoning` is false, or when the model name contains `gpt-5` while using chat mode. In the native path, the reasoning field is removed from the parsed signature and later filled from `reasoning_content` in the LM response.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "For a `dspy.Reasoning` output field, DSPy resolves `reasoning_effort` from `lm_kwargs` first, then `lm.kwargs`, and defaults it to `'low'` if neither provides a value.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "DSPy does not enable native reasoning if the resolved `reasoning_effort` is `None` or if `lm.supports_reasoning` is false; in those cases it returns the original signature unchanged.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "DSPy also deliberately skips native reasoning for chat models whose `lm.model` contains `gpt-5`, even when a `Reasoning` field is present.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "When native reasoning is enabled, DSPy writes the chosen `reasoning_effort` into `lm_kwargs` and removes the reasoning field from the signature.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "After using the native path, DSPy reconstructs reasoning from `reasoning_content` in the LM response, and streamed chunks read `choices[0].delta.reasoning_content` when available.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/types/reasoning.py",
+   "start_line": 53,
+   "end_line": 61,
+   "excerpt": "0053:         if \"reasoning_effort\" in lm_kwargs:\n0054:             # `lm_kwargs` overrides `lm.kwargs`.\n0055:             reasoning_effort = lm_kwargs[\"reasoning_effort\"]\n0056:         elif \"reasoning_effort\" in lm.kwargs:\n0057:             reasoning_effort = lm.kwargs[\"reasoning_effort\"]\n0058:         else:\n0059:             # Turn on the native reasoning explicitly if Reasoning field is present in the signature and no explicit\n0060:             # reasoning effort is set in `lm_kwargs` or `lm.kwargs`.\n0061:             reasoning_effort = \"low\""
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/types/reasoning.py",
+   "start_line": 63,
+   "end_line": 67,
+   "excerpt": "0063:         if reasoning_effort is None or not lm.supports_reasoning:\n0064:             # If users explicitly set `reasoning_effort` to None or the LM doesn't support reasoning, we don't enable\n0065:             # native reasoning.\n0066:             return signature\n0067: "
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/types/reasoning.py",
+   "start_line": 68,
+   "end_line": 73,
+   "excerpt": "0068:         if \"gpt-5\" in lm.model and lm.model_type == \"chat\":\n0069:             # There is a caveat of Litellm as 1.79.0 that when using the chat completion API on GPT-5 family models,\n0070:             # the reasoning content is not available in the response. As a workaround, we don't enable the native\n0071:             # reasoning feature for GPT-5 family models when using the chat completion API.\n0072:             # Litellm issue: https://github.com/BerriAI/litellm/issues/14748\n0073:             return signature"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/types/reasoning.py",
+   "start_line": 75,
+   "end_line": 77,
+   "excerpt": "0075:         lm_kwargs[\"reasoning_effort\"] = reasoning_effort\n0076:         # Delete the reasoning field from the signature to use the native reasoning feature.\n0077:         return signature.delete(field_name)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/types/reasoning.py",
+   "start_line": 80,
+   "end_line": 84,
+   "excerpt": "0080:     def parse_lm_response(cls, response: str | dict[str, Any]) -> Optional[\"Reasoning\"]:\n0081:         \"\"\"Parse the LM response into a Reasoning object.\"\"\"\n0082:         if \"reasoning_content\" in response:\n0083:             return Reasoning(content=response[\"reasoning_content\"])\n0084:         return None"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/adapters/types/reasoning.py",
+   "start_line": 97,
+   "end_line": 101,
+   "excerpt": "0097:         try:\n0098:             if choices := getattr(chunk, \"choices\", None):\n0099:                 return getattr(choices[0].delta, \"reasoning_content\", None)\n0100:         except Exception:\n0101:             return None"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Good provider-feature question with explicit enable/disable gates in one file.",
+ "source_index": 13,
+ "smalldspy_scope": true
+}

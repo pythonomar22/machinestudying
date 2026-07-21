@@ -1,0 +1,111 @@
+{
+ "id": "dspy_3aa70c8ab131",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I do not want DSPy to execute tools yet. I want the backend’s tool-selection decision back as structured data so my own application can inspect or dispatch it. How does DSPy wire that into a function-calling backend, and what validation happens before the LM call?",
+ "gold_answer": "With native function calling enabled and an LM that supports it, the adapter converts each `dspy.Tool` into LiteLLM/OpenAI-style tool schema, puts that list in `lm_kwargs['tools']`, removes the tool input and tool-call output fields from the text-parsed signature, and reconstructs `dspy.ToolCalls` from returned provider tool calls. If you declare a tool-call output field without also supplying tools as input, DSPy raises before making the LM call.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Before the LM is called, the adapter validates native tool-calling signatures and raises if a `ToolCalls` output field is declared without any tool input field.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "When native function calling is enabled and the LM supports function calling, the adapter accepts a `Tool` or `list[Tool]` input, normalizes it to a list, converts each tool with `format_as_litellm_function_call()`, and places the resulting schemas in `lm_kwargs[\"tools\"]`.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "Each DSPy tool is exposed to the backend in LiteLLM/OpenAI function-calling format: `type=\"function\"` plus a `function` object containing the tool name, description, and object-typed parameter schema with `properties` from `self.args` and `required` set to all argument keys.",
+   "span_ids": [
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "For the native function-calling path, the adapter removes both the tool input field and the `ToolCalls` output field from the signature used for prompt formatting and text parsing.",
+   "span_ids": [
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "After the LM returns, the adapter turns provider `tool_calls` into structured `dspy.ToolCalls` data by extracting each call's function name and JSON-parsed arguments, and if the response contains only tool calls, the other declared output fields are filled with `None`.",
+   "span_ids": [
+    "s7"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/base.py",
+   "start_line": 202,
+   "end_line": 206,
+   "excerpt": "0202:         processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)\n0203:         inputs = self.format(processed_signature, demos, inputs)\n0204: \n0205:         outputs = lm(messages=inputs, **lm_kwargs)\n0206:         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/base.py",
+   "start_line": 73,
+   "end_line": 82,
+   "excerpt": "0073:         if self.use_native_function_calling:\n0074:             tool_call_input_field_name = self._get_tool_call_input_field_name(signature)\n0075:             tool_call_output_field_name = self._get_tool_call_output_field_name(signature)\n0076: \n0077:             if tool_call_output_field_name and tool_call_input_field_name is None:\n0078:                 raise ValueError(\n0079:                     f\"You provided an output field {tool_call_output_field_name} to receive the tool calls information, \"\n0080:                     \"but did not provide any tools as the input. Please provide a list of tools as the input by adding an \"\n0081:                     \"input field with type `list[dspy.Tool]`.\"\n0082:                 )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/base.py",
+   "start_line": 464,
+   "end_line": 478,
+   "excerpt": "0464:     def _get_tool_call_input_field_name(self, signature: type[Signature]) -> bool:\n0465:         for name, field in signature.input_fields.items():\n0466:             # Look for annotation `list[dspy.Tool]` or `dspy.Tool`\n0467:             origin = get_origin(field.annotation)\n0468:             if origin is list and field.annotation.__args__[0] == Tool:\n0469:                 return name\n0470:             if field.annotation == Tool:\n0471:                 return name\n0472:         return None\n0473: \n0474:     def _get_tool_call_output_field_name(self, signature: type[Signature]) -> bool:\n0475:         for name, field in signature.output_fields.items():\n0476:             if field.annotation == ToolCalls:\n0477:                 return name\n0478:         return None"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/base.py",
+   "start_line": 84,
+   "end_line": 90,
+   "excerpt": "0084:             if tool_call_output_field_name and lm.supports_function_calling:\n0085:                 tools = inputs[tool_call_input_field_name]\n0086:                 tools = tools if isinstance(tools, list) else [tools]\n0087: \n0088:                 lm_tools = [tool.format_as_litellm_function_call() for tool in tools]\n0089: \n0090:                 lm_kwargs[\"tools\"] = lm_tools"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/types/tool.py",
+   "start_line": 151,
+   "end_line": 163,
+   "excerpt": "0151:     def format_as_litellm_function_call(self):\n0152:         return {\n0153:             \"type\": \"function\",\n0154:             \"function\": {\n0155:                 \"name\": self.name,\n0156:                 \"description\": self.desc,\n0157:                 \"parameters\": {\n0158:                     \"type\": \"object\",\n0159:                     \"properties\": self.args,\n0160:                     \"required\": list(self.args.keys()),\n0161:                 },\n0162:             },\n0163:         }"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/adapters/base.py",
+   "start_line": 92,
+   "end_line": 97,
+   "excerpt": "0092:                 signature_for_native_function_calling = signature.delete(tool_call_output_field_name)\n0093:                 signature_for_native_function_calling = signature_for_native_function_calling.delete(\n0094:                     tool_call_input_field_name\n0095:                 )\n0096: \n0097:                 return signature_for_native_function_calling"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/adapters/base.py",
+   "start_line": 127,
+   "end_line": 158,
+   "excerpt": "0127:             if isinstance(output, dict):\n0128:                 text = output[\"text\"]\n0129:                 output_logprobs = output.get(\"logprobs\")\n0130:                 tool_calls = output.get(\"tool_calls\")\n0131: \n0132:             if text:\n0133:                 value = self.parse(processed_signature, text)\n0134:                 for field_name in original_signature.output_fields.keys():\n0135:                     if field_name not in value:\n0136:                         # We need to set the field not present in the processed signature to None for consistency.\n0137:                         value[field_name] = None\n0138:             elif tool_calls and tool_call_output_field_name:\n0139:                 value = {}\n0140:                 for field_name in original_signature.output_fields.keys():\n0141:                     value[field_name] = None\n0142:             else:\n0143:                 raise AdapterParseError(\n0144:                     adapter_name=type(self).__name__,\n0145:                     signature=original_signature,\n0146:                     lm_response=str(output),\n0147:                     message=\"The LM returned an empty or null response.\",\n0148:                 )\n0149: \n0150:             if tool_calls and tool_call_output_field_name:\n0151:                 tool_calls = [\n0152:                     {\n0153:                         \"name\": v[\"function\"][\"name\"],\n0154:                         \"args\": json_repair.loads(v[\"function\"][\"arguments\"]),\n0155:                     }\n0156:                     for v in tool_calls\n0157:                 ]\n0158:                 value[tool_call_output_field_name] = ToolCalls.from_dict_list(tool_calls)"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Kept as the cleanest non-executing native function-calling question; execution-specific tool questions were lower fit.",
+ "source_index": 14,
+ "smalldspy_scope": true
+}

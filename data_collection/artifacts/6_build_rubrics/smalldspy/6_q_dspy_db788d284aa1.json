@@ -1,0 +1,88 @@
+{
+ "id": "dspy_db788d284aa1",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I’m sending an image through DSPy to an OpenAI-compatible chat backend. Does DSPy leave it embedded inside text, or does it convert the request into multimodal content blocks?",
+ "gold_answer": "DSPy converts it into multimodal content blocks. Custom types first serialize into reserved markers during prompt construction, then `split_message_content_for_custom_types(...)` rewrites user messages into content-part arrays. For `dspy.Image`, `format()` emits OpenAI-style `{'type': 'image_url', 'image_url': {'url': ...}}` blocks, so the backend receives a real multimodal message rather than plain text with an embedded marker.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "For an image input carried as a DSPy custom type, the outbound `user` message `content` is converted into a list of content blocks rather than left as one plain-text string with an embedded marker.",
+   "span_ids": [
+    "s2",
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "When a custom `Type` is serialized and its `format()` returns a list, DSPy JSON-serializes that list and wraps it between the reserved `CUSTOM_TYPE_START_IDENTIFIER` and `CUSTOM_TYPE_END_IDENTIFIER` markers.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "`split_message_content_for_custom_types(...)` scans `user` message strings for those markers, converts surrounding substrings into `{\"type\": \"text\"}` blocks, parses the JSON inside each marker into content blocks, and assigns the resulting list back to `message[\"content\"]`.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "`dspy.Image.format()` emits an OpenAI-compatible image content part of the form `[{\"type\": \"image_url\", \"image_url\": {\"url\": image_url}}]`.",
+   "span_ids": [
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/types/base_type.py",
+   "start_line": 70,
+   "end_line": 77,
+   "excerpt": "0070:     @pydantic.model_serializer()\n0071:     def serialize_model(self):\n0072:         formatted = self.format()\n0073:         if isinstance(formatted, list):\n0074:             return (\n0075:                 f\"{CUSTOM_TYPE_START_IDENTIFIER}{json.dumps(formatted, ensure_ascii=False)}{CUSTOM_TYPE_END_IDENTIFIER}\"\n0076:             )\n0077:         return formatted"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/types/base_type.py",
+   "start_line": 135,
+   "end_line": 160,
+   "excerpt": "0135: def split_message_content_for_custom_types(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:\n0136:     \"\"\"Split user message content into a list of content blocks.\n0137: \n0138:     This method splits each user message's content in the `messages` list to be a list of content block, so that\n0139:     the custom types like `dspy.Image` can be properly formatted for better quality. For example, the split content\n0140:     may look like below if the user message has a `dspy.Image` object:\n0141: \n0142:     ```\n0143:     [\n0144:         {\"type\": \"text\", \"text\": \"{text_before_image}\"},\n0145:         {\"type\": \"image_url\", \"image_url\": {\"url\": \"{image_url}\"}},\n0146:         {\"type\": \"text\", \"text\": \"{text_after_image}\"},\n0147:     ]\n0148:     ```\n0149: \n0150:     This is implemented by finding the `<<CUSTOM-TYPE-START-IDENTIFIER>>` and `<<CUSTOM-TYPE-END-IDENTIFIER>>`\n0151:     in the user message content and splitting the content around them. The `<<CUSTOM-TYPE-START-IDENTIFIER>>`\n0152:     and `<<CUSTOM-TYPE-END-IDENTIFIER>>` are the reserved identifiers for the custom types as in `dspy.Type`.\n0153: \n0154:     Args:\n0155:         messages: a list of messages sent to the LM. The format is the same as [OpenAI API's messages\n0156:             format](https://platform.openai.com/docs/guides/chat-completions/response-format).\n0157: \n0158:     Returns:\n0159:         A list of messages with the content split into a list of content blocks around custom types content.\n0160:     \"\"\""
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/types/base_type.py",
+   "start_line": 161,
+   "end_line": 178,
+   "excerpt": "0161:     for message in messages:\n0162:         if message[\"role\"] != \"user\":\n0163:             # Custom type messages are only in user messages\n0164:             continue\n0165: \n0166:         pattern = rf\"{CUSTOM_TYPE_START_IDENTIFIER}(.*?){CUSTOM_TYPE_END_IDENTIFIER}\"\n0167:         result = []\n0168:         last_end = 0\n0169:         # DSPy adapter always formats user input into a string content before custom type splitting\n0170:         content: str = message[\"content\"]\n0171: \n0172:         for match in re.finditer(pattern, content, re.DOTALL):\n0173:             start, end = match.span()\n0174: \n0175:             # Add text before the current block\n0176:             if start > last_end:\n0177:                 result.append({\"type\": \"text\", \"text\": content[last_end:start]})\n0178: "
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/types/base_type.py",
+   "start_line": 179,
+   "end_line": 207,
+   "excerpt": "0179:             # Parse the JSON inside the block\n0180:             custom_type_content = match.group(1).strip()\n0181:             parsed = None\n0182: \n0183:             for parse_fn in [json.loads, _parse_doubly_quoted_json, json_repair.loads]:\n0184:                 try:\n0185:                     parsed = parse_fn(custom_type_content)\n0186:                     break\n0187:                 except json.JSONDecodeError:\n0188:                     continue\n0189: \n0190:             if parsed:\n0191:                 for custom_type_content in parsed:\n0192:                     result.append(custom_type_content)\n0193:             else:\n0194:                 # fallback to raw string if it's not valid JSON\n0195:                 result.append({\"type\": \"text\", \"text\": custom_type_content})\n0196: \n0197:             last_end = end\n0198: \n0199:         if last_end == 0:\n0200:             # No custom type found, return the original message\n0201:             continue\n0202: \n0203:         # Add any remaining text after the last match\n0204:         if last_end < len(content):\n0205:             result.append({\"type\": \"text\", \"text\": content[last_end:]})\n0206: \n0207:         message[\"content\"] = result"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/types/image.py",
+   "start_line": 73,
+   "end_line": 79,
+   "excerpt": "0073:     @lru_cache(maxsize=32)\n0074:     def format(self) -> list[dict[str, Any]] | str:\n0075:         try:\n0076:             image_url = encode_image(self.url)\n0077:         except Exception as e:\n0078:             raise ValueError(f\"Failed to format image for DSPy: {e}\")\n0079:         return [{\"type\": \"image_url\", \"image_url\": {\"url\": image_url}}]"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Strong multimodal request-formatting question with a clear code path and no doc dependency.",
+ "source_index": 17,
+ "smalldspy_scope": true
+}

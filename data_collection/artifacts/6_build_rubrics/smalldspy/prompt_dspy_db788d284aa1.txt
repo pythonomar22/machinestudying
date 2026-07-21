@@ -1,0 +1,519 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_db788d284aa1`
+- Label: `lm_provider_integration_and_configuration`
+- Question: `I’m sending an image through DSPy to an OpenAI-compatible chat backend. Does DSPy leave it embedded inside text, or does it convert the request into multimodal content blocks?`
+- Gold answer:
+DSPy converts it into multimodal content blocks. Custom types first serialize into reserved markers during prompt construction, then `split_message_content_for_custom_types(...)` rewrites user messages into content-part arrays. For `dspy.Image`, `format()` emits OpenAI-style `{'type': 'image_url', 'image_url': {'url': ...}}` blocks, so the backend receives a real multimodal message rather than plain text with an embedded marker.
+
+## Evidence references
+[
+  {
+    "file": "dspy/adapters/types/base_type.py",
+    "symbol": "Type.serialize_model"
+  },
+  {
+    "file": "dspy/adapters/types/base_type.py",
+    "symbol": "split_message_content_for_custom_types"
+  },
+  {
+    "file": "dspy/adapters/types/image.py",
+    "symbol": "Image.format"
+  }
+]
+
+## Full evidence files
+### dspy/adapters/types/base_type.py
+0001: import json
+0002: import re
+0003: from typing import TYPE_CHECKING, Any, Optional, get_args, get_origin
+0004: 
+0005: import json_repair
+0006: import pydantic
+0007: 
+0008: from dspy.clients.base_lm import BaseLM
+0009: 
+0010: if TYPE_CHECKING:
+0011:     from litellm import ModelResponseStream
+0012: 
+0013:     from dspy.signatures.signature import Signature
+0014: 
+0015: CUSTOM_TYPE_START_IDENTIFIER = "<<CUSTOM-TYPE-START-IDENTIFIER>>"
+0016: CUSTOM_TYPE_END_IDENTIFIER = "<<CUSTOM-TYPE-END-IDENTIFIER>>"
+0017: 
+0018: 
+0019: class Type(pydantic.BaseModel):
+0020:     """Base class to support creating custom types for DSPy signatures.
+0021: 
+0022:     This is the parent class of DSPy custom types, e.g, dspy.Image. Subclasses must implement the `format` method to
+0023:     return a list of dictionaries (same as the Array of content parts in the OpenAI API user message's content field).
+0024: 
+0025:     Examples:
+0026: 
+0027:         ```python
+0028:         class Image(Type):
+0029:             url: str
+0030: 
+0031:             def format(self) -> list[dict[str, Any]]:
+0032:                 return [{"type": "image_url", "image_url": {"url": self.url}}]
+0033:         ```
+0034:     """
+0035: 
+0036:     def format(self) -> list[dict[str, Any]] | str:
+0037:         raise NotImplementedError
+0038: 
+0039:     @classmethod
+0040:     def description(cls) -> str:
+0041:         """Description of the custom type"""
+0042:         return ""
+0043: 
+0044:     @classmethod
+0045:     def extract_custom_type_from_annotation(cls, annotation):
+0046:         """Extract all custom types from the annotation.
+0047: 
+0048:         This is used to extract all custom types from the annotation of a field, while the annotation can
+0049:         have arbitrary level of nesting. For example, we detect `Tool` is in `list[dict[str, Tool]]`.
+0050:         """
+0051:         # Direct match. Nested type like `list[dict[str, Event]]` passes `isinstance(annotation, type)` in python 3.10
+0052:         # while fails in python 3.11. To accommodate users using python 3.10, we need to capture the error and ignore it.
+0053:         try:
+0054:             if isinstance(annotation, type) and issubclass(annotation, cls):
+0055:                 return [annotation]
+0056:         except TypeError:
+0057:             pass
+0058: 
+0059:         origin = get_origin(annotation)
+0060:         if origin is None:
+0061:             return []
+0062: 
+0063:         result = []
+0064:         # Recurse into all type args
+0065:         for arg in get_args(annotation):
+0066:             result.extend(cls.extract_custom_type_from_annotation(arg))
+0067: 
+0068:         return result
+0069: 
+0070:     @pydantic.model_serializer()
+0071:     def serialize_model(self):
+0072:         formatted = self.format()
+0073:         if isinstance(formatted, list):
+0074:             return (
+0075:                 f"{CUSTOM_TYPE_START_IDENTIFIER}{json.dumps(formatted, ensure_ascii=False)}{CUSTOM_TYPE_END_IDENTIFIER}"
+0076:             )
+0077:         return formatted
+0078: 
+0079:     @classmethod
+0080:     def adapt_to_native_lm_feature(
+0081:         cls,
+0082:         signature: type["Signature"],
+0083:         field_name: str,
+0084:         lm: BaseLM,
+0085:         lm_kwargs: dict[str, Any],
+0086:     ) -> type["Signature"]:
+0087:         """Adapt the custom type to the native LM feature if possible.
+0088: 
+0089:         When the LM and configuration supports the related native LM feature, e.g., native tool calling, native
+0090:         reasoning, etc., we adapt the signature and `lm_kwargs` to enable the native LM feature.
+0091: 
+0092:         Args:
+0093:             signature: The DSPy signature for the LM call.
+0094:             field_name: The name of the field in the signature to adapt to the native LM feature.
+0095:             lm: The LM instance.
+0096:             lm_kwargs: The keyword arguments for the LM call, subject to in-place updates if adaptation if required.
+0097: 
+0098:         Returns:
+0099:             The adapted signature. If the custom type is not natively supported by the LM, return the original
+0100:             signature.
+0101:         """
+0102:         return signature
+0103: 
+0104:     @classmethod
+0105:     def is_streamable(cls) -> bool:
+0106:         """Whether the custom type is streamable."""
+0107:         return False
+0108: 
+0109:     @classmethod
+0110:     def parse_stream_chunk(cls, chunk: "ModelResponseStream") -> Optional["Type"]:
+0111:         """
+0112:         Parse a stream chunk into the custom type.
+0113: 
+0114:         Args:
+0115:             chunk: A stream chunk.
+0116: 
+0117:         Returns:
+0118:             A custom type object or None if the chunk is not for this custom type.
+0119:         """
+0120:         return None
+0121: 
+0122:     @classmethod
+0123:     def parse_lm_response(cls, response: str | dict[str, Any]) -> Optional["Type"]:
+0124:         """Parse a LM response into the custom type.
+0125: 
+0126:         Args:
+0127:             response: A LM response.
+0128: 
+0129:         Returns:
+0130:             A custom type object.
+0131:         """
+0132:         return None
+0133: 
+0134: 
+0135: def split_message_content_for_custom_types(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+0136:     """Split user message content into a list of content blocks.
+0137: 
+0138:     This method splits each user message's content in the `messages` list to be a list of content block, so that
+0139:     the custom types like `dspy.Image` can be properly formatted for better quality. For example, the split content
+0140:     may look like below if the user message has a `dspy.Image` object:
+0141: 
+0142:     ```
+0143:     [
+0144:         {"type": "text", "text": "{text_before_image}"},
+0145:         {"type": "image_url", "image_url": {"url": "{image_url}"}},
+0146:         {"type": "text", "text": "{text_after_image}"},
+0147:     ]
+0148:     ```
+0149: 
+0150:     This is implemented by finding the `<<CUSTOM-TYPE-START-IDENTIFIER>>` and `<<CUSTOM-TYPE-END-IDENTIFIER>>`
+0151:     in the user message content and splitting the content around them. The `<<CUSTOM-TYPE-START-IDENTIFIER>>`
+0152:     and `<<CUSTOM-TYPE-END-IDENTIFIER>>` are the reserved identifiers for the custom types as in `dspy.Type`.
+0153: 
+0154:     Args:
+0155:         messages: a list of messages sent to the LM. The format is the same as [OpenAI API's messages
+0156:             format](https://platform.openai.com/docs/guides/chat-completions/response-format).
+0157: 
+0158:     Returns:
+0159:         A list of messages with the content split into a list of content blocks around custom types content.
+0160:     """
+0161:     for message in messages:
+0162:         if message["role"] != "user":
+0163:             # Custom type messages are only in user messages
+0164:             continue
+0165: 
+0166:         pattern = rf"{CUSTOM_TYPE_START_IDENTIFIER}(.*?){CUSTOM_TYPE_END_IDENTIFIER}"
+0167:         result = []
+0168:         last_end = 0
+0169:         # DSPy adapter always formats user input into a string content before custom type splitting
+0170:         content: str = message["content"]
+0171: 
+0172:         for match in re.finditer(pattern, content, re.DOTALL):
+0173:             start, end = match.span()
+0174: 
+0175:             # Add text before the current block
+0176:             if start > last_end:
+0177:                 result.append({"type": "text", "text": content[last_end:start]})
+0178: 
+0179:             # Parse the JSON inside the block
+0180:             custom_type_content = match.group(1).strip()
+0181:             parsed = None
+0182: 
+0183:             for parse_fn in [json.loads, _parse_doubly_quoted_json, json_repair.loads]:
+0184:                 try:
+0185:                     parsed = parse_fn(custom_type_content)
+0186:                     break
+0187:                 except json.JSONDecodeError:
+0188:                     continue
+0189: 
+0190:             if parsed:
+0191:                 for custom_type_content in parsed:
+0192:                     result.append(custom_type_content)
+0193:             else:
+0194:                 # fallback to raw string if it's not valid JSON
+0195:                 result.append({"type": "text", "text": custom_type_content})
+0196: 
+0197:             last_end = end
+0198: 
+0199:         if last_end == 0:
+0200:             # No custom type found, return the original message
+0201:             continue
+0202: 
+0203:         # Add any remaining text after the last match
+0204:         if last_end < len(content):
+0205:             result.append({"type": "text", "text": content[last_end:]})
+0206: 
+0207:         message["content"] = result
+0208: 
+0209:     return messages
+0210: 
+0211: 
+0212: def _parse_doubly_quoted_json(json_str: str) -> Any:
+0213:     """
+0214:     Parse a doubly quoted JSON string into a Python dict.
+0215:     `dspy.Type` can be json-encoded twice if included in either list or dict, e.g., `list[dspy.experimental.Document]`
+0216:     """
+0217:     return json.loads(json.loads(f'"{json_str}"'))
+
+### dspy/adapters/types/image.py
+0001: import base64
+0002: import io
+0003: import mimetypes
+0004: import os
+0005: import warnings
+0006: from functools import lru_cache
+0007: from typing import Any, Union
+0008: from urllib.parse import urlparse
+0009: 
+0010: import pydantic
+0011: import requests
+0012: 
+0013: from dspy.adapters.types.base_type import Type
+0014: 
+0015: try:
+0016:     from PIL import Image as PILImage
+0017: 
+0018:     PIL_AVAILABLE = True
+0019: except ImportError:
+0020:     PIL_AVAILABLE = False
+0021: 
+0022: 
+0023: class Image(Type):
+0024:     url: str
+0025: 
+0026:     model_config = pydantic.ConfigDict(
+0027:         frozen=True,
+0028:         str_strip_whitespace=True,
+0029:         validate_assignment=True,
+0030:         extra="forbid",
+0031:     )
+0032: 
+0033:     def __init__(self, url: Any = None, *, download: bool = False, verify: bool = True, **data):
+0034:         """Create an Image.
+0035: 
+0036:         Parameters
+0037:         ----------
+0038:         url:
+0039:             The image source. Supported values include
+0040: 
+0041:             - ``str``: HTTP(S)/GS URL or local file path
+0042:             - ``bytes``: raw image bytes
+0043:             - ``PIL.Image.Image``: a PIL image instance
+0044:             - ``dict`` with a single ``{"url": value}`` entry (legacy form)
+0045:             - already encoded data URI
+0046: 
+0047:         download:
+0048:             Whether remote URLs should be downloaded to infer their MIME type.
+0049: 
+0050:         verify:
+0051:             Whether to verify SSL certificates when downloading images from URLs.
+0052:             Set to False for self-signed certificates. Default is True.
+0053: 
+0054:         Any additional keyword arguments are passed to :class:`pydantic.BaseModel`.
+0055:         """
+0056: 
+0057:         if url is not None and "url" not in data:
+0058:             # Support a positional argument while allowing ``url=`` in **data.
+0059:             if isinstance(url, dict) and set(url.keys()) == {"url"}:
+0060:                 # Legacy dict form from previous model validator.
+0061:                 data["url"] = url["url"]
+0062:             else:
+0063:                 # ``url`` may be a string, bytes, or a PIL image.
+0064:                 data["url"] = url
+0065: 
+0066:         if "url" in data:
+0067:             # Normalize any accepted input into a base64 data URI or plain URL.
+0068:             data["url"] = encode_image(data["url"], download_images=download, verify=verify)
+0069: 
+0070:         # Delegate the rest of initialization to pydantic's BaseModel.
+0071:         super().__init__(**data)
+0072: 
+0073:     @lru_cache(maxsize=32)
+0074:     def format(self) -> list[dict[str, Any]] | str:
+0075:         try:
+0076:             image_url = encode_image(self.url)
+0077:         except Exception as e:
+0078:             raise ValueError(f"Failed to format image for DSPy: {e}")
+0079:         return [{"type": "image_url", "image_url": {"url": image_url}}]
+0080: 
+0081:     @classmethod
+0082:     def from_url(cls, url: str, download: bool = False):
+0083:         warnings.warn(
+0084:             "Image.from_url is deprecated; use Image(url) instead.",
+0085:             DeprecationWarning,
+0086:             stacklevel=2,
+0087:         )
+0088:         return cls(url, download=download)
+0089: 
+0090:     @classmethod
+0091:     def from_file(cls, file_path: str):
+0092:         warnings.warn(
+0093:             "Image.from_file is deprecated; use Image(file_path) instead.",
+0094:             DeprecationWarning,
+0095:             stacklevel=2,
+0096:         )
+0097:         return cls(file_path)
+0098: 
+0099:     @classmethod
+0100:     def from_PIL(cls, pil_image):  # noqa: N802
+0101:         warnings.warn(
+0102:             "Image.from_PIL is deprecated; use Image(pil_image) instead.",
+0103:             DeprecationWarning,
+0104:             stacklevel=2,
+0105:         )
+0106:         return cls(pil_image)
+0107: 
+0108:     def __str__(self):
+0109:         return self.serialize_model()
+0110: 
+0111:     def __repr__(self):
+0112:         if "base64" in self.url:
+0113:             len_base64 = len(self.url.split("base64,")[1])
+0114:             image_type = self.url.split(";")[0].split("/")[-1]
+0115:             return f"Image(url=data:image/{image_type};base64,<IMAGE_BASE_64_ENCODED({len_base64!s})>)"
+0116:         return f"Image(url='{self.url}')"
+0117: 
+0118: 
+0119: def is_url(string: str) -> bool:
+0120:     """Check if a string is a valid URL."""
+0121:     try:
+0122:         result = urlparse(string)
+0123:         return all([result.scheme in ("http", "https", "gs"), result.netloc])
+0124:     except ValueError:
+0125:         return False
+0126: 
+0127: 
+0128: def encode_image(image: Union[str, bytes, "PILImage.Image", dict], download_images: bool = False, verify: bool = True) -> str:
+0129:     """
+0130:     Encode an image or file to a base64 data URI.
+0131: 
+0132:     Args:
+0133:         image: The image or file to encode. Can be a PIL Image, file path, URL, or data URI.
+0134:         download_images: Whether to download images from URLs.
+0135:         verify: Whether to verify SSL certificates when downloading images.
+0136: 
+0137:     Returns:
+0138:         str: The data URI of the file or the URL if download_images is False.
+0139: 
+0140:     Raises:
+0141:         ValueError: If the file type is not supported.
+0142:     """
+0143:     if isinstance(image, dict) and "url" in image:
+0144:         # NOTE: Not doing other validation for now
+0145:         return image["url"]
+0146:     elif isinstance(image, str):
+0147:         if image.startswith("data:"):
+0148:             # Already a data URI
+0149:             return image
+0150:         elif os.path.isfile(image):
+0151:             # File path
+0152:             return _encode_image_from_file(image)
+0153:         elif is_url(image):
+0154:             # URL
+0155:             if download_images:
+0156:                 return _encode_image_from_url(image, verify=verify)
+0157:             else:
+0158:                 # Return the URL as is
+0159:                 return image
+0160:         else:
+0161:             # Unsupported string format
+0162:             raise ValueError(f"Unrecognized file string: {image}; If this file type should be supported, please open an issue.")
+0163:     elif PIL_AVAILABLE and isinstance(image, PILImage.Image):
+0164:         # PIL Image
+0165:         return _encode_pil_image(image)
+0166:     elif isinstance(image, bytes):
+0167:         # Raw bytes
+0168:         if not PIL_AVAILABLE:
+0169:             raise ImportError("Pillow is required to process image bytes.")
+0170:         img = PILImage.open(io.BytesIO(image))
+0171:         return _encode_pil_image(img)
+0172:     elif isinstance(image, Image):
+0173:         return image.url
+0174:     else:
+0175:         print(f"Unsupported image type: {type(image)}")
+0176:         raise ValueError(f"Unsupported image type: {type(image)}")
+0177: 
+0178: 
+0179: def _encode_image_from_file(file_path: str) -> str:
+0180:     """Encode a file from a file path to a base64 data URI."""
+0181:     with open(file_path, "rb") as file:
+0182:         file_data = file.read()
+0183: 
+0184:     # Use mimetypes to guess directly from the file path
+0185:     mime_type, _ = mimetypes.guess_type(file_path)
+0186:     if mime_type is None:
+0187:         raise ValueError(f"Could not determine MIME type for file: {file_path}")
+0188: 
+0189:     encoded_data = base64.b64encode(file_data).decode("utf-8")
+0190:     return f"data:{mime_type};base64,{encoded_data}"
+0191: 
+0192: 
+0193: def _encode_image_from_url(image_url: str, verify: bool = True) -> str:
+0194:     """Encode a file from a URL to a base64 data URI.
+0195:     
+0196:     Args:
+0197:         image_url: The URL of the image to download.
+0198:         verify: Whether to verify SSL certificates. Set to False for self-signed certs.
+0199:     """
+0200:     response = requests.get(image_url, verify=verify)
+0201:     response.raise_for_status()
+0202:     content_type = response.headers.get("Content-Type", "")
+0203: 
+0204:     # Use the content type from the response headers if available
+0205:     if content_type:
+0206:         mime_type = content_type
+0207:     else:
+0208:         # Try to guess MIME type from URL
+0209:         mime_type, _ = mimetypes.guess_type(image_url)
+0210:         if mime_type is None:
+0211:             raise ValueError(f"Could not determine MIME type for URL: {image_url}")
+0212: 
+0213:     encoded_data = base64.b64encode(response.content).decode("utf-8")
+0214:     return f"data:{mime_type};base64,{encoded_data}"
+0215: 
+0216: 
+0217: def _encode_pil_image(image: "PILImage") -> str:
+0218:     """Encode a PIL Image object to a base64 data URI."""
+0219:     buffered = io.BytesIO()
+0220:     file_format = image.format or "PNG"
+0221:     image.save(buffered, format=file_format)
+0222: 
+0223:     # Get the correct MIME type using the image format
+0224:     file_extension = file_format.lower()
+0225:     mime_type, _ = mimetypes.guess_type(f"file.{file_extension}")
+0226:     if mime_type is None:
+0227:         raise ValueError(f"Could not determine MIME type for image format: {file_format}")
+0228: 
+0229:     encoded_data = base64.b64encode(buffered.getvalue()).decode("utf-8")
+0230:     return f"data:{mime_type};base64,{encoded_data}"
+0231: 
+0232: 
+0233: def _get_file_extension(path_or_url: str) -> str:
+0234:     """Extract the file extension from a file path or URL."""
+0235:     extension = os.path.splitext(urlparse(path_or_url).path)[1].lstrip(".").lower()
+0236:     return extension or "png"  # Default to 'png' if no extension found
+0237: 
+0238: 
+0239: def is_image(obj) -> bool:
+0240:     """Check if the object is an image or a valid media file reference."""
+0241:     if PIL_AVAILABLE and isinstance(obj, PILImage.Image):
+0242:         return True
+0243:     if isinstance(obj, str):
+0244:         if obj.startswith("data:"):
+0245:             return True
+0246:         elif os.path.isfile(obj):
+0247:             return True
+0248:         elif is_url(obj):
+0249:             return True
+0250:     return False
+
+Return JSON that matches the schema exactly.

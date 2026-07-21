@@ -1,0 +1,1044 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_32392270350d`
+- Label: `prompt_compilation_customization_and_inspection`
+- Question: `I'm benchmarking a `dspy.Predict` program and need the exact rendered request, not a conceptual template. How can I capture the full message list from a real call, and how can I preview that same message list before calling the LM?`
+- Gold answer:
+After a real call, read the stored history entry's `messages`. DSPy writes the same LM-call record to the predictor/module history, the LM history, and the global LM history. For a faithful preview before execution, run the adapter's preprocessing step first and then format the processed signature; plain `format(...)` can diverge when native features rewrite the signature.
+
+```python
+import dspy
+from dspy.clients.base_lm import GLOBAL_HISTORY
+from dspy.utils.dummies import DummyLM
+
+lm = DummyLM([{'answer': 'Paris'}])
+dspy.configure(lm=lm)
+
+pred = dspy.Predict('question -> answer')
+adapter = dspy.settings.adapter or dspy.ChatAdapter()
+inputs = {'question': 'What is the capital of France?'}
+lm_kwargs = {}
+processed_sig = adapter._call_preprocess(lm, lm_kwargs, pred.signature, inputs)
+preview = adapter.format(processed_sig, pred.demos, dict(inputs))
+
+out = pred(**inputs)
+sent = pred.history[-1]['messages']
+
+assert out.answer == 'Paris'
+assert sent == lm.history[-1]['messages'] == GLOBAL_HISTORY[-1]['messages']
+assert preview == sent
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/adapters/base.py",
+    "symbol": "Adapter._call_preprocess"
+  },
+  {
+    "file": "dspy/adapters/base.py",
+    "symbol": "Adapter.format"
+  },
+  {
+    "file": "dspy/clients/base_lm.py",
+    "symbol": "BaseLM.update_history"
+  },
+  {
+    "file": "tests/clients/test_inspect_global_history.py",
+    "symbol": "test_inspect_history_basic"
+  }
+]
+
+## Full evidence files
+### dspy/adapters/base.py
+0001: import logging
+0002: from typing import Any, get_origin
+0003: 
+0004: import json_repair
+0005: 
+0006: from dspy.adapters.types import History, Type
+0007: from dspy.adapters.types.base_type import split_message_content_for_custom_types
+0008: from dspy.adapters.types.reasoning import Reasoning
+0009: from dspy.adapters.types.tool import Tool, ToolCalls
+0010: from dspy.clients.base_lm import BaseLM
+0011: from dspy.experimental import Citations
+0012: from dspy.signatures.signature import Signature
+0013: from dspy.utils.callback import BaseCallback, with_callbacks
+0014: from dspy.utils.exceptions import AdapterParseError
+0015: 
+0016: logger = logging.getLogger(__name__)
+0017: 
+0018: _DEFAULT_NATIVE_RESPONSE_TYPES = [Citations, Reasoning]
+0019: 
+0020: 
+0021: class Adapter:
+0022:     """Base Adapter class.
+0023: 
+0024:     The Adapter serves as the interface layer between DSPy module/signature and Language Models (LMs). It handles the
+0025:     complete transformation pipeline from DSPy inputs to LM calls and back to structured outputs.
+0026: 
+0027:     Key responsibilities:
+0028:         - Transform user inputs and signatures into properly formatted LM prompts, which also instructs the LM to format
+0029:             the response in a specific format.
+0030:         - Parse LM outputs into dictionaries matching the signature's output fields.
+0031:         - Enable/disable native LM features (function calling, citations, etc.) based on configuration.
+0032:         - Handle conversation history, few-shot examples, and custom type processing.
+0033: 
+0034:     The adapter pattern allows DSPy to work with different LM interfaces while maintaining a consistent programming
+0035:     model for users.
+0036:     """
+0037: 
+0038:     def __init__(
+0039:         self,
+0040:         callbacks: list[BaseCallback] | None = None,
+0041:         use_native_function_calling: bool = False,
+0042:         native_response_types: list[type[Type]] | None = None,
+0043:     ):
+0044:         """
+0045:         Args:
+0046:             callbacks: List of callback functions to execute during `format()` and `parse()` methods. Callbacks can be
+0047:                 used for logging, monitoring, or custom processing. Defaults to None (empty list).
+0048:             use_native_function_calling: Whether to enable native function calling capabilities when the LM supports it.
+0049:                 If True, the adapter will automatically configure function calling when input fields contain `dspy.Tool`
+0050:                 or `list[dspy.Tool]` types. Defaults to False.
+0051:             native_response_types: List of output field types that should be handled by native LM features rather than
+0052:                 adapter parsing. For example, `dspy.Citations` can be populated directly by citation APIs
+0053:                 (e.g., Anthropic's citation feature). Defaults to `[Citations]`.
+0054:         """
+0055:         self.callbacks = callbacks or []
+0056:         self.use_native_function_calling = use_native_function_calling
+0057:         self.native_response_types = native_response_types or _DEFAULT_NATIVE_RESPONSE_TYPES
+0058: 
+0059:     def __init_subclass__(cls, **kwargs) -> None:
+0060:         super().__init_subclass__(**kwargs)
+0061: 
+0062:         # Decorate format() and parse() method with with_callbacks
+0063:         cls.format = with_callbacks(cls.format)
+0064:         cls.parse = with_callbacks(cls.parse)
+0065: 
+0066:     def _call_preprocess(
+0067:         self,
+0068:         lm: BaseLM,
+0069:         lm_kwargs: dict[str, Any],
+0070:         signature: type[Signature],
+0071:         inputs: dict[str, Any],
+0072:     ) -> type[Signature]:
+0073:         if self.use_native_function_calling:
+0074:             tool_call_input_field_name = self._get_tool_call_input_field_name(signature)
+0075:             tool_call_output_field_name = self._get_tool_call_output_field_name(signature)
+0076: 
+0077:             if tool_call_output_field_name and tool_call_input_field_name is None:
+0078:                 raise ValueError(
+0079:                     f"You provided an output field {tool_call_output_field_name} to receive the tool calls information, "
+0080:                     "but did not provide any tools as the input. Please provide a list of tools as the input by adding an "
+0081:                     "input field with type `list[dspy.Tool]`."
+0082:                 )
+0083: 
+0084:             if tool_call_output_field_name and lm.supports_function_calling:
+0085:                 tools = inputs[tool_call_input_field_name]
+0086:                 tools = tools if isinstance(tools, list) else [tools]
+0087: 
+0088:                 lm_tools = [tool.format_as_litellm_function_call() for tool in tools]
+0089: 
+0090:                 lm_kwargs["tools"] = lm_tools
+0091: 
+0092:                 signature_for_native_function_calling = signature.delete(tool_call_output_field_name)
+0093:                 signature_for_native_function_calling = signature_for_native_function_calling.delete(
+0094:                     tool_call_input_field_name
+0095:                 )
+0096: 
+0097:                 return signature_for_native_function_calling
+0098: 
+0099:         # Handle custom types that use native LM features, e.g., reasoning, citations, etc.
+0100:         for name, field in signature.output_fields.items():
+0101:             if (
+0102:                 isinstance(field.annotation, type)
+0103:                 and field.annotation in self.native_response_types
+0104:                 and issubclass(field.annotation, Type)
+0105:             ):
+0106:                 signature = field.annotation.adapt_to_native_lm_feature(signature, name, lm, lm_kwargs)
+0107: 
+0108:         return signature
+0109: 
+0110:     def _call_postprocess(
+0111:         self,
+0112:         processed_signature: type[Signature],
+0113:         original_signature: type[Signature],
+0114:         outputs: list[dict[str, Any] | str],
+0115:         lm: BaseLM,
+0116:         lm_kwargs: dict[str, Any],
+0117:     ) -> list[dict[str, Any]]:
+0118:         values = []
+0119: 
+0120:         tool_call_output_field_name = self._get_tool_call_output_field_name(original_signature)
+0121: 
+0122:         for output in outputs:
+0123:             output_logprobs = None
+0124:             tool_calls = None
+0125:             text = output
+0126: 
+0127:             if isinstance(output, dict):
+0128:                 text = output["text"]
+0129:                 output_logprobs = output.get("logprobs")
+0130:                 tool_calls = output.get("tool_calls")
+0131: 
+0132:             if text:
+0133:                 value = self.parse(processed_signature, text)
+0134:                 for field_name in original_signature.output_fields.keys():
+0135:                     if field_name not in value:
+0136:                         # We need to set the field not present in the processed signature to None for consistency.
+0137:                         value[field_name] = None
+0138:             elif tool_calls and tool_call_output_field_name:
+0139:                 value = {}
+0140:                 for field_name in original_signature.output_fields.keys():
+0141:                     value[field_name] = None
+0142:             else:
+0143:                 raise AdapterParseError(
+0144:                     adapter_name=type(self).__name__,
+0145:                     signature=original_signature,
+0146:                     lm_response=str(output),
+0147:                     message="The LM returned an empty or null response.",
+0148:                 )
+0149: 
+0150:             if tool_calls and tool_call_output_field_name:
+0151:                 tool_calls = [
+0152:                     {
+0153:                         "name": v["function"]["name"],
+0154:                         "args": json_repair.loads(v["function"]["arguments"]),
+0155:                     }
+0156:                     for v in tool_calls
+0157:                 ]
+0158:                 value[tool_call_output_field_name] = ToolCalls.from_dict_list(tool_calls)
+0159: 
+0160:             # Parse custom types that does not rely on the `Adapter.parse()` method
+0161:             for name, field in original_signature.output_fields.items():
+0162:                 if (
+0163:                     isinstance(field.annotation, type)
+0164:                     and field.annotation in self.native_response_types
+0165:                     and issubclass(field.annotation, Type)
+0166:                 ):
+0167:                     parsed_value = field.annotation.parse_lm_response(output)
+0168:                     if parsed_value is not None:
+0169:                         value[name] = parsed_value
+0170: 
+0171:             if output_logprobs:
+0172:                 value["logprobs"] = output_logprobs
+0173: 
+0174:             values.append(value)
+0175: 
+0176:         return values
+0177: 
+0178:     def __call__(
+0179:         self,
+0180:         lm: BaseLM,
+0181:         lm_kwargs: dict[str, Any],
+0182:         signature: type[Signature],
+0183:         demos: list[dict[str, Any]],
+0184:         inputs: dict[str, Any],
+0185:     ) -> list[dict[str, Any]]:
+0186:         """
+0187:         Execute the adapter pipeline: format inputs, call LM, and parse outputs.
+0188: 
+0189:         Args:
+0190:             lm: The Language Model instance to use for generation. Must be an instance of `dspy.BaseLM`.
+0191:             lm_kwargs: Additional keyword arguments to pass to the LM call (e.g., temperature, max_tokens). These are
+0192:                 passed directly to the LM.
+0193:             signature: The DSPy signature associated with this LM call.
+0194:             demos: List of few-shot examples to include in the prompt. Each dictionary should contain keys matching the
+0195:                 signature's input and output field names. Examples are formatted as user/assistant message pairs.
+0196:             inputs: The current input values for this call. Keys must match the signature's input field names.
+0197: 
+0198:         Returns:
+0199:             List of dictionaries representing parsed LM responses. Each dictionary contains keys matching the
+0200:             signature's output field names. For multiple generations (n > 1), returns multiple dictionaries.
+0201:         """
+0202:         processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
+0203:         inputs = self.format(processed_signature, demos, inputs)
+0204: 
+0205:         outputs = lm(messages=inputs, **lm_kwargs)
+0206:         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
+0207: 
+0208:     async def acall(
+0209:         self,
+0210:         lm: BaseLM,
+0211:         lm_kwargs: dict[str, Any],
+0212:         signature: type[Signature],
+0213:         demos: list[dict[str, Any]],
+0214:         inputs: dict[str, Any],
+0215:     ) -> list[dict[str, Any]]:
+0216:         processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
+0217:         inputs = self.format(processed_signature, demos, inputs)
+0218: 
+0219:         outputs = await lm.acall(messages=inputs, **lm_kwargs)
+0220:         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
+0221: 
+0222:     def format(
+0223:         self,
+0224:         signature: type[Signature],
+0225:         demos: list[dict[str, Any]],
+0226:         inputs: dict[str, Any],
+0227:     ) -> list[dict[str, Any]]:
+0228:         """Format the input messages for the LM call.
+0229: 
+0230:         This method converts the DSPy structured input along with few-shot examples and conversation history into
+0231:         multiturn messages as expected by the LM. For custom adapters, this method can be overridden to customize
+0232:         the formatting of the input messages.
+0233: 
+0234:         In general we recommend the messages to have the following structure:
+0235:         ```
+0236:         [
+0237:             {"role": "system", "content": system_message},
+0238:             # Begin few-shot examples
+0239:             {"role": "user", "content": few_shot_example_1_input},
+0240:             {"role": "assistant", "content": few_shot_example_1_output},
+0241:             {"role": "user", "content": few_shot_example_2_input},
+0242:             {"role": "assistant", "content": few_shot_example_2_output},
+0243:             ...
+0244:             # End few-shot examples
+0245:             # Begin conversation history
+0246:             {"role": "user", "content": conversation_history_1_input},
+0247:             {"role": "assistant", "content": conversation_history_1_output},
+0248:             {"role": "user", "content": conversation_history_2_input},
+0249:             {"role": "assistant", "content": conversation_history_2_output},
+0250:             ...
+0251:             # End conversation history
+0252:             {"role": "user", "content": current_input},
+0253:         ]
+0254: 
+0255:         And system message should contain the field description, field structure, and task description.
+0256:         ```
+0257: 
+0258: 
+0259:         Args:
+0260:             signature: The DSPy signature for which to format the input messages.
+0261:             demos: A list of few-shot examples.
+0262:             inputs: The input arguments to the DSPy module.
+0263: 
+0264:         Returns:
+0265:             A list of multiturn messages as expected by the LM.
+0266:         """
+0267:         inputs_copy = dict(inputs)
+0268: 
+0269:         # If the signature and inputs have conversation history, we need to format the conversation history and
+0270:         # remove the history field from the signature.
+0271:         history_field_name = self._get_history_field_name(signature)
+0272:         if history_field_name:
+0273:             # In order to format the conversation history, we need to remove the history field from the signature.
+0274:             signature_without_history = signature.delete(history_field_name)
+0275:             conversation_history = self.format_conversation_history(
+0276:                 signature_without_history,
+0277:                 history_field_name,
+0278:                 inputs_copy,
+0279:             )
+0280: 
+0281:         messages = []
+0282:         system_message = self.format_system_message(signature)
+0283:         messages.append({"role": "system", "content": system_message})
+0284:         messages.extend(self.format_demos(signature, demos))
+0285:         if history_field_name:
+0286:             # Conversation history and current input
+0287:             content = self.format_user_message_content(signature_without_history, inputs_copy, main_request=True)
+0288:             messages.extend(conversation_history)
+0289:             messages.append({"role": "user", "content": content})
+0290:         else:
+0291:             # Only current input
+0292:             content = self.format_user_message_content(signature, inputs_copy, main_request=True)
+0293:             messages.append({"role": "user", "content": content})
+0294: 
+0295:         messages = split_message_content_for_custom_types(messages)
+0296:         return messages
+0297: 
+0298:     def format_system_message(self, signature: type[Signature]) -> str:
+0299:         """Format the system message for the LM call.
+0300: 
+0301: 
+0302:         Args:
+0303:             signature: The DSPy signature for which to format the system message.
+0304:         """
+0305:         return (
+0306:             f"{self.format_field_description(signature)}\n"
+0307:             f"{self.format_field_structure(signature)}\n"
+0308:             f"{self.format_task_description(signature)}"
+0309:         )
+0310: 
+0311:     def format_field_description(self, signature: type[Signature]) -> str:
+0312:         """Format the field description for the system message.
+0313: 
+0314:         This method formats the field description for the system message. It should return a string that contains
+0315:         the field description for the input fields and the output fields.
+0316: 
+0317:         Args:
+0318:             signature: The DSPy signature for which to format the field description.
+0319: 
+0320:         Returns:
+0321:             A string that contains the field description for the input fields and the output fields.
+0322:         """
+0323:         raise NotImplementedError
+0324: 
+0325:     def format_field_structure(self, signature: type[Signature]) -> str:
+0326:         """Format the field structure for the system message.
+0327: 
+0328:         This method formats the field structure for the system message. It should return a string that dictates the
+0329:         format the input fields should be provided to the LM, and the format the output fields will be in the response.
+0330:         Refer to the ChatAdapter and JsonAdapter for an example.
+0331: 
+0332:         Args:
+0333:             signature: The DSPy signature for which to format the field structure.
+0334:         """
+0335:         raise NotImplementedError
+0336: 
+0337:     def format_task_description(self, signature: type[Signature]) -> str:
+0338:         """Format the task description for the system message.
+0339: 
+0340:         This method formats the task description for the system message. In most cases this is just a thin wrapper
+0341:         over `signature.instructions`.
+0342: 
+0343:         Args:
+0344:             signature: The DSPy signature of the DSpy module.
+0345: 
+0346:         Returns:
+0347:             A string that describes the task.
+0348:         """
+0349:         raise NotImplementedError
+0350: 
+0351:     def format_user_message_content(
+0352:         self,
+0353:         signature: type[Signature],
+0354:         inputs: dict[str, Any],
+0355:         prefix: str = "",
+0356:         suffix: str = "",
+0357:         main_request: bool = False,
+0358:     ) -> str:
+0359:         """Format the user message content.
+0360: 
+0361:         This method formats the user message content, which can be used in formatting few-shot examples, conversation
+0362:         history, and the current input.
+0363: 
+0364:         Args:
+0365:             signature: The DSPy signature for which to format the user message content.
+0366:             inputs: The input arguments to the DSPy module.
+0367:             prefix: A prefix to the user message content.
+0368:             suffix: A suffix to the user message content.
+0369: 
+0370:         Returns:
+0371:             A string that contains the user message content.
+0372:         """
+0373:         raise NotImplementedError
+0374: 
+0375:     def format_assistant_message_content(
+0376:         self,
+0377:         signature: type[Signature],
+0378:         outputs: dict[str, Any],
+0379:         missing_field_message: str | None = None,
+0380:     ) -> str:
+0381:         """Format the assistant message content.
+0382: 
+0383:         This method formats the assistant message content, which can be used in formatting few-shot examples,
+0384:         conversation history.
+0385: 
+0386:         Args:
+0387:             signature: The DSPy signature for which to format the assistant message content.
+0388:             outputs: The output fields to be formatted.
+0389:             missing_field_message: A message to be used when a field is missing.
+0390: 
+0391:         Returns:
+0392:             A string that contains the assistant message content.
+0393:         """
+0394:         raise NotImplementedError
+0395: 
+0396:     def format_demos(self, signature: type[Signature], demos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+0397:         """Format the few-shot examples.
+0398: 
+0399:         This method formats the few-shot examples as multiturn messages.
+0400: 
+0401:         Args:
+0402:             signature: The DSPy signature for which to format the few-shot examples.
+0403:             demos: A list of few-shot examples, each element is a dictionary with keys of the input and output fields of
+0404:                 the signature.
+0405: 
+0406:         Returns:
+0407:             A list of multiturn messages.
+0408:         """
+0409:         complete_demos = []
+0410:         incomplete_demos = []
+0411: 
+0412:         for demo in demos:
+0413:             # Check if all fields are present and not None
+0414:             is_complete = all(k in demo and demo[k] is not None for k in signature.fields)
+0415: 
+0416:             # Check if demo has at least one input and one output field
+0417:             has_input = any(k in demo for k in signature.input_fields)
+0418:             has_output = any(k in demo for k in signature.output_fields)
+0419: 
+0420:             if is_complete:
+0421:                 complete_demos.append(demo)
+0422:             elif has_input and has_output:
+0423:                 # We only keep incomplete demos that have at least one input and one output field
+0424:                 incomplete_demos.append(demo)
+0425: 
+0426:         messages = []
+0427: 
+0428:         incomplete_demo_prefix = "This is an example of the task, though some input or output fields are not supplied."
+0429:         for demo in incomplete_demos:
+0430:             messages.append(
+0431:                 {
+0432:                     "role": "user",
+0433:                     "content": self.format_user_message_content(signature, demo, prefix=incomplete_demo_prefix),
+0434:                 }
+0435:             )
+0436:             messages.append(
+0437:                 {
+0438:                     "role": "assistant",
+0439:                     "content": self.format_assistant_message_content(
+0440:                         signature, demo, missing_field_message="Not supplied for this particular example. "
+0441:                     ),
+0442:                 }
+0443:             )
+0444: 
+0445:         for demo in complete_demos:
+0446:             messages.append({"role": "user", "content": self.format_user_message_content(signature, demo)})
+0447:             messages.append(
+0448:                 {
+0449:                     "role": "assistant",
+0450:                     "content": self.format_assistant_message_content(
+0451:                         signature, demo, missing_field_message="Not supplied for this conversation history message. "
+0452:                     ),
+0453:                 }
+0454:             )
+0455: 
+0456:         return messages
+0457: 
+0458:     def _get_history_field_name(self, signature: type[Signature]) -> bool:
+0459:         for name, field in signature.input_fields.items():
+0460:             if field.annotation == History:
+0461:                 return name
+0462:         return None
+0463: 
+0464:     def _get_tool_call_input_field_name(self, signature: type[Signature]) -> bool:
+0465:         for name, field in signature.input_fields.items():
+0466:             # Look for annotation `list[dspy.Tool]` or `dspy.Tool`
+0467:             origin = get_origin(field.annotation)
+0468:             if origin is list and field.annotation.__args__[0] == Tool:
+0469:                 return name
+0470:             if field.annotation == Tool:
+0471:                 return name
+0472:         return None
+0473: 
+0474:     def _get_tool_call_output_field_name(self, signature: type[Signature]) -> bool:
+0475:         for name, field in signature.output_fields.items():
+0476:             if field.annotation == ToolCalls:
+0477:                 return name
+0478:         return None
+0479: 
+0480:     def format_conversation_history(
+0481:         self,
+0482:         signature: type[Signature],
+0483:         history_field_name: str,
+0484:         inputs: dict[str, Any],
+0485:     ) -> list[dict[str, Any]]:
+0486:         """Format the conversation history.
+0487: 
+0488:         This method formats the conversation history and the current input as multiturn messages.
+0489: 
+0490:         Args:
+0491:             signature: The DSPy signature for which to format the conversation history.
+0492:             history_field_name: The name of the history field in the signature.
+0493:             inputs: The input arguments to the DSPy module.
+0494: 
+0495:         Returns:
+0496:             A list of multiturn messages.
+0497:         """
+0498:         conversation_history = inputs[history_field_name].messages if history_field_name in inputs else None
+0499: 
+0500:         if conversation_history is None:
+0501:             return []
+0502: 
+0503:         messages = []
+0504:         for message in conversation_history:
+0505:             messages.append(
+0506:                 {
+0507:                     "role": "user",
+0508:                     "content": self.format_user_message_content(signature, message),
+0509:                 }
+0510:             )
+0511:             messages.append(
+0512:                 {
+0513:                     "role": "assistant",
+0514:                     "content": self.format_assistant_message_content(signature, message),
+0515:                 }
+0516:             )
+0517: 
+0518:         # Remove the history field from the inputs
+0519:         del inputs[history_field_name]
+0520: 
+0521:         return messages
+0522: 
+0523:     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
+0524:         """Parse the LM output into a dictionary of the output fields.
+0525: 
+0526:         This method parses the LM output into a dictionary of the output fields.
+0527: 
+0528:         Args:
+0529:             signature: The DSPy signature for which to parse the LM output.
+0530:             completion: The LM output to be parsed.
+0531: 
+0532:         Returns:
+0533:             A dictionary of the output fields.
+0534:         """
+0535:         raise NotImplementedError
+
+### dspy/clients/base_lm.py
+0001: import datetime
+0002: import uuid
+0003: from typing import Any, TextIO
+0004: 
+0005: from dspy.dsp.utils import settings
+0006: from dspy.utils.callback import with_callbacks
+0007: from dspy.utils.inspect_history import pretty_print_history
+0008: 
+0009: MAX_HISTORY_SIZE = 10_000
+0010: GLOBAL_HISTORY = []
+0011: 
+0012: 
+0013: class BaseLM:
+0014:     """Base class for handling LLM calls.
+0015: 
+0016:     Most users can directly use the `dspy.LM` class, which is a subclass of `BaseLM`. Users can also implement their
+0017:     own subclasses of `BaseLM` to support custom LLM providers and inject custom logic. To do so, simply override the
+0018:     `forward` method and make sure the return format is identical to the
+0019:     [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object).
+0020: 
+0021:     Examples:
+0022: 
+0023:     ```python
+0024:     from openai import OpenAI
+0025: 
+0026:     import dspy
+0027: 
+0028: 
+0029:     class MyLM(dspy.BaseLM):
+0030:         @property
+0031:         def supports_function_calling(self) -> bool:
+0032:             return self.model.startswith("openai/gpt-4o")
+0033: 
+0034:         @property
+0035:         def supports_reasoning(self) -> bool:
+0036:             return self.model.startswith("anthropic/claude-3-7")
+0037: 
+0038:         @property
+0039:         def supports_response_schema(self) -> bool:
+0040:             return self.model.startswith("openai/gpt-4o")
+0041: 
+0042:         @property
+0043:         def supported_params(self) -> set[str]:
+0044:             if self.model.startswith("openai/gpt-4o"):
+0045:                 return {"response_format"}  # accepts response_format=...
+0046:             return set()
+0047: 
+0048:         def forward(self, prompt, messages=None, **kwargs):
+0049:             client = OpenAI()
+0050:             return client.chat.completions.create(
+0051:                 model=self.model,
+0052:                 messages=messages or [{"role": "user", "content": prompt}],
+0053:                 **self.kwargs,
+0054:             )
+0055: 
+0056: 
+0057:     lm = MyLM(model="gpt-4o-mini")
+0058:     dspy.configure(lm=lm)
+0059:     print(dspy.Predict("q->a")(q="Why did the chicken cross the kitchen?"))
+0060:     ```
+0061:     """
+0062: 
+0063:     def __init__(self, model, model_type="chat", temperature=0.0, max_tokens=1000, cache=True, **kwargs):
+0064:         self.model = model
+0065:         self.model_type = model_type
+0066:         self.cache = cache
+0067:         self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)
+0068:         self.history = []
+0069: 
+0070:     @property
+0071:     def supports_function_calling(self) -> bool:
+0072:         """Whether the model supports function calling (tool use)."""
+0073:         return False
+0074: 
+0075:     @property
+0076:     def supports_reasoning(self) -> bool:
+0077:         """Whether the model supports native reasoning (extended thinking)."""
+0078:         return False
+0079: 
+0080:     @property
+0081:     def supports_response_schema(self) -> bool:
+0082:         """Whether the model supports structured output via response schema."""
+0083:         return False
+0084: 
+0085:     @property
+0086:     def supported_params(self) -> set[str]:
+0087:         """Set of supported OpenAI-style parameter names for the model."""
+0088:         return set()
+0089: 
+0090:     def _process_lm_response(self, response, prompt, messages, **kwargs):
+0091:         merged_kwargs = {**self.kwargs, **kwargs}
+0092: 
+0093:         if self.model_type == "responses":
+0094:             outputs = self._process_response(response)
+0095:         else:
+0096:             outputs = self._process_completion(response, merged_kwargs)
+0097: 
+0098:         if settings.disable_history:
+0099:             return outputs
+0100: 
+0101:         # Logging, with removed api key & where `cost` is None on cache hit.
+0102:         kwargs = {k: v for k, v in kwargs.items() if not k.startswith("api_")}
+0103:         entry = {
+0104:             "prompt": prompt,
+0105:             "messages": messages,
+0106:             "kwargs": kwargs,
+0107:             "response": response,
+0108:             "outputs": outputs,
+0109:             "usage": dict(response.usage),
+0110:             "cost": getattr(response, "_hidden_params", {}).get("response_cost"),
+0111:             "timestamp": datetime.datetime.now().isoformat(),
+0112:             "uuid": str(uuid.uuid4()),
+0113:             "model": self.model,
+0114:             "response_model": response.model,
+0115:             "model_type": self.model_type,
+0116:         }
+0117: 
+0118:         self.update_history(entry)
+0119: 
+0120:         return outputs
+0121: 
+0122:     @with_callbacks
+0123:     def __call__(
+0124:         self,
+0125:         prompt: str | None = None,
+0126:         messages: list[dict[str, Any]] | None = None,
+0127:         **kwargs
+0128:     ) -> list[dict[str, Any] | str]:
+0129:         response = self.forward(prompt=prompt, messages=messages, **kwargs)
+0130:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
+0131: 
+0132:         return outputs
+0133: 
+0134:     @with_callbacks
+0135:     async def acall(
+0136:         self,
+0137:         prompt: str | None = None,
+0138:         messages: list[dict[str, Any]] | None = None,
+0139:         **kwargs
+0140:     ) -> list[dict[str, Any] | str]:
+0141:         response = await self.aforward(prompt=prompt, messages=messages, **kwargs)
+0142:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
+0143:         return outputs
+0144: 
+0145:     def forward(
+0146:         self,
+0147:         prompt: str | None = None,
+0148:         messages: list[dict[str, Any]] | None = None,
+0149:         **kwargs
+0150:     ):
+0151:         """Forward pass for the language model.
+0152: 
+0153:         Subclasses must implement this method, and the response should be identical to either of the following formats:
+0154: 
+0155:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+0156:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+0157:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
+0158: 
+0159:         Raises:
+0160:             dspy.ContextWindowExceededError: When the request fails because the
+0161:                 input exceeds the model's context window. DSPy adapters and
+0162:                 modules rely on this error to trigger fallback behavior (e.g.
+0163:                 truncating the prompt and retrying). Each subclass is
+0164:                 responsible for catching its provider's native error and
+0165:                 re-raising it as `dspy.ContextWindowExceededError`.
+0166:         """
+0167:         raise NotImplementedError("Subclasses must implement this method.")
+0168: 
+0169:     async def aforward(
+0170:         self,
+0171:         prompt: str | None = None,
+0172:         messages: list[dict[str, Any]] | None = None,
+0173:         **kwargs
+0174:     ):
+0175:         """Async forward pass for the language model.
+0176: 
+0177:         Subclasses must implement this method, and the response should be identical to either of the following formats:
+0178: 
+0179:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+0180:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+0181:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
+0182: 
+0183:         Raises:
+0184:             dspy.ContextWindowExceededError: When the request fails because the
+0185:                 input exceeds the model's context window. DSPy adapters and
+0186:                 modules rely on this error to trigger fallback behavior (e.g.
+0187:                 truncating the prompt and retrying). Each subclass is
+0188:                 responsible for catching its provider's native error and
+0189:                 re-raising it as `dspy.ContextWindowExceededError`.
+0190:         """
+0191:         raise NotImplementedError("Subclasses must implement this method.")
+0192: 
+0193:     def copy(self, **kwargs):
+0194:         """Returns a copy of the language model with possibly updated parameters.
+0195: 
+0196:         Any provided keyword arguments update the corresponding attributes or LM kwargs of
+0197:         the copy. For example, ``lm.copy(rollout_id=1, temperature=1.0)`` returns an LM whose
+0198:         requests use a different rollout ID at non-zero temperature to bypass cache collisions.
+0199:         """
+0200: 
+0201:         import copy
+0202: 
+0203:         new_instance = copy.deepcopy(self)
+0204:         new_instance.history = []
+0205: 
+0206:         for key, value in kwargs.items():
+0207:             if hasattr(self, key):
+0208:                 setattr(new_instance, key, value)
+0209:             if (key in self.kwargs) or (not hasattr(self, key)):
+0210:                 if value is None:
+0211:                     new_instance.kwargs.pop(key, None)
+0212:                 else:
+0213:                     new_instance.kwargs[key] = value
+0214:         if hasattr(new_instance, "_warned_zero_temp_rollout"):
+0215:             new_instance._warned_zero_temp_rollout = False
+0216: 
+0217:         return new_instance
+0218: 
+0219:     def inspect_history(self, n: int = 1, file: "TextIO | None" = None) -> None:
+0220:         pretty_print_history(self.history, n, file=file)
+0221: 
+0222:     def update_history(self, entry):
+0223:         if settings.disable_history:
+0224:             return
+0225: 
+0226:         # Global LM history
+0227:         if len(GLOBAL_HISTORY) >= MAX_HISTORY_SIZE:
+0228:             GLOBAL_HISTORY.pop(0)
+0229: 
+0230:         GLOBAL_HISTORY.append(entry)
+0231: 
+0232:         if settings.max_history_size == 0:
+0233:             return
+0234: 
+0235:         # dspy.LM.history
+0236:         if len(self.history) >= settings.max_history_size:
+0237:             self.history.pop(0)
+0238: 
+0239:         self.history.append(entry)
+0240: 
+0241:         # Per-module history
+0242:         caller_modules = settings.caller_modules or []
+0243:         for module in caller_modules:
+0244:             if len(module.history) >= settings.max_history_size:
+0245:                 module.history.pop(0)
+0246:             module.history.append(entry)
+0247: 
+0248:     def _process_completion(self, response, merged_kwargs):
+0249:         """Process the response of OpenAI chat completion API and extract outputs.
+0250: 
+0251:         Args:
+0252:             response: The OpenAI chat completion response
+0253:                 https://platform.openai.com/docs/api-reference/chat/object
+0254:             merged_kwargs: Merged kwargs from self.kwargs and method kwargs
+0255: 
+0256:         Returns:
+0257:             List of processed outputs
+0258:         """
+0259:         outputs = []
+0260:         for c in response.choices:
+0261:             output = {}
+0262:             output["text"] = c.message.content if hasattr(c, "message") else c["text"]
+0263: 
+0264:             if hasattr(c, "message") and hasattr(c.message, "reasoning_content") and c.message.reasoning_content:
+0265:                 output["reasoning_content"] = c.message.reasoning_content
+0266: 
+0267:             if merged_kwargs.get("logprobs"):
+0268:                 output["logprobs"] = c.logprobs if hasattr(c, "logprobs") else c["logprobs"]
+0269:             if hasattr(c, "message") and getattr(c.message, "tool_calls", None):
+0270:                 output["tool_calls"] = c.message.tool_calls
+0271: 
+0272:             # Extract citations from LiteLLM response if available
+0273:             citations = self._extract_citations_from_response(c)
+0274:             if citations:
+0275:                 output["citations"] = citations
+0276: 
+0277:             outputs.append(output)
+0278: 
+0279:         if all(len(output) == 1 for output in outputs):
+0280:             # Return a list if every output only has "text" key
+0281:             outputs = [output["text"] for output in outputs]
+0282:         return outputs
+0283: 
+0284:     def _extract_citations_from_response(self, choice):
+0285:         """Extract citations from LiteLLM response if available.
+0286:         Reference: https://docs.litellm.ai/docs/providers/anthropic#beta-citations-api
+0287: 
+0288:         Args:
+0289:             choice: The choice object from response.choices
+0290: 
+0291:         Returns:
+0292:             A list of citation dictionaries or None if no citations found
+0293:         """
+0294:         try:
+0295:             # Check for citations in LiteLLM provider_specific_fields
+0296:             citations_data = choice.message.provider_specific_fields.get("citations")
+0297:             if isinstance(citations_data, list):
+0298:                 return [citation for citations in citations_data for citation in citations]
+0299:         except Exception:
+0300:             return None
+0301: 
+0302:     def _process_response(self, response):
+0303:         """Process the response of OpenAI Response API and extract outputs.
+0304: 
+0305:         Args:
+0306:             response: OpenAI Response API response
+0307:                 https://platform.openai.com/docs/api-reference/responses/object
+0308: 
+0309:         Returns:
+0310:             List of processed outputs, which is always of size 1 because the Response API only supports one output.
+0311:         """
+0312:         text_outputs = []
+0313:         tool_calls = []
+0314:         reasoning_contents = []
+0315: 
+0316:         for output_item in response.output:
+0317:             output_item_type = output_item.type
+0318:             if output_item_type == "message":
+0319:                 for content_item in output_item.content:
+0320:                     text_outputs.append(content_item.text)
+0321:             elif output_item_type == "function_call":
+0322:                 tool_calls.append(output_item.model_dump())
+0323:             elif output_item_type == "reasoning":
+0324:                 if getattr(output_item, "content", None) and len(output_item.content) > 0:
+0325:                     for content_item in output_item.content:
+0326:                         reasoning_contents.append(content_item.text)
+0327:                 elif getattr(output_item, "summary", None) and len(output_item.summary) > 0:
+0328:                     for summary_item in output_item.summary:
+0329:                         reasoning_contents.append(summary_item.text)
+0330: 
+0331:         result = {}
+0332:         if len(text_outputs) > 0:
+0333:             result["text"] = "".join(text_outputs)
+0334:         if len(tool_calls) > 0:
+0335:             result["tool_calls"] = tool_calls
+0336:         if len(reasoning_contents) > 0:
+0337:             result["reasoning_content"] = "".join(reasoning_contents)
+0338:         # All `response.output` items map to one answer, so we return a list of size 1.
+0339:         return [result]
+0340: 
+0341: 
+0342: def inspect_history(n: int = 1, file: "TextIO | None" = None) -> None:
+0343:     """The global history shared across all LMs.
+0344: 
+0345:     Args:
+0346:         n: Number of recent entries to display. Defaults to 1.
+0347:         file: An optional file-like object to write output to. When
+0348:             provided, ANSI color codes are automatically disabled.
+0349:             Defaults to `None` (prints to stdout).
+0350:     """
+0351:     pretty_print_history(GLOBAL_HISTORY, n, file=file)
+
+### tests/clients/test_inspect_global_history.py
+0001: import pytest
+0002: 
+0003: import dspy
+0004: from dspy.clients.base_lm import GLOBAL_HISTORY
+0005: from dspy.utils.dummies import DummyLM
+0006: 
+0007: 
+0008: @pytest.fixture(autouse=True)
+0009: def clear_history():
+0010:     GLOBAL_HISTORY.clear()
+0011:     yield
+0012: 
+0013: 
+0014: def test_inspect_history_basic(capsys):
+0015:     # Configure a DummyLM with some predefined responses
+0016:     lm = DummyLM([{"response": "Hello"}, {"response": "How are you?"}])
+0017:     dspy.configure(lm=lm)
+0018: 
+0019:     # Make some calls to generate history
+0020:     predictor = dspy.Predict("query: str -> response: str")
+0021:     predictor(query="Hi")
+0022:     predictor(query="What's up?")
+0023: 
+0024:     # Test inspecting all history
+0025:     history = GLOBAL_HISTORY
+0026:     print(capsys)
+0027:     assert len(history) > 0
+0028:     assert isinstance(history, list)
+0029:     assert all(isinstance(entry, dict) for entry in history)
+0030:     assert all("messages" in entry for entry in history)
+0031: 
+0032: 
+0033: def test_inspect_history_with_n(capsys):
+0034:     """Test that inspect_history works with n
+0035:     Random failures in this test most likely mean you are printing messages somewhere
+0036:     """
+0037:     lm = DummyLM([{"response": "One"}, {"response": "Two"}, {"response": "Three"}])
+0038:     dspy.configure(lm=lm)
+0039: 
+0040:     # Generate some history
+0041:     predictor = dspy.Predict("query: str -> response: str")
+0042:     predictor(query="First")
+0043:     predictor(query="Second")
+0044:     predictor(query="Third")
+0045: 
+0046:     dspy.inspect_history(n=2)
+0047:     # Test getting last 2 entries
+0048:     out, err = capsys.readouterr()
+0049:     assert "First" not in out
+0050:     assert "Second" in out
+0051:     assert "Third" in out
+0052: 
+0053: 
+0054: def test_inspect_empty_history(capsys):
+0055:     # Configure fresh DummyLM
+0056:     lm = DummyLM([])
+0057:     dspy.configure(lm=lm)
+0058: 
+0059:     # Test inspecting empty history
+0060:     dspy.inspect_history()
+0061:     history = GLOBAL_HISTORY
+0062:     assert len(history) == 0
+0063:     assert isinstance(history, list)
+0064: 
+0065: 
+0066: def test_inspect_history_n_larger_than_history(capsys):
+0067:     lm = DummyLM([{"response": "First"}, {"response": "Second"}])
+0068:     dspy.configure(lm=lm)
+0069: 
+0070:     predictor = dspy.Predict("query: str -> response: str")
+0071:     predictor(query="Query 1")
+0072:     predictor(query="Query 2")
+0073: 
+0074:     # Request more entries than exist
+0075:     dspy.inspect_history(n=5)
+0076:     history = GLOBAL_HISTORY
+0077:     assert len(history) == 2  # Should return all available entries
+
+Return JSON that matches the schema exactly.

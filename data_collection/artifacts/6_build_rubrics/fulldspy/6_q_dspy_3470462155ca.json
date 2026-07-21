@@ -1,0 +1,105 @@
+{
+ "id": "dspy_3470462155ca",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I want to trace prompt construction across repeated `dspy.Predict` calls without unbounded memory growth. What is the difference between DSPy's prompt history and its execution trace, and how do their limits behave?",
+ "gold_answer": "They are separate stores. Prompt history is written by the LM layer and keeps raw LM-call artifacts such as formatted `messages`, request kwargs, and raw outputs. Execution trace is appended by `Predict` after parsing and stores `(predictor, input_kwargs, Prediction)`. `max_history_size` and `disable_history` govern LM/module history, while `max_trace_size` governs `dspy.settings.trace` and `trace=None` disables trace appends entirely. Global history has its own 10,000-entry cap.\n\n```python\nimport dspy\nfrom dspy.clients.base_lm import GLOBAL_HISTORY\nfrom dspy.utils.dummies import DummyLM\n\nGLOBAL_HISTORY.clear()\nlm = DummyLM([{'answer': 'Paris'}] * 10)\ndspy.configure(lm=lm, trace=[], max_trace_size=3, max_history_size=5)\n\npred = dspy.Predict('question -> answer')\nfor i in range(10):\n    pred(question=f'q{i}')\n\nassert len(dspy.settings.trace) == 3\nassert len(pred.history) == 5\nassert len(lm.history) == 5\nassert len(GLOBAL_HISTORY) == 10\n\nlast_predictor, last_inputs, last_prediction = dspy.settings.trace[-1]\nassert last_inputs == {'question': 'q9'}\nassert last_prediction.answer == 'Paris'\n\ndspy.configure(trace=None)\npred(question='q10')\nassert dspy.settings.trace is None\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Execution trace is maintained separately by `Predict`: after completions are converted into a `Prediction`, `_forward_postprocess` appends a trace item shaped as `(predictor_instance, input_kwargs_copy, Prediction)`.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Trace growth is bounded by `settings.max_trace_size` with oldest-first eviction, and setting `trace=None` disables trace accumulation across repeated `Predict` calls.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Prompt/LM history is logged in the LM layer, not in `Predict`: `BaseLM._process_lm_response` builds a history entry containing call artifacts such as `prompt`, `messages`, filtered request `kwargs`, raw `response`, parsed `outputs`, usage/cost, timestamp/uuid, and model metadata.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "History controls are separate from trace controls: `disable_history` stops LM history logging, while `max_history_size` bounds the LM object's `history` and each caller module's `history` during repeated calls.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Global LM history is a distinct store with its own fixed cap of `10_000` entries, independent of `max_history_size`, and it evicts the oldest global entry when full.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/predict.py",
+   "start_line": 226,
+   "end_line": 233,
+   "excerpt": "0226:     def _forward_postprocess(self, completions, signature, **kwargs):\n0227:         pred = Prediction.from_completions(completions, signature=signature)\n0228:         if kwargs.pop(\"_trace\", True) and settings.trace is not None and settings.max_trace_size > 0:\n0229:             trace = settings.trace\n0230:             if len(trace) >= settings.max_trace_size:\n0231:                 trace.pop(0)\n0232:             trace.append((self, {**kwargs}, pred))\n0233:         return pred"
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 958,
+   "end_line": 975,
+   "excerpt": "0958: def test_trace_size_limit():\n0959:     program = Predict(\"question -> answer\")\n0960:     dspy.configure(lm=DummyLM([{\"answer\": \"Paris\"}]), max_trace_size=3)\n0961: \n0962:     for _ in range(10):\n0963:         program(question=\"What is the capital of France?\")\n0964: \n0965:     assert len(dspy.settings.trace) == 3\n0966: \n0967: \n0968: def test_disable_trace():\n0969:     program = Predict(\"question -> answer\")\n0970:     dspy.configure(lm=DummyLM([{\"answer\": \"Paris\"}]), trace=None)\n0971: \n0972:     for _ in range(10):\n0973:         program(question=\"What is the capital of France?\")\n0974: \n0975:     assert dspy.settings.trace is None"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 90,
+   "end_line": 120,
+   "excerpt": "0090:     def _process_lm_response(self, response, prompt, messages, **kwargs):\n0091:         merged_kwargs = {**self.kwargs, **kwargs}\n0092: \n0093:         if self.model_type == \"responses\":\n0094:             outputs = self._process_response(response)\n0095:         else:\n0096:             outputs = self._process_completion(response, merged_kwargs)\n0097: \n0098:         if settings.disable_history:\n0099:             return outputs\n0100: \n0101:         # Logging, with removed api key & where `cost` is None on cache hit.\n0102:         kwargs = {k: v for k, v in kwargs.items() if not k.startswith(\"api_\")}\n0103:         entry = {\n0104:             \"prompt\": prompt,\n0105:             \"messages\": messages,\n0106:             \"kwargs\": kwargs,\n0107:             \"response\": response,\n0108:             \"outputs\": outputs,\n0109:             \"usage\": dict(response.usage),\n0110:             \"cost\": getattr(response, \"_hidden_params\", {}).get(\"response_cost\"),\n0111:             \"timestamp\": datetime.datetime.now().isoformat(),\n0112:             \"uuid\": str(uuid.uuid4()),\n0113:             \"model\": self.model,\n0114:             \"response_model\": response.model,\n0115:             \"model_type\": self.model_type,\n0116:         }\n0117: \n0118:         self.update_history(entry)\n0119: \n0120:         return outputs"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 222,
+   "end_line": 246,
+   "excerpt": "0222:     def update_history(self, entry):\n0223:         if settings.disable_history:\n0224:             return\n0225: \n0226:         # Global LM history\n0227:         if len(GLOBAL_HISTORY) >= MAX_HISTORY_SIZE:\n0228:             GLOBAL_HISTORY.pop(0)\n0229: \n0230:         GLOBAL_HISTORY.append(entry)\n0231: \n0232:         if settings.max_history_size == 0:\n0233:             return\n0234: \n0235:         # dspy.LM.history\n0236:         if len(self.history) >= settings.max_history_size:\n0237:             self.history.pop(0)\n0238: \n0239:         self.history.append(entry)\n0240: \n0241:         # Per-module history\n0242:         caller_modules = settings.caller_modules or []\n0243:         for module in caller_modules:\n0244:             if len(module.history) >= settings.max_history_size:\n0245:                 module.history.pop(0)\n0246:             module.history.append(entry)"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 978,
+   "end_line": 993,
+   "excerpt": "0978: def test_per_module_history_size_limit():\n0979:     program = Predict(\"question -> answer\")\n0980:     dspy.configure(lm=DummyLM([{\"answer\": \"Paris\"}]), max_history_size=5)\n0981: \n0982:     for _ in range(10):\n0983:         program(question=\"What is the capital of France?\")\n0984:     assert len(program.history) == 5\n0985: \n0986: \n0987: def test_per_module_history_disabled():\n0988:     program = Predict(\"question -> answer\")\n0989:     dspy.configure(lm=DummyLM([{\"answer\": \"Paris\"}]), disable_history=True)\n0990: \n0991:     for _ in range(10):\n0992:         program(question=\"What is the capital of France?\")\n0993:     assert len(program.history) == 0"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 9,
+   "end_line": 10,
+   "excerpt": "0009: MAX_HISTORY_SIZE = 10_000\n0010: GLOBAL_HISTORY = []"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Adds tracing/logging coverage without duplicating the exact-request inspection item.",
+ "source_index": 19,
+ "smalldspy_scope": false
+}

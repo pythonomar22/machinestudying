@@ -1,0 +1,112 @@
+{
+ "id": "dspy_75f76603b3e3",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "If I wrap a program in a module that samples several rollouts and then keeps only the best one, why can the final DSPy trace show just one candidate run, and which run is preserved?",
+ "gold_answer": "`dspy.Predict` traces each underlying predictor call, but `BestOfN` and the rollout loop inside `Refine` deliberately isolate each candidate under a temporary `trace=[]`, copy that rollout's trace, score it, and only splice back the currently best rollout at the end. So you do not get a concatenated trace of every candidate run. In `Refine`, helper predictor calls outside that temporary context can still appear separately, while reward-function tracing is excluded because the rollout trace is copied before scoring.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 12,
+   "statement": "When tracing is enabled, each `dspy.Predict` call records a trace entry by appending `(predictor, inputs, Prediction)` to `dspy.settings.trace`.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 18,
+   "statement": "`BestOfN.forward` runs every sampled rollout inside `dspy.context(trace=[])`, so each candidate gets a fresh temporary trace instead of directly accumulating into the surrounding trace.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "In `BestOfN`, the rollout trace is copied before `reward_fn` runs, `best_trace` is updated only for a better reward, and only `best_trace` is extended back at the end; this means the preserved candidate trace is just the current best rollout, not all candidates or reward-function activity.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "`Refine.forward` uses the same per-rollout isolation pattern: each candidate runs under `dspy.context(trace=[])`, and that rollout trace is copied before `reward_fn` executes.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "In `Refine`, only the rollout stored in `best_trace` is preserved among the sampled candidates, because `best_trace` changes only when `reward > best_reward` and is appended to `dspy.settings.trace` once after the rollout loop.",
+   "span_ids": [
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "`Refine` generates feedback with `dspy.Predict(OfferFeedback)` after the temporary rollout-trace block, so these helper predictor calls can appear separately in the final trace even though only one candidate rollout is kept.",
+   "span_ids": [
+    "s1",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/predict.py",
+   "start_line": 226,
+   "end_line": 233,
+   "excerpt": "0226:     def _forward_postprocess(self, completions, signature, **kwargs):\n0227:         pred = Prediction.from_completions(completions, signature=signature)\n0228:         if kwargs.pop(\"_trace\", True) and settings.trace is not None and settings.max_trace_size > 0:\n0229:             trace = settings.trace\n0230:             if len(trace) >= settings.max_trace_size:\n0231:                 trace.pop(0)\n0232:             trace.append((self, {**kwargs}, pred))\n0233:         return pred"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/best_of_n.py",
+   "start_line": 61,
+   "end_line": 73,
+   "excerpt": "0061:         for idx, rid in enumerate(rollout_ids):\n0062:             lm_ = lm.copy(rollout_id=rid, temperature=1.0)\n0063:             mod = self.module.deepcopy()\n0064:             mod.set_lm(lm_)\n0065: \n0066:             try:\n0067:                 with dspy.context(trace=[]):\n0068:                     pred = mod(**kwargs)\n0069:                     trace = dspy.settings.trace.copy()\n0070: \n0071:                     # NOTE: Not including the trace of reward_fn.\n0072:                     reward = self.reward_fn(kwargs, pred)\n0073: "
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/predict/best_of_n.py",
+   "start_line": 74,
+   "end_line": 88,
+   "excerpt": "0074:                 if reward > best_reward:\n0075:                     best_reward, best_pred, best_trace = reward, pred, trace\n0076: \n0077:                 if reward >= self.threshold:\n0078:                     break\n0079: \n0080:             except Exception as e:\n0081:                 print(f\"BestOfN: Attempt {idx + 1} failed with rollout id {rid}: {e}\")\n0082:                 if idx > self.fail_count:\n0083:                     raise e\n0084:                 self.fail_count -= 1\n0085: \n0086:         if best_trace:\n0087:             dspy.settings.trace.extend(best_trace)\n0088:         return best_pred"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/predict/refine.py",
+   "start_line": 116,
+   "end_line": 138,
+   "excerpt": "0116:                 with dspy.context(trace=[]):\n0117:                     if not advice:\n0118:                         outputs = mod(**kwargs)\n0119:                     else:\n0120: \n0121:                         class WrapperAdapter(adapter.__class__):\n0122:                             def __call__(self, lm, lm_kwargs, signature, demos, inputs):\n0123:                                 inputs[\"hint_\"] = advice.get(signature2name[signature], \"N/A\")  # noqa: B023\n0124:                                 signature = signature.append(\n0125:                                     \"hint_\", InputField(desc=\"A hint to the module from an earlier run\")\n0126:                                 )\n0127:                                 return adapter(lm, lm_kwargs, signature, demos, inputs)\n0128: \n0129:                         with dspy.context(adapter=WrapperAdapter()):\n0130:                             outputs = mod(**kwargs)\n0131: \n0132:                     trace = dspy.settings.trace.copy()\n0133: \n0134:                     # TODO: Remove the hint from the trace, if it's there.\n0135: \n0136:                     # NOTE: Not including the trace of reward_fn.\n0137:                     reward = self.reward_fn(kwargs, outputs)\n0138: "
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/predict/refine.py",
+   "start_line": 139,
+   "end_line": 177,
+   "excerpt": "0139:                 if reward > best_reward:\n0140:                     best_reward, best_pred, best_trace = reward, outputs, trace\n0141: \n0142:                 if self.threshold is not None and reward >= self.threshold:\n0143:                     break\n0144: \n0145:                 if idx == self.N - 1:\n0146:                     break\n0147: \n0148:                 modules = {\"program_code\": self.module_code, \"modules_defn\": inspect_modules(mod)}\n0149:                 trajectory = [{\"module_name\": predictor2name[p], \"inputs\": i, \"outputs\": dict(o)} for p, i, o in trace]\n0150:                 trajectory = {\n0151:                     \"program_inputs\": kwargs,\n0152:                     \"program_trajectory\": trajectory,\n0153:                     \"program_outputs\": dict(outputs),\n0154:                 }\n0155:                 reward = {\n0156:                     \"reward_code\": self.reward_fn_code,\n0157:                     \"target_threshold\": self.threshold,\n0158:                     \"reward_value\": reward,\n0159:                 }\n0160: \n0161:                 advise_kwargs = dict(**modules, **trajectory, **reward, module_names=module_names)\n0162:                 # only dumps if it's a list or dict\n0163:                 advise_kwargs = {\n0164:                     k: v if isinstance(v, str) else orjson.dumps(recursive_mask(v), option=orjson.OPT_INDENT_2).decode()\n0165:                     for k, v in advise_kwargs.items()\n0166:                 }\n0167:                 advice = dspy.Predict(OfferFeedback)(**advise_kwargs).advice\n0168:                 # print(f\"Advice for each module: {advice}\")\n0169: \n0170:             except Exception as e:\n0171:                 print(f\"Refine: Attempt failed with rollout id {rid}: {e}\")\n0172:                 if idx > self.fail_count:\n0173:                     raise e\n0174:                 self.fail_count -= 1\n0175:         if best_trace:\n0176:             dspy.settings.trace.extend(best_trace)\n0177:         return best_pred"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/predict/refine.py",
+   "start_line": 148,
+   "end_line": 167,
+   "excerpt": "0148:                 modules = {\"program_code\": self.module_code, \"modules_defn\": inspect_modules(mod)}\n0149:                 trajectory = [{\"module_name\": predictor2name[p], \"inputs\": i, \"outputs\": dict(o)} for p, i, o in trace]\n0150:                 trajectory = {\n0151:                     \"program_inputs\": kwargs,\n0152:                     \"program_trajectory\": trajectory,\n0153:                     \"program_outputs\": dict(outputs),\n0154:                 }\n0155:                 reward = {\n0156:                     \"reward_code\": self.reward_fn_code,\n0157:                     \"target_threshold\": self.threshold,\n0158:                     \"reward_value\": reward,\n0159:                 }\n0160: \n0161:                 advise_kwargs = dict(**modules, **trajectory, **reward, module_names=module_names)\n0162:                 # only dumps if it's a list or dict\n0163:                 advise_kwargs = {\n0164:                     k: v if isinstance(v, str) else orjson.dumps(recursive_mask(v), option=orjson.OPT_INDENT_2).decode()\n0165:                     for k, v in advise_kwargs.items()\n0166:                 }\n0167:                 advice = dspy.Predict(OfferFeedback)(**advise_kwargs).advice"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Directly tests DSPy's tracing semantics rather than LM history inspection.",
+ "source_index": 16,
+ "smalldspy_scope": true
+}

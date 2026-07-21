@@ -1,0 +1,1214 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_903d3bc782b5`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `A `dspy.ReAct` program works in async mode with an `async def` tool, but the synchronous path breaks. What behavior does DSPy actually support for sync versus async tool execution, and do I need separate tool definitions?`
+- Gold answer:
+The program path determines the tool entrypoint. Synchronous `dspy.ReAct` calls the tool wrapper's `__call__`; if the tool returns a coroutine, DSPy raises `ValueError` unless `allow_tool_async_sync_conversion` is enabled. Asynchronous `dspy.ReAct` calls `acall`, which awaits real async tools and also accepts ordinary sync functions. So you usually keep one tool definition and use the async program path when the tool itself is async.
+
+## Evidence references
+[
+  {
+    "file": "dspy/predict/react.py",
+    "symbol": "ReAct.forward"
+  },
+  {
+    "file": "dspy/predict/react.py",
+    "symbol": "ReAct.aforward"
+  },
+  {
+    "file": "dspy/adapters/types/tool.py",
+    "symbol": "Tool.__call__"
+  },
+  {
+    "file": "dspy/adapters/types/tool.py",
+    "symbol": "Tool.acall"
+  },
+  {
+    "file": "tests/predict/test_react.py",
+    "symbol": "test_async_tool_calling_with_pydantic_args"
+  }
+]
+
+## Full evidence files
+### dspy/predict/react.py
+0001: import logging
+0002: from typing import TYPE_CHECKING, Any, Callable, Literal
+0003: 
+0004: import dspy
+0005: from dspy.adapters.types.tool import Tool
+0006: from dspy.primitives.module import Module
+0007: from dspy.signatures.signature import ensure_signature
+0008: from dspy.utils.exceptions import ContextWindowExceededError
+0009: 
+0010: logger = logging.getLogger(__name__)
+0011: 
+0012: if TYPE_CHECKING:
+0013:     from dspy.signatures.signature import Signature
+0014: 
+0015: 
+0016: class ReAct(Module):
+0017:     def __init__(self, signature: type["Signature"], tools: list[Callable], max_iters: int = 20):
+0018:         """
+0019:         ReAct stands for "Reasoning and Acting," a popular paradigm for building tool-using agents.
+0020:         In this approach, the language model is iteratively provided with a list of tools and has
+0021:         to reason about the current situation. The model decides whether to call a tool to gather more
+0022:         information or to finish the task based on its reasoning process. The DSPy version of ReAct is
+0023:         generalized to work over any signature, thanks to signature polymorphism.
+0024: 
+0025:         Args:
+0026:             signature: The signature of the module, which defines the input and output of the react module.
+0027:             tools (list[Callable]): A list of functions, callable objects, or `dspy.Tool` instances.
+0028:             max_iters (Optional[int]): The maximum number of iterations to run. Defaults to 10.
+0029: 
+0030:         Examples:
+0031: 
+0032:         ```python
+0033:         def get_weather(city: str) -> str:
+0034:             return f"The weather in {city} is sunny."
+0035: 
+0036:         react = dspy.ReAct(signature="question->answer", tools=[get_weather])
+0037:         pred = react(question="What is the weather in Tokyo?")
+0038:         ```
+0039:         """
+0040:         super().__init__()
+0041:         self.signature = signature = ensure_signature(signature)
+0042:         self.max_iters = max_iters
+0043: 
+0044:         tools = [t if isinstance(t, Tool) else Tool(t) for t in tools]
+0045:         tools = {tool.name: tool for tool in tools}
+0046: 
+0047:         inputs = ", ".join([f"`{k}`" for k in signature.input_fields.keys()])
+0048:         outputs = ", ".join([f"`{k}`" for k in signature.output_fields.keys()])
+0049:         instr = [f"{signature.instructions}\n"] if signature.instructions else []
+0050: 
+0051:         instr.extend(
+0052:             [
+0053:                 f"You are an Agent. In each episode, you will be given the fields {inputs} as input. And you can see your past trajectory so far.",
+0054:                 f"Your goal is to use one or more of the supplied tools to collect any necessary information for producing {outputs}.\n",
+0055:                 "To do this, you will interleave next_thought, next_tool_name, and next_tool_args in each turn, and also when finishing the task.",
+0056:                 "After each tool call, you receive a resulting observation, which gets appended to your trajectory.\n",
+0057:                 "When writing next_thought, you may reason about the current situation and plan for future steps.",
+0058:                 "When selecting the next_tool_name and its next_tool_args, the tool must be one of:\n",
+0059:             ]
+0060:         )
+0061: 
+0062:         tools["finish"] = Tool(
+0063:             func=lambda: "Completed.",
+0064:             name="finish",
+0065:             desc=f"Marks the task as complete. That is, signals that all information for producing the outputs, i.e. {outputs}, are now available to be extracted.",
+0066:             args={},
+0067:         )
+0068: 
+0069:         for idx, tool in enumerate(tools.values()):
+0070:             instr.append(f"({idx + 1}) {tool}")
+0071:         instr.append("When providing `next_tool_args`, the value inside the field must be in JSON format")
+0072: 
+0073:         react_signature = (
+0074:             dspy.Signature({**signature.input_fields}, "\n".join(instr))
+0075:             .append("trajectory", dspy.InputField(), type_=str)
+0076:             .append("next_thought", dspy.OutputField(), type_=str)
+0077:             .append("next_tool_name", dspy.OutputField(), type_=Literal[tuple(tools.keys())])
+0078:             .append("next_tool_args", dspy.OutputField(), type_=dict[str, Any])
+0079:         )
+0080: 
+0081:         fallback_signature = dspy.Signature(
+0082:             {**signature.input_fields, **signature.output_fields},
+0083:             signature.instructions,
+0084:         ).append("trajectory", dspy.InputField(), type_=str)
+0085: 
+0086:         self.tools = tools
+0087:         self.react = dspy.Predict(react_signature)
+0088:         self.extract = dspy.ChainOfThought(fallback_signature)
+0089: 
+0090:     def _format_trajectory(self, trajectory: dict[str, Any]):
+0091:         adapter = dspy.settings.adapter or dspy.ChatAdapter()
+0092:         trajectory_signature = dspy.Signature(f"{', '.join(trajectory.keys())} -> x")
+0093:         return adapter.format_user_message_content(trajectory_signature, trajectory)
+0094: 
+0095:     def forward(self, **input_args):
+0096:         trajectory = {}
+0097:         max_iters = input_args.pop("max_iters", self.max_iters)
+0098:         for idx in range(max_iters):
+0099:             try:
+0100:                 pred = self._call_with_potential_trajectory_truncation(self.react, trajectory, **input_args)
+0101:             except ValueError as err:
+0102:                 logger.warning(f"Ending the trajectory: Agent failed to select a valid tool: {_fmt_exc(err)}")
+0103:                 break
+0104: 
+0105:             trajectory[f"thought_{idx}"] = pred.next_thought
+0106:             trajectory[f"tool_name_{idx}"] = pred.next_tool_name
+0107:             trajectory[f"tool_args_{idx}"] = pred.next_tool_args
+0108: 
+0109:             try:
+0110:                 trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](**pred.next_tool_args)
+0111:             except Exception as err:
+0112:                 trajectory[f"observation_{idx}"] = f"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}"
+0113: 
+0114:             if pred.next_tool_name == "finish":
+0115:                 break
+0116: 
+0117:         extract = self._call_with_potential_trajectory_truncation(self.extract, trajectory, **input_args)
+0118:         return dspy.Prediction(trajectory=trajectory, **extract)
+0119: 
+0120:     async def aforward(self, **input_args):
+0121:         trajectory = {}
+0122:         max_iters = input_args.pop("max_iters", self.max_iters)
+0123:         for idx in range(max_iters):
+0124:             try:
+0125:                 pred = await self._async_call_with_potential_trajectory_truncation(self.react, trajectory, **input_args)
+0126:             except ValueError as err:
+0127:                 logger.warning(f"Ending the trajectory: Agent failed to select a valid tool: {_fmt_exc(err)}")
+0128:                 break
+0129: 
+0130:             trajectory[f"thought_{idx}"] = pred.next_thought
+0131:             trajectory[f"tool_name_{idx}"] = pred.next_tool_name
+0132:             trajectory[f"tool_args_{idx}"] = pred.next_tool_args
+0133: 
+0134:             try:
+0135:                 trajectory[f"observation_{idx}"] = await self.tools[pred.next_tool_name].acall(**pred.next_tool_args)
+0136:             except Exception as err:
+0137:                 trajectory[f"observation_{idx}"] = f"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}"
+0138: 
+0139:             if pred.next_tool_name == "finish":
+0140:                 break
+0141: 
+0142:         extract = await self._async_call_with_potential_trajectory_truncation(self.extract, trajectory, **input_args)
+0143:         return dspy.Prediction(trajectory=trajectory, **extract)
+0144: 
+0145:     def _call_with_potential_trajectory_truncation(self, module, trajectory, **input_args):
+0146:         for _ in range(3):
+0147:             try:
+0148:                 return module(
+0149:                     **input_args,
+0150:                     trajectory=self._format_trajectory(trajectory),
+0151:                 )
+0152:             except ContextWindowExceededError:
+0153:                 logger.warning("Trajectory exceeded the context window, truncating the oldest tool call information.")
+0154:                 trajectory = self.truncate_trajectory(trajectory)
+0155:         raise ValueError("The context window was exceeded even after 3 attempts to truncate the trajectory.")
+0156: 
+0157:     async def _async_call_with_potential_trajectory_truncation(self, module, trajectory, **input_args):
+0158:         for _ in range(3):
+0159:             try:
+0160:                 return await module.acall(
+0161:                     **input_args,
+0162:                     trajectory=self._format_trajectory(trajectory),
+0163:                 )
+0164:             except ContextWindowExceededError:
+0165:                 logger.warning("Trajectory exceeded the context window, truncating the oldest tool call information.")
+0166:                 trajectory = self.truncate_trajectory(trajectory)
+0167:         raise ValueError("The context window was exceeded even after 3 attempts to truncate the trajectory.")
+0168: 
+0169:     def truncate_trajectory(self, trajectory):
+0170:         """Truncates the trajectory so that it fits in the context window.
+0171: 
+0172:         Users can override this method to implement their own truncation logic.
+0173:         """
+0174:         keys = list(trajectory.keys())
+0175:         if len(keys) < 4:
+0176:             # Every tool call has 4 keys: thought, tool_name, tool_args, and observation.
+0177:             raise ValueError(
+0178:                 "The trajectory is too long so your prompt exceeded the context window, but the trajectory cannot be "
+0179:                 "truncated because it only has one tool call."
+0180:             )
+0181: 
+0182:         for key in keys[:4]:
+0183:             trajectory.pop(key)
+0184: 
+0185:         return trajectory
+0186: 
+0187: 
+0188: def _fmt_exc(err: BaseException, *, limit: int = 5) -> str:
+0189:     """
+0190:     Return a one-string traceback summary.
+0191:     * `limit` - how many stack frames to keep (from the innermost outwards).
+0192:     """
+0193: 
+0194:     import traceback
+0195: 
+0196:     return "\n" + "".join(traceback.format_exception(type(err), err, err.__traceback__, limit=limit)).strip()
+0197: 
+0198: 
+0199: """
+0200: Thoughts and Planned Improvements for dspy.ReAct.
+0201: 
+0202: TOPIC 01: How Trajectories are Formatted, or rather when they are formatted.
+0203: 
+0204: Right now, both sub-modules are invoked with a `trajectory` argument, which is a string formatted in `forward`. Though
+0205: the formatter uses a general adapter.format_fields, the tracing of DSPy only sees the string, not the formatting logic.
+0206: 
+0207: What this means is that, in demonstrations, even if the user adjusts the adapter for a fixed program, the demos' format
+0208: will not update accordingly, but the inference-time trajectories will.
+0209: 
+0210: One way to fix this is to support `format=fn` in the dspy.InputField() for "trajectory" in the signatures. But this
+0211: means that care must be taken that the adapter is accessed at `forward` runtime, not signature definition time.
+0212: 
+0213: Another potential fix is to more natively support a "variadic" input field, where the input is a list of dictionaries,
+0214: or a big dictionary, and have each adapter format it accordingly.
+0215: 
+0216: Trajectories also affect meta-programming modules that view the trace later. It's inefficient O(n^2) to view the
+0217: trace of every module repeating the prefix.
+0218: 
+0219: 
+0220: TOPIC 03: Simplifying ReAct's __init__ by moving modular logic to the Tool class.
+0221:     * Handling exceptions and error messages.
+0222:     * More cleanly defining the "finish" tool, perhaps as a runtime-defined function?
+0223: 
+0224: 
+0225: TOPIC 04: Default behavior when the trajectory gets too long.
+0226: 
+0227: 
+0228: TOPIC 05: Adding more structure around how the instruction is formatted.
+0229:     * Concretely, it's now a string, so an optimizer can and does rewrite it freely.
+0230:     * An alternative would be to add more structure, such that a certain template is fixed but values are variable?
+0231: 
+0232: 
+0233: TOPIC 06: Idiomatically allowing tools that maintain state across iterations, but not across different `forward` calls.
+0234:     * So the tool would be newly initialized at the start of each `forward` call, but maintain state across iterations.
+0235:     * This is pretty useful for allowing the agent to keep notes or count certain things, etc.
+0236: """
+
+### dspy/adapters/types/tool.py
+0001: import asyncio
+0002: import inspect
+0003: from typing import TYPE_CHECKING, Any, Callable, get_origin, get_type_hints
+0004: 
+0005: import pydantic
+0006: from jsonschema import ValidationError, validate
+0007: from pydantic import BaseModel, TypeAdapter, create_model
+0008: 
+0009: from dspy.adapters.types.base_type import Type
+0010: from dspy.dsp.utils.settings import settings
+0011: from dspy.utils.callback import with_callbacks
+0012: 
+0013: if TYPE_CHECKING:
+0014:     import mcp
+0015:     from langchain.tools import BaseTool
+0016: 
+0017: _TYPE_MAPPING = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
+0018: 
+0019: 
+0020: class Tool(Type):
+0021:     """Tool class.
+0022: 
+0023:     This class is used to simplify the creation of tools for tool calling (function calling) in LLMs. Only supports
+0024:     functions for now.
+0025:     """
+0026: 
+0027:     func: Callable
+0028:     name: str | None = None
+0029:     desc: str | None = None
+0030:     args: dict[str, Any] | None = None
+0031:     arg_types: dict[str, Any] | None = None
+0032:     arg_desc: dict[str, str] | None = None
+0033:     has_kwargs: bool = False
+0034: 
+0035:     def __init__(
+0036:         self,
+0037:         func: Callable,
+0038:         name: str | None = None,
+0039:         desc: str | None = None,
+0040:         args: dict[str, Any] | None = None,
+0041:         arg_types: dict[str, Any] | None = None,
+0042:         arg_desc: dict[str, str] | None = None,
+0043:     ):
+0044:         """Initialize the Tool class.
+0045: 
+0046:         Users can choose to specify the `name`, `desc`, `args`, and `arg_types`, or let the `dspy.Tool`
+0047:         automatically infer the values from the function. For values that are specified by the user, automatic inference
+0048:         will not be performed on them.
+0049: 
+0050:         Args:
+0051:             func (Callable): The actual function that is being wrapped by the tool.
+0052:             name (Optional[str], optional): The name of the tool. Defaults to None.
+0053:             desc (Optional[str], optional): The description of the tool. Defaults to None.
+0054:             args (Optional[dict[str, Any]], optional): The args and their schema of the tool, represented as a
+0055:                 dictionary from arg name to arg's json schema. Defaults to None.
+0056:             arg_types (Optional[dict[str, Any]], optional): The argument types of the tool, represented as a dictionary
+0057:                 from arg name to the type of the argument. Defaults to None.
+0058:             arg_desc (Optional[dict[str, str]], optional): Descriptions for each arg, represented as a
+0059:                 dictionary from arg name to description string. Defaults to None.
+0060: 
+0061:         Examples:
+0062: 
+0063:         ```python
+0064:         def foo(x: int, y: str = "hello"):
+0065:             return str(x) + y
+0066: 
+0067:         tool = Tool(foo)
+0068:         print(tool.args)
+0069:         # Expected output: {'x': {'type': 'integer'}, 'y': {'type': 'string', 'default': 'hello'}}
+0070:         ```
+0071:         """
+0072:         super().__init__(func=func, name=name, desc=desc, args=args, arg_types=arg_types, arg_desc=arg_desc)
+0073:         self._parse_function(func, arg_desc)
+0074: 
+0075:     def _parse_function(self, func: Callable, arg_desc: dict[str, str] | None = None):
+0076:         """Helper method that parses a function to extract the name, description, and args.
+0077: 
+0078:         This is a helper function that automatically infers the name, description, and args of the tool from the
+0079:         provided function. In order to make the inference work, the function must have valid type hints.
+0080:         """
+0081:         annotations_func = func if inspect.isfunction(func) or inspect.ismethod(func) else func.__call__
+0082:         name = getattr(func, "__name__", type(func).__name__)
+0083:         desc = getattr(func, "__doc__", None) or getattr(annotations_func, "__doc__", "")
+0084:         args = {}
+0085:         arg_types = {}
+0086: 
+0087:         # Use inspect.signature to get all arg names
+0088:         sig = inspect.signature(annotations_func)
+0089:         # Get available type hints
+0090:         available_hints = get_type_hints(annotations_func)
+0091:         # Build a dictionary of arg name -> type (defaulting to Any when missing)
+0092:         hints = {param_name: available_hints.get(param_name, Any) for param_name in sig.parameters.keys()}
+0093:         default_values = {param_name: sig.parameters[param_name].default for param_name in sig.parameters.keys()}
+0094: 
+0095:         # Process each argument's type to generate its JSON schema.
+0096:         for k, v in hints.items():
+0097:             arg_types[k] = v
+0098:             if k == "return":
+0099:                 continue
+0100:             # Check if the type (or its origin) is a subclass of Pydantic's BaseModel
+0101:             origin = get_origin(v) or v
+0102:             if isinstance(origin, type) and issubclass(origin, BaseModel):
+0103:                 # Get json schema, and replace $ref with the actual schema
+0104:                 v_json_schema = _resolve_json_schema_reference(v.model_json_schema())
+0105:                 args[k] = v_json_schema
+0106:             else:
+0107:                 args[k] = _resolve_json_schema_reference(TypeAdapter(v).json_schema())
+0108:             if default_values[k] is not inspect.Parameter.empty:
+0109:                 args[k]["default"] = default_values[k]
+0110:             if arg_desc and k in arg_desc:
+0111:                 args[k]["description"] = arg_desc[k]
+0112: 
+0113:         self.name = self.name or name
+0114:         self.desc = self.desc or desc
+0115:         self.args = self.args if self.args is not None else args
+0116:         self.arg_types = self.arg_types if self.arg_types is not None else arg_types
+0117:         self.has_kwargs = any(param.kind == param.VAR_KEYWORD for param in sig.parameters.values())
+0118: 
+0119:     def _validate_and_parse_args(self, **kwargs):
+0120:         # Validate the args value comply to the json schema.
+0121:         for k, v in kwargs.items():
+0122:             if k not in self.args:
+0123:                 if self.has_kwargs:
+0124:                     continue
+0125:                 else:
+0126:                     raise ValueError(f"Arg {k} is not in the tool's args.")
+0127:             try:
+0128:                 instance = v.model_dump() if hasattr(v, "model_dump") else v
+0129:                 type_str = self.args[k].get("type")
+0130:                 if type_str is not None and type_str != "Any":
+0131:                     validate(instance=instance, schema=self.args[k])
+0132:             except ValidationError as e:
+0133:                 raise ValueError(f"Arg {k} is invalid: {e.message}")
+0134: 
+0135:         # Parse the args to the correct type.
+0136:         parsed_kwargs = {}
+0137:         for k, v in kwargs.items():
+0138:             if k in self.arg_types and self.arg_types[k] != Any:
+0139:                 # Create a pydantic model wrapper with a dummy field `value` to parse the arg to the correct type.
+0140:                 # This is specifically useful for handling nested Pydantic models like `list[list[MyPydanticModel]]`
+0141:                 pydantic_wrapper = create_model("Wrapper", value=(self.arg_types[k], ...))
+0142:                 parsed = pydantic_wrapper.model_validate({"value": v})
+0143:                 parsed_kwargs[k] = parsed.value
+0144:             else:
+0145:                 parsed_kwargs[k] = v
+0146:         return parsed_kwargs
+0147: 
+0148:     def format(self):
+0149:         return str(self)
+0150: 
+0151:     def format_as_litellm_function_call(self):
+0152:         return {
+0153:             "type": "function",
+0154:             "function": {
+0155:                 "name": self.name,
+0156:                 "description": self.desc,
+0157:                 "parameters": {
+0158:                     "type": "object",
+0159:                     "properties": self.args,
+0160:                     "required": list(self.args.keys()),
+0161:                 },
+0162:             },
+0163:         }
+0164: 
+0165:     def _run_async_in_sync(self, coroutine):
+0166:         try:
+0167:             loop = asyncio.get_running_loop()
+0168:         except RuntimeError:
+0169:             # Run the coroutine outside of "except" block to avoid propagation
+0170:             loop = None
+0171: 
+0172:         if loop is None:
+0173:             return asyncio.run(coroutine)
+0174:         return loop.run_until_complete(coroutine)
+0175: 
+0176:     @with_callbacks
+0177:     def __call__(self, **kwargs):
+0178:         parsed_kwargs = self._validate_and_parse_args(**kwargs)
+0179:         result = self.func(**parsed_kwargs)
+0180:         if asyncio.iscoroutine(result):
+0181:             if settings.allow_tool_async_sync_conversion:
+0182:                 return self._run_async_in_sync(result)
+0183:             else:
+0184:                 raise ValueError(
+0185:                     "You are calling `__call__` on an async tool, please use `acall` instead or enable "
+0186:                     "async-to-sync conversion with `dspy.configure(allow_tool_async_sync_conversion=True)` "
+0187:                     "or `with dspy.context(allow_tool_async_sync_conversion=True):`."
+0188:                 )
+0189:         return result
+0190: 
+0191:     @with_callbacks
+0192:     async def acall(self, **kwargs):
+0193:         parsed_kwargs = self._validate_and_parse_args(**kwargs)
+0194:         result = self.func(**parsed_kwargs)
+0195:         if asyncio.iscoroutine(result):
+0196:             return await result
+0197:         else:
+0198:             # We should allow calling a sync tool in the async path.
+0199:             return result
+0200: 
+0201:     @classmethod
+0202:     def from_mcp_tool(cls, session: "mcp.ClientSession", tool: "mcp.types.Tool") -> "Tool":
+0203:         """
+0204:         Build a DSPy tool from an MCP tool and a ClientSession.
+0205: 
+0206:         Args:
+0207:             session: The MCP session to use.
+0208:             tool: The MCP tool to convert.
+0209: 
+0210:         Returns:
+0211:             A Tool object.
+0212:         """
+0213:         from dspy.utils.mcp import convert_mcp_tool
+0214: 
+0215:         return convert_mcp_tool(session, tool)
+0216: 
+0217:     @classmethod
+0218:     def from_langchain(cls, tool: "BaseTool") -> "Tool":
+0219:         """
+0220:         Build a DSPy tool from a LangChain tool.
+0221: 
+0222:         Args:
+0223:             tool: The LangChain tool to convert.
+0224: 
+0225:         Returns:
+0226:             A Tool object.
+0227: 
+0228:         Examples:
+0229: 
+0230:         ```python
+0231:         import asyncio
+0232:         import dspy
+0233:         from langchain.tools import tool as lc_tool
+0234: 
+0235:         @lc_tool
+0236:         def add(x: int, y: int):
+0237:             "Add two numbers together."
+0238:             return x + y
+0239: 
+0240:         dspy_tool = dspy.Tool.from_langchain(add)
+0241: 
+0242:         async def run_tool():
+0243:             return await dspy_tool.acall(x=1, y=2)
+0244: 
+0245:         print(asyncio.run(run_tool()))
+0246:         # 3
+0247:         ```
+0248:         """
+0249:         from dspy.utils.langchain_tool import convert_langchain_tool
+0250: 
+0251:         return convert_langchain_tool(tool)
+0252: 
+0253:     def __repr__(self):
+0254:         return f"Tool(name={self.name}, desc={self.desc}, args={self.args})"
+0255: 
+0256:     def __str__(self):
+0257:         desc = f", whose description is <desc>{self.desc}</desc>.".replace("\n", "  ") if self.desc else "."
+0258:         arg_desc = f"It takes arguments {self.args}."
+0259:         return f"{self.name}{desc} {arg_desc}"
+0260: 
+0261: 
+0262: class ToolCalls(Type):
+0263:     class ToolCall(Type):
+0264:         name: str
+0265:         args: dict[str, Any]
+0266: 
+0267:         def format(self):
+0268:             return {
+0269:                 "type": "function",
+0270:                 "function": {
+0271:                     "name": self.name,
+0272:                     "arguments": self.args,
+0273:                 },
+0274:             }
+0275: 
+0276:         def execute(self, functions: dict[str, Any] | list[Tool] | None = None) -> Any:
+0277:             """Execute this individual tool call and return its result.
+0278: 
+0279:             Args:
+0280:                 functions: Functions to search for the tool. Can be:
+0281:                           - Dict mapping tool names to functions: {"tool_name": function}
+0282:                           - List of Tool objects: [Tool(function), ...]
+0283:                           - None: Will search in caller's locals and globals (automatic lookup)
+0284: 
+0285:             Returns:
+0286:                 The result from executing this tool call.
+0287: 
+0288:             Raises:
+0289:                 ValueError: If the tool function cannot be found.
+0290:                 Exception: Any exception raised by the tool function.
+0291:             """
+0292:             func = None
+0293: 
+0294:             if functions is None:
+0295:                 # Automatic lookup in caller's globals and locals
+0296:                 frame = inspect.currentframe().f_back
+0297:                 try:
+0298:                     caller_globals = frame.f_globals
+0299:                     caller_locals = frame.f_locals
+0300:                     func = caller_locals.get(self.name) or caller_globals.get(self.name)
+0301:                 finally:
+0302:                     del frame
+0303: 
+0304:             elif isinstance(functions, dict):
+0305:                 func = functions.get(self.name)
+0306:             elif isinstance(functions, list):
+0307:                 for tool in functions:
+0308:                     if tool.name == self.name:
+0309:                         func = tool.func
+0310:                         break
+0311: 
+0312:             if func is None:
+0313:                 raise ValueError(f"Tool function '{self.name}' not found. Please pass the tool functions to the `execute` method.")
+0314: 
+0315:             try:
+0316:                 args = self.args or {}
+0317:                 return func(**args)
+0318:             except Exception as e:
+0319:                 raise RuntimeError(f"Error executing tool '{self.name}': {e}") from e
+0320: 
+0321:     tool_calls: list[ToolCall]
+0322: 
+0323:     @classmethod
+0324:     def from_dict_list(cls, tool_calls_dicts: list[dict[str, Any]]) -> "ToolCalls":
+0325:         """Convert a list of dictionaries to a ToolCalls instance.
+0326: 
+0327:         Args:
+0328:             dict_list: A list of dictionaries, where each dictionary should have 'name' and 'args' keys.
+0329: 
+0330:         Returns:
+0331:             A ToolCalls instance.
+0332: 
+0333:         Examples:
+0334: 
+0335:             ```python
+0336:             tool_calls_dict = [
+0337:                 {"name": "search", "args": {"query": "hello"}},
+0338:                 {"name": "translate", "args": {"text": "world"}}
+0339:             ]
+0340:             tool_calls = ToolCalls.from_dict_list(tool_calls_dict)
+0341:             ```
+0342:         """
+0343:         tool_calls = [cls.ToolCall(**item) for item in tool_calls_dicts]
+0344:         return cls(tool_calls=tool_calls)
+0345: 
+0346:     @classmethod
+0347:     def description(cls) -> str:
+0348:         return (
+0349:             "Tool calls information, including the name of the tools and the arguments to be passed to it. "
+0350:             "Arguments must be provided in JSON format."
+0351:         )
+0352: 
+0353:     def format(self) -> list[dict[str, Any]]:
+0354:         # The tool_call field is compatible with OpenAI's tool calls schema.
+0355:         return {
+0356:             "tool_calls": [tool_call.format() for tool_call in self.tool_calls],
+0357:         }
+0358: 
+0359:     @pydantic.model_validator(mode="before")
+0360:     @classmethod
+0361:     def validate_input(cls, data: Any):
+0362:         if isinstance(data, cls):
+0363:             return data
+0364: 
+0365:         # Handle case where data is a list of dicts with "name" and "args" keys
+0366:         if isinstance(data, list) and all(
+0367:             isinstance(item, dict) and "name" in item and "args" in item for item in data
+0368:         ):
+0369:             return {"tool_calls": [cls.ToolCall(**item) for item in data]}
+0370:         # Handle case where data is a dict
+0371:         elif isinstance(data, dict):
+0372:             if "tool_calls" in data:
+0373:                 # Handle case where data is a dict with "tool_calls" key
+0374:                 tool_calls_data = data["tool_calls"]
+0375:                 if isinstance(tool_calls_data, list):
+0376:                     return {
+0377:                         "tool_calls": [
+0378:                             cls.ToolCall(**item) if isinstance(item, dict) else item for item in tool_calls_data
+0379:                         ]
+0380:                     }
+0381:             elif "name" in data and "args" in data:
+0382:                 # Handle case where data is a dict with "name" and "args" keys
+0383:                 return {"tool_calls": [cls.ToolCall(**data)]}
+0384: 
+0385:         raise ValueError(f"Received invalid value for `dspy.ToolCalls`: {data}")
+0386: 
+0387: 
+0388: def _resolve_json_schema_reference(schema: dict) -> dict:
+0389:     """Recursively resolve json model schema, expanding all references."""
+0390: 
+0391:     # If there are no definitions to resolve, return the main schema
+0392:     if "$defs" not in schema and "definitions" not in schema:
+0393:         return schema
+0394: 
+0395:     def resolve_refs(obj: Any) -> Any:
+0396:         if not isinstance(obj, (dict, list)):
+0397:             return obj
+0398:         if isinstance(obj, dict):
+0399:             if "$ref" in obj:
+0400:                 ref_path = obj["$ref"].split("/")[-1]
+0401:                 return resolve_refs(schema["$defs"][ref_path])
+0402:             return {k: resolve_refs(v) for k, v in obj.items()}
+0403: 
+0404:         # Must be a list
+0405:         return [resolve_refs(item) for item in obj]
+0406: 
+0407:     # Resolve all references in the main schema
+0408:     resolved_schema = resolve_refs(schema)
+0409:     # Remove the $defs key as it's no longer needed
+0410:     resolved_schema.pop("$defs", None)
+0411:     return resolved_schema
+0412: 
+0413: 
+0414: def convert_input_schema_to_tool_args(
+0415:     schema: dict[str, Any],
+0416: ) -> tuple[dict[str, Any], dict[str, Type], dict[str, str]]:
+0417:     """Convert an input json schema to tool arguments compatible with DSPy Tool.
+0418: 
+0419:     Args:
+0420:         schema: An input json schema describing the tool's input parameters
+0421: 
+0422:     Returns:
+0423:         A tuple of (args, arg_types, arg_desc) for DSPy Tool definition.
+0424:     """
+0425:     args, arg_types, arg_desc = {}, {}, {}
+0426:     properties = schema.get("properties", None)
+0427:     if properties is None:
+0428:         return args, arg_types, arg_desc
+0429: 
+0430:     required = schema.get("required", [])
+0431: 
+0432:     defs = schema.get("$defs", {})
+0433: 
+0434:     for name, prop in properties.items():
+0435:         if len(defs) > 0:
+0436:             prop = _resolve_json_schema_reference({"$defs": defs, **prop})
+0437:         args[name] = prop
+0438:         arg_types[name] = _TYPE_MAPPING.get(prop.get("type"), Any)
+0439:         arg_desc[name] = prop.get("description", "No description provided.")
+0440:         if name in required:
+0441:             arg_desc[name] += " (Required)"
+0442: 
+0443:     return args, arg_types, arg_desc
+
+### tests/predict/test_react.py
+0001: import re
+0002: 
+0003: import pytest
+0004: from pydantic import BaseModel
+0005: 
+0006: import dspy
+0007: import dspy.adapters.base as adapter_base
+0008: import dspy.adapters.utils as adapter_utils
+0009: from dspy.utils.dummies import DummyLM
+0010: from dspy.utils.exceptions import ContextWindowExceededError
+0011: 
+0012: 
+0013: @pytest.mark.extra
+0014: def test_tool_observation_preserves_custom_type():
+0015:     pytest.importorskip("PIL.Image")
+0016:     from PIL import Image
+0017: 
+0018:     captured_calls = []
+0019: 
+0020:     class SpyChatAdapter(dspy.ChatAdapter):
+0021:         def format_user_message_content(self, signature, inputs, *args, **kwargs):
+0022:             captured_calls.append((signature, dict(inputs)))
+0023:             return super().format_user_message_content(signature, inputs, *args, **kwargs)
+0024: 
+0025:     def make_images():
+0026:         return dspy.Image("https://example.com/test.png"), dspy.Image(Image.new("RGB", (100, 100), "red"))
+0027: 
+0028: 
+0029:     adapter = SpyChatAdapter()
+0030:     lm = DummyLM(
+0031:         [
+0032:             {
+0033:                 "next_thought": "I should call the image tool.",
+0034:                 "next_tool_name": "make_images",
+0035:                 "next_tool_args": {},
+0036:             },
+0037:             {
+0038:                 "next_thought": "I now have the image so I can finish.",
+0039:                 "next_tool_name": "finish",
+0040:                 "next_tool_args": {},
+0041:             },
+0042:             {"reasoning": "image ready", "answer": "done"},
+0043:         ],
+0044:         adapter=adapter,
+0045:     )
+0046:     dspy.configure(lm=lm, adapter=adapter)
+0047: 
+0048:     react = dspy.ReAct("question -> answer", tools=[make_images])
+0049:     react(question="Draw me something red")
+0050: 
+0051:     sigs_with_obs = [sig for sig, inputs in captured_calls if "observation_0" in inputs]
+0052:     assert sigs_with_obs, "Expected ReAct to format a trajectory containing observation_0"
+0053: 
+0054:     observation_content = lm.history[1]["messages"][1]["content"]
+0055:     assert sum(1 for part in observation_content if isinstance(part, dict) and part.get("type") == "image_url") == 2
+0056: 
+0057: 
+0058: def test_tool_calling_with_pydantic_args():
+0059:     class CalendarEvent(BaseModel):
+0060:         name: str
+0061:         date: str
+0062:         participants: dict[str, str]
+0063: 
+0064:     def write_invitation_letter(participant_name: str, event_info: CalendarEvent):
+0065:         if participant_name not in event_info.participants:
+0066:             return None
+0067:         return f"It's my honor to invite {participant_name} to event {event_info.name} on {event_info.date}"
+0068: 
+0069:     class InvitationSignature(dspy.Signature):
+0070:         participant_name: str = dspy.InputField(desc="The name of the participant to invite")
+0071:         event_info: CalendarEvent = dspy.InputField(desc="The information about the event")
+0072:         invitation_letter: str = dspy.OutputField(desc="The invitation letter to be sent to the participant")
+0073: 
+0074:     react = dspy.ReAct(InvitationSignature, tools=[write_invitation_letter])
+0075: 
+0076:     lm = DummyLM(
+0077:         [
+0078:             {
+0079:                 "next_thought": "I need to write an invitation letter for Alice to the Science Fair event.",
+0080:                 "next_tool_name": "write_invitation_letter",
+0081:                 "next_tool_args": {
+0082:                     "participant_name": "Alice",
+0083:                     "event_info": {
+0084:                         "name": "Science Fair",
+0085:                         "date": "Friday",
+0086:                         "participants": {"Alice": "female", "Bob": "male"},
+0087:                     },
+0088:                 },
+0089:             },
+0090:             {
+0091:                 "next_thought": (
+0092:                     "I have successfully written the invitation letter for Alice to the Science Fair. Now "
+0093:                     "I can finish the task."
+0094:                 ),
+0095:                 "next_tool_name": "finish",
+0096:                 "next_tool_args": {},
+0097:             },
+0098:             {
+0099:                 "reasoning": "This is a very rigorous reasoning process, trust me bro!",
+0100:                 "invitation_letter": "It's my honor to invite Alice to the Science Fair event on Friday.",
+0101:             },
+0102:         ]
+0103:     )
+0104:     dspy.configure(lm=lm)
+0105: 
+0106:     outputs = react(
+0107:         participant_name="Alice",
+0108:         event_info=CalendarEvent(
+0109:             name="Science Fair",
+0110:             date="Friday",
+0111:             participants={"Alice": "female", "Bob": "male"},
+0112:         ),
+0113:     )
+0114:     assert outputs.invitation_letter == "It's my honor to invite Alice to the Science Fair event on Friday."
+0115: 
+0116:     expected_trajectory = {
+0117:         "thought_0": "I need to write an invitation letter for Alice to the Science Fair event.",
+0118:         "tool_name_0": "write_invitation_letter",
+0119:         "tool_args_0": {
+0120:             "participant_name": "Alice",
+0121:             "event_info": {
+0122:                 "name": "Science Fair",
+0123:                 "date": "Friday",
+0124:                 "participants": {"Alice": "female", "Bob": "male"},
+0125:             },
+0126:         },
+0127:         "observation_0": "It's my honor to invite Alice to event Science Fair on Friday",
+0128:         "thought_1": "I have successfully written the invitation letter for Alice to the Science Fair. Now I can finish the task.",
+0129:         "tool_name_1": "finish",
+0130:         "tool_args_1": {},
+0131:         "observation_1": "Completed.",
+0132:     }
+0133:     assert outputs.trajectory == expected_trajectory
+0134: 
+0135: 
+0136: def test_react_with_tools_skips_native_response_issubclass_for_generic_alias(monkeypatch):
+0137:     def get_user_info(name: str):
+0138:         return {"name": name}
+0139: 
+0140:     class CustomerService(dspy.Signature):
+0141:         user_request: str = dspy.InputField()
+0142:         process_result: str = dspy.OutputField()
+0143: 
+0144:     react = dspy.ReAct(CustomerService, tools=[get_user_info])
+0145:     problem_annotation = react.react.signature.output_fields["next_tool_args"].annotation
+0146: 
+0147:     def guarded_issubclass(cls, class_or_tuple):
+0148:         if cls == problem_annotation:
+0149:             raise TypeError("issubclass() arg 1 must be a class")
+0150:         return issubclass(cls, class_or_tuple)
+0151: 
+0152:     monkeypatch.setattr(adapter_base, "issubclass", guarded_issubclass, raising=False)
+0153:     monkeypatch.setattr(adapter_utils, "issubclass", guarded_issubclass, raising=False)
+0154: 
+0155:     lm = DummyLM(
+0156:         [
+0157:             {
+0158:                 "next_thought": "I should look up the user first.",
+0159:                 "next_tool_name": "get_user_info",
+0160:                 "next_tool_args": {"name": "Adam"},
+0161:             },
+0162:             {
+0163:                 "next_thought": "I have the information I need, so I can finish now.",
+0164:                 "next_tool_name": "finish",
+0165:                 "next_tool_args": {},
+0166:             },
+0167:             {
+0168:                 "reasoning": "I fetched the user profile and can answer the request.",
+0169:                 "process_result": "Resolved Adam's request.",
+0170:             },
+0171:         ]
+0172:     )
+0173: 
+0174:     with dspy.context(lm=lm):
+0175:         result = react(user_request="Help me, my name is Adam")
+0176: 
+0177:     assert result.process_result == "Resolved Adam's request."
+0178:     assert result.trajectory["tool_name_0"] == "get_user_info"
+0179:     assert result.trajectory["tool_args_0"] == {"name": "Adam"}
+0180: 
+0181: 
+0182: def test_tool_calling_without_typehint():
+0183:     def foo(a, b):
+0184:         """Add two numbers."""
+0185:         return a + b
+0186: 
+0187:     react = dspy.ReAct("a, b -> c:int", tools=[foo])
+0188:     lm = DummyLM(
+0189:         [
+0190:             {"next_thought": "I need to add two numbers.", "next_tool_name": "foo", "next_tool_args": {"a": 1, "b": 2}},
+0191:             {"next_thought": "I have the sum, now I can finish.", "next_tool_name": "finish", "next_tool_args": {}},
+0192:             {"reasoning": "I added the numbers successfully", "c": 3},
+0193:         ]
+0194:     )
+0195:     dspy.configure(lm=lm)
+0196:     outputs = react(a=1, b=2)
+0197: 
+0198:     expected_trajectory = {
+0199:         "thought_0": "I need to add two numbers.",
+0200:         "tool_name_0": "foo",
+0201:         "tool_args_0": {
+0202:             "a": 1,
+0203:             "b": 2,
+0204:         },
+0205:         "observation_0": 3,
+0206:         "thought_1": "I have the sum, now I can finish.",
+0207:         "tool_name_1": "finish",
+0208:         "tool_args_1": {},
+0209:         "observation_1": "Completed.",
+0210:     }
+0211:     assert outputs.trajectory == expected_trajectory
+0212: 
+0213: 
+0214: def test_trajectory_truncation():
+0215:     # Create a simple tool for testing
+0216:     def echo(text: str) -> str:
+0217:         return f"Echoed: {text}"
+0218: 
+0219:     # Create ReAct instance with our echo tool
+0220:     react = dspy.ReAct("input_text -> output_text", tools=[echo])
+0221: 
+0222:     # Mock react.react to simulate multiple tool calls
+0223:     call_count = 0
+0224: 
+0225:     def mock_react(**kwargs):
+0226:         nonlocal call_count
+0227:         call_count += 1
+0228: 
+0229:         if call_count < 3:
+0230:             # First 2 calls use the echo tool
+0231:             return dspy.Prediction(
+0232:                 next_thought=f"Thought {call_count}",
+0233:                 next_tool_name="echo",
+0234:                 next_tool_args={"text": f"Text {call_count}"},
+0235:             )
+0236:         elif call_count == 3:
+0237:             # The 3rd call raises context window exceeded error
+0238:             raise ContextWindowExceededError()
+0239:         else:
+0240:             # The 4th call finishes
+0241:             return dspy.Prediction(next_thought="Final thought", next_tool_name="finish", next_tool_args={})
+0242: 
+0243:     react.react = mock_react
+0244:     react.extract = lambda **kwargs: dspy.Prediction(output_text="Final output")
+0245: 
+0246:     # Call forward and get the result
+0247:     result = react(input_text="test input")
+0248: 
+0249:     # Verify that older entries in the trajectory were truncated
+0250:     assert "thought_0" not in result.trajectory
+0251:     assert "thought_2" in result.trajectory
+0252:     assert result.output_text == "Final output"
+0253: 
+0254: 
+0255: @pytest.mark.asyncio
+0256: async def test_context_window_exceeded_after_retries():
+0257:     def echo(text: str) -> str:
+0258:         return f"Echoed: {text}"
+0259: 
+0260:     react = dspy.ReAct("input_text -> output_text", tools=[echo])
+0261: 
+0262:     def mock_react(**kwargs):
+0263:         raise ContextWindowExceededError()
+0264: 
+0265:     # Test sync version
+0266:     extract_calls = []
+0267: 
+0268:     def mock_extract(**kwargs):
+0269:         extract_calls.append(kwargs)
+0270:         return dspy.Prediction(output_text="Fallback output")
+0271: 
+0272:     react.react = mock_react
+0273:     react.extract = mock_extract
+0274: 
+0275:     result = react(input_text="test input")
+0276:     assert result.trajectory == {}
+0277:     assert result.output_text == "Fallback output"
+0278:     assert len(extract_calls) == 1
+0279:     assert extract_calls[0]["input_text"] == "test input"
+0280:     assert "trajectory" in extract_calls[0]
+0281: 
+0282:     # Test async version
+0283:     async_extract_calls = []
+0284: 
+0285:     async def mock_react_async(**kwargs):
+0286:         raise ContextWindowExceededError()
+0287: 
+0288:     async def mock_extract_async(**kwargs):
+0289:         async_extract_calls.append(kwargs)
+0290:         return dspy.Prediction(output_text="Fallback output")
+0291: 
+0292:     react.react.acall = mock_react_async
+0293:     react.extract.acall = mock_extract_async
+0294: 
+0295:     result = await react.acall(input_text="test input")
+0296:     assert result.trajectory == {}
+0297:     assert result.output_text == "Fallback output"
+0298:     assert len(async_extract_calls) == 1
+0299:     assert async_extract_calls[0]["input_text"] == "test input"
+0300:     assert "trajectory" in async_extract_calls[0]
+0301: 
+0302: 
+0303: def test_error_retry():
+0304:     # --- a tiny tool that always fails -------------------------------------
+0305:     def foo(a, b):
+0306:         raise Exception("tool error")
+0307: 
+0308:     # --- program under test -------------------------------------------------
+0309:     react = dspy.ReAct("a, b -> c:int", tools=[foo])
+0310:     lm = DummyLM(
+0311:         [
+0312:             {
+0313:                 "next_thought": "I need to add two numbers.",
+0314:                 "next_tool_name": "foo",
+0315:                 "next_tool_args": {"a": 1, "b": 2},
+0316:             },
+0317:             {
+0318:                 "next_thought": "I need to add two numbers.",
+0319:                 "next_tool_name": "foo",
+0320:                 "next_tool_args": {"a": 1, "b": 2},
+0321:             },
+0322:             # (The model *would* succeed on the 3rd turn, but max_iters=2 stops earlier.)
+0323:             {"reasoning": "I added the numbers successfully", "c": 3},
+0324:         ]
+0325:     )
+0326:     dspy.configure(lm=lm)
+0327: 
+0328:     outputs = react(a=1, b=2, max_iters=2)
+0329:     traj = outputs.trajectory
+0330: 
+0331:     # --- exact-match checks (thoughts + tool calls) -------------------------
+0332:     control_expected = {
+0333:         "thought_0": "I need to add two numbers.",
+0334:         "tool_name_0": "foo",
+0335:         "tool_args_0": {"a": 1, "b": 2},
+0336:         "thought_1": "I need to add two numbers.",
+0337:         "tool_name_1": "foo",
+0338:         "tool_args_1": {"a": 1, "b": 2},
+0339:     }
+0340:     for k, v in control_expected.items():
+0341:         assert traj[k] == v, f"{k} mismatch"
+0342: 
+0343:     # --- flexible checks for observations ----------------------------------
+0344:     # We only care that each observation mentions our error string; we ignore
+0345:     # any extra traceback detail or differing prefixes.
+0346:     for i in range(2):
+0347:         obs = traj[f"observation_{i}"]
+0348:         assert re.search(r"\btool error\b", obs), f"unexpected observation_{i!r}: {obs}"
+0349: 
+0350: 
+0351: @pytest.mark.asyncio
+0352: async def test_async_tool_calling_with_pydantic_args():
+0353:     class CalendarEvent(BaseModel):
+0354:         name: str
+0355:         date: str
+0356:         participants: dict[str, str]
+0357: 
+0358:     async def write_invitation_letter(participant_name: str, event_info: CalendarEvent):
+0359:         if participant_name not in event_info.participants:
+0360:             return None
+0361:         return f"It's my honor to invite {participant_name} to event {event_info.name} on {event_info.date}"
+0362: 
+0363:     class InvitationSignature(dspy.Signature):
+0364:         participant_name: str = dspy.InputField(desc="The name of the participant to invite")
+0365:         event_info: CalendarEvent = dspy.InputField(desc="The information about the event")
+0366:         invitation_letter: str = dspy.OutputField(desc="The invitation letter to be sent to the participant")
+0367: 
+0368:     react = dspy.ReAct(InvitationSignature, tools=[write_invitation_letter])
+0369: 
+0370:     lm = DummyLM(
+0371:         [
+0372:             {
+0373:                 "next_thought": "I need to write an invitation letter for Alice to the Science Fair event.",
+0374:                 "next_tool_name": "write_invitation_letter",
+0375:                 "next_tool_args": {
+0376:                     "participant_name": "Alice",
+0377:                     "event_info": {
+0378:                         "name": "Science Fair",
+0379:                         "date": "Friday",
+0380:                         "participants": {"Alice": "female", "Bob": "male"},
+0381:                     },
+0382:                 },
+0383:             },
+0384:             {
+0385:                 "next_thought": (
+0386:                     "I have successfully written the invitation letter for Alice to the Science Fair. Now "
+0387:                     "I can finish the task."
+0388:                 ),
+0389:                 "next_tool_name": "finish",
+0390:                 "next_tool_args": {},
+0391:             },
+0392:             {
+0393:                 "reasoning": "This is a very rigorous reasoning process, trust me bro!",
+0394:                 "invitation_letter": "It's my honor to invite Alice to the Science Fair event on Friday.",
+0395:             },
+0396:         ]
+0397:     )
+0398:     with dspy.context(lm=lm):
+0399:         outputs = await react.acall(
+0400:             participant_name="Alice",
+0401:             event_info=CalendarEvent(
+0402:                 name="Science Fair",
+0403:                 date="Friday",
+0404:                 participants={"Alice": "female", "Bob": "male"},
+0405:             ),
+0406:         )
+0407:     assert outputs.invitation_letter == "It's my honor to invite Alice to the Science Fair event on Friday."
+0408: 
+0409:     expected_trajectory = {
+0410:         "thought_0": "I need to write an invitation letter for Alice to the Science Fair event.",
+0411:         "tool_name_0": "write_invitation_letter",
+0412:         "tool_args_0": {
+0413:             "participant_name": "Alice",
+0414:             "event_info": {
+0415:                 "name": "Science Fair",
+0416:                 "date": "Friday",
+0417:                 "participants": {"Alice": "female", "Bob": "male"},
+0418:             },
+0419:         },
+0420:         "observation_0": "It's my honor to invite Alice to event Science Fair on Friday",
+0421:         "thought_1": "I have successfully written the invitation letter for Alice to the Science Fair. Now I can finish the task.",
+0422:         "tool_name_1": "finish",
+0423:         "tool_args_1": {},
+0424:         "observation_1": "Completed.",
+0425:     }
+0426:     assert outputs.trajectory == expected_trajectory
+0427: 
+0428: 
+0429: @pytest.mark.asyncio
+0430: async def test_async_error_retry():
+0431:     # A tiny tool that always fails
+0432:     async def foo(a, b):
+0433:         raise Exception("tool error")
+0434: 
+0435:     react = dspy.ReAct("a, b -> c:int", tools=[foo])
+0436:     lm = DummyLM(
+0437:         [
+0438:             {
+0439:                 "next_thought": "I need to add two numbers.",
+0440:                 "next_tool_name": "foo",
+0441:                 "next_tool_args": {"a": 1, "b": 2},
+0442:             },
+0443:             {
+0444:                 "next_thought": "I need to add two numbers.",
+0445:                 "next_tool_name": "foo",
+0446:                 "next_tool_args": {"a": 1, "b": 2},
+0447:             },
+0448:             # (The model *would* succeed on the 3rd turn, but max_iters=2 stops earlier.)
+0449:             {"reasoning": "I added the numbers successfully", "c": 3},
+0450:         ]
+0451:     )
+0452:     with dspy.context(lm=lm):
+0453:         outputs = await react.acall(a=1, b=2, max_iters=2)
+0454:     traj = outputs.trajectory
+0455: 
+0456:     # Exact-match checks (thoughts + tool calls)
+0457:     control_expected = {
+0458:         "thought_0": "I need to add two numbers.",
+0459:         "tool_name_0": "foo",
+0460:         "tool_args_0": {"a": 1, "b": 2},
+0461:         "thought_1": "I need to add two numbers.",
+0462:         "tool_name_1": "foo",
+0463:         "tool_args_1": {"a": 1, "b": 2},
+0464:     }
+0465:     for k, v in control_expected.items():
+0466:         assert traj[k] == v, f"{k} mismatch"
+0467: 
+0468:     # Flexible checks for observations
+0469:     # We only care that each observation mentions our error string; we ignore
+0470:     # any extra traceback detail or differing prefixes.
+0471:     for i in range(2):
+0472:         obs = traj[f"observation_{i}"]
+0473:         assert re.search(r"\btool error\b", obs), f"unexpected observation_{i!r}: {obs}"
+
+Return JSON that matches the schema exactly.

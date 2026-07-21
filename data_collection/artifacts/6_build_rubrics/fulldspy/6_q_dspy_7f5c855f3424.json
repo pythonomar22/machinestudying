@@ -1,0 +1,113 @@
+{
+ "id": "dspy_7f5c855f3424",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I saved a predictor that used a custom gateway. After loading it in a fresh process, the secret was gone from the file, the gateway URL no longer applied, but text-mode calls still authenticated from the environment. What LM state does DSPy intentionally strip, and how do trusted files opt back in?",
+ "gold_answer": "`api_key` is never serialized by `LM.dump_state()`. On load, DSPy strips `api_base`, `base_url`, and `model_list` unless you opt in with `allow_unsafe_lm_state=True`. In text mode, DSPy then resolves `api_key` and `api_base` again from kwargs or the environment, so an environment key can still authenticate even when a serialized endpoint override was ignored.",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "`LM.dump_state()` excludes `api_key` from serialized LM state, so saved predictor files do not contain that secret.",
+   "span_ids": [
+    "s1",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "By default, loading a predictor sanitizes LM state by removing `api_base`, `base_url`, and `model_list` before reconstructing the `LM`, so serialized endpoint or model-list overrides are ignored.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s8"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Trusted serialized files opt back in by loading with `allow_unsafe_lm_state=True`, which bypasses that sanitization and preserves serialized endpoint overrides in the reconstructed `LM`.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 20,
+   "statement": "For `model_type=\"text\"`, DSPy routes calls through `litellm_text_completion`, which resolves `api_key` and `api_base` from request kwargs or provider-specific environment variables at call time; therefore a safe-loaded predictor can still authenticate from the environment even when a serialized `api_base` override was dropped.",
+   "span_ids": [
+    "s5",
+    "s6",
+    "s7"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 312,
+   "end_line": 324,
+   "excerpt": "0312:     def dump_state(self):\n0313:         state_keys = [\n0314:             \"model\",\n0315:             \"model_type\",\n0316:             \"cache\",\n0317:             \"num_retries\",\n0318:             \"finetuning_model\",\n0319:             \"launch_kwargs\",\n0320:             \"train_kwargs\",\n0321:         ]\n0322:         # Exclude api_key from kwargs to prevent API keys from being saved in plain text\n0323:         filtered_kwargs = {k: v for k, v in self.kwargs.items() if k != \"api_key\"}\n0324:         return {key: getattr(self, key) for key in state_keys} | filtered_kwargs"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/predict.py",
+   "start_line": 22,
+   "end_line": 40,
+   "excerpt": "0022: UNSAFE_LM_STATE_KEYS = {\"api_base\", \"base_url\", \"model_list\"}\n0023: \n0024: \n0025: def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:\n0026:     if allow_unsafe_lm_state:\n0027:         return lm_state\n0028: \n0029:     unsafe_keys = sorted(UNSAFE_LM_STATE_KEYS.intersection(lm_state))\n0030: \n0031:     if not unsafe_keys:\n0032:         return lm_state\n0033: \n0034:     sanitized_lm_state = {k: v for k, v in lm_state.items() if k not in UNSAFE_LM_STATE_KEYS}\n0035:     logger.warning(\n0036:         \"Ignoring unsafe LM config key(s) during state load: %s. \"\n0037:         \"Pass allow_unsafe_lm_state=True to preserve these keys for trusted files.\",\n0038:         unsafe_keys,\n0039:     )\n0040:     return sanitized_lm_state"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/predict/predict.py",
+   "start_line": 92,
+   "end_line": 112,
+   "excerpt": "0092:     def load_state(self, state: dict, *, allow_unsafe_lm_state: bool = False) -> \"Predict\":\n0093:         \"\"\"Load the saved state of a `Predict` object.\n0094: \n0095:         Args:\n0096:             state: The saved state of a `Predict` object.\n0097:             allow_unsafe_lm_state: If True, preserves `api_base`, `base_url`, and `model_list` from\n0098:                 serialized LM state. Enable only when loading trusted files.\n0099: \n0100:         Returns:\n0101:             Self to allow method chaining.\n0102:         \"\"\"\n0103:         excluded_keys = [\"signature\", \"extended_signature\", \"lm\"]\n0104:         for name, value in state.items():\n0105:             # `excluded_keys` are fields that go through special handling.\n0106:             if name not in excluded_keys:\n0107:                 setattr(self, name, value)\n0108: \n0109:         self.signature = self.signature.load_state(state[\"signature\"])\n0110:         sanitized_lm_state = _sanitize_lm_state(state[\"lm\"], allow_unsafe_lm_state) if state[\"lm\"] else None\n0111:         self.lm = LM(**sanitized_lm_state) if sanitized_lm_state else None\n0112: "
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 287,
+   "end_line": 306,
+   "excerpt": "0287: def test_load_allows_serialized_endpoint_override_with_opt_in(tmp_path, endpoint_override_key):\n0288:     file_path = tmp_path / \"model.json\"\n0289:     override_url = \"http://override.local/v1\"\n0290:     original_predict = dspy.Predict(\"q->a\")\n0291:     original_predict.lm = dspy.LM(model=\"openai/gpt-4o-mini\")\n0292:     original_predict.save(file_path)\n0293: \n0294:     with open(file_path, \"rb\") as f:\n0295:         saved_state = orjson.loads(f.read())\n0296:     saved_state[\"lm\"][endpoint_override_key] = override_url\n0297:     with open(file_path, \"wb\") as f:\n0298:         f.write(orjson.dumps(saved_state))\n0299: \n0300:     with patch(\"dspy.predict.predict.logger.warning\") as warning_mock:\n0301:         loaded_predict = dspy.Predict(\"q->a\")\n0302:         loaded_predict.load(file_path, allow_unsafe_lm_state=True)\n0303: \n0304:     assert loaded_predict.lm is not None\n0305:     assert loaded_predict.lm.kwargs[endpoint_override_key] == override_url\n0306:     warning_mock.assert_not_called()"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/lm.py",
+   "start_line": 177,
+   "end_line": 183,
+   "excerpt": "0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/clients/lm.py",
+   "start_line": 403,
+   "end_line": 425,
+   "excerpt": "0403: def litellm_text_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0404:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0405:     request = dict(request)\n0406:     request.pop(\"rollout_id\", None)\n0407:     headers = request.pop(\"headers\", None)\n0408:     # Extract the provider and model from the model string.\n0409:     # TODO: Not all the models are in the format of \"provider/model\"\n0410:     model = request.pop(\"model\").split(\"/\", 1)\n0411:     provider, model = model[0] if len(model) > 1 else \"openai\", model[-1]\n0412: \n0413:     # Use the API key and base from the request, or from the environment.\n0414:     api_key = request.pop(\"api_key\", None) or os.getenv(f\"{provider}_API_KEY\")\n0415:     api_base = request.pop(\"api_base\", None) or os.getenv(f\"{provider}_API_BASE\")\n0416: \n0417:     # Build the prompt from the messages.\n0418:     prompt = \"\\n\\n\".join([x[\"content\"] for x in request.pop(\"messages\")] + [\"BEGIN RESPONSE:\"])\n0419: \n0420:     return litellm.text_completion(\n0421:         cache=cache,\n0422:         model=f\"text-completion-openai/{model}\",\n0423:         api_key=api_key,\n0424:         api_base=api_base,\n0425:         prompt=prompt,"
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 451,
+   "end_line": 487,
+   "excerpt": "0451:     original_predict = dspy.Predict(\"q->a\")\n0452:     original_predict.lm = dspy.LM(model=\"openai/gpt-4o-mini\", model_type=\"text\")\n0453:     original_predict.save(file_path)\n0454: \n0455:     with open(file_path, \"rb\") as f:\n0456:         saved_state = orjson.loads(f.read())\n0457:     assert \"api_key\" not in saved_state[\"lm\"]\n0458:     saved_state[\"lm\"][\"api_base\"] = override_url\n0459:     with open(file_path, \"wb\") as f:\n0460:         f.write(orjson.dumps(saved_state))\n0461: \n0462:     monkeypatch.setenv(\"openai_API_KEY\", env_api_key)\n0463: \n0464:     class FakeResp(dict):\n0465:         cache_hit = False\n0466:         usage = {}\n0467: \n0468:         def __init__(self):\n0469:             super().__init__({\"choices\": []})\n0470: \n0471:     # Simulates legacy behavior by allowing serialized endpoint overrides.\n0472:     opt_in_loaded_predict = dspy.Predict(\"q->a\")\n0473:     opt_in_loaded_predict.load(file_path, allow_unsafe_lm_state=True)\n0474:     with patch(\"litellm.text_completion\", return_value=FakeResp()) as text_completion_mock:\n0475:         opt_in_loaded_predict.lm.forward(prompt=\"hello\", cache=False)\n0476: \n0477:     assert text_completion_mock.call_args.kwargs[\"api_base\"] == override_url\n0478:     assert text_completion_mock.call_args.kwargs[\"api_key\"] == env_api_key\n0479: \n0480:     safe_loaded_predict = dspy.Predict(\"q->a\")\n0481:     safe_loaded_predict.load(file_path)\n0482:     with patch(\"litellm.text_completion\", return_value=FakeResp()) as text_completion_mock:\n0483:         safe_loaded_predict.lm.forward(prompt=\"hello\", cache=False)\n0484: \n0485:     # In the safe path, the key still comes from the environment, but the serialized endpoint override does not.\n0486:     assert text_completion_mock.call_args.kwargs[\"api_key\"] == env_api_key\n0487:     assert text_completion_mock.call_args.kwargs[\"api_base\"] != override_url"
+  },
+  {
+   "span_id": "s8",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 344,
+   "end_line": 366,
+   "excerpt": "0344: def test_load_state_ignores_serialized_model_list_endpoint_override_by_default():\n0345:     override_url = \"http://override.local/v1\"\n0346:     original_predict = dspy.Predict(\"q->a\")\n0347:     original_predict.lm = dspy.LM(model=\"openai/gpt-4o-mini\")\n0348:     saved_state = copy.deepcopy(original_predict.dump_state())\n0349:     saved_state[\"lm\"][\"model_list\"] = [\n0350:         {\n0351:             \"model_name\": \"openai/gpt-4o-mini\",\n0352:             \"litellm_params\": {\n0353:                 \"model\": \"openai/gpt-4o-mini\",\n0354:                 \"api_base\": override_url,\n0355:             },\n0356:         }\n0357:     ]\n0358: \n0359:     with patch(\"dspy.predict.predict.logger.warning\") as warning_mock:\n0360:         loaded_predict = dspy.Predict(\"q->a\")\n0361:         loaded_predict.load_state(saved_state)\n0362: \n0363:     assert loaded_predict.lm is not None\n0364:     assert \"model_list\" not in loaded_predict.lm.kwargs\n0365:     warning_mock.assert_called_once()\n0366:     assert \"model_list\" in warning_mock.call_args.args[1]"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Good persistence-safety question that stays inside provider configuration behavior.",
+ "source_index": 3,
+ "smalldspy_scope": false
+}
