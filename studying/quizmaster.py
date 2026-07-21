@@ -53,15 +53,23 @@ QUIZ_TEMPLATE = """You are the quizmaster in a self-quizzing study loop for {lib
 ## Mission
 - Produce exactly {num_questions} new practice questions with gold answers.
 - Tag each with a short snake_case `mechanism` slug naming the library mechanism it probes.
-- Difficulty must be `hard` or `very_hard`; prefer a mix.
 - `code_evidence` must cite at least 2 real `*.py` files under the code roots that ground the answer. List the directories before citing; cite only files you verified exist in THIS checkout.
 - Verify every gold program against the actual source before returning it: read the code, run the logic in your head, and make sure the printed/asserted proof is what the library really does.
+- You may explore ONLY this checkout: never read, list, or execute anything outside the current working directory (no absolute paths elsewhere, no `~`, no `..` above the repo root). Sessions that touch outside paths are rejected wholesale.
+
+## Curriculum for this round
+{curriculum}
+
+## Corpus surface to cover
+Spread the questions across this corpus's public surface rather than clustering on one corner. The checkout contains:
+{corpus_surface}
+Weight your choices toward the mechanisms a real user of THIS corpus hits most; revisit a module only when the curriculum asks for a retest or the studier keeps failing it.
 
 ## Execution contract for gold programs
 Every gold program is executed in an EMPTY working directory with the pinned {library_name} package installed: `import dspy` works, nothing else is present. The program must NOT read repository files, search for a repo root, inspect source paths, or depend on the working directory in any way — it proves the behavior purely through the imported library (DummyLM-driven calls, prints, assertions). A program that tries to locate or open the repository fails verification automatically.
 
-## Register exemplars (match the style, never the content)
-These questions define the register and distribution to match: support-thread framing over 2-4 short paragraphs, behavioral symptoms, locator-hard wording, and a closing ask for a runnable offline program. Do NOT duplicate, paraphrase, or trivially perturb any of them — write questions about clearly different mechanisms or clearly distinct behaviors.
+## Register exemplars (match the style ONLY — never the content or topic mix)
+These questions define the REGISTER to match: support-thread framing over 2-4 short paragraphs, behavioral symptoms, locator-hard wording, and a closing ask for a runnable offline program. They do NOT define the topics — cover the corpus surface above, not the exemplars' topic mix. Do NOT duplicate, paraphrase, or trivially perturb any of them.
 
 {exemplar_questions}
 
@@ -88,6 +96,54 @@ FEEDBACK_HEADER = (
 )
 
 
+def corpus_surface() -> str:
+    """Deterministic listing of the corpus's public modules, for coverage."""
+
+    lines = []
+    for root in ("dspy/predict", "dspy/adapters", "dspy/primitives", "tests/predict"):
+        names = sorted(
+            path.name for path in (CORPUS_REPO / root).glob("*.py")
+            if path.name != "__init__.py"
+        )
+        lines.append(f"- `{root}/`: " + ", ".join(names))
+        for sub in sorted(p for p in (CORPUS_REPO / root).iterdir() if p.is_dir() and p.name != "__pycache__"):
+            names = sorted(q.name for q in sub.glob("*.py") if q.name != "__init__.py")
+            if names:
+                lines.append(f"- `{root}/{sub.name}/`: " + ", ".join(names))
+    return "\n".join(lines)
+
+
+ALLOWED_PATH_PREFIXES = ("/bin", "/usr", "/dev", "/proc", "/etc", "/lib", "/sbin")
+ABS_PATH = re.compile(r"(?:^|[\s'\"=(:;])(/[A-Za-z0-9_.@/-]+)")
+ESCAPE_TOKENS = re.compile(r"(?:(?<![\w.])\.\./|(?:^|[\s'\"=(:;])~(?=[/\s'\"]|$))")
+
+
+def _command_violations(events_path: Path) -> list[str]:
+    """Commands in a codex event log that touch paths outside the corpus."""
+
+    corpus = str(CORPUS_REPO)
+    violations = []
+    for line in events_path.read_text(encoding="utf-8").splitlines():
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = event.get("item") or {}
+        if event.get("type") != "item.completed" or item.get("type") != "command_execution":
+            continue
+        command = item.get("command") or ""
+        bad = [
+            token for token in ABS_PATH.findall(command)
+            if not token.startswith(corpus)
+            and not token.startswith(ALLOWED_PATH_PREFIXES)
+        ]
+        if ESCAPE_TOKENS.search(command):
+            bad.append("~ or ../ escape")
+        if bad:
+            violations.append(f"{command[:160]} -> {sorted(set(bad))[:4]}")
+    return violations
+
+
 def question_id(round_no: int, question: str) -> str:
     digest = hashlib.sha256(question.encode("utf-8")).hexdigest()[:8]
     return f"r{round_no}_{digest}"
@@ -107,7 +163,7 @@ def _schema(num_questions: int) -> dict:
                         "question": {"type": "string"},
                         "answer": {"type": "string"},
                         "mechanism": {"type": "string"},
-                        "difficulty": {"type": "string", "enum": ["hard", "very_hard"]},
+                        "difficulty": {"type": "string", "enum": ["medium", "hard", "very_hard"]},
                         "code_evidence": {
                             "type": "array",
                             "minItems": 2,
@@ -206,8 +262,9 @@ def _feedback_block(prior_verdicts: list[dict]) -> str:
         return FEEDBACK_EMPTY
     lines = []
     for verdict in prior_verdicts:
-        mistake = (verdict["studier_mistakes"] or ["clean"])[0]
-        lines.append(f"- [{verdict['mechanism']}] {verdict['verdict']} — {mistake}")
+        mistakes = verdict["studier_mistakes"]
+        first = f"{mistakes[0]['mistake']} [{mistakes[0]['mistake_class']}]" if mistakes else "clean"
+        lines.append(f"- [{verdict['mechanism']}] {verdict['verdict']} — {first}")
     return FEEDBACK_HEADER + "\n".join(lines)
 
 
@@ -215,6 +272,7 @@ def generate_questions(
     *,
     round_no: int,
     num_questions: int,
+    curriculum: str,
     exemplars: list[str],
     prior_questions: list[str],
     prior_verdicts: list[dict],
@@ -229,6 +287,8 @@ def generate_questions(
         library_description=VALUES["library_description"],
         code_roots_bullets=VALUES["code_roots_bullets"],
         num_questions=num_questions,
+        curriculum=curriculum,
+        corpus_surface=corpus_surface(),
         exemplar_questions="\n\n".join(
             f"### Exemplar {i + 1}\n{text}" for i, text in enumerate(exemplars)
         ),
@@ -249,6 +309,19 @@ def generate_questions(
         )
         items = _run_codex(attempt_prompt, gen_dir, num_questions, attempt)["questions"]
         accepted, rejected, problems = [], [], []
+        escapes = _command_violations(gen_dir / f"events_a{attempt}.jsonl")
+        if escapes:
+            (gen_dir / f"escapes_a{attempt}.json").write_text(
+                json.dumps(escapes, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
+            )
+            problems.append(
+                "your exploration commands touched paths outside this checkout "
+                "(rejected wholesale — explore only the current working directory): "
+                + "; ".join(escapes[:3])
+            )
+            rejected = [{"position": None, "problems": ["session escaped the corpus checkout"],
+                         "escapes": escapes[:20]}]
+            continue
         for position, item in enumerate(items):
             item_problems = _violations([item], avoid)
             if any(item["question"].strip() == kept["question"].strip() for kept in accepted):

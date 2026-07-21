@@ -114,6 +114,7 @@ def run_validation(
     round_no: int,
     out_dir: Path,
     budgets: tuple[str, ...],
+    rollouts: int,
     debug: bool,
 ) -> dict:
     """Evaluate the fixed validation set under the current note; report only."""
@@ -123,11 +124,16 @@ def run_validation(
         return read_json(report_path)
     prefix = NOTE_PREFIX.format(library=corpus.display, note=note) if note else ""
 
-    cases = [(row, budget) for budget in budgets for row in rows]
+    cases = [
+        (row, budget, rollout)
+        for budget in budgets
+        for rollout in range(rollouts)
+        for row in rows
+    ]
 
     def run_case(index: int, case) -> Path:
-        row, budget = case
-        path = out_dir / "episodes" / budget / f"{row['id']}.json"
+        row, budget, rollout = case
+        path = out_dir / "episodes" / budget / f"r{rollout}" / f"{row['id']}.json"
         if _episode_ok(path):
             return path
         question = {"id": row["id"], "question": prefix + row["question"]}
@@ -139,8 +145,9 @@ def run_validation(
                 question=question,
                 condition="selfquiz-validation",
                 budget=budget,
-                rollout=0,
-                seed=stable_seed(master_seed, "selfquiz-val", round_no, row["id"], budget, attempt),
+                rollout=rollout,
+                seed=stable_seed(master_seed, "selfquiz-val", round_no, row["id"],
+                                 budget, rollout, attempt),
                 base_url=base_urls[index % len(base_urls)],
                 max_iters=BUDGET_ITERS[budget],
                 forced=False,
@@ -150,8 +157,8 @@ def run_validation(
                 break
         if episode["status"] not in {"ok", "no_answer"}:
             episode["status"] = "gave_up"
-            log.warning("validation episode gave up: round %d %s/%s (%s)",
-                        round_no, budget, row["id"], episode.get("error", ""))
+            log.warning("validation episode gave up: round %d %s/r%d/%s (%s)",
+                        round_no, budget, rollout, row["id"], episode.get("error", ""))
         episode["round"] = round_no
         write_json(path, episode)
         return path
@@ -163,13 +170,13 @@ def run_validation(
     by_id = {row["id"]: row for row in rows}
 
     def grade_case(case) -> tuple[str, str, dict]:
-        row, budget = case
-        path = out_dir / "grades" / budget / f"{row['id']}.json"
-        episode = read_json(out_dir / "episodes" / budget / f"{row['id']}.json")
+        row, budget, rollout = case
+        path = out_dir / "grades" / budget / f"r{rollout}" / f"{row['id']}.json"
+        episode = read_json(out_dir / "episodes" / budget / f"r{rollout}" / f"{row['id']}.json")
         if path.exists():
             return budget, row["id"], read_json(path)
         grade = _grade_one(api, by_id[row["id"]], episode.get("answer", ""))
-        grade.update(qid=row["id"], budget=budget, round=round_no,
+        grade.update(qid=row["id"], budget=budget, rollout=rollout, round=round_no,
                      episode_status=episode["status"],
                      gen_tokens=episode.get("gen_tokens", 0))
         write_json(path, grade)
@@ -178,14 +185,19 @@ def run_validation(
     with ThreadPoolExecutor(max_workers=4) as pool:
         graded = list(pool.map(grade_case, cases))
 
-    report = {"round": round_no, "note_chars": len(note), "budgets": {}}
+    report = {"round": round_no, "note_chars": len(note), "rollouts": rollouts,
+              "budgets": {}}
     for budget in budgets:
         population = [grade for b, _, grade in graded if b == budget]
+        per_question: dict[str, list] = {}
+        for _, qid, grade in graded:
+            if grade["budget"] == budget:
+                per_question.setdefault(qid, []).append(grade["lenient"])
         report["budgets"][budget] = {
             "episodes": len(population),
             "mean_lenient": sum(g["lenient"] for g in population) / len(population),
             "mean_generated_tokens": sum(g["gen_tokens"] for g in population) / len(population),
-            "per_question": {g["qid"]: g["lenient"] for g in population},
+            "per_question": {qid: sum(v) / len(v) for qid, v in sorted(per_question.items())},
         }
     write_json(report_path, report)
     for budget, result in report["budgets"].items():

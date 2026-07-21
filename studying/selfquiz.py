@@ -33,10 +33,11 @@ from pathlib import Path
 from studybench.artifacts import read_json, sha256_json, sha256_text, stable_seed, write_json, write_text
 from studybench.dataset import CORPORA, NOTE_PREFIX, ROOT, load_questions
 from studybench.react import MODEL, MODEL_REVISION, SAMPLING, TOOL_CONFIG, make_tools
-from studybench.react import run_episode
+from studybench.react import run_episode, study_prompt
 from studybench.tools import RepoTools
 
 from . import distill as distiller
+from . import notebook as nb
 from . import quizmaster, verifier
 from .sandbox import extract_program, run_program
 from .validate import load_validation_questions, run_validation, validation_dataset_sha256
@@ -45,9 +46,47 @@ ROUNDS = 5
 QUESTIONS_PER_ROUND = 6
 MIN_ACCEPT = 4
 ATTEMPT_MAX_ITERS = 20
+EXPLORE_ITERATIONS = 50
 VALIDATION_BUDGETS = ("direct", "k5")
+VALIDATION_ROLLOUTS = 2
 TEST_SIMILARITY_MAX = 0.35
 log = logging.getLogger("studying.selfquiz")
+
+
+def curriculum_directive(last_verdicts: list[dict]) -> str:
+    """Difficulty mix and retest slots for the next round, from the last round."""
+
+    if not last_verdicts:
+        return (
+            "First quiz round after exploration: ALL questions at `medium` "
+            "difficulty, probing the corpus's core public API surface — the "
+            "mechanisms every real user touches first (defining signatures, "
+            "running predictors, offline testing, adapters, examples and "
+            "predictions)."
+        )
+    rate = sum(v["verdict"] == "correct" for v in last_verdicts) / len(last_verdicts)
+    if rate < 1 / 3:
+        mix = (
+            "The studier is struggling: at least 4 questions `medium` on core "
+            "public API, at most 2 `hard`, no `very_hard`."
+        )
+    elif rate < 2 / 3:
+        mix = "Balanced difficulty: about 3 `medium`, 2 `hard`, at most 1 `very_hard`."
+    else:
+        mix = (
+            "The studier is succeeding: escalate — about 2 `medium`, 2 `hard`, "
+            "2 `very_hard`."
+        )
+    failed = [v["mechanism"] for v in last_verdicts if v["verdict"] == "incorrect"]
+    retests = list(dict.fromkeys(failed))[:2]
+    if retests:
+        mix += (
+            " Dedicate one slot each to RETESTING these previously failed "
+            "mechanisms with a fresh, SIMPLER scenario (different behavior, "
+            "same mechanism), to check whether the studier's lesson landed: "
+            + ", ".join(retests) + "."
+        )
+    return mix
 
 
 def _shingles(text: str) -> set[str]:
@@ -111,10 +150,12 @@ def _attempt_deterministic(answer: str, run_dir: Path) -> dict:
 
 def study_round(
     *, round_no: int, args, corpus, tools, urls, verify_api, round_dir: Path,
-    note: str, exemplars, prior_questions, prior_verdicts, test_rows,
+    current_notebook: dict, curriculum: str, exemplars, prior_questions,
+    prior_verdicts, test_rows,
 ) -> tuple[list[dict], dict[str, dict]]:
     """Run one complete study round; every phase is idempotent on disk."""
 
+    note = nb.render(current_notebook)
     questions_path = round_dir / "questions.json"
     if questions_path.exists():
         questions = read_json(questions_path)["questions"]
@@ -122,6 +163,7 @@ def study_round(
         accepted = quizmaster.generate_questions(
             round_no=round_no,
             num_questions=args.questions_per_round,
+            curriculum=curriculum,
             exemplars=exemplars,
             prior_questions=prior_questions,
             prior_verdicts=prior_verdicts,
@@ -142,6 +184,7 @@ def study_round(
             )
         write_json(questions_path, {
             "round": round_no,
+            "curriculum": curriculum,
             "questions": questions,
             "dropped_test_similar": dropped,
         })
@@ -215,21 +258,27 @@ def study_round(
     log.info("round %d verdicts: %s", round_no, counts)
 
     note_path = round_dir / "cheatsheet.md"
-    if not note_path.exists():
+    notebook_path = round_dir / "notebook.json"
+    if not (note_path.exists() and notebook_path.exists()):
         findings = distiller.build_findings(questions, verdicts)
-        new_note, usage = distiller.distill(
+        updated, ledger = distiller.distill(
             base_url=urls[0],
             api_key=os.environ.get("VLLM_API_KEY", "EMPTY"),
             library=corpus.display,
-            current=note,
+            current=current_notebook,
             findings=findings,
             seed=stable_seed(args.seed, "selfquiz-distill", round_no),
         )
-        write_json(round_dir / "distill.json", {"round": round_no, "usage": usage,
-                                                "note_chars": len(new_note)})
-        write_text(note_path, new_note)
-    log.info("round %d cheatsheet: %d chars", round_no,
-             len(note_path.read_text(encoding="utf-8")))
+        write_json(round_dir / "distill.json", {
+            "round": round_no,
+            "ledger": ledger,
+            "note_chars": len(nb.render(updated)),
+        })
+        write_json(notebook_path, updated)
+        write_text(note_path, nb.render(updated))
+    log.info("round %d cheatsheet: %d chars, %d sections", round_no,
+             len(note_path.read_text(encoding="utf-8")),
+             len(read_json(notebook_path)["sections"]))
     return questions, verdicts
 
 
@@ -252,9 +301,13 @@ def main() -> None:
         args.attempt_max_iters = 5
         args.min_accept = 1
         validation_budgets = ("direct",)
+        validation_rollouts = 1
+        explore_iterations = 2
     else:
         args.min_accept = MIN_ACCEPT
         validation_budgets = VALIDATION_BUDGETS
+        validation_rollouts = VALIDATION_ROLLOUTS
+        explore_iterations = EXPLORE_ITERATIONS
     urls = args.base_urls.split(",")
 
     (ROOT / "logs").mkdir(exist_ok=True)
@@ -280,8 +333,9 @@ def main() -> None:
     run_root = ROOT / "runs" / args.run_id / corpus.name
     study_root = run_root / "study"
     manifest = {
-        "schema_version": 1,
+        "schema_version": 2,
         "kind": "selfquiz-study",
+        "iteration": 2,
         "run_id": args.run_id,
         "task": corpus.name,
         "smoke": args.smoke,
@@ -302,14 +356,19 @@ def main() -> None:
         "questions_per_round": args.questions_per_round,
         "min_accept": args.min_accept,
         "attempt_max_iters": args.attempt_max_iters,
-        "cheatsheet_cap": distiller.CHEATSHEET_CAP,
+        "explore_iterations": explore_iterations,
+        "distillation": {"mode": "notebook-ops", "cap": distiller.CHEATSHEET_CAP,
+                         "max_ops": distiller.MAX_OPS},
+        "curriculum": "adaptive difficulty (medium/hard/very_hard) + retests, from last round's verdicts",
         "validation_dataset_sha256": validation_dataset_sha256(),
         "validation_budgets": list(validation_budgets),
-        "validation_exemplars": "all validation question texts, every round",
+        "validation_rollouts": validation_rollouts,
+        "validation_exemplars": "all validation question texts (register only), every round",
         "test_similarity_max": TEST_SIMILARITY_MAX,
         "quizmaster": {"model": quizmaster.MODEL, "effort": quizmaster.EFFORT,
-                       "harness": "codex exec, read-only, corpus checkout"},
-        "verifier": {"model": verifier.MODEL},
+                       "harness": "codex exec, read-only, corpus checkout",
+                       "enforcement": "event-log corpus-only read check, batch-rejecting"},
+        "verifier": {"model": verifier.MODEL, "mistake_classes": True},
         "validation_judge": {"model": "gpt-5.4", "contract": "paper"},
     }
     # The stored manifest is authoritative on resume; source_commit is
@@ -328,6 +387,37 @@ def main() -> None:
 
     decontaminate(validation_rows, test_rows, study_root / "decontamination.json")
 
+    # Round 0: the studier writes its own exploration cheatsheet (the baseline
+    # cheatsheet procedure, fresh seed); quiz rounds then verify and patch it.
+    round0 = study_root / "round_0"
+    explore_path = round0 / "explore.json"
+    notebook0_path = round0 / "notebook.json"
+    if not (explore_path.exists() and notebook0_path.exists()):
+        episode = run_episode(
+            corpus=corpus,
+            tools=tools,
+            question={"id": "explore",
+                      "question": study_prompt(corpus.display, explore_iterations)},
+            condition="selfquiz-study",
+            budget="explore",
+            rollout=0,
+            seed=stable_seed(args.seed, "selfquiz-explore"),
+            base_url=urls[0],
+            max_iters=explore_iterations,
+            forced=True,
+            debug=args.debug,
+        )
+        if episode["status"] != "ok" or not episode["answer"].strip():
+            raise SystemExit(f"exploration study failed: {episode['status']}")
+        write_json(explore_path, episode)
+        notebook0 = nb.parse(episode["answer"])
+        write_json(notebook0_path, notebook0)
+        write_text(round0 / "cheatsheet.md", nb.render(notebook0))
+    explore_episode = read_json(explore_path)
+    current_notebook = read_json(notebook0_path)
+    log.info("round 0 exploration note: %d chars, %d sections",
+             len(nb.render(current_notebook)), len(current_notebook["sections"]))
+
     validation_common = dict(
         rows=validation_rows,
         corpus=corpus,
@@ -336,16 +426,17 @@ def main() -> None:
         api_key=os.environ["OPENAI_API_KEY"],
         master_seed=args.seed,
         budgets=validation_budgets,
+        rollouts=validation_rollouts,
         debug=args.debug,
     )
     reports = [run_validation(
-        note="", round_no=0, out_dir=study_root / "round_0" / "validation",
-        **validation_common,
+        note=nb.render(current_notebook), round_no=0,
+        out_dir=round0 / "validation", **validation_common,
     )]
 
-    note = ""
     all_questions: list[dict] = []
     round_summaries = []
+    last_verdicts: list[dict] = []
     verify_api = verifier.client()
     for round_no in range(1, args.rounds + 1):
         round_dir = study_root / f"round_{round_no}"
@@ -361,14 +452,17 @@ def main() -> None:
             urls=urls,
             verify_api=verify_api,
             round_dir=round_dir,
-            note=note,
+            current_notebook=current_notebook,
+            curriculum=curriculum_directive(last_verdicts),
             exemplars=exemplars,
             prior_questions=[question["question"] for question in all_questions],
             prior_verdicts=prior_verdicts,
             test_rows=test_rows,
         )
         all_questions.extend(questions)
-        note = (round_dir / "cheatsheet.md").read_text(encoding="utf-8")
+        last_verdicts = list(verdicts.values())
+        current_notebook = read_json(round_dir / "notebook.json")
+        note = nb.render(current_notebook)
         reports.append(run_validation(
             note=note, round_no=round_no, out_dir=round_dir / "validation",
             **validation_common,
@@ -382,20 +476,31 @@ def main() -> None:
             "verdicts": counts,
             "attempt_gen_tokens": sum(v["attempt_gen_tokens"] for v in verdicts.values()),
             "note_chars": len(note),
+            "note_sections": len(current_notebook["sections"]),
         })
 
+    note = nb.render(current_notebook)
     write_text(run_root / "cheatsheet.md", note)
-    distill_tokens = sum(
-        entry.get("completion_tokens", 0)
-        for round_no in range(1, args.rounds + 1)
-        for entry in read_json(study_root / f"round_{round_no}" / "distill.json")["usage"]
-    )
+    distill_tokens = 0
+    for round_no in range(1, args.rounds + 1):
+        ledger = read_json(study_root / f"round_{round_no}" / "distill.json")["ledger"]
+        distill_tokens += sum(
+            entry.get("usage", {}).get("completion_tokens", 0) for entry in ledger.values()
+            if isinstance(entry, dict)
+        )
     study = {
         "kind": "selfquiz",
-        "schema_version": 1,
+        "schema_version": 2,
+        "iteration": 2,
         "config_sha256": sha256_json(manifest),
+        "exploration": {
+            "iterations": explore_iterations,
+            "gen_tokens": explore_episode["gen_tokens"],
+            "repository_tool_calls": explore_episode["repository_tool_calls"],
+        },
         "rounds": round_summaries,
         "studier_generated_tokens": {
+            "exploration": explore_episode["gen_tokens"],
             "attempts": sum(entry["attempt_gen_tokens"] for entry in round_summaries),
             "distillation": distill_tokens,
         },

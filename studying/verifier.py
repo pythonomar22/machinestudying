@@ -38,7 +38,12 @@ Gold program output:
 ## Rules
 - The gold program and the sandbox results are ground truth; judge substance, not style. An attempt that reaches the same behavior through different valid {library} APIs can still be correct.
 - `verdict`: `correct` (right mechanism and working behavior), `partial` (right direction with material gaps), or `incorrect`.
-- `studier_mistakes`: concrete and specific — name hallucinated or stale APIs exactly, wrong fields or data flow, missing mechanisms, programs that do not run. Empty only if the attempt is clean.
+- `studier_mistakes`: concrete and specific — name hallucinated or stale APIs exactly, wrong fields or data flow, missing mechanisms, programs that do not run. Empty only if the attempt is clean. Classify every mistake:
+  - `answer_format`: no single fenced runnable program, prose where a program was asked for, code that does not compile.
+  - `stale_or_hallucinated_api`: imports or symbols that do not exist in this repository (name the wrong one and the right one).
+  - `offline_harness_misuse`: wrong offline-LM setup (hand-rolled mocks where the shipped test stub was needed, broken LM wiring).
+  - `mechanism_misunderstanding`: wrong model of how the library mechanism actually behaves.
+  - `other`: anything else.
 - `lessons`: the durable {library} facts that would have prevented the mistakes — each self-contained, actionable, at most 2 sentences, citing the relevant repository files. Extract lessons even from correct attempts when they reveal something worth retaining (a lucky guess, a fragile pattern, a cleaner idiom the gold uses).
 
 Return JSON that matches the schema exactly."""
@@ -53,7 +58,27 @@ SCHEMA = {
             "properties": {
                 "verdict": {"type": "string", "enum": ["correct", "partial", "incorrect"]},
                 "summary": {"type": "string"},
-                "studier_mistakes": {"type": "array", "items": {"type": "string"}},
+                "studier_mistakes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "mistake": {"type": "string"},
+                            "mistake_class": {
+                                "type": "string",
+                                "enum": [
+                                    "answer_format",
+                                    "stale_or_hallucinated_api",
+                                    "offline_harness_misuse",
+                                    "mechanism_misunderstanding",
+                                    "other",
+                                ],
+                            },
+                        },
+                        "required": ["mistake", "mistake_class"],
+                        "additionalProperties": False,
+                    },
+                },
                 "lessons": {
                     "type": "array",
                     "items": {
@@ -90,7 +115,9 @@ def verify_attempt(
         return {
             "verdict": "incorrect",
             "summary": "The studier produced no answer.",
-            "studier_mistakes": ["produced no answer at all"],
+            "studier_mistakes": [
+                {"mistake": "produced no answer at all", "mistake_class": "answer_format"}
+            ],
             "lessons": [],
             "judge_response": None,
         }
