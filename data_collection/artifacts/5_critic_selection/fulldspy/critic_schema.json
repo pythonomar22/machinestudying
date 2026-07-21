@@ -1,13 +1,16 @@
 {
  "type": "object",
  "properties": {
-  "candidates": {
+  "selections": {
    "type": "array",
-   "minItems": 20,
-   "maxItems": 20,
+   "minItems": 1,
+   "maxItems": 8,
    "items": {
     "type": "object",
     "properties": {
+     "source_index": {
+      "type": "integer"
+     },
      "question": {
       "type": "string"
      },
@@ -46,6 +49,7 @@
      }
     },
     "required": [
+     "source_index",
      "question",
      "answer",
      "difficulty",
@@ -54,10 +58,14 @@
     ],
     "additionalProperties": false
    }
+  },
+  "selection_notes": {
+   "type": "string"
   }
  },
  "required": [
-  "candidates"
+  "selections",
+  "selection_notes"
  ],
  "additionalProperties": false
 }

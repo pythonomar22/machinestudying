@@ -249,19 +249,26 @@ one-time LLM judgment, archived).
 | 4 | (nothing) | output enforcement | `--output-schema` JSON Schema (exactly 20 items, difficulty enum, >=2 evidence items); deterministic validation of evidence paths against the checkout; (rev 2) the deliverable contract is validated — exactly one fenced ```python block per answer, nothing outside it, and it must `compile()`; questions must be >=400 chars in >=2 paragraphs (loose lower bounds of the adopted register: released questions run 856–1,848 chars, median 3 paragraphs) — at Stage 3a AND (inherited via the shared validator) at Stage 3b, so the critic can never strip programs or flatten questions again; at most 1 corrective re-run per topic |
 | 5 | (nothing) | model account | the operator's ChatGPT/Codex login, model pinned to gpt-5.4, effort xhigh (the user config's default model/effort are overridden per run) |
 
-**Two-corpus design (user-directed):** generation runs twice with
-identical seeds, template, and harness, differing ONLY in the repository
-Codex can read — plus, since 2026-07-21, per-scope `code_roots`
-placeholder values (`SCOPE_VALUES`): the smalldspy prompt states
-truthfully that the corpus is a deliberately small subset (only
-`dspy/predict`, `dspy/adapters`, `dspy/primitives`, `tests/predict`) and
-warns that remembered full-DSPy files do not exist there. Motivated by an
-observed rev-2 failure mode: under the program register the generator
-cited out-of-scope files from parametric memory (`dspy/evaluate/...`,
-`dspy/clients/...`) through both attempts. Describing the corpus honestly
-to the generator is what the paper's own setup does implicitly (its
-generator's repo IS the answering agent's corpus); stages 3b and the
-optimizer inherit the same per-scope values — `fulldspy` (full checkout, source + tests + docs) and
+**Two-corpus design (user-directed) — RETIRED 2026-07-21.** Originally:
+generation ran twice, identical except for the repository Codex could
+read. Under rev 2's program register the corpus-constrained smalldspy
+generation became unreliable — the generator cited out-of-scope files
+from parametric memory (`dspy/evaluate/...`, `dspy/clients/...`) through
+both attempts on 3/4 topics, even after a `SCOPE_VALUES` fix stated the
+corpus truthfully (per-scope code_roots text retained in the script for
+provenance; a corpus-truth rerun was started, then abandoned when the
+design changed). **User decision: the SmallDSPy-scope set is now DERIVED,
+not generated — the single fulldspy pipeline runs 4→5→6→7, every stage
+re-tags `smalldspy_scope` (all evidence inside the 66-file corpus) after
+any rewrite, and the small-scope validation set is the final stage-7
+output filtered on that tag.** Consequences, stated honestly: the small
+set is a strict subset of the full set (not an independent set), its
+questions were generated with full-repo context (only their evidence is
+scope-confined), and its size is whatever survives the pipeline —
+rev-2 candidates start at 21/80 in scope (9/9/2/1 by topic: 
+module_composition 9, prompt_compilation 9, evaluation_metrics 2,
+lm_provider 1). If the surviving subset proves too small, the fallback
+is a dedicated critic pass over the 21 in-scope candidates — `fulldspy` (full checkout, source + tests + docs) and
 `smalldspy` (the 66-file corpus checkout; no docs in its working tree, and
 the read-only sandbox enforces scope because out-of-scope files do not
 exist there). This measures how corpus scope shapes the generated

@@ -483,6 +483,28 @@ def run_scope(scope: str) -> None:
           f"({revised} revised, {len(dropped)} dropped) -> {merged_path.name}, "
           f"{jsonl_path.name}")
 
+    if scope == "fulldspy":
+        # The SmallDSPy-scope set is DERIVED, not generated (FIDELITY.md):
+        # the subset whose evidence lies entirely inside the 66-file corpus.
+        subset = [r for r in final if r["smalldspy_scope"]]
+        derived = {
+            "derived_from": merged_path.name,
+            "derivation": "fulldspy validation questions whose evidence "
+                          "spans lie entirely inside the 66-file SmallDSPy "
+                          "corpus (smalldspy_scope tag, recomputed after "
+                          "every rewrite stage)",
+            "num_questions": len(subset),
+            "questions": subset,
+        }
+        (ARTIFACTS / "7_smalldspy_validation.json").write_text(
+            json.dumps(derived, ensure_ascii=False, indent=1) + "\n",
+            encoding="utf-8")
+        (ARTIFACTS / "7_smalldspy_validation.jsonl").write_text(
+            "".join(json.dumps({k: r[k] for k in canonical}, ensure_ascii=False)
+                    + "\n" for r in subset),
+            encoding="utf-8")
+        print(f"derived smalldspy validation set: {len(subset)} questions")
+
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
