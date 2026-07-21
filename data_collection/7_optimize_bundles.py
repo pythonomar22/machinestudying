@@ -60,7 +60,7 @@ def load_module(name: str, filename: str):
 gen = load_module("stage3a", "4_generate_candidates.py")
 s6 = load_module("stage4", "6_build_rubrics.py")
 
-WORKERS = 3
+WORKERS = 4
 MAX_ROUNDS = 3        # revision rounds before a bundle is dropped
 RUN_TIMEOUT = 180     # seconds per sandbox execution
 CODE_BLOCK = re.compile(r"```python\n(.*?)```", re.DOTALL)

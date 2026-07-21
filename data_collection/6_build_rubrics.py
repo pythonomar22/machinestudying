@@ -53,7 +53,7 @@ def load_stage3a():
 
 gen = load_stage3a()
 
-WORKERS = 3          # concurrent codex sessions per scope
+WORKERS = 4          # concurrent codex sessions per scope
 MAX_SPAN_LINES = 300  # paper: "never exceed 300 lines"
 
 # ---------------------------------------------------------------------------

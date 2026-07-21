@@ -34,6 +34,7 @@ import argparse
 import importlib.util
 import json
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 DC = Path(__file__).resolve().parent
@@ -153,7 +154,8 @@ def critic_violations(selections: list[dict], repo: Path) -> list[str]:
 
 def run_codex(prompt: str, scope_dir: Path, repo: Path, slug: str, attempt: int) -> dict:
     schema_path = scope_dir / "critic_schema.json"
-    schema_path.write_text(json.dumps(CRITIC_SCHEMA, indent=1), encoding="utf-8")
+    if not schema_path.exists():
+        schema_path.write_text(json.dumps(CRITIC_SCHEMA, indent=1), encoding="utf-8")
     last_message = scope_dir / f"last_message_{slug}_a{attempt}.json"
     events_path = scope_dir / f"events_{slug}_a{attempt}.jsonl"
     command = [
@@ -268,11 +270,29 @@ def run_scope(scope: str, sessions: dict[int, dict]) -> None:
         capture_output=True, text=True, timeout=30,
     ).stdout.strip() != gen.PINNED_COMMIT:
         raise RuntimeError(f"{repo} is not at the pinned commit")
+    scope_dir = ARTIFACTS / scope
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    (scope_dir / "critic_schema.json").write_text(
+        json.dumps(CRITIC_SCHEMA, indent=1), encoding="utf-8")
     records = [
         json.loads(path.read_text(encoding="utf-8"))
         for path in sorted((CANDIDATES_DIR / scope).glob("4_topic_*.json"))
     ]
-    results = [select_topic(record, sessions, scope) for record in records]
+
+    results, failures = [], []
+    with ThreadPoolExecutor(max_workers=len(records)) as pool:
+        futures = {pool.submit(select_topic, r, sessions, scope): r for r in records}
+        for future, record in futures.items():
+            try:
+                results.append(future.result())
+            except Exception as error:
+                failures.append((record["label"], str(error)))
+                print(f"{scope}/{record['label']}: FAILED: {str(error)[:300]}",
+                      flush=True)
+    if failures:
+        raise RuntimeError(f"{scope}: {len(failures)} topic(s) failed - rerun to "
+                           f"retry them: {[label for label, _ in failures]}")
+    results.sort(key=lambda result: result["cluster_id"])
     merged = {
         "scope": scope,
         "harness": f"codex exec (codex-cli), model {gen.MODEL}, effort {gen.EFFORT}, "

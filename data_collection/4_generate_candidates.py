@@ -43,6 +43,7 @@ import argparse
 import json
 import re
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 DC = Path(__file__).resolve().parent
@@ -380,7 +381,8 @@ def violations(candidates: list[dict], repo: Path) -> list[str]:
 
 def run_codex(prompt: str, scope_dir: Path, repo: Path, slug: str, attempt: int) -> dict:
     schema_path = scope_dir / "output_schema.json"
-    schema_path.write_text(json.dumps(OUTPUT_SCHEMA, indent=1), encoding="utf-8")
+    if not schema_path.exists():
+        schema_path.write_text(json.dumps(OUTPUT_SCHEMA, indent=1), encoding="utf-8")
     last_message = scope_dir / f"last_message_{slug}_a{attempt}.json"
     events_path = scope_dir / f"events_{slug}_a{attempt}.jsonl"
     command = [
@@ -482,7 +484,24 @@ def run_scope(scope: str, topics: list[dict], sessions: dict[int, dict]) -> None
         capture_output=True, text=True, timeout=30,
     ).stdout.strip() != PINNED_COMMIT:
         raise RuntimeError(f"{repo} is not at the pinned commit")
-    records = [generate_topic(topic, sessions, scope) for topic in topics]
+    (ARTIFACTS / scope).mkdir(parents=True, exist_ok=True)
+    (ARTIFACTS / scope / "output_schema.json").write_text(
+        json.dumps(OUTPUT_SCHEMA, indent=1), encoding="utf-8")
+
+    records, failures = [], []
+    with ThreadPoolExecutor(max_workers=len(topics)) as pool:
+        futures = {pool.submit(generate_topic, t, sessions, scope): t for t in topics}
+        for future, topic in futures.items():
+            try:
+                records.append(future.result())
+            except Exception as error:
+                failures.append((topic["label"], str(error)))
+                print(f"{scope}/{topic['label']}: FAILED: {str(error)[:300]}",
+                      flush=True)
+    if failures:
+        raise RuntimeError(f"{scope}: {len(failures)} topic(s) failed - rerun to "
+                           f"retry them: {[label for label, _ in failures]}")
+    records.sort(key=lambda record: record["cluster_id"])
     merged = {
         "scope": scope,
         "harness": f"codex exec (codex-cli), model {MODEL}, effort {EFFORT}, "
