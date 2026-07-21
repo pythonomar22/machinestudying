@@ -116,8 +116,85 @@ eval paired with both baselines.
 
 ## Run
 
-- `runs/smalldspy-selfquiz2-20260721` (pending; smoke first).
+- `runs/smalldspy-selfquiz2-20260721` — completed 2026-07-21, single
+  uninterrupted job (no resumes, no code changes mid-study). Every
+  quizmaster round passed the corpus-only read check with zero escapes
+  and generated 6/6 questions on the first attempt (9–15 min/round at
+  medium-weighted difficulty vs 27–47 min in iteration 1). The notebook
+  evolved by edits only: 11 → 12 → 14 → 13 → 13 → 12 sections; the cap
+  compression at rounds 3–5 engaged as designed. Training verdicts:
+  0 correct anywhere; 2/1/1/2 partial in rounds 1/3/4/5 (curriculum
+  pinned difficulty at its floor — mostly `medium` — from round 2 on).
+  Studier study compute: 50-step exploration (49k gen tokens) + 231k
+  attempt tokens + 23k distillation tokens.
+
+Validation trajectory (mean lenient, 7 questions × 2 rollouts):
+
+| round | 0 (explore) | 1 | 2 | 3 | 4 | 5 |
+|---|---:|---:|---:|---:|---:|---:|
+| direct | 0.00 | 2.14 | 5.36 | 4.64 | 2.86 | 0.00 |
+| k5 | 5.36 | 2.86 | 6.43 | 10.36 | 8.21 | 3.00 |
+
+Gentler and more monotone than iteration 1 through round 3, then a drop
+at round 5 coinciding with the largest cap compression (10.3k → 7.5k
+chars). Still noise-dominated at this population size.
 
 ## Results
 
-(pending)
+**Paper-tier GPT-5.4 grading is blocked: the OpenAI API key exhausted its
+quota (`insufficient_quota`) immediately after the eval completed.** The
+held-out episodes are complete and validated (60/60, paired seeds); the
+paper-comparable number can be produced the moment credits are restored
+with `uv run --frozen python -m studybench.grade
+runs/smalldspy-selfquiz2-20260721 --judge gpt`.
+
+Interim diagnostic: all five conditions graded with the pinned local
+Qwen3.5-9B 10k-thinking judge (same judge, same contract, one batch era —
+known overgrading bias, not paper-comparable; see experiments/002):
+
+| Condition | direct | k5 | k20 | forced k20 | local E |
+|---|---:|---:|---:|---:|---:|
+| no-study | 9.6/4.0k | 23.7/4.5k | 17.1/6.5k | 42.6/25.1k | 18.98 |
+| cheatsheet | 17.7/2.8k | 18.4/4.2k | 34.4/5.3k | 35.7/21.4k | **27.47** |
+| selfquiz1 (final note) | 8.4/3.4k | 26.3/4.9k | 32.4/7.0k | 30.7/21.3k | 20.89 |
+| selfquiz1sel (r1 note) | 14.1/3.0k | 23.9/5.2k | 20.5/8.0k | 46.3/22.9k | 22.68 |
+| selfquiz2 (explore+quiz) | 7.6/2.5k | 10.8/3.9k | 25.9/4.7k | 49.1/24.8k | 22.46 |
+
+Local-judge reading (diagnostic only): iteration 2 sits above no-study
+and iteration-1-final but still below the exploration cheatsheet. Its
+per-budget shape is distinctive — the *worst* k5 in the table but the
+*highest* forced-k20 cell of the whole project (49.1) — i.e. the
+quiz-patched note appears to help sustained search and not cheap
+answers, which the expertise anchor penalizes. Local orderings between
+nearby conditions are not trustworthy (iteration 1 showed local/GPT
+rank inversions); treat everything here as screening signal.
+
+## Interpretation so far (pre-GPT, held loosely)
+
+- The iteration-2 mechanics all worked: no escapes, no churn, adaptive
+  curriculum, standing foundations sections created and grown.
+- The studier still solved ~nothing (0 correct in 30 attempts even at
+  `medium`): on this corpus, Qwen3.5-9B's frontier appears to be below
+  the easiest questions a benchmark-register quizmaster writes. The
+  binding constraint on self-quizzing iteration 1 AND 2 may simply be
+  that the studier is too weak for its teacher's practice material —
+  the next lever is question difficulty far below "benchmark register"
+  (e.g. single-mechanism drills), or a stronger studier.
+- The exploration-init hypothesis is not yet confirmed or refuted: under
+  the local judge, explore+quiz (22.46) landed below explore-only-style
+  cheatsheet (27.47) — if the GPT number agrees, quizzing on top of
+  exploration *subtracted* value at cheap budgets in this configuration,
+  plausibly by lengthening/complicating the note that direct answers
+  condition on (validation round-5 drop after compression is consistent).
+- Statistical limits from 006 apply unchanged: n=5 questions, single
+  study seeds; nothing here separates from zero.
+
+## Next
+
+1. Regrade `smalldspy-selfquiz2-20260721` with GPT-5.4 when quota is
+   restored (and ideally all five runs in one batch, per the 006 audit's
+   judge-drift caution).
+2. If the GPT ordering matches: iteration 3 should attack the studier's
+   frontier directly — drill-level questions (single mechanism, few
+   lines), or note ablations isolating whether quiz-added content helps
+   or harms cheap-budget answering.
