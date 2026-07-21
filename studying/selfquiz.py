@@ -312,10 +312,19 @@ def main() -> None:
         "verifier": {"model": verifier.MODEL},
         "validation_judge": {"model": "gpt-5.4", "contract": "paper"},
     }
+    # The stored manifest is authoritative on resume; source_commit is
+    # provenance of the launch, not part of the immutable study design.
     manifest_path = run_root / "selfquiz.json"
-    if manifest_path.exists() and read_json(manifest_path) != manifest:
-        raise SystemExit(f"study configuration changed; use a new --run-id: {manifest_path}")
-    write_json(manifest_path, manifest)
+    volatile = {"source_commit", "source_dirty"}
+    if manifest_path.exists():
+        existing = read_json(manifest_path)
+        if {k: v for k, v in existing.items() if k not in volatile} != {
+            k: v for k, v in manifest.items() if k not in volatile
+        }:
+            raise SystemExit(f"study configuration changed; use a new --run-id: {manifest_path}")
+        manifest = existing
+    else:
+        write_json(manifest_path, manifest)
 
     decontaminate(validation_rows, test_rows, study_root / "decontamination.json")
 
