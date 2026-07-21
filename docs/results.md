@@ -47,3 +47,21 @@ Future results should come only from the paired baseline/cheatsheet pipeline in
 the root README, retain the complete study and evaluation artifacts until the
 numbers are checked, and be added here only after both populations pass the
 reporter's completeness and compatibility checks.
+
+## SmallDSPy paired GPT-5.4 measurements (2026-07-16 / 2026-07-21)
+
+All four conditions share master seed 20260715, identical per-episode seeds
+(audited), and the paper-contract GPT-5.4 judge. Cells are lenient accuracy
+with mean generated tokens.
+
+| Condition | direct | k5 | k20 | forced k20 | expertise |
+|---|---:|---:|---:|---:|---:|
+| no-study | 7.1 (4.0k) | 14.8 (4.5k) | 16.1 (6.5k) | 26.5 (25.1k) | 12.35 |
+| cheatsheet | 15.4 (2.8k) | 15.1 (4.2k) | 19.7 (5.3k) | 29.1 (21.4k) | 19.18 |
+| selfquiz iter-1, final note | 11.4 (3.4k) | 14.7 (4.9k) | 17.7 (7.0k) | 21.3 (21.3k) | 13.75 |
+| selfquiz iter-1, val-selected note | 4.4 (3.0k) | 12.3 (5.2k) | 15.0 (8.0k) | 38.5 (22.9k) | 13.04 |
+
+These are exact measurements of these artifacts, not method-level findings:
+on 5 questions no pairwise expertise gap is statistically separable from
+zero (paired cluster bootstrap CIs all include 0). Full context, audit
+findings, and mandatory qualifiers in `experiments/006-selfquiz-smalldspy.md`.

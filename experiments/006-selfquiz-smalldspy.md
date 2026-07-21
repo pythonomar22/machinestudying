@@ -103,28 +103,81 @@ baselines; lenient accuracy / mean generated tokens):
 | cheatsheet | 15.40/2.8k | 15.13/4.2k | 19.73/5.3k | 29.13/21.4k | **19.18** |
 | selfquiz (final note) | 11.40/3.4k | 14.67/4.9k | 17.73/7.0k | 21.27/21.3k | 13.75 |
 
-## Interpretation (iteration 1, honest)
-
-The specified protocol — evolve for 5 rounds, evaluate the final note —
-**does not beat the exploration cheatsheet** (13.75 vs 19.18); it lands
-between baseline and cheatsheet. Two mechanisms visible in the artifacts:
-
-1. **Full-rewrite distillation is unstable.** The note is rewritten from
-   scratch each round at temperature 1.0; validation peaked at round 1 and
-   degraded as later rewrites dropped earlier content. The final note is
-   not the best note the loop produced.
-2. **Training difficulty outran the studier.** Verdict counts collapsed to
-   all-incorrect by rounds 3–5, so later rounds distilled from failures on
-   very hard questions rather than consolidating basics.
-3. At forced k20 the selfquiz note scores below even no-study (21.27 vs
-   26.47), consistent with the paper's observation that long search
-   amortizes notes away — and suggesting this note actively misdirects
-   long searches.
-
 **Selection variant (declared before running):** because round selection by
 *self-generated* validation score is test-blind and part of a legitimate
-studying algorithm, we also evaluate the validation-selected note
-(round 1, argmax of mean validation lenient across budgets: 15.4 vs ≤6.1
-for all other rounds) as `smalldspy-selfquiz1sel-20260721`. This is the
+studying algorithm, we also evaluated the validation-selected note
+(round 1, argmax of mean validation lenient across budgets: 15.4 vs ≤7.5
+for all other rounds) as `smalldspy-selfquiz1sel-20260721`. This was the
 second and final test-set evaluation of this method family in this
-iteration; both results are reported regardless of outcome.
+iteration; both results are reported regardless of outcome:
+
+| Condition | direct | k5 | k20 | forced k20 | Expertise |
+|---|---:|---:|---:|---:|---:|
+| selfquiz (round-1 note, val-selected) | 4.40/3.0k | 12.27/5.2k | 15.00/8.0k | 38.53/22.9k | 13.04 |
+
+## Interpretation (audited)
+
+A four-agent adversarial audit plus an interpretation review ran over the
+complete artifact set (workflow `wf_2e25b54e-dd4`; findings summarized
+here). Mechanical integrity is fully clean: all 240 episodes across the
+four conditions have identical paired seeds (independently recomputed),
+notes were verifiably delivered (240/240 question hashes reconstruct),
+grading is exact (all 120 selfquiz grades rebuild byte-for-byte, lenient =
+weighted claim sum everywhere), the same served judge snapshot graded all
+four runs, and no test content reaches any study prompt, training
+question, or note (max 3-gram Jaccard 0.007–0.010, ~50× below threshold).
+The numbers are real; the claims must stay narrow:
+
+1. **On this 5-question test set, neither selfquiz note scored higher than
+   the exploration cheatsheet in expertise** (19.18 vs 13.75/13.04), and
+   the ordering is consistent across direct/k5/k20 for both notes. The
+   gaps are NOT statistically separable at this sample size: the paired
+   bootstrap CI on the headline gap is [-3.26, +13.91], per-rollout
+   expertise flips the sign once, and leave-one-question-out nearly halves
+   the gap. No method-level conclusion ("self-quizzing doesn't work") is
+   supported.
+2. Two mandatory qualifiers on the cheatsheet's win: ~1.5–2 of its 5.4
+   E-point lead over selfquiz (and ~3.8 of its 6.8 over baseline) flows
+   through the expertise metric's answer-shortening channel (shorter
+   direct answers earn more AUC mass), not answer quality; and the winning
+   cheatsheet contains zero ReAct content while the test is 5/5
+   react_agents_and_tools — condition differences largely measure generic
+   note effects, not topic-matched studied knowledge.
+3. **The loop's own validation score was highest at round 1 and lower in
+   every later round.** Descriptively true; but the peak rests on a single
+   100-scoring episode (excluding that question flattens the trajectory),
+   each point is 14 single-rollout episodes, and rounds 4–5 were generated
+   under changed quizmaster code. "Full-rewrite distillation instability"
+   is consistent with — but not demonstrated by — this data.
+4. **Validation-based note selection anti-transferred on expertise**:
+   selection used validation direct+k5, and those are exactly the test
+   budgets where the selected note did worst (direct 4.40, worst of all
+   four conditions). The same note produced the highest condition-budget
+   cell in the whole study at forced k20 (38.53; corrected to ~37.5 after
+   two confirmed judge over-credits on supporting claims) — reported as a
+   noisy, unexplained high cell (~1.2 SE over cheatsheet, dominated by one
+   question), not a finding.
+5. **Process deviations found by the audit, recorded honestly**: the
+   round-4/5 quizmaster codex sessions escaped the declared corpus
+   checkout (read full-DSPy files and ran python outside it — every
+   command enumerated; zero test-set reads, and any benefit would have
+   favored selfquiz, which still lost). `selfquiz.json`'s "read-only,
+   corpus checkout" description is therefore inaccurate for rounds 4–5;
+   future runs need a read-scoped sandbox. The study also straddles two
+   quizmaster code versions (2→3 generation attempts after round 4
+   initially yielded 2/6 surviving questions).
+
+## Next
+
+1. Cheap fixes suggested by the trajectory: incremental note *editing*
+   instead of full rewrites (or low-temperature distillation), curriculum
+   control so training difficulty tracks the studier (verdicts collapsed
+   to all-incorrect by round 3), and validation with enough rollouts to
+   support selection.
+2. Statistical power is the binding constraint: SmallDSPy's 5 questions
+   cannot separate these methods. The fulldspy setting (30 test questions,
+   32-question validation set) is where iteration 2 should run, with the
+   one-time full-corpus baselines from the 005 ledger.
+3. Regrade all four runs in one judge batch if any number is published
+   (the audit could not fully exclude judge drift between the Jul 16 and
+   Jul 21 grading batches, though the served snapshot was identical).
