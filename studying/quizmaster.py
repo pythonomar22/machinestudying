@@ -57,6 +57,9 @@ QUIZ_TEMPLATE = """You are the quizmaster in a self-quizzing study loop for {lib
 - `code_evidence` must cite at least 2 real `*.py` files under the code roots that ground the answer. List the directories before citing; cite only files you verified exist in THIS checkout.
 - Verify every gold program against the actual source before returning it: read the code, run the logic in your head, and make sure the printed/asserted proof is what the library really does.
 
+## Execution contract for gold programs
+Every gold program is executed in an EMPTY working directory with the pinned {library_name} package installed: `import dspy` works, nothing else is present. The program must NOT read repository files, search for a repo root, inspect source paths, or depend on the working directory in any way — it proves the behavior purely through the imported library (DummyLM-driven calls, prints, assertions). A program that tries to locate or open the repository fails verification automatically.
+
 ## Register exemplars (match the style, never the content)
 These questions define the register and distribution to match: support-thread framing over 2-4 short paragraphs, behavioral symptoms, locator-hard wording, and a closing ask for a runnable offline program. Do NOT duplicate, paraphrase, or trivially perturb any of them — write questions about clearly different mechanisms or clearly distinct behaviors.
 
@@ -237,7 +240,7 @@ def generate_questions(
     (gen_dir / "prompt.txt").write_text(prompt, encoding="utf-8")
 
     avoid = exemplars + prior_questions
-    items, problems = [], ["not run"]
+    accepted, rejected, problems = [], [], ["not run"]
     for attempt in range(2):
         attempt_prompt = prompt if attempt == 0 else (
             prompt + "\n\n## Corrections required\nYour previous output had "
@@ -245,36 +248,41 @@ def generate_questions(
             + "\n- ".join(problems)
         )
         items = _run_codex(attempt_prompt, gen_dir, num_questions, attempt)["questions"]
-        problems = _violations(items, avoid)
+        accepted, rejected, problems = [], [], []
+        for position, item in enumerate(items):
+            item_problems = _violations([item], avoid)
+            if any(item["question"].strip() == kept["question"].strip() for kept in accepted):
+                item_problems.append("duplicate of another question in this batch")
+            sandbox_result = None
+            if not item_problems:
+                qid = question_id(round_no, item["question"])
+                program, _ = extract_program(item["answer"])
+                sandbox_result = run_program(
+                    program, gen_dir / "gold_runs" / f"a{attempt}_{qid}"
+                )
+                if not passed(sandbox_result):
+                    item_problems.append(
+                        "gold program failed in the sandbox: "
+                        + (sandbox_result["stderr"][-600:] or "timeout or nonzero exit")
+                    )
+            if item_problems:
+                problems.extend(f"question {position}: {text}" for text in item_problems)
+                rejected.append({"position": position, "problems": item_problems,
+                                 "sandbox": sandbox_result, **item})
+            else:
+                accepted.append({
+                    "qid": question_id(round_no, item["question"]),
+                    **item,
+                    "gold_stdout": sandbox_result["stdout"][:GOLD_STDOUT_CHARS],
+                })
         if not problems:
             break
-
-    accepted, rejected = [], []
-    for position, item in enumerate(items):
-        item_problems = _violations([item], avoid)
-        if any(item["question"].strip() == kept["question"].strip() for kept in accepted):
-            item_problems.append("duplicate of an accepted question in this batch")
-        if item_problems:
-            rejected.append({"position": position, "problems": item_problems, **item})
-            continue
-        qid = question_id(round_no, item["question"])
-        program, _ = extract_program(item["answer"])
-        result = run_program(program, gen_dir / "gold_runs" / qid)
-        if not passed(result):
-            rejected.append({"position": position, "problems": ["gold program failed in sandbox"],
-                             "sandbox": result, **item})
-            continue
-        accepted.append({
-            "qid": qid,
-            **item,
-            "gold_stdout": result["stdout"][:GOLD_STDOUT_CHARS],
-        })
+    (gen_dir / "rejected.json").write_text(
+        json.dumps(rejected, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
+    )
     if len(accepted) < min_accept:
         raise RuntimeError(
             f"round {round_no}: only {len(accepted)}/{num_questions} questions "
             f"survived verification (need {min_accept}); inspect {gen_dir}"
         )
-    (gen_dir / "rejected.json").write_text(
-        json.dumps(rejected, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
-    )
     return accepted
