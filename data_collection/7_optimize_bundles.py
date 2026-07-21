@@ -299,6 +299,10 @@ def self_grade(bundle: dict, repo: Path, scope_dir: Path, tag: str) -> dict:
 
 def revision_violations(result: dict, repo: Path) -> list[str]:
     problems = []
+    if problem := gen.question_violation(result["question"]):
+        problems.append(problem)
+    if problem := gen.program_violation(result["answer"]):
+        problems.append(problem)
     paths = []
     for span in result["evidence"]:
         path = span["path"]
