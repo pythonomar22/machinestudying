@@ -141,12 +141,23 @@ chars). Still noise-dominated at this population size.
 
 ## Results
 
-**Paper-tier GPT-5.4 grading is blocked: the OpenAI API key exhausted its
-quota (`insufficient_quota`) immediately after the eval completed.** The
-held-out episodes are complete and validated (60/60, paired seeds); the
-paper-comparable number can be produced the moment credits are restored
-with `uv run --frozen python -m studybench.grade
-runs/smalldspy-selfquiz2-20260721 --judge gpt`.
+Paper-tier GPT-5.4 grading (run after credits were restored, 2026-07-21
+18:49; grading of the other four runs predates it — the 006 audit's
+judge-drift caution applies across grading batches):
+
+| Condition | direct | k5 | k20 | forced k20 | Expertise |
+|---|---:|---:|---:|---:|---:|
+| no-study | 7.1/4.0k | 14.8/4.5k | 16.1/6.5k | 26.5/25.1k | 12.35 |
+| cheatsheet | 15.4/2.8k | 15.1/4.2k | 19.7/5.3k | 29.1/21.4k | **19.18** |
+| selfquiz1 (final note) | 11.4/3.4k | 14.7/4.9k | 17.7/7.0k | 21.3/21.3k | 13.75 |
+| selfquiz1 (r1 note) | 4.4/3.0k | 12.3/5.2k | 15.0/8.0k | 38.5/22.9k | 13.04 |
+| **selfquiz2 (explore+quiz)** | 4.3/2.5k | 13.8/3.9k | 17.6/4.7k | 26.5/24.8k | **15.19** |
+
+Paired cluster bootstraps over the 5 questions (20k resamples):
+E(cheatsheet)−E(selfquiz2) = +3.65, 95% CI **[−8.67, +20.41]**;
+E(selfquiz2)−E(no-study) = +3.52, CI [−1.64, +9.96];
+E(selfquiz2)−E(selfquiz1) = +1.61, CI [−6.77, +7.37]. Nothing separates
+from zero.
 
 Interim diagnostic: all five conditions graded with the pinned local
 Qwen3.5-9B 10k-thinking judge (same judge, same contract, one batch era —
@@ -169,25 +180,34 @@ answers, which the expertise anchor penalizes. Local orderings between
 nearby conditions are not trustworthy (iteration 1 showed local/GPT
 rank inversions); treat everything here as screening signal.
 
-## Interpretation so far (pre-GPT, held loosely)
+## Interpretation
 
-- The iteration-2 mechanics all worked: no escapes, no churn, adaptive
-  curriculum, standing foundations sections created and grown.
-- The studier still solved ~nothing (0 correct in 30 attempts even at
-  `medium`): on this corpus, Qwen3.5-9B's frontier appears to be below
-  the easiest questions a benchmark-register quizmaster writes. The
-  binding constraint on self-quizzing iteration 1 AND 2 may simply be
-  that the studier is too weak for its teacher's practice material —
-  the next lever is question difficulty far below "benchmark register"
-  (e.g. single-mechanism drills), or a stronger studier.
-- The exploration-init hypothesis is not yet confirmed or refuted: under
-  the local judge, explore+quiz (22.46) landed below explore-only-style
-  cheatsheet (27.47) — if the GPT number agrees, quizzing on top of
-  exploration *subtracted* value at cheap budgets in this configuration,
-  plausibly by lengthening/complicating the note that direct answers
-  condition on (validation round-5 drop after compression is consistent).
-- Statistical limits from 006 apply unchanged: n=5 questions, single
-  study seeds; nothing here separates from zero.
+- **Point estimates**: iteration 2 is the best self-quizzing variant so
+  far (15.19 vs 13.75/13.04) and sits above no-study (+2.83), but still
+  below the exploration cheatsheet (−3.99). All gaps have CIs spanning
+  zero; these are descriptive statements about this 5-question set.
+- **The decisive per-budget fact**: selfquiz2's direct collapsed to 4.33
+  vs the cheatsheet's 15.40 — *even though iteration 2's note started
+  from an exploration note of the same kind*. On this run, quizzing on
+  top of exploration subtracted value at cheap budgets: the final
+  (round-5, cap-compressed) note conditions direct answers worse than a
+  plain exploration note does, while k5/k20/k20f are near-baseline. The
+  validation round-5 drop after the big compression pointed the same
+  way. The local judge foreshadowed the shape (worst k5) but wildly
+  overgraded k20f (49.1 vs GPT 26.5) — another local/GPT divergence.
+- **Mechanics all held**: zero corpus escapes across 5 rounds, first-
+  attempt generation every round, edit-ops with no churn, foundations
+  sections created and grown, single uninterrupted job.
+- **The studier remains the bottleneck**: 0 correct in 30 attempts even
+  at `medium` difficulty (57 total across both iterations). The
+  quiz→lesson→note channel cannot compound while the studier solves
+  nothing; the note fills with corrections for errors the studier keeps
+  making anyway at answer time.
+- Study compute: selfquiz2 spent ~303k studier-generated tokens (49k
+  exploration + 231k attempts + 23k distillation) vs the cheatsheet
+  condition's ~50k, for less measured expertise — iteration 2 is also a
+  negative result on studying *intelligence* (expertise per study
+  compute), stated descriptively.
 
 ## Next
 

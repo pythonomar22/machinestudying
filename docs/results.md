@@ -60,8 +60,10 @@ with mean generated tokens.
 | cheatsheet | 15.4 (2.8k) | 15.1 (4.2k) | 19.7 (5.3k) | 29.1 (21.4k) | 19.18 |
 | selfquiz iter-1, final note | 11.4 (3.4k) | 14.7 (4.9k) | 17.7 (7.0k) | 21.3 (21.3k) | 13.75 |
 | selfquiz iter-1, val-selected note | 4.4 (3.0k) | 12.3 (5.2k) | 15.0 (8.0k) | 38.5 (22.9k) | 13.04 |
+| selfquiz iter-2, explore+quiz | 4.3 (2.5k) | 13.8 (3.9k) | 17.6 (4.7k) | 26.5 (24.8k) | 15.19 |
 
 These are exact measurements of these artifacts, not method-level findings:
 on 5 questions no pairwise expertise gap is statistically separable from
 zero (paired cluster bootstrap CIs all include 0). Full context, audit
-findings, and mandatory qualifiers in `experiments/006-selfquiz-smalldspy.md`.
+findings, and mandatory qualifiers in `experiments/006-selfquiz-smalldspy.md`
+and `experiments/007-selfquiz2-smalldspy.md`.
