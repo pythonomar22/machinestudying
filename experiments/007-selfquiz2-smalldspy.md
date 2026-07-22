@@ -260,6 +260,51 @@ regardless of note. The only live wire was validation-k5, which DID
 crash after the round-5 compression (10.36 → 3.00) — the protocol
 recorded it and, by design, did nothing.
 
+## Deeper post-mortem: the assumptions audit (2026-07-21)
+
+Question-level decompositions that overturn the frame, not just the
+mechanics:
+
+- **The cheatsheet's own advantage is one idiom.** Its +8.27 direct gap
+  over no-study decomposes as +8.00 from `dspy_a5b116f00083` alone (the
+  JSONAdapter question) and ~0 from the other four; the baseline note
+  contains zero ReAct and zero History content. On this exam, at the
+  budget that dominates expertise, "beating the cheatsheet" operationally
+  means "have `dspy.configure(adapter=JSONAdapter())` in your note."
+  We had it after exploration, quiz round 1 *enriched* it
+  (chat_vs_json_adapter_formatting probe; s5 grew 264→417 chars with a
+  fence), and the round-5 compression deleted it. The damage was
+  end-loaded, and the protocol evaluates the final note.
+- **Objective misalignment.** The verifier grades attempts against gold
+  programs and sandbox outcomes (execution correctness); the evaluation
+  is lenient rubric-claim sums with NO compile gate. The loop delivered
+  real gains in its own currency — direct-answer compile rate rose from
+  8/15 (iter 1) to 13/15 — and the exam does not pay that currency.
+  Note real estate went to execution discipline; lenient pays mechanism
+  naming/structure.
+- **Register misalignment in the curriculum.** The quizmaster prompt
+  inherits A.2's quality bar ("locator-hard", "synthesis across files",
+  "no trivial questions", "no one-grep questions") — which structurally
+  bans the drill-level questions the curriculum asks for. Even `medium`
+  questions came out as corner probes (KNN serialization, BestOfN
+  budgets); ReAct got 3 of 30 questions while being the test's entire
+  cluster and a large share of the corpus.
+- **Learning bandwidth is real but tiny.** Of 4 mechanisms probed in 2+
+  rounds, 2 improved incorrect→partial after repeated exposure
+  (predict_defaults after 3 failures, predict_multi_completion after 2).
+  The channel works; at ~2 increments per 30 questions it cannot
+  compound in 5 rounds.
+- **The loop has no trustworthy objective.** Validation-direct is ~90%
+  zeros; validation-k5 is 7-question noise; the verifier optimizes the
+  wrong currency. An iterative optimizer without a usable value signal
+  is a random walk, and each 9B rewrite is a coin flip that can destroy
+  content (proven twice). A single unoptimized exploration pass wins on
+  breadth-per-token because it never re-touches what it wrote.
+- **n=5 is a content-overlap lottery.** Note value at direct is
+  dominated by whether specific idioms intersect 5 specific questions;
+  method differences below ~8 E points are unresolvable here. SmallDSPy
+  iterations can debug mechanics — they cannot rank studying methods.
+
 ## Iteration-3 levers (targeted, from the post-mortem)
 
 1. **Content-preservation invariant on distillation** (P2): after any
