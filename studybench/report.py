@@ -100,8 +100,8 @@ def print_row(label: str, points, wauc: float) -> None:
     print(f"{label:22}  {cells}  {wauc:6.2f}")
 
 
-def report(base_id: str, cheat_id: str, grade_id: str) -> None:
-    for task in ("dspy", "openclaw"):
+def report(base_id: str, cheat_id: str, grade_id: str, tasks: tuple[str, ...]) -> None:
+    for task in tasks:
         corpus = CORPORA[task]
         base, base_episodes, base_grades, base_grade_manifest = load_grades(
             base_id, task, grade_id
@@ -143,9 +143,13 @@ def main() -> None:
     parser.add_argument("--baseline-run", required=True)
     parser.add_argument("--cheatsheet-run", required=True)
     parser.add_argument("--grade-id", default="gpt-5-4")
+    parser.add_argument("--tasks", default="dspy,openclaw")
     args = parser.parse_args()
+    tasks = tuple(args.tasks.split(","))
+    if not tasks or any(task not in ("dspy", "openclaw") for task in tasks):
+        parser.error("--tasks must be a comma-separated subset of dspy,openclaw")
     try:
-        report(args.baseline_run, args.cheatsheet_run, args.grade_id)
+        report(args.baseline_run, args.cheatsheet_run, args.grade_id, tasks)
     except (OSError, ValueError) as error:
         raise SystemExit(f"report error: {error}") from error
 

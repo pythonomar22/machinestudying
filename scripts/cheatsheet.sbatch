@@ -1,8 +1,8 @@
 #!/bin/bash
-# Study the pinned SmallDSPy corpus for 50 forced ReAct iterations, save the
-# resulting cheatsheet, then run the same held-out evaluation as the baseline.
-# Example:
-#   SB_RUN_ID=smalldspy-cheatsheet SB_SEED=0 sbatch scripts/cheatsheet.sbatch
+# Study the pinned corpus selected by SB_TASK for 50 forced ReAct iterations,
+# save the resulting cheatsheet, then run the same held-out evaluation as the
+# baseline. Example:
+#   SB_RUN_ID=dspy-cheatsheet SB_SEED=0 SB_TASK=dspy sbatch scripts/cheatsheet.sbatch
 #SBATCH --job-name=studybench-cheat
 #SBATCH --account=matx
 #SBATCH --partition=matx

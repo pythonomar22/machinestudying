@@ -1,8 +1,9 @@
 #!/bin/bash
-# Run SmallDSPy evaluation with Qwen3.5-9B. The default condition is baseline;
-# scripts/cheatsheet.sbatch reuses this exact launcher with study enabled.
+# Run a StudyBench evaluation with Qwen3.5-9B. The default condition is
+# baseline; scripts/cheatsheet.sbatch reuses this exact launcher with study
+# enabled. SB_TASK selects the benchmark (smalldspy, dspy, or openclaw).
 # Example:
-#   SB_RUN_ID=smalldspy-base SB_SEED=0 sbatch scripts/nostudying.sbatch
+#   SB_RUN_ID=dspy-base SB_SEED=0 SB_TASK=dspy sbatch scripts/nostudying.sbatch
 #SBATCH --job-name=studybench-eval
 #SBATCH --account=matx
 #SBATCH --partition=matx
@@ -19,6 +20,7 @@ cd "${SLURM_SUBMIT_DIR:?submit this job with sbatch}"
 
 RUN_ID=${SB_RUN_ID:?set SB_RUN_ID}
 SEED=${SB_SEED:?set SB_SEED}
+TASK=${SB_TASK:-smalldspy}
 CONDITION=${SB_CONDITION:-baseline}
 BUDGETS=${SB_BUDGETS:-direct,k5,k20,k20f}
 ROLLOUTS=${SB_ROLLOUTS:-3}
@@ -34,6 +36,8 @@ die() {
 [[ "$RUN_ID" =~ ^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$ ]] \
     || die "SB_RUN_ID must contain only letters, digits, '-' and '_'"
 [[ "$SEED" =~ ^-?[0-9]+$ ]] || die "SB_SEED must be an integer"
+[[ "$TASK" = smalldspy || "$TASK" = dspy || "$TASK" = openclaw ]] \
+    || die "SB_TASK must be smalldspy, dspy, or openclaw"
 [[ "$CONDITION" = baseline || "$CONDITION" = cheatsheet || "$CONDITION" = selfquiz ]] \
     || die "SB_CONDITION must be baseline, cheatsheet, or selfquiz"
 [[ "$ROLLOUTS" =~ ^[1-9][0-9]*$ ]] || die "ROLLOUTS must be positive"
@@ -180,7 +184,7 @@ BASE_URLS=$(IFS=,; printf '%s' "${URLS[*]}")
 echo "vLLM ready: $BASE_URLS"
 
 args=(
-    --task smalldspy
+    --task "$TASK"
     --condition "$CONDITION"
     --run-id "$RUN_ID"
     --seed "$SEED"
@@ -196,4 +200,4 @@ servers_alive || die "a vLLM server crashed before evaluation"
 .venv-dspy/bin/python -m studybench.react "${args[@]}"
 servers_alive || die "a vLLM server crashed during evaluation"
 
-echo "$CONDITION evaluation complete: runs/$RUN_ID/smalldspy"
+echo "$CONDITION evaluation complete: runs/$RUN_ID/$TASK"
