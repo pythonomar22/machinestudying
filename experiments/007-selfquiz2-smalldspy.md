@@ -209,12 +209,82 @@ rank inversions); treat everything here as screening signal.
   negative result on studying *intelligence* (expertise per study
   compute), stated descriptively.
 
-## Next
+## Post-mortem dig (2026-07-21, after the GPT numbers)
 
-1. Regrade `smalldspy-selfquiz2-20260721` with GPT-5.4 when quota is
-   restored (and ideally all five runs in one batch, per the 006 audit's
-   judge-drift caution).
-2. If the GPT ordering matches: iteration 3 should attack the studier's
-   frontier directly — drill-level questions (single mechanism, few
-   lines), or note ablations isolating whether quiz-added content helps
-   or harms cheap-budget answering.
+Question-level and artifact-level forensics on why selfquiz2 (15.19)
+trails the cheatsheet (19.18):
+
+**P1 — The direct gap is two questions, and mostly one.** Per-question
+direct means: `dspy_a5b116f00083` (JSONAdapter question) cheatsheet 40.0
+vs selfquiz2 0.0 — 8 of the 11 direct gap points. `dspy_2de37073e8e4`
+(History chatbot) no-study 24.0 vs selfquiz2 6.7 — but claim-level reads
+show this is supporting-claim flicker plus near-misses, not note
+poisoning (in one rollout our note pushed the answer *closer* to the
+core claim than no-study ever got: it declared `history: History` in the
+signature, then botched the wiring).
+
+**P2 — Compression destroyed the note's most valuable content, twice
+over.** The round-0 exploration note contained the full adapter table
+(ChatAdapter/JSONAdapter/XMLAdapter); the round-5 cap compression
+rewrote "Adapters & Formatting" without JSONAdapter — the exact idiom
+(`dspy.configure(adapter=JSONAdapter())`) that wins the highest-value
+test question and that the baseline cheatsheet carries. Worse, the
+compression pass replaced two standing sections with *descriptions of
+the edit* as their content: "Verified Imports and API Surface" became
+"Removed duplicate header and redundant content block. Merged import
+warnings." (77 chars) and "Offline testing idiom" became "Condensed
+logging boilerplate and harness discipline guidelines." (64 chars). A
+small-model structured-edit failure mode the ops validator did not
+catch (content non-empty ⇒ accepted).
+
+**P3 — The quiz channel that survived, worked.** The intact "Answering
+style" section coincides with direct answers going from iteration 1's
+11/15 single-fence, 8/15 compiling to 13/15 and 13/15 — cheatsheet-level
+discipline. The quizzing loop CAN add durable value; it lost because the
+compression pass destroyed more than the quiz rounds added.
+
+**P4 — Ops-interface flaws found in the history.** (a) The distiller
+cannot address a section it just added (IDs are assigned after the
+fact), so round-1 "Answering style" content was appended into "Quick
+Start" and round-2 recreated a duplicate section; (b) no title
+sanitization (final note renders "## ## Answering style"); (c)
+compression is value-blind — nothing marks exploration content as
+load-bearing, because quiz rounds never probed adapters at all
+(coverage never reached that corner in 5 rounds).
+
+**P5 — Validation cannot see the failure that matters.** Across both
+iterations, validation-direct is ~90% zeros (8/84 and 10/84 nonzero
+cells): a dead signal at the budget that dominates expertise. Three
+validation questions do involve adapters, but score ~0 at direct
+regardless of note. The only live wire was validation-k5, which DID
+crash after the round-5 compression (10.36 → 3.00) — the protocol
+recorded it and, by design, did nothing.
+
+## Iteration-3 levers (targeted, from the post-mortem)
+
+1. **Content-preservation invariant on distillation** (P2): after any
+   edit/compression call, deterministically require that the note's set
+   of code-fence lines and backticked API tokens is ≥90% preserved
+   unless tokens were explicitly moved; reject edit-summary-shaped
+   section content (e.g. sections in standing roles must contain a code
+   fence or backticked API names). On violation: retry once, then keep
+   the pre-edit note.
+2. **Raise the cap to 24k chars** (P2): 12k (~3k tokens) is tiny against
+   the context window and the cap is what triggered the destruction; at
+   observed growth (~1k chars/round) 5 rounds never reach 24k, making
+   compression a non-event.
+3. **Fix the ops interface** (P4): let ops target new sections by title,
+   sanitize titles, and require substantive content in standing sections.
+4. **Curriculum still owes the studier easier material** (unchanged from
+   the pre-dig list): 0 verifier-correct in 57 attempts across both
+   iterations; drill-level single-mechanism questions are the untested
+   lever.
+5. **Open design question for Omar**: validation-k5 detected the
+   round-5 damage in-loop. A guard that reverts a round's edits when
+   validation drops sharply would have saved ~4 E points here, and is
+   arguably legitimate (the validation set is self-generated study
+   material, not the hidden task) — but it crosses the line the original
+   protocol drew ("don't use validation to update the study object").
+   Iteration 1's selection-by-validation also anti-transferred, so any
+   such guard should trigger only on large drops. Needs an explicit
+   decision before iteration 3.
