@@ -115,17 +115,29 @@ verdicts; artifacts under `runs/dspy-teachermini-20260722/dspy/grades/`.
 
 | budget | mean lenient | mean gen tokens (codex output incl. reasoning) |
 |---|---:|---:|
+| direct (closed-book, added 2026-07-23) | 22.00 | 11.3k |
 | k5f | 70.50 | 9.9k |
 | k20f | 77.14 | 15.1k |
 | k50f | 78.21 | 31.9k |
 
-WAUC over the three measured points (same Appendix-C integral,
+The direct pass (70 sessions, 63/70 executed exactly zero commands; the
+rest 1–2) exposes the search gap directly: closed-book, only 6/70
+programs run in the sandbox (vs 57–62/70 with search) and lenient falls
+to 22.0 — while COSTING more tokens than k5f (11.3k vs 9.9k; the model
+reasons longer when it cannot look, and it does not help). The direct
+point is therefore strictly dominated by k5f and the measured-point WAUC
+is unchanged at 22.83; the axis head below 9.9k stays floored (~70% of
+the weight). Figure: `runs/dspy-teachermini-20260722/dspy/grades/
+expertise_curves.png`. **The single most important number for the
+fold-back thesis: five exploration commands buy +48.5 lenient points
+(22.0 → 70.5).**
+
+WAUC over the measured points (same Appendix-C integral,
 cross-validated against studybench.weighted_auc on the 008 data):
-**22.83** — despite ~30% of the axis weight flooring to zero below the
-cheapest point (no k=0 pass). Not comparable to test-set expertise
-numbers (different model, harness, and question set — and these rubrics
-are our own replication, gold-authored by the same model family as the
-judge).
+**22.83**, with ~70% of the axis weight floored to zero below the
+cheapest useful point. Not comparable to test-set expertise numbers
+(different model, harness, and question set — and these rubrics are our
+own replication, gold-authored by the same model family as the judge).
 
 Per-question deltas: k5→k20 28 up / 15 down / 27 tie; k20→k50 15 up /
 17 down / 38 tie. 21/70 perfect scores at k50f; no question is

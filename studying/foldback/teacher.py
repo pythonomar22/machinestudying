@@ -55,6 +55,19 @@ The `answer` field must END with your complete deliverable: exactly ONE fenced `
 
 Return JSON matching the provided schema and nothing else."""
 
+DIRECT_PROMPT = """You are an expert answering one question about the repository in your working directory (a pinned DSPy checkout of the DSPy library). This is a CLOSED-BOOK answer.
+
+## Exploration budget (hard requirement)
+Run EXACTLY 0 shell commands. Do not explore, list, read, or search anything — no commands of any kind. Answer purely from what you already know about this library. `tool_log` must be an empty array.
+
+## Question
+{question}
+
+## Answer contract
+The `answer` field must END with your complete deliverable: exactly ONE fenced ```python block containing a small, self-contained, runnable program (offline, no API key; whenever a language model is needed use the offline stub this library ships for its own tests, `dspy.utils.dummies.DummyLM`), ending with the prints/assertions the question demands. Any explanation goes in short prose BEFORE the fence or in inline comments. Use only APIs you are confident exist in this library.
+
+Return JSON matching the provided schema and nothing else."""
+
 SCHEMA = {
     "type": "object",
     "properties": {
@@ -111,6 +124,10 @@ def escape_violations(commands: list[str]) -> list[str]:
     return violations
 
 
+def budget_dir(k: int) -> str:
+    return "direct" if k == 0 else f"k{k}f"
+
+
 def attempt_case(row: dict, k: int, out_dir: Path) -> dict:
     """One codex attempt; idempotent via record.json."""
 
@@ -118,7 +135,8 @@ def attempt_case(row: dict, k: int, out_dir: Path) -> dict:
     if record_path.exists():
         return read_json(record_path)
     out_dir.mkdir(parents=True, exist_ok=True)
-    prompt = PROMPT.format(k=k, question=row["question"])
+    prompt = (DIRECT_PROMPT.format(question=row["question"]) if k == 0
+              else PROMPT.format(k=k, question=row["question"]))
     write_text(out_dir / "prompt.txt", prompt)
     schema_path = out_dir / "schema.json"
     schema_path.write_text(json.dumps(SCHEMA, indent=1), encoding="utf-8")
@@ -188,8 +206,8 @@ def main() -> None:
     if not args.run_id.replace("-", "").replace("_", "").isalnum():
         parser.error("--run-id must contain only letters, digits, '-' and '_'")
     budgets = [int(k) for k in args.budgets.split(",")]
-    if not budgets or any(k < 1 for k in budgets):
-        parser.error("--budgets must be positive integers")
+    if not budgets or any(k < 0 for k in budgets):
+        parser.error("--budgets must be non-negative integers (0 = direct, closed-book)")
 
     (ROOT / "logs").mkdir(exist_ok=True)
     logging.basicConfig(
@@ -230,13 +248,27 @@ def main() -> None:
         "questions": list(study_ids),
         "grading": "deliberately absent — runs only; sandbox execution is deterministic logging",
     }
+    # The stored manifest is authoritative; adding NEW budgets to an existing
+    # run is allowed (recorded as a union), everything else must match.
+    STABLE = ("kind", "task", "model", "effort", "harness", "corpus_commit",
+              "corpus_snapshot_sha256", "practice_dataset_sha256", "master_seed",
+              "split", "questions", "grading", "limit", "prompt_sha256")
+    manifest["direct_prompt_sha256"] = sha256_text(DIRECT_PROMPT)
     manifest_path = run_root / "teacher.json"
     if manifest_path.exists():
         existing = read_json(manifest_path)
-        if {k: v for k, v in existing.items() if k != "workers"} != {
-            k: v for k, v in manifest.items() if k != "workers"
-        }:
-            raise SystemExit(f"teacher configuration changed; use a new --run-id: {manifest_path}")
+        mismatch = [key for key in STABLE if existing.get(key) != manifest.get(key)]
+        if mismatch:
+            raise SystemExit(
+                f"teacher configuration changed ({mismatch}); use a new --run-id: {manifest_path}"
+            )
+        existing["budgets_forced_commands"] = sorted(
+            set(existing["budgets_forced_commands"]) | set(budgets)
+        )
+        existing["workers"] = args.workers
+        existing["direct_prompt_sha256"] = manifest["direct_prompt_sha256"]
+        write_json(manifest_path, existing)
+        manifest = existing
     else:
         write_json(manifest_path, manifest)
 
@@ -249,9 +281,9 @@ def main() -> None:
     def run_case(case) -> None:
         row, k = case
         try:
-            record = attempt_case(row, k, run_root / f"k{k}f" / row["id"])
-            log.info("k%df %s: commands=%d compliant=%s fences=%d sandbox=%s",
-                     k, row["id"], record["executed_commands"],
+            record = attempt_case(row, k, run_root / budget_dir(k) / row["id"])
+            log.info("%s %s: commands=%d compliant=%s fences=%d sandbox=%s",
+                     budget_dir(k), row["id"], record["executed_commands"],
                      record["budget_compliant"], record["fenced_python_blocks"],
                      (record["sandbox"] or {}).get("passed"))
         except Exception as error:
@@ -267,10 +299,10 @@ def main() -> None:
         )
 
     summary = {"budgets": {}}
-    for k in budgets:
-        records = [read_json(run_root / f"k{k}f" / qid / "record.json") for qid in study_ids]
+    for k in manifest["budgets_forced_commands"]:
+        records = [read_json(run_root / budget_dir(k) / qid / "record.json") for qid in study_ids]
         with_program = [r for r in records if r["sandbox"] is not None]
-        summary["budgets"][f"k{k}f"] = {
+        summary["budgets"][budget_dir(k)] = {
             "cases": len(records),
             "answers_with_single_fence": sum(r["fenced_python_blocks"] == 1 for r in records),
             "budget_compliant": sum(r["budget_compliant"] for r in records),

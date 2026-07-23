@@ -28,6 +28,7 @@ from studybench.dataset import ROOT
 
 from .data import load_practice_questions
 from .devval import _grade_one
+from .teacher import budget_dir
 
 
 def wauc(points: list[tuple[float, float]]) -> float:
@@ -76,7 +77,7 @@ def main() -> None:
 
     run_root = ROOT / "runs" / args.run_id / "dspy"
     manifest = read_json(run_root / "teacher.json")
-    budgets = [f"k{k}f" for k in manifest["budgets_forced_commands"]]
+    budgets = [budget_dir(k) for k in manifest["budgets_forced_commands"]]
     by_id = {row["id"]: row for row in load_practice_questions()}
     qids = manifest["questions"]
     api = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=JUDGE_TIMEOUT, max_retries=2)
