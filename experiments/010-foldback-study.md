@@ -104,6 +104,39 @@ devval (variant × dev-30, direct+k5 × 2 rollouts, paper judge).
     rubric grading.
   - Escape scan: 3 of 210 sessions touched out-of-corpus paths
     (logged per record for the analysis; diagnostics are not rejected).
-  - Lenient grading deliberately NOT run (Omar will trigger it);
-    per-budget mean lenient and the k50f lesson-mining analysis are the
-    next steps.
+  - Lenient grading deliberately NOT run at collection time; graded on
+    Omar's go the same night (below).
+
+## Teacher grading (paper-contract GPT-5.4, one era, 2026-07-23)
+
+First grading against our own rev-3 rubrics at scale (previously only
+eval runs on the StudyBench test questions were graded). 210/210
+verdicts; artifacts under `runs/dspy-teachermini-20260722/dspy/grades/`.
+
+| budget | mean lenient | mean gen tokens (codex output incl. reasoning) |
+|---|---:|---:|
+| k5f | 70.50 | 9.9k |
+| k20f | 77.14 | 15.1k |
+| k50f | 78.21 | 31.9k |
+
+WAUC over the three measured points (same Appendix-C integral,
+cross-validated against studybench.weighted_auc on the 008 data):
+**22.83** — despite ~30% of the axis weight flooring to zero below the
+cheapest point (no k=0 pass). Not comparable to test-set expertise
+numbers (different model, harness, and question set — and these rubrics
+are our own replication, gold-authored by the same model family as the
+judge).
+
+Per-question deltas: k5→k20 28 up / 15 down / 27 tie; k20→k50 15 up /
+17 down / 38 tie. 21/70 perfect scores at k50f; no question is
+all-zero at every budget. Biggest k5→k50 gainers (the trajectories to
+read first): dspy_0fb766e45959 (10→100), dspy_387f99a1348d (0→75),
+dspy_076b51a85fa2 (40→100), dspy_c99213024029 (25→85),
+dspy_0767302a1fa2 (5→55).
+
+Reading: the strong searcher is already at 70.5 with FIVE commands —
+most of its advantage is prior knowledge plus efficient targeting, not
+search volume; returns then diminish steeply (+6.6 for 5→20, +1.1 for
+20→50) and k20→k50 is net noise (15 up, 17 down). The distillation
+signal is concentrated in the k5→k20 flips and the five big gainers,
+not in bulk k50f volume.
