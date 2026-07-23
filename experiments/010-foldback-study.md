@@ -84,4 +84,26 @@ devval (variant × dev-30, direct+k5 × 2 rollouts, paper judge).
 
 ## Runs
 
-Pending.
+- `runs/dspy-teachermini-20260722` — **teacher trajectory collection,
+  complete (2026-07-23), ungraded by instruction.** codex gpt-5.4-mini
+  (ChatGPT-account auth, effort medium, read-only at the pinned fulldspy
+  checkout) answered all 70 study-slice questions at forced exploration
+  budgets k=5f / k=20f / k=50f — 210 sessions, 10 workers, zero
+  failures, ~2.6 h wall. Every session archives the full codex event
+  stream (ground-truth commands), the model's self-reported per-step
+  tool_log (command, motivation, discovery), the answer, and a sandbox
+  execution of its program.
+  - Budget adherence (from event streams, not self-report): median
+    commands exactly 5 / 20 / 51; exact-k compliance 54/41/23 of 70
+    (mini overshoots by a few commands at higher k — recorded, not
+    enforced).
+  - Answer contract: 209/210 single-fence answers.
+  - **Sandbox pass rises monotonically with search budget: 57 → 58 → 62
+    of 70 (81% → 83% → 89%)** — first structural evidence in this line
+    that more exploration buys more working programs, before any
+    rubric grading.
+  - Escape scan: 3 of 210 sessions touched out-of-corpus paths
+    (logged per record for the analysis; diagnostics are not rejected).
+  - Lenient grading deliberately NOT run (Omar will trigger it);
+    per-budget mean lenient and the k50f lesson-mining analysis are the
+    next steps.
