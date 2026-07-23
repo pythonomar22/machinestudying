@@ -67,3 +67,26 @@ on 5 questions no pairwise expertise gap is statistically separable from
 zero (paired cluster bootstrap CIs all include 0). Full context, audit
 findings, and mandatory qualifiers in `experiments/006-selfquiz-smalldspy.md`
 and `experiments/007-selfquiz2-smalldspy.md`.
+
+## Full Study-DSPy paired GPT-5.4 baselines (2026-07-22)
+
+The 30-question paper benchmark, full pinned corpus, master seed
+20260715, identical per-episode seeds across arms, one grading batch era
+(`gpt-5.4-2026-03-05`). Runs `dspy-nostudy-20260722` and
+`dspy-cheatsheet-20260722`, both at source commit 57fd39d.
+
+| Condition | direct | k5 | k20 | forced k20 | expertise |
+|---|---:|---:|---:|---:|---:|
+| no-study | 4.5 (3.0k) | 8.2 (5.7k) | 9.8 (7.7k) | 24.0 (20.5k) | 9.04 |
+| cheatsheet | 10.4 (2.8k) | 14.3 (5.4k) | 19.5 (7.5k) | 29.5 (24.1k) | 15.90 |
+
+Cheatsheet − no-study = **+6.85 expertise**, paired cluster bootstrap
+over questions 95% CI **[+3.00, +10.83]** — the project's first
+condition gap separable from zero, replicating the paper's Table-1
+direction (paper: 6.49 → 9.65). The gain is accuracy-driven (token-axis
+channel ≤0.12 E), distributed (23/30 questions positive, wins>losses at
+every budget, leave-one-out range [+6.09, +7.65]), and survived a
+five-auditor adversarial workflow; plausible judge-leniency inflation is
+bounded at ~0.3–0.4 E. Full table, audit findings, and caveats in
+`experiments/008-fulldspy-baselines.md`. These two runs are the anchor
+pair every fulldspy studying method must beat.
