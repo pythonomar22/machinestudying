@@ -1,0 +1,94 @@
+{
+ "id": "dspy_396097eb3773",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I saved prompt customizations from one signature and then loaded them onto another signature after a refactor where the field names stayed the same but the field order changed. What I need to know is whether DSPy matches saved prompt metadata by field name or just by position.\n\nThis is not theoretical for me: if it matches positionally, a harmless reordering could silently attach the wrong descriptions to the wrong fields. I want a small repro that makes the mismatch obvious from the loaded state itself.\n\nGive me a complete, runnable Python program that saves prompt state from one signature, loads it into another signature with the same field names in a different order, prints the loaded descriptions, and asserts whether the mapping happened by position or by name.",
+ "gold_answer": "```python\nimport dspy\n\n\nSource = dspy.Signature(\"question, context -> answer\", \"Source instructions\")\nSource = Source.with_updated_fields(\"question\", desc=\"SOURCE QUESTION\")\nSource = Source.with_updated_fields(\"context\", desc=\"SOURCE CONTEXT\")\nSource = Source.with_updated_fields(\"answer\", desc=\"SOURCE ANSWER\")\nsource_state = Source.dump_state()\n\nTarget = dspy.Signature(\"context, question -> answer\", \"Target instructions\")\nTarget = Target.with_updated_fields(\"context\", desc=\"TARGET CONTEXT\")\nTarget = Target.with_updated_fields(\"question\", desc=\"TARGET QUESTION\")\nTarget = Target.with_updated_fields(\"answer\", desc=\"TARGET ANSWER\")\n\nloaded = Target.load_state(source_state)\n\nloaded_context_desc = loaded.input_fields[\"context\"].json_schema_extra[\"desc\"]\nloaded_question_desc = loaded.input_fields[\"question\"].json_schema_extra[\"desc\"]\nloaded_answer_desc = loaded.output_fields[\"answer\"].json_schema_extra[\"desc\"]\n\nprint(loaded.instructions)\nprint(loaded_context_desc)\nprint(loaded_question_desc)\nprint(loaded_answer_desc)\n\nassert loaded.instructions == \"Source instructions\"\nassert loaded_context_desc == \"SOURCE QUESTION\"\nassert loaded_question_desc == \"SOURCE CONTEXT\"\nassert loaded_answer_desc == \"SOURCE ANSWER\"\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "`dump_state()` saves prompt state as `instructions` plus a `fields` list of `prefix`/`description` entries in field order, and the saved field metadata does not include field names.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "`load_state()` matches saved field metadata positionally by zipping the current signature fields with the saved `fields` list; it does not look up saved metadata by field name.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "A correct repro should show that reordering the inputs swaps the loaded descriptions relative to field names: loading a source `question, context -> answer` state into a target `context, question -> answer` makes `context` receive the source question description, `question` receive the source context description, and `answer` receive the source answer description.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The loaded signature's instructions should also be overwritten by the saved source instructions after `load_state()`.",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 487,
+   "end_line": 497,
+   "excerpt": "0487:     def dump_state(cls):\n0488:         state = {\"instructions\": cls.instructions, \"fields\": []}\n0489:         for field in cls.fields:\n0490:             state[\"fields\"].append(\n0491:                 {\n0492:                     \"prefix\": cls.fields[field].json_schema_extra[\"prefix\"],\n0493:                     \"description\": cls.fields[field].json_schema_extra[\"desc\"],\n0494:                 }\n0495:             )\n0496: \n0497:         return state"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 500,
+   "end_line": 508,
+   "excerpt": "0500:     def load_state(cls, state):\n0501:         signature_copy = Signature(deepcopy(cls.fields), cls.instructions)\n0502: \n0503:         signature_copy.instructions = state[\"instructions\"]\n0504:         for field, saved_field in zip(signature_copy.fields.values(), state[\"fields\"], strict=False):\n0505:             field.json_schema_extra[\"prefix\"] = saved_field[\"prefix\"]\n0506:             field.json_schema_extra[\"desc\"] = saved_field[\"description\"]\n0507: \n0508:         return signature_copy"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 607,
+   "end_line": 645,
+   "excerpt": "0607: def _parse_signature(signature: str, names=None) -> dict[str, tuple[type, Any]]:\n0608:     if signature.count(\"->\") != 1:\n0609:         raise ValueError(f\"Invalid signature format: '{signature}', must contain exactly one '->'.\")\n0610: \n0611:     inputs_str, outputs_str = signature.split(\"->\")\n0612: \n0613:     input_fields = list(_parse_field_string(inputs_str, names))\n0614:     output_fields = list(_parse_field_string(outputs_str, names))\n0615:     duplicate_field_names = sorted({field_name for field_name, *_ in input_fields}.intersection(\n0616:         field_name for field_name, *_ in output_fields\n0617:     ))\n0618:     if duplicate_field_names:\n0619:         raise ValueError(\n0620:             \"Input and output fields must have distinct names, but found duplicates: \"\n0621:             f\"'{', '.join(duplicate_field_names)}'.\"\n0622:         )\n0623: \n0624:     fields = {}\n0625:     for field_name, field_type, is_type_undefined in input_fields:\n0626:         fields[field_name] = (field_type, InputField(IS_TYPE_UNDEFINED= is_type_undefined))\n0627:     for field_name, field_type, _ in output_fields:\n0628:         fields[field_name] = (field_type, OutputField())\n0629: \n0630:     return fields\n0631: \n0632: \n0633: def _parse_field_string(field_string: str, names=None) -> Iterator[tuple[str, type, bool]]:\n0634:     \"\"\"Extract the field name and type from field string in the string-based Signature.\n0635: \n0636:     It takes a string like \"x: int, y: str\" and returns a dictionary mapping field names to their types.\n0637:     For example, \"x: int, y: str\" -> [(\"x\", int), (\"y\", str)]. This function utilizes the Python AST to parse the\n0638:     fields and types.\n0639:     \"\"\"\n0640: \n0641:     args = ast.parse(f\"def f({field_string}): pass\").body[0].args.args\n0642:     field_names: list[str] = [arg.arg for arg in args]\n0643:     types_list: list[type] = [str if arg.annotation is None else _parse_type_node(arg.annotation, names) for arg in args]\n0644:     is_type_undefined: list[bool] = [True if arg.annotation is None else False for arg in args]\n0645:     return zip(field_names, types_list, is_type_undefined, strict=False)"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/signatures/test_signature.py",
+   "start_line": 210,
+   "end_line": 248,
+   "excerpt": "0210: def test_dump_and_load_state():\n0211:     class CustomSignature(dspy.Signature):\n0212:         \"\"\"I am just an instruction.\"\"\"\n0213: \n0214:         sentence = dspy.InputField(desc=\"I am an innocent input!\")\n0215:         sentiment = dspy.OutputField()\n0216: \n0217:     state = CustomSignature.dump_state()\n0218:     expected = {\n0219:         \"instructions\": \"I am just an instruction.\",\n0220:         \"fields\": [\n0221:             {\n0222:                 \"prefix\": \"Sentence:\",\n0223:                 \"description\": \"I am an innocent input!\",\n0224:             },\n0225:             {\n0226:                 \"prefix\": \"Sentiment:\",\n0227:                 \"description\": \"${sentiment}\",\n0228:             },\n0229:         ],\n0230:     }\n0231:     assert state == expected\n0232: \n0233:     class CustomSignature2(dspy.Signature):\n0234:         \"\"\"I am a malicious instruction.\"\"\"\n0235: \n0236:         sentence = dspy.InputField(desc=\"I am an malicious input!\")\n0237:         sentiment = dspy.OutputField()\n0238: \n0239:     assert CustomSignature2.dump_state() != expected\n0240:     # Overwrite the state with the state of CustomSignature.\n0241:     loaded_signature = CustomSignature2.load_state(state)\n0242:     assert loaded_signature.instructions == \"I am just an instruction.\"\n0243:     # After `load_state`, the state should be the same as CustomSignature.\n0244:     assert loaded_signature.dump_state() == expected\n0245:     # CustomSignature2 should not have been modified.\n0246:     assert CustomSignature2.instructions == \"I am a malicious instruction.\"\n0247:     assert CustomSignature2.fields[\"sentence\"].json_schema_extra[\"desc\"] == \"I am an malicious input!\"\n0248:     assert CustomSignature2.fields[\"sentiment\"].json_schema_extra[\"prefix\"] == \"Sentiment:\""
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Excellent subtle bug/behavior question: saved prompt metadata is replayed positionally, not by field name.",
+ "source_index": 42,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

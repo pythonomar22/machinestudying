@@ -1,0 +1,99 @@
+{
+ "id": "dspy_437a6d715342",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I'm wrapping my own gateway in a custom `dspy.BaseLM`. Typed JSON outputs only seem to work when DSPy believes the backend can accept a schema, and I need to know the minimum capability contract I have to advertise from the LM object.\n\nGive me a complete, runnable Python program that defines tiny offline `dspy.BaseLM` wrappers with different capability flags, runs the same `dspy.Predict` + `dspy.JSONAdapter` call through each one, and prints/asserts whether DSPy sent a structured schema, plain `json_object`, or no response-format hint at all.",
+ "gold_answer": "```python\nfrom types import SimpleNamespace\n\nimport dspy\nimport pydantic\n\n\nclass FakeResp(dict):\n    cache_hit = False\n\n    def __init__(self, text):\n        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason=\"stop\")\n        super().__init__({\"choices\": [choice]})\n        self.choices = [choice]\n        self.usage = {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"custom/offline\"\n\n\nclass CaptureLM(dspy.BaseLM):\n    def __init__(self, support_response_format, support_schema):\n        super().__init__(\"custom/offline\", \"chat\", 0.0, 1000, False)\n        self._support_response_format = support_response_format\n        self._support_schema = support_schema\n        self.calls = []\n\n    @property\n    def supported_params(self):\n        return {\"response_format\"} if self._support_response_format else set()\n\n    @property\n    def supports_response_schema(self):\n        return self._support_schema\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        self.calls.append({\"prompt\": prompt, \"messages\": messages, **kwargs})\n        return FakeResp('{\"answer\": \"Paris\"}')\n\n    async def aforward(self, prompt=None, messages=None, **kwargs):\n        return self.forward(prompt=prompt, messages=messages, **kwargs)\n\n\nclass QASignature(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nprogram = dspy.Predict(QASignature)\nadapter = dspy.JSONAdapter()\nstructured_lm = CaptureLM(True, True)\njson_mode_lm = CaptureLM(True, False)\nplain_lm = CaptureLM(False, False)\n\nwith dspy.context(lm=structured_lm, adapter=adapter):\n    assert program(question=\"What is the capital of France?\").answer == \"Paris\"\n\nwith dspy.context(lm=json_mode_lm, adapter=adapter):\n    assert program(question=\"What is the capital of France?\").answer == \"Paris\"\n\nwith dspy.context(lm=plain_lm, adapter=adapter):\n    assert program(question=\"What is the capital of France?\").answer == \"Paris\"\n\nstructured_rf = structured_lm.calls[0][\"response_format\"]\njson_mode_rf = json_mode_lm.calls[0][\"response_format\"]\nplain_has_rf = \"response_format\" in plain_lm.calls[0]\n\nassert issubclass(structured_rf, pydantic.BaseModel)\nassert json_mode_rf == {\"type\": \"json_object\"}\nassert not plain_has_rf\n\nprint(\n    {\n        \"structured_response_format_type\": structured_rf.__name__,\n        \"json_mode_response_format\": json_mode_rf,\n        \"plain_has_response_format\": plain_has_rf,\n    }\n)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "The answer provides one controlled comparison through the same `dspy.Predict` plus `dspy.JSONAdapter` path that covers all three adapter outcomes: no `response_format` hint, `{\"type\": \"json_object\"}`, and a structured schema object.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The answer identifies that `JSONAdapter` only sends any `response_format` hint if the LM advertises `'response_format'` in `supported_params`; otherwise the LM call proceeds without a `response_format` kwarg.",
+   "span_ids": [
+    "s1",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The answer shows that advertising `supported_params={'response_format'}` alone is not enough for typed schemas: when `supports_response_schema` is `False`, DSPy sets `response_format` to `{\"type\": \"json_object\"}`.",
+   "span_ids": [
+    "s1",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The answer shows that typed structured output is enabled only when the LM both accepts `response_format` and reports `supports_response_schema = True`, in which case DSPy passes a generated `pydantic.BaseModel` subclass as `response_format`.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The answer keeps the output signature schema-compatible so the comparison isolates LM capability flags, avoiding output types such as open-ended `dict[...]` mappings or the `ToolCalls` fallback case that independently force JSON-object mode.",
+   "span_ids": [
+    "s4",
+    "s1"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 45,
+   "end_line": 56,
+   "excerpt": "0045:     def _json_adapter_call_common(self, lm, lm_kwargs, signature, demos, inputs, call_fn):\n0046:         \"\"\"Common call logic to be used for both sync and async calls.\"\"\"\n0047:         if \"response_format\" not in lm.supported_params:\n0048:             return call_fn(lm, lm_kwargs, signature, demos, inputs)\n0049: \n0050:         has_tool_calls = any(field.annotation == ToolCalls for field in signature.output_fields.values())\n0051: \n0052:         if _has_open_ended_mapping(signature) or (not self.use_native_function_calling and has_tool_calls) or not lm.supports_response_schema:\n0053:             # We found that structured output mode doesn't work well with dspy.ToolCalls as output field.\n0054:             # So we fall back to json mode if native function calling is disabled and ToolCalls is present.\n0055:             lm_kwargs[\"response_format\"] = {\"type\": \"json_object\"}\n0056:             return call_fn(lm, lm_kwargs, signature, demos, inputs)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 66,
+   "end_line": 75,
+   "excerpt": "0066:         result = self._json_adapter_call_common(lm, lm_kwargs, signature, demos, inputs, super().__call__)\n0067:         if result:\n0068:             return result\n0069: \n0070:         try:\n0071:             structured_output_model = _get_structured_outputs_response_format(\n0072:                 signature, self.use_native_function_calling\n0073:             )\n0074:             lm_kwargs[\"response_format\"] = structured_output_model\n0075:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 212,
+   "end_line": 247,
+   "excerpt": "0212: def _get_structured_outputs_response_format(\n0213:     signature: SignatureMeta,\n0214:     use_native_function_calling: bool = True,\n0215: ) -> type[pydantic.BaseModel]:\n0216:     \"\"\"\n0217:     Builds a Pydantic model from a DSPy signature's output_fields and ensures the generated JSON schema\n0218:     is compatible with OpenAI Structured Outputs (all objects have a \"required\" key listing every property,\n0219:     and additionalProperties is always false).\n0220: \n0221:     IMPORTANT: If any field's annotation is an open-ended mapping (e.g. dict[str, Any]), then a structured\n0222:     schema cannot be generated since all properties must be explicitly declared. In that case, an exception\n0223:     is raised so that the caller can fall back to using a plain \"json_object\" response_format.\n0224:     \"\"\"\n0225:     # Although we've already performed an early check, we keep this here as a final guard.\n0226:     for name, field in signature.output_fields.items():\n0227:         annotation = field.annotation\n0228:         if get_origin(annotation) is dict:\n0229:             raise ValueError(\n0230:                 f\"Field '{name}' has an open-ended mapping type which is not supported by Structured Outputs.\"\n0231:             )\n0232: \n0233:     fields = {}\n0234:     for name, field in signature.output_fields.items():\n0235:         annotation = field.annotation\n0236:         if use_native_function_calling and annotation == ToolCalls:\n0237:             # Skip ToolCalls field if native function calling is enabled.\n0238:             continue\n0239:         default = field.default if hasattr(field, \"default\") else ...\n0240:         fields[name] = (annotation, default)\n0241: \n0242:     # Build the model with extra fields forbidden.\n0243:     pydantic_model = pydantic.create_model(\n0244:         \"DSPyProgramOutputs\",\n0245:         __config__=pydantic.ConfigDict(extra=\"forbid\"),\n0246:         **fields,\n0247:     )"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 27,
+   "end_line": 37,
+   "excerpt": "0027: def _has_open_ended_mapping(signature: SignatureMeta) -> bool:\n0028:     \"\"\"\n0029:     Check whether any output field in the signature has an open-ended mapping type,\n0030:     such as dict[str, Any]. Structured Outputs require explicit properties, so such fields\n0031:     are incompatible.\n0032:     \"\"\"\n0033:     for field in signature.output_fields.values():\n0034:         annotation = field.annotation\n0035:         if get_origin(annotation) is dict:\n0036:             return True\n0037:     return False"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 80,
+   "end_line": 88,
+   "excerpt": "0080:     @property\n0081:     def supports_response_schema(self) -> bool:\n0082:         \"\"\"Whether the model supports structured output via response schema.\"\"\"\n0083:         return False\n0084: \n0085:     @property\n0086:     def supported_params(self) -> set[str]:\n0087:         \"\"\"Set of supported OpenAI-style parameter names for the model.\"\"\"\n0088:         return set()"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Custom `BaseLM` capability contract for JSONAdapter.",
+ "source_index": 15,
+ "smalldspy_scope": false
+}

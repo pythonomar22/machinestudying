@@ -1,0 +1,604 @@
+{
+ "cluster_id": 0,
+ "label": "evaluation_metrics_and_parallelism",
+ "label_description": "Users in this cluster are trying to evaluate DSPy programs and drive teleprompter/optimizer compilation with custom evaluators, including boolean vs. numeric scores, LLM-graded metrics, callable or async metrics, and multiple metrics. They also need those evaluation and optimization runs to execute correctly and efficiently through threading, batching, concurrency controls, Parallel, and async LM/tool calls.",
+ "seed_numbers": [
+  175,
+  193,
+  1351,
+  7938,
+  110,
+  298,
+  429,
+  892,
+  139,
+  813,
+  145,
+  1786,
+  1426,
+  767,
+  8753,
+  991,
+  8351,
+  975,
+  1236,
+  663,
+  8896,
+  8122
+ ],
+ "num_candidates_reviewed": 60,
+ "kept_indices": [
+  0,
+  2,
+  3,
+  4,
+  6,
+  9,
+  10,
+  12,
+  14,
+  15,
+  17,
+  22,
+  25,
+  26,
+  29,
+  30,
+  33,
+  38,
+  43,
+  45,
+  50,
+  51,
+  52,
+  53,
+  55
+ ],
+ "rejected_indices": [
+  1,
+  5,
+  7,
+  8,
+  11,
+  13,
+  16,
+  18,
+  19,
+  20,
+  21,
+  23,
+  24,
+  27,
+  28,
+  31,
+  32,
+  34,
+  35,
+  36,
+  37,
+  39,
+  40,
+  41,
+  42,
+  44,
+  46,
+  47,
+  48,
+  49,
+  54,
+  56,
+  57,
+  58,
+  59
+ ],
+ "selection_notes": "Selected 25 candidates that stay grounded in `dspy/` and `tests/`, emphasize evaluation/optimizer/parallelism behavior, and avoid doc-only prompts. I rewrote a few prompts to remove method/function locator giveaways and dropped easier or redundant candidates.",
+ "finalists": [
+  {
+   "source_index": 0,
+   "question": "I'm using a graded metric for a QA program where exact matches get 1.0, near-misses get 0.5, and bad answers get 0.0. I want to use the same style of metric for evaluation and later compilation, but I'm not sure whether DSPy treats non-boolean scores as real numeric values or just truthy/falsy passes.\n\nI already saw the overall score printed as a percentage, which made me wonder whether it's averaging the raw floats or silently thresholding them. I don't want a prose explanation because this is the sort of thing that's easy to misunderstand from logs alone.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, evaluates a tiny `dspy.Predict` program on three examples with scores 1.0, 0.5, and 0.0, and prints/asserts the final percentage so the aggregation behavior is undeniable.",
+   "answer": "```python\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.utils.dummies import DummyLM\n\n\ndspy.configure(\n    lm=DummyLM(\n        {\n            \"q1\": {\"answer\": \"red\"},\n            \"q2\": {\"answer\": \"bluish\"},\n            \"q3\": {\"answer\": \"yellow\"},\n        }\n    )\n)\n\nprogram = dspy.Predict(\"question -> answer\")\ndevset = [\n    dspy.Example(question=\"q1\", answer=\"red\").with_inputs(\"question\"),\n    dspy.Example(question=\"q2\", answer=\"blue\").with_inputs(\"question\"),\n    dspy.Example(question=\"q3\", answer=\"green\").with_inputs(\"question\"),\n]\n\n\ndef partial_credit(example, prediction):\n    if prediction.answer == example.answer:\n        return 1.0\n    if prediction.answer[0] == example.answer[0]:\n        return 0.5\n    return 0.0\n\n\nresult = Evaluate(devset=devset, metric=partial_credit, display_progress=False)(program)\nper_example_scores = [score for _, _, score in result.results]\nprint(result.score)\nprint(per_example_scores)\nassert per_example_scores == [1.0, 0.5, 0.0]\nassert result.score == 50.0\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "Evaluate.__call__"
+    },
+    {
+     "file": "dspy/teleprompt/random_search.py",
+     "symbol": "BootstrapFewShotWithRandomSearch.compile"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 2,
+   "question": "I want my evaluator to return more than a bare float. In addition to the numeric score, I want per-example feedback text that I can inspect after the run, but I don't know whether DSPy keeps that structured object or flattens it away when computing the aggregate.\n\nWhat I need is a tiny offline proof, not a description. Give me a complete, runnable Python program that uses `DummyLM`, returns a structured score-plus-feedback object from the metric, and then prints/asserts both the aggregate percentage and the preserved per-example feedback inside the evaluation results.",
+   "answer": "```python\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.utils.dummies import DummyLM\n\n\ndspy.configure(\n    lm=DummyLM(\n        {\n            \"capital\": {\"answer\": \"Paris\"},\n            \"port\": {\"answer\": \"Lyon\"},\n        }\n    )\n)\n\nprogram = dspy.Predict(\"question -> answer\")\ndevset = [\n    dspy.Example(question=\"capital\", answer=\"Paris\").with_inputs(\"question\"),\n    dspy.Example(question=\"port\", answer=\"Marseille\").with_inputs(\"question\"),\n]\n\n\ndef scored_metric(example, prediction):\n    correct = prediction.answer == example.answer\n    return dspy.Prediction(\n        score=1.0 if correct else 0.25,\n        feedback=\"exact match\" if correct else f\"expected {example.answer}, got {prediction.answer}\",\n    )\n\n\nresult = Evaluate(devset=devset, metric=scored_metric, display_progress=False)(program)\nsecond_score = result.results[1][2]\nprint(result.score)\nprint(type(second_score).__name__, second_score.score, second_score.feedback)\nassert isinstance(second_score, dspy.Prediction)\nassert second_score.score == 0.25\nassert second_score.feedback == \"expected Marseille, got Lyon\"\nassert result.score == 62.5\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "Evaluate.__call__"
+    },
+    {
+     "file": "dspy/primitives/prediction.py",
+     "symbol": "Prediction.__radd__"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 3,
+   "question": "I'm trying to reuse an async evaluator because my judge already lives in async code. Passing it into a normal DSPy evaluation run doesn't seem to get awaited, and the failure mode is confusing enough that I'd rather have a minimal repro than keep guessing.\n\nPlease give me a complete, runnable Python program that uses `DummyLM` offline, passes an async metric into a normal evaluation run, and prints/asserts the exact kind of failure you get when DSPy treats that metric synchronously.",
+   "answer": "```python\nimport asyncio\nimport warnings\n\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.utils.dummies import DummyLM\n\n\nwarnings.filterwarnings(\"ignore\", category=RuntimeWarning)\ndspy.configure(lm=DummyLM({\"q\": {\"answer\": \"2\"}}))\nprogram = dspy.Predict(\"question -> answer\")\ndevset = [dspy.Example(question=\"q\", answer=\"2\").with_inputs(\"question\")]\n\n\nasync def async_metric(example, prediction):\n    await asyncio.sleep(0)\n    return 1.0\n\n\nprobe = async_metric(devset[0], dspy.Prediction(answer=\"2\"))\nassert asyncio.iscoroutine(probe)\nprobe.close()\n\nwith warnings.catch_warnings():\n    warnings.simplefilter(\"ignore\", category=RuntimeWarning)\n    try:\n        Evaluate(devset=devset, metric=async_metric, display_progress=False)(program)\n    except TypeError as e:\n        print(type(e).__name__)\n        print(str(e))\n        assert isinstance(e, TypeError)\n    else:\n        raise AssertionError(\"Expected Evaluate to fail when given an async metric.\")\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "Evaluate.__call__"
+    },
+    {
+     "file": "dspy/teleprompt/bootstrap.py",
+     "symbol": "BootstrapFewShot._bootstrap_one_example"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 4,
+   "question": "My acceptance logic needs the execution trace, not just gold and prediction. The confusing part is that it seems fine during prompt compilation, then blows up when I try to run a plain evaluation pass over the same program.\n\nI want a small repro that demonstrates both sides of that mismatch in one place. Give me a complete, runnable Python program that uses `DummyLM` offline, shows a trace-requiring metric failing under plain evaluation, then shows the same metric working during few-shot bootstrapping, with prints/assertions proving both outcomes.",
+   "answer": "```python\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.teleprompt import BootstrapFewShot\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\n\ndef trace_required_metric(example, prediction, trace):\n    return len(trace) == 1 and prediction.answer == example.answer\n\n\ndspy.configure(lm=DummyLM({\"math\": {\"answer\": \"4\"}}))\ntrainset = [dspy.Example(question=\"math\", answer=\"4\").with_inputs(\"question\")]\nstudent = SimpleModule()\nteacher = SimpleModule()\n\ntry:\n    Evaluate(devset=trainset, metric=trace_required_metric, display_progress=False)(student)\nexcept TypeError as e:\n    evaluate_error = str(e)\nelse:\n    raise AssertionError(\"Expected plain Evaluate to fail for a metric that requires trace.\")\n\ncompiled = BootstrapFewShot(\n    metric=trace_required_metric,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n).compile(student, teacher=teacher, trainset=trainset)\n\nprint(evaluate_error)\nprint(compiled._compiled, len(compiled.predictor.demos))\nassert \"trace\" in evaluate_error\nassert compiled._compiled is True\nassert len(compiled.predictor.demos) == 1\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "Evaluate.__call__"
+    },
+    {
+     "file": "dspy/teleprompt/bootstrap.py",
+     "symbol": "BootstrapFewShot._bootstrap_one_example"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 6,
+   "question": "I have a mixed-quality dev set where a few examples can raise exceptions inside the program, but I don't want one bad item to abort the whole run. I also need to know exactly what DSPy puts into the per-example results for the failed row and how that affects the aggregate score.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, makes one example raise during evaluation, keeps the run going with a non-default failure score, and prints/asserts the placeholder prediction and the final percentage.",
+   "answer": "```python\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SometimesBroken(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        if question == \"boom\":\n            raise RuntimeError(\"boom\")\n        return self.predictor(question=question)\n\n\n\ndspy.configure(\n    lm=DummyLM(\n        {\n            \"ok-1\": {\"answer\": \"A\"},\n            \"ok-2\": {\"answer\": \"B\"},\n        }\n    )\n)\n\nprogram = SometimesBroken()\ndevset = [\n    dspy.Example(question=\"ok-1\", answer=\"A\").with_inputs(\"question\"),\n    dspy.Example(question=\"boom\", answer=\"ignored\").with_inputs(\"question\"),\n    dspy.Example(question=\"ok-2\", answer=\"B\").with_inputs(\"question\"),\n]\n\nresult = Evaluate(\n    devset=devset,\n    metric=lambda example, prediction: example.answer == prediction.answer,\n    display_progress=False,\n    max_errors=2,\n    failure_score=-0.25,\n)(program)\n\nfailed_prediction = result.results[1][1]\nfailed_score = result.results[1][2]\nprint(result.score)\nprint(type(failed_prediction).__name__, list(failed_prediction.keys()), failed_score)\nassert isinstance(failed_prediction, dspy.Prediction)\nassert list(failed_prediction.keys()) == []\nassert failed_score == -0.25\nassert result.score == 58.33\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "Evaluate.__call__"
+    },
+    {
+     "file": "dspy/utils/parallelizer.py",
+     "symbol": "ParallelExecutor._wrap_function"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 9,
+   "question": "I'm using a graded acceptance metric during few-shot bootstrapping, and I hit something surprising: tiny nonzero scores seem to behave like successes unless I set an explicit threshold. I want a repro that shows whether a score like 0.1 is accepted as 'good enough' when no threshold is configured.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, compiles the same tiny program twice with a metric that always returns 0.1, once without a threshold and once with a stricter threshold, and prints/asserts the resulting demo counts so the acceptance rule is obvious.",
+   "answer": "```python\nimport dspy\nfrom dspy.teleprompt import BootstrapFewShot\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\n\ndef tiny_nonzero_metric(example, prediction, trace=None):\n    return 0.1\n\n\ndspy.configure(lm=DummyLM({\"math\": {\"answer\": \"4\"}}))\ntrainset = [dspy.Example(question=\"math\", answer=\"4\").with_inputs(\"question\")]\n\ncompiled_without_threshold = BootstrapFewShot(\n    metric=tiny_nonzero_metric,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n).compile(SimpleModule(), teacher=SimpleModule(), trainset=trainset)\n\ncompiled_with_threshold = BootstrapFewShot(\n    metric=tiny_nonzero_metric,\n    metric_threshold=0.5,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n).compile(SimpleModule(), teacher=SimpleModule(), trainset=trainset)\n\ncount_without_threshold = len(compiled_without_threshold.predictor.demos)\ncount_with_threshold = len(compiled_with_threshold.predictor.demos)\nprint(count_without_threshold, count_with_threshold)\nassert count_without_threshold == 1\nassert count_with_threshold == 0\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bootstrap.py",
+     "symbol": "BootstrapFewShot._bootstrap_one_example"
+    },
+    {
+     "file": "dspy/teleprompt/bootstrap.py",
+     "symbol": "BootstrapFewShot._train"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 10,
+   "question": "I asked the random-search few-shot optimizer for only one candidate set, but the compiled program came back carrying more scored variants than I requested. I suspect DSPy is always evaluating a few built-in baselines before it starts counting random candidates, but I want a repro that proves the exact count.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, asks for one candidate set, and prints/asserts both the stored count and the stored seed identifiers if DSPy records them.",
+   "answer": "```python\nimport dspy\nfrom dspy.teleprompt import BootstrapFewShotWithRandomSearch\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\n\ndef metric(example, prediction, trace=None):\n    return example.answer == prediction.answer\n\n\ndspy.configure(\n    lm=DummyLM(\n        {\n            \"q1\": {\"answer\": \"A\"},\n            \"q2\": {\"answer\": \"B\"},\n        }\n    )\n)\n\ntrainset = [\n    dspy.Example(question=\"q1\", answer=\"A\").with_inputs(\"question\"),\n    dspy.Example(question=\"q2\", answer=\"B\").with_inputs(\"question\"),\n]\n\noptimizer = BootstrapFewShotWithRandomSearch(\n    metric=metric,\n    num_candidate_programs=1,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=1,\n    num_threads=1,\n)\nbest = optimizer.compile(SimpleModule(), teacher=SimpleModule(), trainset=trainset, valset=trainset)\nseeds = [candidate[\"seed\"] for candidate in best.candidate_programs]\nprint(len(seeds), seeds)\nassert len(seeds) == 4\nassert set(seeds) == {-3, -2, -1, 0}\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/random_search.py",
+     "symbol": "BootstrapFewShotWithRandomSearch.compile"
+    },
+    {
+     "file": "dspy/teleprompt/utils.py",
+     "symbol": "create_n_fewshot_demo_sets"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 12,
+   "question": "My custom evaluator for `dspy.GEPA` only takes gold and prediction, and the optimizer rejects it before the run even starts. I need a tiny repro that shows what signature is actually required, plus a matching version that is accepted.\n\nGive me a complete, runnable Python program that stays offline, first shows the rejection for a two-argument metric, then constructs the optimizer successfully with the right five-argument metric signature, and prints/asserts both outcomes.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nreflection_lm = DummyLM([{\"text\": \"unused\"}])\n\n\ndef bad_metric(gold, pred):\n    return 1.0\n\n\ntry:\n    dspy.GEPA(metric=bad_metric, reflection_lm=reflection_lm, max_metric_calls=1)\nexcept TypeError as e:\n    bad_error = str(e)\nelse:\n    raise AssertionError(\"Expected GEPA to reject the two-argument metric.\")\n\n\n\ndef good_metric(gold, pred, trace=None, pred_name=None, pred_trace=None):\n    return dspy.Prediction(score=1.0, feedback=\"ok\")\n\n\noptimizer = dspy.GEPA(metric=good_metric, reflection_lm=reflection_lm, max_metric_calls=1)\nprint(\"accepted\", type(optimizer).__name__)\nprint(bad_error)\nassert \"five arguments\" in bad_error\nassert optimizer.metric_fn is good_metric\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/gepa/gepa.py",
+     "symbol": "GEPA.__init__"
+    },
+    {
+     "file": "tests/teleprompt/test_gepa.py",
+     "symbol": "test_metric_requires_feedback_signature"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 14,
+   "question": "I have a small multi-step program and I'm trying to finetune it offline. Even with just one local LM, the compile step can complain that `num_threads` is too small, which makes me think the job count might be based on predictors rather than models in some cases.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, builds a two-predictor module, compiles with the finetune optimizer in a configuration that triggers that thread-count check, and prints/asserts the error so the job-count rule is obvious.",
+   "answer": "```python\nimport dspy\nfrom dspy.teleprompt import BootstrapFinetune\nfrom dspy.utils.dummies import DummyLM\n\n\nclass TwoPredictorModule(dspy.Module):\n    def __init__(self, lm):\n        super().__init__()\n        self.first = dspy.Predict(\"input -> mid\")\n        self.second = dspy.Predict(\"mid -> output\")\n        self.first.lm = lm\n        self.second.lm = lm\n\n    def forward(self, input):\n        mid = self.first(input=input).mid\n        return self.second(mid=mid)\n\n\nlm = DummyLM([{\"mid\": \"intermediate\"}, {\"output\": \"final\"}])\nstudent = TwoPredictorModule(lm)\ntrainset = [dspy.Example(input=\"x\", output=\"final\").with_inputs(\"input\")]\noptimizer = BootstrapFinetune(\n    metric=lambda example, prediction, trace=None: True,\n    multitask=False,\n    num_threads=1,\n)\n\ntry:\n    optimizer.compile(student, trainset=trainset)\nexcept ValueError as e:\n    message = str(e)\n    print(message)\n    assert \"num_threads\" in message\n    assert \"fine-tuning jobs\" in message\nelse:\n    raise AssertionError(\"Expected BootstrapFinetune to reject too few threads.\")\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bootstrap_finetune.py",
+     "symbol": "BootstrapFinetune.compile"
+    },
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.predictors"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 15,
+   "question": "I'm trying to optimize against one aggregate reward while still carrying several field-level subscores and feedback alongside it. I don't need multiple objectives for selection right now, but I do need proof that DSPy's stochastic optimizer path can keep the auxiliary metadata around instead of dropping everything except the main score.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, runs a tiny program through the same metric-wrapping path that `SIMBA` uses, and prints/asserts the aggregate score plus the preserved auxiliary metadata.",
+   "answer": "```python\nimport dspy\nfrom dspy.teleprompt.simba_utils import wrap_program\nfrom dspy.utils.dummies import DummyLM\n\n\ndspy.configure(lm=DummyLM({\"What is 1+1?\": {\"answer\": \"2\"}}))\nprogram = dspy.Predict(\"question -> answer\")\nexample = dspy.Example(question=\"What is 1+1?\", answer=\"2\").with_inputs(\"question\")\n\n\ndef composite_metric(example, prediction):\n    return dspy.Prediction(\n        score=0.75,\n        answer_score=float(prediction.answer == example.answer),\n        overlap_score=0.5,\n        feedback=\"aggregate score is for selection; field scores are auxiliary\",\n    )\n\n\nwrapped = wrap_program(program, composite_metric)\nout = wrapped(example)\nprint(out[\"score\"])\nprint(out[\"output_metadata\"])\nassert out[\"score\"] == 0.75\nassert out[\"prediction\"].answer == \"2\"\nassert out[\"output_metadata\"] == {\n    \"answer_score\": 1.0,\n    \"overlap_score\": 0.5,\n    \"feedback\": \"aggregate score is for selection; field scores are auxiliary\",\n}\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/simba_utils.py",
+     "symbol": "wrap_program"
+    },
+    {
+     "file": "dspy/teleprompt/simba.py",
+     "symbol": "SIMBA.compile"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 17,
+   "question": "I'm running the same program in parallel with per-example LM overrides inside the module. The thing I'm nervous about is cross-talk: one thread picking up another thread's LM or leaking its override back to the main thread.\n\nGive me a complete, runnable Python program that uses two different `DummyLM` instances offline, runs two calls through DSPy's parallel executor at the same time, and prints/asserts that each input gets the answer from its own LM while the main thread keeps the original default LM.",
+   "answer": "```python\nimport time\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nglobal_lm = DummyLM({\"Germany\": {\"answer\": \"Berlin\"}})\nfrance_lm = DummyLM({\"France\": {\"answer\": \"Paris\"}})\ndspy.configure(lm=global_lm)\n\n\nclass CountryProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        if \"France\" in question:\n            with dspy.context(lm=france_lm):\n                time.sleep(0.2)\n                return self.predictor(question=question)\n        time.sleep(0.2)\n        return self.predictor(question=question)\n\n\nprogram = CountryProgram()\nparallel = dspy.Parallel(num_threads=2, disable_progress_bar=True)\nresults = parallel(\n    [\n        (program, {\"question\": \"What is the capital of France?\"}),\n        (program, {\"question\": \"What is the capital of Germany?\"}),\n    ]\n)\nanswers = [result.answer for result in results]\nprint(answers)\nprint(dspy.settings.lm is global_lm)\nassert answers == [\"Paris\", \"Berlin\"]\nassert dspy.settings.lm is global_lm\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/utils/parallelizer.py",
+     "symbol": "ParallelExecutor._execute_parallel"
+    },
+    {
+     "file": "tests/utils/test_settings.py",
+     "symbol": "test_dspy_context_with_dspy_parallel"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 22,
+   "question": "I'm using DSPy's built-in semantic judge, but I'm nervous about bad grader outputs. If the underlying judge produces precision or recall outside the valid `[0, 1]` range, I need to know whether DSPy clamps those numbers before computing F1 or just propagates nonsense.\n\nThis is one of those behaviors that's too easy to misread from a source skim. I want a concrete repro with an obviously invalid pair of grader values.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, makes the semantic judge return precision above 1 and recall below 0, and prints/asserts the final score so the clamping behavior is proven.",
+   "answer": "```python\nimport dspy\nfrom dspy.evaluate.auto_evaluation import SemanticF1\nfrom dspy.utils.dummies import DummyLM\n\ndspy.configure(lm=DummyLM([{\"reasoning\": \"bad grader output\", \"precision\": 1.7, \"recall\": -0.4}]))\nmetric = SemanticF1()\nresult = metric(dspy.Example(question=\"q\", response=\"gold\"), dspy.Prediction(response=\"pred\"))\nprint(\"semantic_f1_score:\", result.score)\nassert result.score == 0.0\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/auto_evaluation.py",
+     "symbol": "f1_score"
+    },
+    {
+     "file": "dspy/evaluate/auto_evaluation.py",
+     "symbol": "SemanticF1.forward"
+    },
+    {
+     "file": "tests/evaluate/test_auto_evaluation.py",
+     "symbol": "test_semantic_f1_score_value"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 25,
+   "question": "I also have async code that fans out several DSPy tasks at once. I need to know whether sibling async tasks are allowed to change DSPy's global defaults, or whether the only safe pattern there is temporary task-local overrides.\n\nThis matters because I do per-task model overrides in async evaluation and judge pipelines, and one task must not leak its LM or trace state into another. I want a repro that shows the restriction and also proves the temporary overrides stay isolated across concurrent tasks.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, establishes the global settings inside one async entry task, then tries to reconfigure them from a sibling task, uses temporary overrides in two concurrent tasks, and prints/asserts the per-task values plus the unchanged global state afterward.",
+   "answer": "```python\nimport asyncio\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nasync def forbidden_configure():\n    try:\n        bad_lm = DummyLM([{\"answer\": \"bad\"}])\n        bad_lm.tag = \"bad\"\n        dspy.configure(lm=bad_lm)\n    except RuntimeError as e:\n        return str(e)\n    raise AssertionError(\"Expected dspy.configure to fail in a sibling async task\")\n\n\nasync def allowed_context(tag):\n    local_lm = DummyLM([{\"answer\": tag}])\n    local_lm.tag = tag\n    with dspy.context(lm=local_lm, trace=[tag]):\n        await asyncio.sleep(0)\n        return dspy.settings.lm.tag, list(dspy.settings.trace)\n\n\nasync def main():\n    base_lm = DummyLM([{\"answer\": \"base\"}])\n    base_lm.tag = \"base\"\n    dspy.configure(lm=base_lm, trace=[])\n\n    error_text, first, second = await asyncio.gather(\n        forbidden_configure(),\n        allowed_context(\"task-one\"),\n        allowed_context(\"task-two\"),\n    )\n    return error_text, first, second, dspy.settings.lm.tag, list(dspy.settings.trace)\n\n\nerror_text, first, second, global_tag, global_trace = asyncio.run(main())\nprint(\"configure_error:\", error_text)\nprint(\"task_one:\", first)\nprint(\"task_two:\", second)\nprint(\"global_after:\", global_tag, global_trace)\nassert \"same async task\" in error_text\nassert first == (\"task-one\", [\"task-one\"])\nassert second == (\"task-two\", [\"task-two\"])\nassert global_tag == \"base\"\nassert global_trace == []\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/dsp/utils/settings.py",
+     "symbol": "Settings._ensure_configure_allowed"
+    },
+    {
+     "file": "dspy/dsp/utils/settings.py",
+     "symbol": "Settings.context"
+    },
+    {
+     "file": "tests/utils/test_settings.py",
+     "symbol": "test_dspy_context_with_async_task_group"
+    },
+    {
+     "file": "tests/utils/test_settings.py",
+     "symbol": "test_dspy_configure_allowance_async"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 26,
+   "question": "I'm using an async DSPy module that works when I await it directly, but I need to feed it through a synchronous optimizer pipeline. Before I refactor a bunch of code, I want proof of whether DSPy can adapt that kind of module cleanly for compilation.\n\nThe important part is not just one conversion mode. I want to know whether both the in-place conversion and the wrapper-style conversion can make the optimizer complete and actually collect demos.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, converts the same async module into sync form both ways, compiles each version with a few-shot optimizer, and prints/asserts the resulting demo counts.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass AsyncProgram(dspy.Module):\n    def __init__(self):\n        self.predict = dspy.Predict(\"question -> answer\")\n\n    async def aforward(self, question: str):\n        return await self.predict.acall(question=question)\n\n\ndef metric(example, prediction, trace=None):\n    return True\n\n\ndspy.configure(lm=DummyLM([{\"answer\": \"dummy\"} for _ in range(100)]))\ndataset = [dspy.Example(question=\"question\", answer=\"answer\").with_inputs(\"question\") for _ in range(10)]\noptimizer = dspy.BootstrapFewShot(metric=metric, max_bootstrapped_demos=2, max_labeled_demos=0)\ncompiled_in_place = optimizer.compile(dspy.syncify(AsyncProgram(), in_place=True), trainset=dataset)\ncompiled_wrapped = optimizer.compile(dspy.syncify(AsyncProgram(), in_place=False), trainset=dataset)\nprint(\"in_place_demos:\", len(compiled_in_place.predictors()[0].demos))\nprint(\"wrapped_demos:\", len(compiled_wrapped.predictors()[0].demos))\nassert len(compiled_in_place.predictors()[0].demos) == 2\nassert len(compiled_wrapped.predictors()[0].demos) == 2\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/utils/syncify.py",
+     "symbol": "syncify"
+    },
+    {
+     "file": "tests/utils/test_syncify.py",
+     "symbol": "test_syncify_works_with_optimizers"
+    },
+    {
+     "file": "tests/utils/test_syncify.py",
+     "symbol": "test_syncify_in_place"
+    },
+    {
+     "file": "tests/utils/test_syncify.py",
+     "symbol": "test_syncify_with_wrapper"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 29,
+   "question": "I'm compiling with `dspy.BetterTogether` and I left out a validation set because I thought that meant 'no validation'. The run behavior makes me suspect DSPy may be silently holding out part of the trainset by default instead.\n\nThat matters a lot for small datasets, because I don't want to accidentally shrink the optimization set without noticing. I need a proof that shows exactly how many examples go to optimization versus validation when I keep the defaults.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, compiles a tiny `dspy.BetterTogether` pipeline with no explicit valset, and prints/asserts the trainset size seen by the optimizer and the validation-set size seen by the evaluator.",
+   "answer": "```python\nfrom unittest.mock import Mock, patch\n\nimport dspy\nfrom dspy.teleprompt import BetterTogether\nfrom dspy.teleprompt.teleprompt import Teleprompter\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\n\nclass CapturingOptimizer(Teleprompter):\n    def __init__(self):\n        self.seen_trainset_len = None\n\n    def compile(self, student, trainset=None, **kwargs):\n        self.seen_trainset_len = len(trainset)\n        return student\n\n\ndef metric(example, prediction, trace=None):\n    return 1.0\n\n\nstudent = SimpleModule()\nstudent.set_lm(DummyLM([{\"output\": \"ok\"}]))\ntrainset = [dspy.Example(input=f\"q{i}\", output=f\"a{i}\").with_inputs(\"input\") for i in range(10)]\noptimizer_step = CapturingOptimizer()\noptimizer = BetterTogether(metric=metric, p=optimizer_step)\nseen_eval_sizes = []\n\n\ndef fake_eval(batch_size, dataset, candidate_program, evaluate, rng=None):\n    seen_eval_sizes.append(len(dataset))\n    return Mock(score=0.5)\n\n\nwith patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\", side_effect=fake_eval):\n    with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n        with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n            with patch.object(optimizer, \"_models_changed\", return_value=False):\n                optimizer.compile(student, trainset=trainset, strategy=\"p\")\n\nprint(\"optimizer_trainset_len:\", optimizer_step.seen_trainset_len)\nprint(\"eval_dataset_sizes:\", seen_eval_sizes)\nassert optimizer_step.seen_trainset_len == 9\nassert seen_eval_sizes == [1, 1]\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether.compile"
+    },
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether._prepare_trainset_and_valset"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 30,
+   "question": "I'm chaining two optimizers with `dspy.BetterTogether`. When I do have a real validation set, I want the best-scoring intermediate checkpoint back even if it wasn't the last step. But when I intentionally disable validation, I want the latest program in the chain.\n\nI can imagine either policy being reasonable, so I don't want a guess. I want one small repro that demonstrates both modes side by side.\n\nGive me a complete, runnable Python program that stays offline, uses tiny custom teleprompters plus patched evaluation scores, compiles once with validation and once with validation turned off, and prints/asserts which marked program is returned in each case.",
+   "answer": "```python\nfrom unittest.mock import Mock, patch\n\nimport dspy\nfrom dspy.teleprompt import BetterTogether\nfrom dspy.teleprompt.teleprompt import Teleprompter\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\n\nclass MarkedOptimizer(Teleprompter):\n    def __init__(self, marker):\n        self.marker = marker\n\n    def compile(self, student, **kwargs):\n        program = SimpleModule()\n        program.marker = self.marker\n        return program\n\n\ndef metric(example, prediction, trace=None):\n    return 1.0\n\n\ntrainset = [dspy.Example(input=\"train\", output=\"out\").with_inputs(\"input\")]\nvalset = [dspy.Example(input=\"val\", output=\"out\").with_inputs(\"input\")]\nstudent1 = SimpleModule(); student1.set_lm(DummyLM([{\"output\": \"out\"}]))\nstudent2 = SimpleModule(); student2.set_lm(DummyLM([{\"output\": \"out\"}]))\noptimizer = BetterTogether(metric=metric, p=MarkedOptimizer(\"p_optimized\"), w=MarkedOptimizer(\"w_optimized\"))\nwith patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\") as mock_eval:\n    mock_eval.side_effect = [Mock(score=0.5), Mock(score=0.9), Mock(score=0.7)]\n    with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n        with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n            with patch.object(optimizer, \"_models_changed\", return_value=False):\n                best_with_valset = optimizer.compile(student1, trainset=trainset, valset=valset, strategy=\"p -> w\")\noptimizer_no_val = BetterTogether(metric=metric, p=MarkedOptimizer(\"p_optimized\"), w=MarkedOptimizer(\"w_optimized\"))\nwith patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n    with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n        with patch.object(optimizer_no_val, \"_models_changed\", return_value=False):\n            latest_without_valset = optimizer_no_val.compile(student2, trainset=trainset, valset=None, valset_ratio=0, strategy=\"p -> w\")\nprint(\"with_valset_marker:\", best_with_valset.marker)\nprint(\"without_valset_marker:\", latest_without_valset.marker)\nassert best_with_valset.marker == \"p_optimized\"\nassert latest_without_valset.marker == \"w_optimized\"\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether._run_strategies"
+    },
+    {
+     "file": "tests/teleprompt/test_bettertogether.py",
+     "symbol": "test_program_selection"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 33,
+   "question": "I'm giving different compile-time knobs to the prompt step and the weight step inside `dspy.BetterTogether`. My concern is that DSPy might either broadcast every extra argument to every optimizer or silently drop step-specific ones.\n\nI need a tiny repro that makes the routing visible, not a summary. The proof I want is that one optimizer receives only its own custom argument and the other one receives only its own.\n\nGive me a complete, runnable Python program that stays offline, runs a two-step `dspy.BetterTogether` strategy with custom per-step compile arguments, and prints/asserts exactly which kwargs each optimizer received.",
+   "answer": "```python\nfrom unittest.mock import Mock, patch\n\nimport dspy\nfrom dspy.teleprompt import BetterTogether\nfrom dspy.teleprompt.teleprompt import Teleprompter\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\n\nclass PromptOptimizer(Teleprompter):\n    def __init__(self):\n        self.received_kwargs = None\n\n    def compile(self, student, trainset=None, num_trials=None, **kwargs):\n        self.received_kwargs = {\"trainset\": trainset, \"num_trials\": num_trials, **kwargs}\n        return student\n\n\nclass WeightOptimizer(Teleprompter):\n    def __init__(self):\n        self.received_kwargs = None\n\n    def compile(self, student, trainset=None, num_batches=None, **kwargs):\n        self.received_kwargs = {\"trainset\": trainset, \"num_batches\": num_batches, **kwargs}\n        return student\n\n\ndef metric(example, prediction, trace=None):\n    return 1.0\n\n\nstudent = SimpleModule(); student.set_lm(DummyLM([{\"output\": \"out\"}]))\ntrainset = [dspy.Example(input=\"train\", output=\"out\").with_inputs(\"input\")]\nvalset = [dspy.Example(input=\"val\", output=\"out\").with_inputs(\"input\")]\nprompt_opt = PromptOptimizer(); weight_opt = WeightOptimizer()\noptimizer = BetterTogether(metric=metric, p=prompt_opt, w=weight_opt)\nwith patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\", return_value=Mock(score=0.85)):\n    with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n        with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n            with patch.object(optimizer, \"_models_changed\", return_value=False):\n                optimizer.compile(student, trainset=trainset, valset=valset, strategy=\"p -> w\", optimizer_compile_args={\"p\": {\"num_trials\": 10}, \"w\": {\"num_batches\": 5}})\nprint(\"prompt_kwargs:\", prompt_opt.received_kwargs)\nprint(\"weight_kwargs:\", weight_opt.received_kwargs)\nassert prompt_opt.received_kwargs[\"num_trials\"] == 10\nassert \"num_batches\" not in prompt_opt.received_kwargs or prompt_opt.received_kwargs[\"num_batches\"] is None\nassert weight_opt.received_kwargs[\"num_batches\"] == 5\nassert \"num_trials\" not in weight_opt.received_kwargs or weight_opt.received_kwargs[\"num_trials\"] is None\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether._validate_compile_args"
+    },
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether._run_and_evaluate_step"
+    },
+    {
+     "file": "tests/teleprompt/test_bettertogether.py",
+     "symbol": "test_compile_args_multi_optimizer_strategy"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 38,
+   "question": "I'm using the random-search few-shot optimizer and I omitted a separate validation set. What I need to know is whether DSPY then evaluates the candidate on the trainset itself, rather than leaving validation empty or inventing some other split.\n\nI want a minimal repro that isolates the evaluation phase and makes the dataset choice visible, because this has a big effect on how much I trust the reported score.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, restricts the run to the baseline candidate so the metric sees only evaluation examples, and prints/asserts whether the optimizer reused the trainset as its valset.",
+   "answer": "```python\nimport dspy\nfrom dspy import Example\nfrom dspy.teleprompt import BootstrapFewShotWithRandomSearch\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\n\ntrainset = [\n    Example(input=\"q1\", output=\"a1\").with_inputs(\"input\"),\n    Example(input=\"q2\", output=\"a2\").with_inputs(\"input\"),\n]\nstudent = SimpleModule(); student.set_lm(DummyLM({\"q1\": {\"output\": \"a1\"}, \"q2\": {\"output\": \"a2\"}}))\nseen_inputs = []\n\n\ndef recording_metric(example, prediction, trace=None):\n    seen_inputs.append(example.input)\n    return 1.0\n\n\noptimizer = BootstrapFewShotWithRandomSearch(\n    metric=recording_metric,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n    num_candidate_programs=1,\n    num_threads=1,\n)\ncompiled = optimizer.compile(student, trainset=trainset, valset=None, restrict={-3})\nprint(\"valset_is_trainset:\", optimizer.valset is trainset)\nprint(\"inputs_seen_by_metric:\", seen_inputs)\nprint(\"candidate_seeds:\", [candidate[\"seed\"] for candidate in compiled.candidate_programs])\nassert optimizer.valset is trainset\nassert seen_inputs == [\"q1\", \"q2\"]\nassert [candidate[\"seed\"] for candidate in compiled.candidate_programs] == [-3]\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/random_search.py",
+     "symbol": "BootstrapFewShotWithRandomSearch.compile"
+    },
+    {
+     "file": "tests/teleprompt/test_random_search.py",
+     "symbol": "test_basic_workflow"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 43,
+   "question": "I'm collecting execution traces for optimizer-style reflection, and one of my model completions occasionally comes back in the wrong format. What I need to know is whether DSPy drops that row completely or preserves the raw bad completion and some kind of score so I can feed it back into debugging.\n\nThis is exactly the sort of thing that's too easy to infer incorrectly from source comments. Give me a complete, runnable Python program that stays offline with `DummyLM`, forces one well-formed output and one malformed output during trace capture, and prints/asserts the bad row's type, raw completion text, score-like field, and trace presence.",
+   "answer": "```python\nimport dspy\nfrom dspy.dsp.utils.utils import dotdict\nfrom dspy.teleprompt.bootstrap_trace import FailedPrediction, bootstrap_trace_data\nfrom dspy.utils.dummies import DummyLM\n\n\nclass StringToInt(dspy.Signature):\n    text: str = dspy.InputField()\n    number: int = dspy.OutputField()\n\n\nclass MalformedDummyLM(DummyLM):\n    def __init__(self):\n        super().__init__([{\"number\": 1}], adapter=dspy.JSONAdapter())\n        self.calls = 0\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        self.calls += 1\n        if self.calls == 1:\n            return super().forward(prompt=prompt, messages=messages, **kwargs)\n        return dotdict(\n            choices=[dotdict(message=dotdict(content=\"not json at all\", tool_calls=None), finish_reason=\"stop\")],\n            usage=dotdict(prompt_tokens=0, completion_tokens=0, total_tokens=0),\n            model=\"dummy\",\n        )\n\n\ndef exact_match(example, prediction, trace=None):\n    return example.number == prediction.number\n\n\nlm = MalformedDummyLM()\ndspy.configure(lm=lm, adapter=dspy.JSONAdapter())\nprogram = dspy.Predict(StringToInt)\ndataset = [\n    dspy.Example(text=\"one\", number=1).with_inputs(\"text\"),\n    dspy.Example(text=\"two\", number=2).with_inputs(\"text\"),\n]\n\nrows = bootstrap_trace_data(\n    program=program,\n    dataset=dataset,\n    metric=exact_match,\n    raise_on_error=False,\n    capture_failed_parses=True,\n)\n\nprint(\"row_types:\", [type(row[\"prediction\"]).__name__ for row in rows])\nbad = rows[1][\"prediction\"]\nprint(\"bad_completion:\", bad.completion_text)\nprint(\"bad_format_reward:\", bad.format_reward)\nprint(\"bad_trace_len:\", len(rows[1][\"trace\"]))\nassert isinstance(bad, FailedPrediction)\nassert bad.completion_text == \"not json at all\"\nassert bad.format_reward is not None\nassert len(rows[1][\"trace\"]) > 0\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bootstrap_trace.py",
+     "symbol": "bootstrap_trace_data"
+    },
+    {
+     "file": "dspy/teleprompt/bootstrap_trace.py",
+     "symbol": "FailedPrediction"
+    },
+    {
+     "file": "tests/teleprompt/test_bootstrap_trace.py",
+     "symbol": "test_bootstrap_trace_data"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 45,
+   "question": "I'm letting DSPy's few-shot optimizer retry the same training example across multiple rounds because the first attempt can fail. What I need to know is whether later rounds actually use a fresh rollout configuration or just rerun the exact same LM state and hit the same cache.\n\nDon't tell me what the optimizer is supposed to do. Give me a complete, runnable Python program that stays offline with `DummyLM`, forces a first-round failure and a second-round success, and prints/asserts the LM-copy kwargs and per-call LM kwargs for the two rounds.",
+   "answer": "```python\nimport dspy\nfrom dspy.teleprompt import BootstrapFewShot\nfrom dspy.utils.dummies import DummyLM\n\n\nclass RecordingDummyLM(DummyLM):\n    def __init__(self, answers, copy_log=None, call_log=None, adapter=None):\n        super().__init__(answers, adapter=adapter)\n        self.copy_log = [] if copy_log is None else copy_log\n        self.call_log = [] if call_log is None else call_log\n\n    def copy(self, **kwargs):\n        self.copy_log.append(kwargs.copy())\n        clone = RecordingDummyLM(\n            {\"What is 1+1?\": {\"answer\": \"2\"}},\n            copy_log=self.copy_log,\n            call_log=self.call_log,\n            adapter=self.adapter,\n        )\n        clone.kwargs = {**self.kwargs, **kwargs}\n        return clone\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        self.call_log.append(self.kwargs.copy())\n        return super().forward(prompt=prompt, messages=messages, **kwargs)\n\n\nclass TinyProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\nmetric_calls = []\n\n\ndef metric(example, prediction, trace=None):\n    metric_calls.append(prediction.answer)\n    return len(metric_calls) >= 2\n\n\nlm = RecordingDummyLM({\"What is 1+1?\": {\"answer\": \"2\"}})\ndspy.configure(lm=lm)\ntrainset = [dspy.Example(question=\"What is 1+1?\", answer=\"2\").with_inputs(\"question\")]\n\nBootstrapFewShot(\n    metric=metric,\n    max_rounds=2,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n).compile(TinyProgram(), trainset=trainset)\n\nprint(\"copy_log:\", lm.copy_log)\nprint(\"call_log:\", lm.call_log)\nassert lm.copy_log == [{\"rollout_id\": 1, \"temperature\": 1.0}]\nassert lm.call_log[0] == {}\nassert lm.call_log[1][\"rollout_id\"] == 1\nassert lm.call_log[1][\"temperature\"] == 1.0\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bootstrap.py",
+     "symbol": "BootstrapFewShot._bootstrap_one_example"
+    },
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM.copy"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 50,
+   "question": "I'm using the evolutionary optimizer as a batch-search tool and I turned on per-task best-output tracking. DSPy rejected the configuration unless another, more verbose tracking mode was also enabled, and I want a proof of both the dependency and what appears on the returned program once the config is accepted.\n\nGive me a complete, runnable Python program that stays offline with `DummyLM`, first reproduces the configuration failure, then uses a tiny patched optimizer run to print/assert that the compiled program exposes per-task best outputs when the compatible tracking mode is enabled.",
+   "answer": "```python\nimport types\n\nimport dspy\nimport gepa\nfrom dspy.teleprompt.gepa.gepa import GEPA\nfrom dspy.utils.dummies import DummyLM\n\n\nclass TinyProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\ndef metric(gold, pred, trace=None, pred_name=None, pred_trace=None):\n    return dspy.Prediction(score=1.0, feedback=\"ok\")\n\n\nstudent = TinyProgram()\ntrainset = [dspy.Example(question=\"Q\", answer=\"A\").with_inputs(\"question\")]\nreflection_lm = DummyLM([{\"new_instruction\": \"Keep answering briefly.\"}])\n\ntry:\n    GEPA(metric=metric, reflection_lm=reflection_lm, max_metric_calls=1, track_best_outputs=True)\nexcept AssertionError as e:\n    print(\"init_error:\", str(e))\n    assert \"track_stats\" in str(e)\nelse:\n    raise AssertionError(\"Expected the incompatible tracking configuration to fail.\")\n\noriginal_optimize = gepa.optimize\n\n\ndef fake_optimize(**kwargs):\n    seed_candidate = kwargs[\"seed_candidate\"]\n    return types.SimpleNamespace(\n        best_candidate=seed_candidate,\n        candidates=[seed_candidate],\n        parents=[[None]],\n        val_aggregate_scores=[1.0],\n        best_outputs_valset=[[(0, [dspy.Prediction(answer=\"A\")])]],\n        val_subscores=[[1.0]],\n        per_val_instance_best_candidates=[{0}],\n        discovery_eval_counts=[1],\n        total_metric_calls=1,\n        num_full_val_evals=1,\n        run_dir=None,\n        seed=0,\n    )\n\n\ngepa.optimize = fake_optimize\ntry:\n    dspy.configure(lm=DummyLM({\"Q\": {\"answer\": \"A\"}}))\n    optimized = GEPA(\n        metric=metric,\n        reflection_lm=reflection_lm,\n        max_metric_calls=1,\n        track_stats=True,\n        track_best_outputs=True,\n    ).compile(student, trainset=trainset, valset=trainset)\n    print(\"best_outputs:\", optimized.detailed_results.best_outputs_valset)\n    assert optimized.detailed_results.best_outputs_valset[0][0][0] == 0\n    assert optimized.detailed_results.best_outputs_valset[0][0][1][0].answer == \"A\"\nfinally:\n    gepa.optimize = original_optimize\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/gepa/gepa.py",
+     "symbol": "GEPA.__init__"
+    },
+    {
+     "file": "dspy/teleprompt/gepa/gepa.py",
+     "symbol": "GEPA.compile"
+    },
+    {
+     "file": "dspy/teleprompt/gepa/gepa.py",
+     "symbol": "DspyGEPAResult.from_gepa_result"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 51,
+   "question": "My evolutionary optimizer metric can emit predictor-specific feedback with its own subscore, but I'm not sure DSPy actually uses that subscore. The behavior I need to pin down is whether DSPy keeps only the feedback text while silently replacing the predictor-level score with the overall module score, and whether it warns just once or on every example.\n\nGive me a complete, runnable Python program that stays offline, constructs a tiny reflective dataset with two mismatched examples, and prints/asserts the warning count plus the final scores stored on the feedback objects.",
+   "answer": "```python\nimport io\nimport logging\nimport types\n\nimport dspy\nfrom dspy.teleprompt.gepa.gepa_utils import DspyAdapter\n\n\nclass TinyProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\nstudent = TinyProgram()\npredictor = student.predictor\nfeedback_objects = []\n\n\ndef feedback_fn(**kwargs):\n    obj = dspy.Prediction(\n        score=0.1,\n        feedback=f\"feedback-for-{kwargs['predictor_inputs']['question']}\",\n    )\n    feedback_objects.append(obj)\n    return obj\n\n\nadapter = DspyAdapter(\n    student_module=student,\n    metric_fn=lambda *args, **kwargs: 0.9,\n    feedback_map={\"predictor\": feedback_fn},\n    warn_on_score_mismatch=True,\n)\n\neval_batch = types.SimpleNamespace(\n    trajectories=[\n        {\n            \"example\": dspy.Example(question=\"Q1\", answer=\"A\").with_inputs(\"question\"),\n            \"prediction\": dspy.Prediction(answer=\"A\"),\n            \"trace\": [(predictor, {\"question\": \"Q1\"}, dspy.Prediction(answer=\"A\"))],\n            \"score\": 0.9,\n        },\n        {\n            \"example\": dspy.Example(question=\"Q2\", answer=\"A\").with_inputs(\"question\"),\n            \"prediction\": dspy.Prediction(answer=\"A\"),\n            \"trace\": [(predictor, {\"question\": \"Q2\"}, dspy.Prediction(answer=\"A\"))],\n            \"score\": 0.9,\n        },\n    ]\n)\n\nlogger = logging.getLogger(\"dspy.teleprompt.gepa.gepa_utils\")\nstream = io.StringIO()\nhandler = logging.StreamHandler(stream)\nlogger.addHandler(handler)\nlogger.setLevel(logging.WARNING)\ntry:\n    dataset = adapter.make_reflective_dataset(\n        candidate={\"predictor\": predictor.signature.instructions},\n        eval_batch=eval_batch,\n        components_to_update=[\"predictor\"],\n    )\nfinally:\n    logger.removeHandler(handler)\n\nwarning_text = stream.getvalue()\nprint(\"warning_count:\", warning_text.count(\"GEPA does not support predictor level scoring\"))\nprint(\"feedback_scores_after:\", [obj.score for obj in feedback_objects])\nprint(\"dataset_feedbacks:\", [row[\"Feedback\"] for row in dataset[\"predictor\"]])\nassert warning_text.count(\"GEPA does not support predictor level scoring\") == 1\nassert [obj.score for obj in feedback_objects] == [0.9, 0.9]\nassert dataset[\"predictor\"][0][\"Feedback\"] == \"feedback-for-Q1\"\nassert dataset[\"predictor\"][1][\"Feedback\"] == \"feedback-for-Q2\"\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/gepa/gepa_utils.py",
+     "symbol": "DspyAdapter.make_reflective_dataset"
+    },
+    {
+     "file": "dspy/teleprompt/gepa/gepa.py",
+     "symbol": "GEPA.compile"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 52,
+   "question": "When a predictor output is badly formatted during reflective data collection, I need to know whether DSPy turns that failure into explicit feedback or just drops the example. I can imagine either policy being useful depending on configuration, so I want both sides demonstrated in one place.\n\nGive me a complete, runnable Python program that stays offline, feeds one failed-format trace into the reflection-data path twice under two configurations, and prints/asserts the drop-vs-feedback behavior.",
+   "answer": "```python\nimport types\n\nimport dspy\nfrom dspy.teleprompt.bootstrap_trace import FailedPrediction\nfrom dspy.teleprompt.gepa.gepa_utils import DspyAdapter\n\n\nclass TinyProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\nstudent = TinyProgram()\npredictor = student.predictor\ncandidate = {\"predictor\": predictor.signature.instructions}\nfailed = FailedPrediction(completion_text=\"RAW BAD OUTPUT\", format_reward=0.0)\nrow = {\n    \"example\": dspy.Example(question=\"Q\", answer=\"A\").with_inputs(\"question\"),\n    \"prediction\": failed,\n    \"trace\": [(predictor, {\"question\": \"Q\"}, failed)],\n    \"score\": 0.0,\n}\neval_batch = types.SimpleNamespace(trajectories=[row])\nunused_feedback = {\"predictor\": lambda **kwargs: dspy.Prediction(score=0.0, feedback=\"unused\")}\n\nadapter_drop = DspyAdapter(\n    student_module=student,\n    metric_fn=lambda *args, **kwargs: 0.0,\n    feedback_map=unused_feedback,\n    add_format_failure_as_feedback=False,\n)\ntry:\n    adapter_drop.make_reflective_dataset(candidate, eval_batch, [\"predictor\"])\nexcept Exception as e:\n    print(\"without_feedback_toggle:\", str(e))\n    assert \"No valid predictions found\" in str(e)\nelse:\n    raise AssertionError(\"Expected the failed-format example to be dropped.\")\n\nadapter_keep = DspyAdapter(\n    student_module=student,\n    metric_fn=lambda *args, **kwargs: 0.0,\n    feedback_map=unused_feedback,\n    add_format_failure_as_feedback=True,\n)\ndataset = adapter_keep.make_reflective_dataset(candidate, eval_batch, [\"predictor\"])\nkept = dataset[\"predictor\"][0]\nprint(\"generated_outputs:\", kept[\"Generated Outputs\"])\nprint(\"feedback:\", kept[\"Feedback\"])\nassert \"RAW BAD OUTPUT\" in kept[\"Generated Outputs\"]\nassert kept[\"Feedback\"].startswith(\"Your output failed to parse.\")\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/gepa/gepa_utils.py",
+     "symbol": "DspyAdapter.make_reflective_dataset"
+    },
+    {
+     "file": "dspy/teleprompt/bootstrap_trace.py",
+     "symbol": "FailedPrediction"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 53,
+   "question": "I fan out sync work through DSPy's async wrapper for regular Python callables, and I need proof that the worker-limit setting really throttles concurrency instead of just being a decorative knob. This matters because the difference between one worker and several workers is huge in my evaluation pipeline.\n\nGive me a complete, runnable Python program that stays offline, wraps a sleeping sync function with DSPy's async wrapper, runs the same workload under two worker limits, and prints/asserts the timing difference.",
+   "answer": "```python\nimport asyncio\nimport time\n\nimport dspy\n\n\ndef sleeper(delay):\n    time.sleep(delay)\n    return 42\n\n\nasync_sleeper = dspy.asyncify(sleeper)\n\n\nasync def timed_run(workers, tasks, delay):\n    with dspy.context(async_max_workers=workers):\n        start = time.perf_counter()\n        results = await asyncio.gather(*[async_sleeper(delay) for _ in range(tasks)])\n        elapsed = time.perf_counter() - start\n    return results, elapsed\n\n\nasync def main():\n    slow_results, slow_elapsed = await timed_run(1, 4, 0.2)\n    fast_results, fast_elapsed = await timed_run(4, 4, 0.2)\n    print(\"serialish_elapsed:\", round(slow_elapsed, 2))\n    print(\"parallel_elapsed:\", round(fast_elapsed, 2))\n    assert slow_results == [42, 42, 42, 42]\n    assert fast_results == [42, 42, 42, 42]\n    assert fast_elapsed < slow_elapsed / 2\n\n\nasyncio.run(main())\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/utils/asyncify.py",
+     "symbol": "asyncify"
+    },
+    {
+     "file": "tests/utils/test_asyncify.py",
+     "symbol": "test_asyncify"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "source_index": 55,
+   "question": "I have several async tools and I need proof that calling them through DSPy from async code actually overlaps instead of queueing them one by one. This matters because a tool-heavy evaluation run becomes unusable if the calls serialize.\n\nGive me a complete, runnable Python program that stays offline, wraps one async tool with `dspy.Tool`, fires several async tool invocations with `asyncio.gather`, and prints/asserts both the returned values and a wall-clock bound proving concurrency.",
+   "answer": "```python\nimport asyncio\n\nimport dspy\n\n\nasync def async_echo(x: int, y: str = \"hello\") -> str:\n    await asyncio.sleep(0.1)\n    return f\"{y} {x}\"\n\n\ntool = dspy.Tool(async_echo)\n\n\nasync def main():\n    start = asyncio.get_event_loop().time()\n    results = await asyncio.gather(*[tool.acall(x=i, y=f\"hello{i}\") for i in range(5)])\n    elapsed = asyncio.get_event_loop().time() - start\n    print(\"results:\", results)\n    print(\"elapsed:\", round(elapsed, 3))\n    assert results == [f\"hello{i} {i}\" for i in range(5)]\n    assert elapsed < 0.3\n\n\nasyncio.run(main())\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/types/tool.py",
+     "symbol": "Tool.acall"
+    },
+    {
+     "file": "tests/adapters/test_tool.py",
+     "symbol": "test_async_concurrent_calls"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  }
+ ]
+}

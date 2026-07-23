@@ -1,0 +1,125 @@
+{
+ "id": "dspy_ba7672567747",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "My signature takes a Pydantic model that itself contains an image plus an optional list of more images. I do not want to assume this survives a predictor-state round-trip just because plain `dspy.Image` fields do.\n\nThe failure mode I care about is nested multimodal loss: if the inner model gets flattened incorrectly, the prompt will stop carrying the right number of image blocks even though the Python object still looks valid.\n\nGive me a complete, runnable Python program that uses `DummyLM`, round-trips a predictor with a demo built from a Pydantic model containing nested images, and proves the next LM call still contains all four expected image blocks.",
+ "gold_answer": "```python\nimport pydantic\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\ndef count_blocks(messages, kind):\n    total = 0\n    for m in messages:\n        c = m.get('content')\n        if isinstance(c, list):\n            total += sum(1 for b in c if isinstance(b, dict) and b.get('type') == kind)\n    return total\n\nclass ImageModel(pydantic.BaseModel):\n    image: dspy.Image\n    image_list: list[dspy.Image] | None = None\n    output: str\n\nclass Sig(dspy.Signature):\n    model_input: ImageModel = dspy.InputField()\n    output: str = dspy.OutputField()\n\nmodel_input = ImageModel(\n    image=dspy.Image('https://example.com/dog.jpg'),\n    image_list=[dspy.Image('https://example.com/cat.jpg')],\n    output='Multiple photos',\n)\np = dspy.Predict(Sig)\np.demos = [dspy.Example(model_input=model_input, output='Multiple photos')]\nstate = p.dump_state()\nq = dspy.Predict(Sig)\nq.load_state(state)\n\ndspy.configure(lm=DummyLM([{'output': 'Multiple photos'}]))\nout = q(model_input=model_input)\nmsgs = dspy.settings.lm.history[-1]['messages']\nassert out.output == 'Multiple photos'\nassert count_blocks(msgs, 'image_url') == 4\nassert '<DSPY_IMAGE_START>' not in str(msgs)\nprint(count_blocks(msgs, 'image_url'))\nprint(str(msgs))\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The program defines a Pydantic model as the signature input type, with a required `image: dspy.Image` field and an optional `image_list: list[dspy.Image] | None` field, and uses that model in a `dspy.Signature` input field.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "It creates a demo/example whose `model_input` is an instance of that Pydantic model containing one direct image plus one image in `image_list`, attaches that demo to a predictor, and round-trips the predictor through serialized state before the checked call.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "For the post-round-trip invocation, it configures a `DummyLM` to return the expected `output`, calls the reloaded predictor with `model_input`, and asserts the returned `output` is `\"Multiple photos\"`.",
+   "span_ids": [
+    "s7",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "It proves nested multimodal preservation by inspecting the LM call messages and counting `image_url` blocks in message content, asserting that the next call contains exactly 4 such blocks.",
+   "span_ids": [
+    "s6",
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "It also asserts that the emitted messages do not contain the `\"<DSPY_IMAGE_START>\"` marker, guarding against incorrect flattening of image inputs into placeholder text.",
+   "span_ids": [
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/predict.py",
+   "start_line": 71,
+   "end_line": 90,
+   "excerpt": "0071:     def dump_state(self, json_mode=True):\n0072:         state_keys = [\"traces\", \"train\"]\n0073:         state = {k: getattr(self, k) for k in state_keys}\n0074: \n0075:         state[\"demos\"] = []\n0076:         for demo in self.demos:\n0077:             demo = demo.copy()\n0078: \n0079:             for field in demo:\n0080:                 # FIXME: Saving BaseModels as strings in examples doesn't matter because you never re-access as an object\n0081:                 demo[field] = serialize_object(demo[field])\n0082: \n0083:             if isinstance(demo, dict) or not json_mode:\n0084:                 state[\"demos\"].append(demo)\n0085:             else:\n0086:                 state[\"demos\"].append(demo.toDict())\n0087: \n0088:         state[\"signature\"] = self.signature.dump_state()\n0089:         state[\"lm\"] = self.lm.dump_state() if self.lm else None\n0090:         return state"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/predict.py",
+   "start_line": 318,
+   "end_line": 334,
+   "excerpt": "0318: def serialize_object(obj):\n0319:     \"\"\"\n0320:     Recursively serialize a given object into a JSON-compatible format.\n0321:     Supports Pydantic models, lists, dicts, and primitive types.\n0322:     \"\"\"\n0323:     if isinstance(obj, BaseModel):\n0324:         # Use model_dump with mode=\"json\" to ensure all fields (including HttpUrl, datetime, etc.)\n0325:         # are converted to JSON-serializable types (strings)\n0326:         return obj.model_dump(mode=\"json\")\n0327:     elif isinstance(obj, list):\n0328:         return [serialize_object(item) for item in obj]\n0329:     elif isinstance(obj, tuple):\n0330:         return tuple(serialize_object(item) for item in obj)\n0331:     elif isinstance(obj, dict):\n0332:         return {key: serialize_object(value) for key, value in obj.items()}\n0333:     else:\n0334:         return obj"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/signatures/test_adapter_image.py",
+   "start_line": 291,
+   "end_line": 298,
+   "excerpt": "0291:     class ImageModel(pydantic.BaseModel):\n0292:         image: dspy.Image\n0293:         image_list: list[dspy.Image] | None = None\n0294:         output: str\n0295: \n0296:     class PydanticSignature(dspy.Signature):\n0297:         model_input: ImageModel = dspy.InputField()\n0298:         output: str = dspy.OutputField()"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/signatures/test_adapter_image.py",
+   "start_line": 301,
+   "end_line": 318,
+   "excerpt": "0301:     model_input = ImageModel(\n0302:         image=dspy.Image(\"https://example.com/dog.jpg\"),\n0303:         image_list=[dspy.Image(\"https://example.com/cat.jpg\")],\n0304:         output=\"Multiple photos\",\n0305:     )\n0306: \n0307:     # Create example and predictor\n0308:     examples = [dspy.Example(model_input=model_input, output=\"Multiple photos\").with_inputs(\"model_input\")]\n0309: \n0310:     predictor, lm = setup_predictor(PydanticSignature, {\"output\": \"Multiple photos\"})\n0311:     optimizer = dspy.teleprompt.LabeledFewShot(k=1)\n0312:     compiled_predictor = optimizer.compile(student=predictor, trainset=examples, sample=False)\n0313: \n0314:     # Test save and load\n0315:     with tempfile.NamedTemporaryFile(mode=\"w+\", delete=True, suffix=\".json\") as temp_file:\n0316:         compiled_predictor.save(temp_file.name)\n0317:         loaded_predictor = dspy.Predict(PydanticSignature)\n0318:         loaded_predictor.load(temp_file.name)"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/signatures/test_adapter_image.py",
+   "start_line": 320,
+   "end_line": 326,
+   "excerpt": "0320:     # Run prediction\n0321:     result = loaded_predictor(model_input=model_input)\n0322: \n0323:     # Verify output matches expected\n0324:     assert result.output == \"Multiple photos\"\n0325:     assert count_messages_with_image_url_pattern(lm.history[-1][\"messages\"]) == 4\n0326:     assert \"<DSPY_IMAGE_START>\" not in str(lm.history[-1][\"messages\"])"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/signatures/test_adapter_image.py",
+   "start_line": 40,
+   "end_line": 64,
+   "excerpt": "0040: def count_messages_with_image_url_pattern(messages):\n0041:     pattern = {\"type\": \"image_url\", \"image_url\": {\"url\": lambda x: isinstance(x, str)}}\n0042: \n0043:     try:\n0044: \n0045:         def check_pattern(obj, pattern):\n0046:             if isinstance(pattern, dict):\n0047:                 if not isinstance(obj, dict):\n0048:                     return False\n0049:                 return all(k in obj and check_pattern(obj[k], v) for k, v in pattern.items())\n0050:             if callable(pattern):\n0051:                 return pattern(obj)\n0052:             return obj == pattern\n0053: \n0054:         def count_patterns(obj, pattern):\n0055:             count = 0\n0056:             if check_pattern(obj, pattern):\n0057:                 count += 1\n0058:             if isinstance(obj, dict):\n0059:                 count += sum(count_patterns(v, pattern) for v in obj.values())\n0060:             if isinstance(obj, (list, tuple)):\n0061:                 count += sum(count_patterns(v, pattern) for v in obj)\n0062:             return count\n0063: \n0064:         return count_patterns(messages, pattern)"
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/signatures/test_adapter_image.py",
+   "start_line": 69,
+   "end_line": 73,
+   "excerpt": "0069: def setup_predictor(signature, expected_output):\n0070:     \"\"\"Helper to set up a predictor with DummyLM\"\"\"\n0071:     lm = DummyLM([expected_output])\n0072:     dspy.configure(lm=lm)\n0073:     return dspy.Predict(signature), lm"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Covers nested multimodal serialization inside a Pydantic wrapper, not just top-level image fields.",
+ "source_index": 50,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

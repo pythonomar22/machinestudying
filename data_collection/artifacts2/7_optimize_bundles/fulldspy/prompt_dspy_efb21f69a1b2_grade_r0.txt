@@ -1,0 +1,1081 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_efb21f69a1b2`
+- Label: `module_composition_and_runtime_interoperability`
+- Question: `I'm debugging history growth in a nested DSPy program and I want to know whether one LM call is copied into each module's history or whether ancestor modules share the same history entry object. I also need to confirm what `disable_history` actually stops.
+
+The concrete scenario is a parent `dspy.Module` that calls a `dspy.ChainOfThought` submodule, followed by a direct call to the submodule itself. Then I want to toggle history off and prove that no new entries are recorded anywhere.
+
+Give me a complete, runnable Python program that uses `DummyLM`, inspects parent and child histories, and proves the lengths plus object identity so the sharing and the disable toggle are both clear.`
+- Model answer:
+```python
+import dspy
+from dspy.utils.dummies import DummyLM
+
+class P(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.cot = dspy.ChainOfThought('question -> answer')
+    def forward(self, question: str):
+        return self.cot(question=question)
+
+lm = DummyLM([
+    {'reasoning': 'r1', 'answer': 'Paris'},
+    {'reasoning': 'r2', 'answer': 'Rome'},
+    {'reasoning': 'r3', 'answer': 'Berlin'},
+], adapter=dspy.JSONAdapter())
+prog = P()
+
+dspy.configure(lm=lm, adapter=dspy.JSONAdapter(), disable_history=False)
+prog(question='France?')
+prog.cot(question='Italy?')
+assert len(prog.history) == 1
+assert len(prog.cot.history) == 2
+assert len(prog.cot.predict.history) == 2
+assert id(prog.history[0]) == id(prog.cot.history[0])
+print('before:', len(prog.history), len(prog.cot.history), len(prog.cot.predict.history))
+
+dspy.configure(lm=lm, adapter=dspy.JSONAdapter(), disable_history=True)
+prog(question='Germany?')
+assert len(prog.history) == 1
+assert len(prog.cot.history) == 2
+assert len(prog.cot.predict.history) == 2
+print('after:', len(prog.history), len(prog.cot.history), len(prog.cot.predict.history))
+```
+
+## Gold answer
+```python
+import dspy
+from dspy.utils.dummies import DummyLM
+
+class P(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.cot = dspy.ChainOfThought('question -> answer')
+    def forward(self, question: str):
+        return self.cot(question=question)
+
+lm = DummyLM([
+    {'reasoning': 'r1', 'answer': 'Paris'},
+    {'reasoning': 'r2', 'answer': 'Rome'},
+    {'reasoning': 'r3', 'answer': 'Berlin'},
+], adapter=dspy.JSONAdapter())
+prog = P()
+
+dspy.configure(lm=lm, adapter=dspy.JSONAdapter(), disable_history=False)
+prog(question='France?')
+prog.cot(question='Italy?')
+assert len(prog.history) == 1
+assert len(prog.cot.history) == 2
+assert len(prog.cot.predict.history) == 2
+assert id(prog.history[0]) == id(prog.cot.history[0])
+print('before:', len(prog.history), len(prog.cot.history), len(prog.cot.predict.history))
+
+dspy.configure(lm=lm, adapter=dspy.JSONAdapter(), disable_history=True)
+prog(question='Germany?')
+assert len(prog.history) == 1
+assert len(prog.cot.history) == 2
+assert len(prog.cot.predict.history) == 2
+print('after:', len(prog.history), len(prog.cot.history), len(prog.cot.predict.history))
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 35,
+    "statement": "After one call through the parent module and then one direct call to the `ChainOfThought` submodule, the program shows `parent.history` has length 1 while both the submodule history and its underlying predictor history have length 2.",
+    "span_ids": [
+      "s1"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 30,
+    "statement": "The history item created by the parent-triggered LM call is the same shared object in ancestor and child module histories, which can be proven with object identity rather than just equal contents.",
+    "span_ids": [
+      "s2",
+      "s4"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "With `disable_history=True`, a subsequent LM call does not append any new history entry anywhere, so the parent, submodule, and predictor history lengths all remain unchanged.",
+    "span_ids": [
+      "s3",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "supporting",
+    "weight": 10,
+    "statement": "A correct runnable example configures DSPy with a `DummyLM` and `JSONAdapter`, defines a parent `dspy.Module` whose `forward` delegates to a `ChainOfThought` child, and invokes both the parent and the child directly to exercise the history behavior.",
+    "span_ids": [
+      "s1"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "tests/primitives/test_base_module.py",
+    "start_line": 391,
+    "end_line": 417,
+    "excerpt": "0391: def test_module_history():\n0392:     class MyProgram(dspy.Module):\n0393:         def __init__(self, **kwargs):\n0394:             super().__init__(**kwargs)\n0395:             self.cot = dspy.ChainOfThought(\"question -> answer\")\n0396: \n0397:         def forward(self, question: str, **kwargs) -> Prediction:\n0398:             return self.cot(question=question)\n0399: \n0400:     with patch(\"litellm.completion\") as mock_completion:\n0401:         mock_completion.return_value = ModelResponse(\n0402:             choices=[\n0403:                 Choices(message=Message(content=\"{'reasoning': 'Paris is the capital of France', 'answer': 'Paris'}\"))\n0404:             ],\n0405:             model=\"openai/gpt-4o-mini\",\n0406:         )\n0407:         dspy.configure(lm=dspy.LM(\"openai/gpt-4o-mini\", cache=False), adapter=dspy.JSONAdapter())\n0408:         program = MyProgram()\n0409:         program(question=\"What is the capital of France?\")\n0410: \n0411:         # Second call only call the submodule.\n0412:         program.cot(question=\"What is the capital of France?\")\n0413: \n0414:         # The LM history entity exists in all the ancestor callers.\n0415:         assert len(program.history) == 1\n0416:         assert len(program.cot.history) == 2\n0417:         assert len(program.cot.predict.history) == 2"
+  },
+  {
+    "span_id": "s2",
+    "path": "tests/primitives/test_base_module.py",
+    "start_line": 419,
+    "end_line": 420,
+    "excerpt": "0419:         # The same history entity is shared across all the ancestor callers to reduce memory usage.\n0420:         assert id(program.history[0]) == id(program.cot.history[0])"
+  },
+  {
+    "span_id": "s3",
+    "path": "tests/primitives/test_base_module.py",
+    "start_line": 424,
+    "end_line": 430,
+    "excerpt": "0424:         dspy.configure(disable_history=True)\n0425: \n0426:         program(question=\"What is the capital of France?\")\n0427:         # No history is recorded when history is disabled.\n0428:         assert len(program.history) == 1\n0429:         assert len(program.cot.history) == 2\n0430:         assert len(program.cot.predict.history) == 2"
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/clients/base_lm.py",
+    "start_line": 241,
+    "end_line": 246,
+    "excerpt": "0241:         # Per-module history\n0242:         caller_modules = settings.caller_modules or []\n0243:         for module in caller_modules:\n0244:             if len(module.history) >= settings.max_history_size:\n0245:                 module.history.pop(0)\n0246:             module.history.append(entry)"
+  },
+  {
+    "span_id": "s5",
+    "path": "dspy/clients/base_lm.py",
+    "start_line": 98,
+    "end_line": 100,
+    "excerpt": "0098:         if settings.disable_history:\n0099:             return outputs\n0100: "
+  }
+]
+
+## Whole evidence files
+### tests/primitives/test_base_module.py
+0001: import asyncio
+0002: import logging
+0003: import os
+0004: import threading
+0005: from unittest.mock import patch
+0006: 
+0007: import pytest
+0008: from litellm import Choices, Message, ModelResponse
+0009: from litellm.types.utils import Usage
+0010: 
+0011: import dspy
+0012: from dspy.primitives.prediction import Prediction
+0013: from dspy.utils.dummies import DummyLM
+0014: 
+0015: 
+0016: def test_deepcopy_basic():
+0017:     signature = dspy.Signature("q -> a")
+0018:     cot = dspy.ChainOfThought(signature)
+0019:     cot_copy = cot.deepcopy()
+0020:     assert len(cot.parameters()) == len(cot_copy.parameters())
+0021:     # Parameters should be different objects with the same values.
+0022:     assert id(cot.parameters()[0]) != id(cot_copy.parameters()[0])
+0023:     assert cot.parameters()[0].__dict__ == cot_copy.parameters()[0].__dict__
+0024: 
+0025: 
+0026: def test_deepcopy_with_uncopyable_modules():
+0027:     class CustomClass(dspy.Module):
+0028:         def __init__(self):
+0029:             self.lock = threading.Lock()  # Non-copyable object.
+0030:             self.cot = dspy.ChainOfThought(dspy.Signature("q -> a"))
+0031: 
+0032:     model = CustomClass()
+0033:     model_copy = model.deepcopy()
+0034:     assert len(model.parameters()) == len(model_copy.parameters())
+0035:     # The lock should be refer to the same object (shallow copy).
+0036:     assert id(model.lock) == id(model_copy.lock)
+0037:     # Parameters should be different objects with the same values.
+0038:     assert id(model.parameters()[0]) != id(model_copy.parameters()[0])
+0039:     assert model.parameters()[0].__dict__ == model_copy.parameters()[0].__dict__
+0040: 
+0041: 
+0042: def test_deepcopy_with_nested_modules():
+0043:     class CustomClass1(dspy.Module):
+0044:         def __init__(self):
+0045:             self.lock = threading.Lock()  # Non-copyable object.
+0046:             self.cot = dspy.ChainOfThought(dspy.Signature("q -> a"))
+0047: 
+0048:     class CustomClass2(dspy.Module):
+0049:         def __init__(self):
+0050:             self.submodel = CustomClass1()
+0051: 
+0052:     model = CustomClass2()
+0053:     model_copy = model.deepcopy()
+0054:     assert len(model.parameters()) == len(model_copy.parameters())
+0055:     # The lock should be refer to the same object (shallow copy).
+0056:     assert id(model.submodel.lock) == id(model_copy.submodel.lock)
+0057:     # Parameters should be different objects with the same values.
+0058:     assert id(model.parameters()[0]) != id(model_copy.parameters()[0])
+0059:     assert model.parameters()[0].__dict__ == model_copy.parameters()[0].__dict__
+0060: 
+0061: 
+0062: def test_save_and_load_with_json(tmp_path):
+0063:     model = dspy.ChainOfThought(dspy.Signature("q -> a"))
+0064:     model.predict.signature = model.predict.signature.with_instructions("You are a helpful assistant.")
+0065:     model.predict.demos = [
+0066:         dspy.Example(q="What is the capital of France?", a="Paris", reasoning="n/a").with_inputs("q"),
+0067:         # Nested example
+0068:         dspy.Example(
+0069:             q=[
+0070:                 dspy.Example(q="What is the capital of France?"),
+0071:                 dspy.Example(q="What is actually the capital of France?"),
+0072:             ],
+0073:             a="Paris",
+0074:             reasoning="n/a",
+0075:         ).with_inputs("q"),
+0076:     ]
+0077:     save_path = tmp_path / "model.json"
+0078:     model.save(save_path)
+0079:     new_model = dspy.ChainOfThought(dspy.Signature("q -> a"))
+0080:     new_model.load(save_path)
+0081: 
+0082:     assert str(new_model.predict.signature) == str(model.predict.signature)
+0083:     assert new_model.predict.demos[0] == model.predict.demos[0].toDict()
+0084:     assert new_model.predict.demos[1] == model.predict.demos[1].toDict()
+0085: 
+0086: 
+0087: @pytest.mark.extra
+0088: def test_save_and_load_with_pkl(tmp_path):
+0089:     import datetime
+0090: 
+0091:     # `datetime.date` is not json serializable, so we need to save with pickle.
+0092:     class MySignature(dspy.Signature):
+0093:         """Just a custom signature."""
+0094: 
+0095:         current_date: datetime.date = dspy.InputField()
+0096:         target_date: datetime.date = dspy.InputField()
+0097:         date_diff: int = dspy.OutputField(desc="The difference in days between the current_date and the target_date")
+0098: 
+0099:     trainset = [
+0100:         {"current_date": datetime.date(2024, 1, 1), "target_date": datetime.date(2024, 1, 2), "date_diff": 1},
+0101:         {"current_date": datetime.date(2024, 1, 1), "target_date": datetime.date(2024, 1, 3), "date_diff": 2},
+0102:         {"current_date": datetime.date(2024, 1, 1), "target_date": datetime.date(2024, 1, 4), "date_diff": 3},
+0103:         {"current_date": datetime.date(2024, 1, 1), "target_date": datetime.date(2024, 1, 5), "date_diff": 4},
+0104:         {"current_date": datetime.date(2024, 1, 1), "target_date": datetime.date(2024, 1, 6), "date_diff": 5},
+0105:     ]
+0106:     trainset = [dspy.Example(**example).with_inputs("current_date", "target_date") for example in trainset]
+0107: 
+0108:     dspy.configure(
+0109:         lm=DummyLM([{"date_diff": "1", "reasoning": "n/a"}, {"date_diff": "2", "reasoning": "n/a"}] * 10)
+0110:     )
+0111: 
+0112:     cot = dspy.ChainOfThought(MySignature)
+0113:     cot(current_date=datetime.date(2024, 1, 1), target_date=datetime.date(2024, 1, 2))
+0114: 
+0115:     def dummy_metric(example, pred, trace=None):
+0116:         return True
+0117: 
+0118:     optimizer = dspy.BootstrapFewShot(max_bootstrapped_demos=4, max_labeled_demos=4, max_rounds=5, metric=dummy_metric)
+0119:     compiled_cot = optimizer.compile(cot, trainset=trainset)
+0120:     compiled_cot.predict.signature = compiled_cot.predict.signature.with_instructions("You are a helpful assistant.")
+0121: 
+0122:     save_path = tmp_path / "program.pkl"
+0123:     compiled_cot.save(save_path)
+0124: 
+0125:     new_cot = dspy.ChainOfThought(MySignature)
+0126:     new_cot.load(save_path, allow_pickle=True)
+0127: 
+0128:     assert str(new_cot.predict.signature) == str(compiled_cot.predict.signature)
+0129:     assert new_cot.predict.demos == compiled_cot.predict.demos
+0130: 
+0131: 
+0132: def test_save_with_extra_modules(tmp_path):
+0133:     import sys
+0134: 
+0135:     # Create a temporary Python file with our custom module
+0136:     custom_module_path = tmp_path / "custom_module.py"
+0137:     with open(custom_module_path, "w") as f:
+0138:         f.write("""
+0139: import dspy
+0140: 
+0141: class MyModule(dspy.Module):
+0142:     def __init__(self):
+0143:         self.cot = dspy.ChainOfThought(dspy.Signature("q -> a"))
+0144: 
+0145:     def forward(self, q):
+0146:         return self.cot(q=q)
+0147: """)
+0148: 
+0149:     # Add the tmp_path to Python path so we can import the module
+0150:     sys.path.insert(0, str(tmp_path))
+0151:     try:
+0152:         import custom_module
+0153: 
+0154:         cot = custom_module.MyModule()
+0155: 
+0156:         cot.save(tmp_path, save_program=True)
+0157:         # Remove the custom module from sys.modules to simulate it not being available
+0158:         sys.modules.pop("custom_module", None)
+0159:         # Also remove it from sys.path
+0160:         sys.path.remove(str(tmp_path))
+0161:         del custom_module
+0162: 
+0163:         # Test the loading fails without using `modules_to_serialize`
+0164:         with pytest.raises(ModuleNotFoundError):
+0165:             dspy.load(tmp_path, allow_pickle=True)
+0166: 
+0167:         sys.path.insert(0, str(tmp_path))
+0168:         import custom_module
+0169: 
+0170:         cot.save(
+0171:             tmp_path,
+0172:             modules_to_serialize=[custom_module],
+0173:             save_program=True,
+0174:         )
+0175: 
+0176:         # Remove the custom module from sys.modules to simulate it not being available
+0177:         sys.modules.pop("custom_module", None)
+0178:         # Also remove it from sys.path
+0179:         sys.path.remove(str(tmp_path))
+0180:         del custom_module
+0181: 
+0182:         loaded_module = dspy.load(tmp_path, allow_pickle=True)
+0183:         assert loaded_module.cot.predict.signature == cot.cot.predict.signature
+0184: 
+0185:     finally:
+0186:         # Only need to clean up sys.path
+0187:         if str(tmp_path) in sys.path:
+0188:             sys.path.remove(str(tmp_path))
+0189: 
+0190: 
+0191: def test_load_with_version_mismatch(tmp_path):
+0192:     from dspy.primitives.base_module import logger
+0193: 
+0194:     # Mock versions during save
+0195:     save_versions = {"python": "3.9", "dspy": "2.4.0", "cloudpickle": "2.0"}
+0196: 
+0197:     # Mock versions during load
+0198:     load_versions = {"python": "3.10", "dspy": "2.5.0", "cloudpickle": "2.1"}
+0199: 
+0200:     predict = dspy.Predict("question->answer")
+0201: 
+0202:     # Create a custom handler to capture log messages
+0203:     class ListHandler(logging.Handler):
+0204:         def __init__(self):
+0205:             super().__init__()
+0206:             self.messages = []
+0207: 
+0208:         def emit(self, record):
+0209:             self.messages.append(record.getMessage())
+0210: 
+0211:     # Add handler and set level
+0212:     handler = ListHandler()
+0213:     original_level = logger.level
+0214:     logger.addHandler(handler)
+0215:     logger.setLevel(logging.WARNING)
+0216: 
+0217:     try:
+0218:         save_path = tmp_path / "program.pkl"
+0219:         # Mock version during save
+0220:         with patch("dspy.primitives.base_module.get_dependency_versions", return_value=save_versions):
+0221:             predict.save(save_path)
+0222: 
+0223:         # Mock version during load
+0224:         with patch("dspy.primitives.base_module.get_dependency_versions", return_value=load_versions):
+0225:             loaded_predict = dspy.Predict("question->answer")
+0226:             loaded_predict.load(save_path, allow_pickle=True)
+0227: 
+0228:         # Assert warnings were logged: 1 for pickle loading + 3 for version mismatches
+0229:         assert len(handler.messages) == 4
+0230: 
+0231:         # First message is about pickle loading
+0232:         assert ".pkl" in handler.messages[0]
+0233: 
+0234:         # Rest are version mismatch warnings
+0235:         for msg in handler.messages[1:]:
+0236:             assert "There is a mismatch of" in msg
+0237: 
+0238:         # Verify the model still loads correctly despite version mismatches
+0239:         assert isinstance(loaded_predict, dspy.Predict)
+0240:         assert str(predict.signature) == str(loaded_predict.signature)
+0241: 
+0242:     finally:
+0243:         # Clean up: restore original level and remove handler
+0244:         logger.setLevel(original_level)
+0245:         logger.removeHandler(handler)
+0246: 
+0247: 
+0248: @pytest.mark.llm_call
+0249: def test_single_module_call_with_usage_tracker(lm_for_test):
+0250:     dspy.configure(lm=dspy.LM(lm_for_test, cache=False, temperature=0.0), track_usage=True)
+0251: 
+0252:     predict = dspy.ChainOfThought("question -> answer")
+0253:     output = predict(question="What is the capital of France?")
+0254: 
+0255:     lm_usage = output.get_lm_usage()
+0256:     assert len(lm_usage) == 1
+0257:     assert lm_usage[lm_for_test]["prompt_tokens"] > 0
+0258:     assert lm_usage[lm_for_test]["completion_tokens"] > 0
+0259:     assert lm_usage[lm_for_test]["total_tokens"] > 0
+0260: 
+0261:     # Test no usage being tracked when cache is enabled
+0262:     dspy.configure(lm=dspy.LM(lm_for_test, cache=True, temperature=0.0), track_usage=True)
+0263:     for _ in range(2):
+0264:         output = predict(question="What is the capital of France?")
+0265: 
+0266:     assert len(output.get_lm_usage()) == 0
+0267: 
+0268: 
+0269: @pytest.mark.llm_call
+0270: def test_multi_module_call_with_usage_tracker(lm_for_test):
+0271:     dspy.configure(lm=dspy.LM(lm_for_test, cache=False, temperature=0.0), track_usage=True)
+0272: 
+0273:     class MyProgram(dspy.Module):
+0274:         def __init__(self):
+0275:             self.predict1 = dspy.ChainOfThought("question -> answer")
+0276:             self.predict2 = dspy.ChainOfThought("question, answer -> score")
+0277: 
+0278:         def __call__(self, question: str) -> Prediction:
+0279:             answer = self.predict1(question=question)
+0280:             score = self.predict2(question=question, answer=answer)
+0281:             return score
+0282: 
+0283:     program = MyProgram()
+0284:     output = program(question="What is the capital of France?")
+0285: 
+0286:     lm_usage = output.get_lm_usage()
+0287:     assert len(lm_usage) == 1
+0288:     assert lm_usage[lm_for_test]["prompt_tokens"] > 0
+0289:     assert lm_usage[lm_for_test]["prompt_tokens"] > 0
+0290:     assert lm_usage[lm_for_test]["completion_tokens"] > 0
+0291:     assert lm_usage[lm_for_test]["total_tokens"] > 0
+0292: 
+0293: 
+0294: # TODO: prepare second model for testing this unit test in ci
+0295: @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="Skip the test if OPENAI_API_KEY is not set.")
+0296: def test_usage_tracker_in_parallel():
+0297:     class MyProgram(dspy.Module):
+0298:         def __init__(self, lm):
+0299:             self.lm = lm
+0300:             self.predict1 = dspy.ChainOfThought("question -> answer")
+0301:             self.predict2 = dspy.ChainOfThought("question, answer -> score")
+0302: 
+0303:         def __call__(self, question: str) -> Prediction:
+0304:             with dspy.context(lm=self.lm):
+0305:                 answer = self.predict1(question=question)
+0306:                 score = self.predict2(question=question, answer=answer)
+0307:                 return score
+0308: 
+0309:     dspy.configure(track_usage=True)
+0310:     program1 = MyProgram(lm=dspy.LM("openai/gpt-4o-mini", cache=False))
+0311:     program2 = MyProgram(lm=dspy.LM("openai/gpt-3.5-turbo", cache=False))
+0312: 
+0313:     parallelizer = dspy.Parallel()
+0314: 
+0315:     results = parallelizer(
+0316:         [
+0317:             (program1, {"question": "What is the meaning of life?"}),
+0318:             (program2, {"question": "why did a chicken cross the kitchen?"}),
+0319:         ]
+0320:     )
+0321: 
+0322:     assert results[0].get_lm_usage() is not None
+0323:     assert results[1].get_lm_usage() is not None
+0324: 
+0325:     assert results[0].get_lm_usage().keys() == set(["openai/gpt-4o-mini"])
+0326:     assert results[1].get_lm_usage().keys() == set(["openai/gpt-3.5-turbo"])
+0327: 
+0328: 
+0329: @pytest.mark.asyncio
+0330: async def test_usage_tracker_async_parallel():
+0331:     program = dspy.Predict("question -> answer")
+0332: 
+0333:     with patch("litellm.acompletion") as mock_completion:
+0334:         mock_completion.return_value = ModelResponse(
+0335:             choices=[Choices(message=Message(content="{'answer': 'Paris'}"))],
+0336:             usage=Usage(
+0337:                 **{
+0338:                     "prompt_tokens": 1117,
+0339:                     "completion_tokens": 46,
+0340:                     "total_tokens": 1163,
+0341:                     "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 0},
+0342:                     "completion_tokens_details": {
+0343:                         "reasoning_tokens": 0,
+0344:                         "audio_tokens": 0,
+0345:                         "accepted_prediction_tokens": 0,
+0346:                         "rejected_prediction_tokens": 0,
+0347:                     },
+0348:                 },
+0349:             ),
+0350:             model="openai/gpt-4o-mini",
+0351:         )
+0352: 
+0353:         coroutines = [
+0354:             program.acall(question="What is the capital of France?"),
+0355:             program.acall(question="What is the capital of France?"),
+0356:             program.acall(question="What is the capital of France?"),
+0357:             program.acall(question="What is the capital of France?"),
+0358:         ]
+0359:         with dspy.context(
+0360:             lm=dspy.LM("openai/gpt-4o-mini", cache=False), track_usage=True, adapter=dspy.JSONAdapter()
+0361:         ):
+0362:             results = await asyncio.gather(*coroutines)
+0363: 
+0364:         assert results[0].get_lm_usage() is not None
+0365:         assert results[1].get_lm_usage() is not None
+0366: 
+0367:         lm_usage0 = results[0].get_lm_usage()["openai/gpt-4o-mini"]
+0368:         lm_usage1 = results[1].get_lm_usage()["openai/gpt-4o-mini"]
+0369:         assert lm_usage0["prompt_tokens"] == 1117
+0370:         assert lm_usage1["prompt_tokens"] == 1117
+0371:         assert lm_usage0["completion_tokens"] == 46
+0372:         assert lm_usage1["completion_tokens"] == 46
+0373:         assert lm_usage0["total_tokens"] == 1163
+0374:         assert lm_usage1["total_tokens"] == 1163
+0375: 
+0376: 
+0377: def test_usage_tracker_no_side_effect():
+0378:     class MyProgram(dspy.Module):
+0379:         def __init__(self):
+0380:             self.predict = dspy.Predict("question -> answer")
+0381: 
+0382:         def forward(self, question: str, **kwargs) -> str:
+0383:             return self.predict(question=question).answer
+0384: 
+0385:     program = MyProgram()
+0386:     with dspy.context(lm=DummyLM([{"answer": "Paris"}]), track_usage=True):
+0387:         result = program(question="What is the capital of France?")
+0388:     assert result == "Paris"
+0389: 
+0390: 
+0391: def test_module_history():
+0392:     class MyProgram(dspy.Module):
+0393:         def __init__(self, **kwargs):
+0394:             super().__init__(**kwargs)
+0395:             self.cot = dspy.ChainOfThought("question -> answer")
+0396: 
+0397:         def forward(self, question: str, **kwargs) -> Prediction:
+0398:             return self.cot(question=question)
+0399: 
+0400:     with patch("litellm.completion") as mock_completion:
+0401:         mock_completion.return_value = ModelResponse(
+0402:             choices=[
+0403:                 Choices(message=Message(content="{'reasoning': 'Paris is the capital of France', 'answer': 'Paris'}"))
+0404:             ],
+0405:             model="openai/gpt-4o-mini",
+0406:         )
+0407:         dspy.configure(lm=dspy.LM("openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter())
+0408:         program = MyProgram()
+0409:         program(question="What is the capital of France?")
+0410: 
+0411:         # Second call only call the submodule.
+0412:         program.cot(question="What is the capital of France?")
+0413: 
+0414:         # The LM history entity exists in all the ancestor callers.
+0415:         assert len(program.history) == 1
+0416:         assert len(program.cot.history) == 2
+0417:         assert len(program.cot.predict.history) == 2
+0418: 
+0419:         # The same history entity is shared across all the ancestor callers to reduce memory usage.
+0420:         assert id(program.history[0]) == id(program.cot.history[0])
+0421: 
+0422:         assert program.history[0]["outputs"] == ["{'reasoning': 'Paris is the capital of France', 'answer': 'Paris'}"]
+0423: 
+0424:         dspy.configure(disable_history=True)
+0425: 
+0426:         program(question="What is the capital of France?")
+0427:         # No history is recorded when history is disabled.
+0428:         assert len(program.history) == 1
+0429:         assert len(program.cot.history) == 2
+0430:         assert len(program.cot.predict.history) == 2
+0431: 
+0432:         dspy.configure(disable_history=False)
+0433: 
+0434:         program(question="What is the capital of France?")
+0435:         # History is recorded again when history is enabled.
+0436:         assert len(program.history) == 2
+0437:         assert len(program.cot.history) == 3
+0438:         assert len(program.cot.predict.history) == 3
+0439: 
+0440: 
+0441: def test_module_history_with_concurrency():
+0442:     class MyProgram(dspy.Module):
+0443:         def __init__(self):
+0444:             super().__init__()
+0445:             self.cot = dspy.ChainOfThought("question -> answer")
+0446: 
+0447:         def forward(self, question: str, **kwargs) -> Prediction:
+0448:             return self.cot(question=question)
+0449: 
+0450:     with patch("litellm.completion") as mock_completion:
+0451:         mock_completion.return_value = ModelResponse(
+0452:             choices=[Choices(message=Message(content="{'reasoning': 'N/A', 'answer': 'Holy crab!'}"))],
+0453:             model="openai/gpt-4o-mini",
+0454:         )
+0455:         dspy.configure(lm=dspy.LM("openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter())
+0456:         program = MyProgram()
+0457: 
+0458:         parallelizer = dspy.Parallel()
+0459: 
+0460:         parallelizer(
+0461:             [
+0462:                 (program, {"question": "What is the meaning of life?"}),
+0463:                 (program, {"question": "why did a chicken cross the kitchen?"}),
+0464:             ]
+0465:         )
+0466:         assert len(program.history) == 2
+0467:         assert len(program.cot.history) == 2
+0468:         assert len(program.cot.predict.history) == 2
+0469: 
+0470: 
+0471: @pytest.mark.asyncio
+0472: async def test_module_history_async():
+0473:     class MyProgram(dspy.Module):
+0474:         def __init__(self, **kwargs):
+0475:             super().__init__(**kwargs)
+0476:             self.cot = dspy.ChainOfThought("question -> answer")
+0477: 
+0478:         async def aforward(self, question: str, **kwargs) -> Prediction:
+0479:             return await self.cot.acall(question=question)
+0480: 
+0481:     with patch("litellm.acompletion") as mock_completion:
+0482:         mock_completion.return_value = ModelResponse(
+0483:             choices=[
+0484:                 Choices(message=Message(content="{'reasoning': 'Paris is the capital of France', 'answer': 'Paris'}"))
+0485:             ],
+0486:             model="openai/gpt-4o-mini",
+0487:         )
+0488:         program = MyProgram()
+0489:         with dspy.context(lm=dspy.LM("openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter()):
+0490:             await program.acall(question="What is the capital of France?")
+0491: 
+0492:             # Second call only call the submodule.
+0493:             await program.cot.acall(question="What is the capital of France?")
+0494: 
+0495:         # The LM history entity exists in all the ancestor callers.
+0496:         assert len(program.history) == 1
+0497:         assert len(program.cot.history) == 2
+0498:         assert len(program.cot.predict.history) == 2
+0499: 
+0500:         # The same history entity is shared across all the ancestor callers to reduce memory usage.
+0501:         assert id(program.history[0]) == id(program.cot.history[0])
+0502: 
+0503:         assert program.history[0]["outputs"] == ["{'reasoning': 'Paris is the capital of France', 'answer': 'Paris'}"]
+0504: 
+0505:         with dspy.context(
+0506:             disable_history=True, lm=dspy.LM("openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter()
+0507:         ):
+0508:             await program.acall(question="What is the capital of France?")
+0509: 
+0510:         # No history is recorded when history is disabled.
+0511:         assert len(program.history) == 1
+0512:         assert len(program.cot.history) == 2
+0513:         assert len(program.cot.predict.history) == 2
+0514: 
+0515:         with dspy.context(
+0516:             disable_history=False, lm=dspy.LM("openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter()
+0517:         ):
+0518:             await program.acall(question="What is the capital of France?")
+0519:         # History is recorded again when history is enabled.
+0520:         assert len(program.history) == 2
+0521:         assert len(program.cot.history) == 3
+0522:         assert len(program.cot.predict.history) == 3
+0523: 
+0524: 
+0525: def test_forward_direct_call_warning(capsys):
+0526:     class TestModule(dspy.Module):
+0527:         def forward(self, x):
+0528:             return x
+0529: 
+0530:     module = TestModule()
+0531:     module.forward("test")
+0532:     captured = capsys.readouterr()
+0533:     assert "directly is discouraged" in captured.err
+0534: 
+0535: 
+0536: def test_forward_through_call_no_warning(capsys):
+0537:     class TestModule(dspy.Module):
+0538:         def forward(self, x):
+0539:             return x
+0540: 
+0541:     module = TestModule()
+0542:     module(x="test")
+0543:     captured = capsys.readouterr()
+0544:     assert "directly is discouraged" not in captured.err
+
+### dspy/clients/base_lm.py
+0001: import datetime
+0002: import uuid
+0003: from typing import Any, TextIO
+0004: 
+0005: from dspy.dsp.utils import settings
+0006: from dspy.utils.callback import with_callbacks
+0007: from dspy.utils.inspect_history import pretty_print_history
+0008: 
+0009: MAX_HISTORY_SIZE = 10_000
+0010: GLOBAL_HISTORY = []
+0011: 
+0012: 
+0013: class BaseLM:
+0014:     """Base class for handling LLM calls.
+0015: 
+0016:     Most users can directly use the `dspy.LM` class, which is a subclass of `BaseLM`. Users can also implement their
+0017:     own subclasses of `BaseLM` to support custom LLM providers and inject custom logic. To do so, simply override the
+0018:     `forward` method and make sure the return format is identical to the
+0019:     [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object).
+0020: 
+0021:     Examples:
+0022: 
+0023:     ```python
+0024:     from openai import OpenAI
+0025: 
+0026:     import dspy
+0027: 
+0028: 
+0029:     class MyLM(dspy.BaseLM):
+0030:         @property
+0031:         def supports_function_calling(self) -> bool:
+0032:             return self.model.startswith("openai/gpt-4o")
+0033: 
+0034:         @property
+0035:         def supports_reasoning(self) -> bool:
+0036:             return self.model.startswith("anthropic/claude-3-7")
+0037: 
+0038:         @property
+0039:         def supports_response_schema(self) -> bool:
+0040:             return self.model.startswith("openai/gpt-4o")
+0041: 
+0042:         @property
+0043:         def supported_params(self) -> set[str]:
+0044:             if self.model.startswith("openai/gpt-4o"):
+0045:                 return {"response_format"}  # accepts response_format=...
+0046:             return set()
+0047: 
+0048:         def forward(self, prompt, messages=None, **kwargs):
+0049:             client = OpenAI()
+0050:             return client.chat.completions.create(
+0051:                 model=self.model,
+0052:                 messages=messages or [{"role": "user", "content": prompt}],
+0053:                 **self.kwargs,
+0054:             )
+0055: 
+0056: 
+0057:     lm = MyLM(model="gpt-4o-mini")
+0058:     dspy.configure(lm=lm)
+0059:     print(dspy.Predict("q->a")(q="Why did the chicken cross the kitchen?"))
+0060:     ```
+0061:     """
+0062: 
+0063:     def __init__(self, model, model_type="chat", temperature=0.0, max_tokens=1000, cache=True, **kwargs):
+0064:         self.model = model
+0065:         self.model_type = model_type
+0066:         self.cache = cache
+0067:         self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)
+0068:         self.history = []
+0069: 
+0070:     @property
+0071:     def supports_function_calling(self) -> bool:
+0072:         """Whether the model supports function calling (tool use)."""
+0073:         return False
+0074: 
+0075:     @property
+0076:     def supports_reasoning(self) -> bool:
+0077:         """Whether the model supports native reasoning (extended thinking)."""
+0078:         return False
+0079: 
+0080:     @property
+0081:     def supports_response_schema(self) -> bool:
+0082:         """Whether the model supports structured output via response schema."""
+0083:         return False
+0084: 
+0085:     @property
+0086:     def supported_params(self) -> set[str]:
+0087:         """Set of supported OpenAI-style parameter names for the model."""
+0088:         return set()
+0089: 
+0090:     def _process_lm_response(self, response, prompt, messages, **kwargs):
+0091:         merged_kwargs = {**self.kwargs, **kwargs}
+0092: 
+0093:         if self.model_type == "responses":
+0094:             outputs = self._process_response(response)
+0095:         else:
+0096:             outputs = self._process_completion(response, merged_kwargs)
+0097: 
+0098:         if settings.disable_history:
+0099:             return outputs
+0100: 
+0101:         # Logging, with removed api key & where `cost` is None on cache hit.
+0102:         kwargs = {k: v for k, v in kwargs.items() if not k.startswith("api_")}
+0103:         entry = {
+0104:             "prompt": prompt,
+0105:             "messages": messages,
+0106:             "kwargs": kwargs,
+0107:             "response": response,
+0108:             "outputs": outputs,
+0109:             "usage": dict(response.usage),
+0110:             "cost": getattr(response, "_hidden_params", {}).get("response_cost"),
+0111:             "timestamp": datetime.datetime.now().isoformat(),
+0112:             "uuid": str(uuid.uuid4()),
+0113:             "model": self.model,
+0114:             "response_model": response.model,
+0115:             "model_type": self.model_type,
+0116:         }
+0117: 
+0118:         self.update_history(entry)
+0119: 
+0120:         return outputs
+0121: 
+0122:     @with_callbacks
+0123:     def __call__(
+0124:         self,
+0125:         prompt: str | None = None,
+0126:         messages: list[dict[str, Any]] | None = None,
+0127:         **kwargs
+0128:     ) -> list[dict[str, Any] | str]:
+0129:         response = self.forward(prompt=prompt, messages=messages, **kwargs)
+0130:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
+0131: 
+0132:         return outputs
+0133: 
+0134:     @with_callbacks
+0135:     async def acall(
+0136:         self,
+0137:         prompt: str | None = None,
+0138:         messages: list[dict[str, Any]] | None = None,
+0139:         **kwargs
+0140:     ) -> list[dict[str, Any] | str]:
+0141:         response = await self.aforward(prompt=prompt, messages=messages, **kwargs)
+0142:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
+0143:         return outputs
+0144: 
+0145:     def forward(
+0146:         self,
+0147:         prompt: str | None = None,
+0148:         messages: list[dict[str, Any]] | None = None,
+0149:         **kwargs
+0150:     ):
+0151:         """Forward pass for the language model.
+0152: 
+0153:         Subclasses must implement this method, and the response should be identical to either of the following formats:
+0154: 
+0155:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+0156:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+0157:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
+0158: 
+0159:         Raises:
+0160:             dspy.ContextWindowExceededError: When the request fails because the
+0161:                 input exceeds the model's context window. DSPy adapters and
+0162:                 modules rely on this error to trigger fallback behavior (e.g.
+0163:                 truncating the prompt and retrying). Each subclass is
+0164:                 responsible for catching its provider's native error and
+0165:                 re-raising it as `dspy.ContextWindowExceededError`.
+0166:         """
+0167:         raise NotImplementedError("Subclasses must implement this method.")
+0168: 
+0169:     async def aforward(
+0170:         self,
+0171:         prompt: str | None = None,
+0172:         messages: list[dict[str, Any]] | None = None,
+0173:         **kwargs
+0174:     ):
+0175:         """Async forward pass for the language model.
+0176: 
+0177:         Subclasses must implement this method, and the response should be identical to either of the following formats:
+0178: 
+0179:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+0180:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+0181:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
+0182: 
+0183:         Raises:
+0184:             dspy.ContextWindowExceededError: When the request fails because the
+0185:                 input exceeds the model's context window. DSPy adapters and
+0186:                 modules rely on this error to trigger fallback behavior (e.g.
+0187:                 truncating the prompt and retrying). Each subclass is
+0188:                 responsible for catching its provider's native error and
+0189:                 re-raising it as `dspy.ContextWindowExceededError`.
+0190:         """
+0191:         raise NotImplementedError("Subclasses must implement this method.")
+0192: 
+0193:     def copy(self, **kwargs):
+0194:         """Returns a copy of the language model with possibly updated parameters.
+0195: 
+0196:         Any provided keyword arguments update the corresponding attributes or LM kwargs of
+0197:         the copy. For example, ``lm.copy(rollout_id=1, temperature=1.0)`` returns an LM whose
+0198:         requests use a different rollout ID at non-zero temperature to bypass cache collisions.
+0199:         """
+0200: 
+0201:         import copy
+0202: 
+0203:         new_instance = copy.deepcopy(self)
+0204:         new_instance.history = []
+0205: 
+0206:         for key, value in kwargs.items():
+0207:             if hasattr(self, key):
+0208:                 setattr(new_instance, key, value)
+0209:             if (key in self.kwargs) or (not hasattr(self, key)):
+0210:                 if value is None:
+0211:                     new_instance.kwargs.pop(key, None)
+0212:                 else:
+0213:                     new_instance.kwargs[key] = value
+0214:         if hasattr(new_instance, "_warned_zero_temp_rollout"):
+0215:             new_instance._warned_zero_temp_rollout = False
+0216: 
+0217:         return new_instance
+0218: 
+0219:     def inspect_history(self, n: int = 1, file: "TextIO | None" = None) -> None:
+0220:         pretty_print_history(self.history, n, file=file)
+0221: 
+0222:     def update_history(self, entry):
+0223:         if settings.disable_history:
+0224:             return
+0225: 
+0226:         # Global LM history
+0227:         if len(GLOBAL_HISTORY) >= MAX_HISTORY_SIZE:
+0228:             GLOBAL_HISTORY.pop(0)
+0229: 
+0230:         GLOBAL_HISTORY.append(entry)
+0231: 
+0232:         if settings.max_history_size == 0:
+0233:             return
+0234: 
+0235:         # dspy.LM.history
+0236:         if len(self.history) >= settings.max_history_size:
+0237:             self.history.pop(0)
+0238: 
+0239:         self.history.append(entry)
+0240: 
+0241:         # Per-module history
+0242:         caller_modules = settings.caller_modules or []
+0243:         for module in caller_modules:
+0244:             if len(module.history) >= settings.max_history_size:
+0245:                 module.history.pop(0)
+0246:             module.history.append(entry)
+0247: 
+0248:     def _process_completion(self, response, merged_kwargs):
+0249:         """Process the response of OpenAI chat completion API and extract outputs.
+0250: 
+0251:         Args:
+0252:             response: The OpenAI chat completion response
+0253:                 https://platform.openai.com/docs/api-reference/chat/object
+0254:             merged_kwargs: Merged kwargs from self.kwargs and method kwargs
+0255: 
+0256:         Returns:
+0257:             List of processed outputs
+0258:         """
+0259:         outputs = []
+0260:         for c in response.choices:
+0261:             output = {}
+0262:             output["text"] = c.message.content if hasattr(c, "message") else c["text"]
+0263: 
+0264:             if hasattr(c, "message") and hasattr(c.message, "reasoning_content") and c.message.reasoning_content:
+0265:                 output["reasoning_content"] = c.message.reasoning_content
+0266: 
+0267:             if merged_kwargs.get("logprobs"):
+0268:                 output["logprobs"] = c.logprobs if hasattr(c, "logprobs") else c["logprobs"]
+0269:             if hasattr(c, "message") and getattr(c.message, "tool_calls", None):
+0270:                 output["tool_calls"] = c.message.tool_calls
+0271: 
+0272:             # Extract citations from LiteLLM response if available
+0273:             citations = self._extract_citations_from_response(c)
+0274:             if citations:
+0275:                 output["citations"] = citations
+0276: 
+0277:             outputs.append(output)
+0278: 
+0279:         if all(len(output) == 1 for output in outputs):
+0280:             # Return a list if every output only has "text" key
+0281:             outputs = [output["text"] for output in outputs]
+0282:         return outputs
+0283: 
+0284:     def _extract_citations_from_response(self, choice):
+0285:         """Extract citations from LiteLLM response if available.
+0286:         Reference: https://docs.litellm.ai/docs/providers/anthropic#beta-citations-api
+0287: 
+0288:         Args:
+0289:             choice: The choice object from response.choices
+0290: 
+0291:         Returns:
+0292:             A list of citation dictionaries or None if no citations found
+0293:         """
+0294:         try:
+0295:             # Check for citations in LiteLLM provider_specific_fields
+0296:             citations_data = choice.message.provider_specific_fields.get("citations")
+0297:             if isinstance(citations_data, list):
+0298:                 return [citation for citations in citations_data for citation in citations]
+0299:         except Exception:
+0300:             return None
+0301: 
+0302:     def _process_response(self, response):
+0303:         """Process the response of OpenAI Response API and extract outputs.
+0304: 
+0305:         Args:
+0306:             response: OpenAI Response API response
+0307:                 https://platform.openai.com/docs/api-reference/responses/object
+0308: 
+0309:         Returns:
+0310:             List of processed outputs, which is always of size 1 because the Response API only supports one output.
+0311:         """
+0312:         text_outputs = []
+0313:         tool_calls = []
+0314:         reasoning_contents = []
+0315: 
+0316:         for output_item in response.output:
+0317:             output_item_type = output_item.type
+0318:             if output_item_type == "message":
+0319:                 for content_item in output_item.content:
+0320:                     text_outputs.append(content_item.text)
+0321:             elif output_item_type == "function_call":
+0322:                 tool_calls.append(output_item.model_dump())
+0323:             elif output_item_type == "reasoning":
+0324:                 if getattr(output_item, "content", None) and len(output_item.content) > 0:
+0325:                     for content_item in output_item.content:
+0326:                         reasoning_contents.append(content_item.text)
+0327:                 elif getattr(output_item, "summary", None) and len(output_item.summary) > 0:
+0328:                     for summary_item in output_item.summary:
+0329:                         reasoning_contents.append(summary_item.text)
+0330: 
+0331:         result = {}
+0332:         if len(text_outputs) > 0:
+0333:             result["text"] = "".join(text_outputs)
+0334:         if len(tool_calls) > 0:
+0335:             result["tool_calls"] = tool_calls
+0336:         if len(reasoning_contents) > 0:
+0337:             result["reasoning_content"] = "".join(reasoning_contents)
+0338:         # All `response.output` items map to one answer, so we return a list of size 1.
+0339:         return [result]
+0340: 
+0341: 
+0342: def inspect_history(n: int = 1, file: "TextIO | None" = None) -> None:
+0343:     """The global history shared across all LMs.
+0344: 
+0345:     Args:
+0346:         n: Number of recent entries to display. Defaults to 1.
+0347:         file: An optional file-like object to write output to. When
+0348:             provided, ANSI color codes are automatically disabled.
+0349:             Defaults to `None` (prints to stdout).
+0350:     """
+0351:     pretty_print_history(GLOBAL_HISTORY, n, file=file)
+
+Return JSON that matches the schema exactly.

@@ -1,0 +1,408 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_bb6058b8c688`
+- Label: `prompt_compilation_customization_and_inspection`
+- Question: `I am auditing `dspy.ReAct`, and I do not just care about the tool-selection prompt. I also need to know what prompt DSPy uses for the final answer-extraction step after the agent decides it is done, because I do not want the tool catalog duplicated there.
+
+Please keep it offline and deterministic. I want one small run that finishes immediately, then shows me both recorded system messages so the split between the planning step and the extraction step is undeniable.
+
+Give me a complete, runnable Python program that runs offline with `DummyLM`, prints the first and second system messages from a `dspy.ReAct` call, and asserts that the first prompt contains the tool-planning text while the second prompt falls back to the original task without the tool catalog.`
+- Model answer:
+```python
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+def lookup(city: str) -> str:
+    """Look up a city."""
+    return "Paris"
+
+
+lm = DummyLM(
+    [
+        {"next_thought": "I already know the answer.", "next_tool_name": "finish", "next_tool_args": {}},
+        {"reasoning": "No tool call was needed.", "answer": "Paris"},
+    ]
+)
+
+with dspy.context(lm=lm):
+    agent = dspy.ReAct("question -> answer", tools=[lookup])
+    result = agent(question="What is the capital of France?")
+
+first_system = lm.history[0]["messages"][0]["content"]
+second_system = lm.history[1]["messages"][0]["content"]
+
+print(first_system)
+print("---")
+print(second_system)
+
+assert result.answer == "Paris"
+assert "lookup" in first_system
+assert "next_tool_name" in first_system
+assert "lookup" not in second_system
+assert "next_tool_name" not in second_system
+assert "Given the fields `question`, produce the fields `answer`." in second_system
+```
+
+## Gold answer
+```python
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+def lookup(city: str) -> str:
+    """Look up a city."""
+    return "Paris"
+
+
+lm = DummyLM(
+    [
+        {"next_thought": "I already know the answer.", "next_tool_name": "finish", "next_tool_args": {}},
+        {"reasoning": "No tool call was needed.", "answer": "Paris"},
+    ]
+)
+
+with dspy.context(lm=lm):
+    agent = dspy.ReAct("question -> answer", tools=[lookup])
+    result = agent(question="What is the capital of France?")
+
+first_system = lm.history[0]["messages"][0]["content"]
+second_system = lm.history[1]["messages"][0]["content"]
+
+print(first_system)
+print("---")
+print(second_system)
+
+assert result.answer == "Paris"
+assert "lookup" in first_system
+assert "next_tool_name" in first_system
+assert "lookup" not in second_system
+assert "next_tool_name" not in second_system
+assert "Given the fields `question`, produce the fields `answer`." in second_system
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 30,
+    "statement": "Identifies the first recorded system prompt as the `self.react` prompt built from agent-style instructions that mention the task inputs/outputs, enumerate the available tools (plus `finish`), and require `next_thought`, `next_tool_name`, and `next_tool_args` outputs.",
+    "span_ids": [
+      "s1"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "Identifies the second recorded system prompt as a separate extraction prompt because `ReAct` creates a `fallback_signature` with only the original signature's input/output fields and `signature.instructions`, then wraps it in `dspy.ChainOfThought` as `self.extract`.",
+    "span_ids": [
+      "s2"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "Shows an immediate-completion run where the first planning step selects `finish`, since `forward` breaks as soon as `next_tool_name == \"finish\"` and then calls `self.extract`, yielding one planning LM call followed by one extraction LM call.",
+    "span_ids": [
+      "s1",
+      "s3"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "supporting",
+    "weight": 20,
+    "statement": "Checks the two printed system prompts accordingly: the first contains tool-planning markers such as the tool catalog and/or `next_tool_name`, while the second omits that catalog and planning fields and falls back to the original task-only instruction.",
+    "span_ids": [
+      "s1",
+      "s2"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/predict/react.py",
+    "start_line": 47,
+    "end_line": 79,
+    "excerpt": "0047:         inputs = \", \".join([f\"`{k}`\" for k in signature.input_fields.keys()])\n0048:         outputs = \", \".join([f\"`{k}`\" for k in signature.output_fields.keys()])\n0049:         instr = [f\"{signature.instructions}\\n\"] if signature.instructions else []\n0050: \n0051:         instr.extend(\n0052:             [\n0053:                 f\"You are an Agent. In each episode, you will be given the fields {inputs} as input. And you can see your past trajectory so far.\",\n0054:                 f\"Your goal is to use one or more of the supplied tools to collect any necessary information for producing {outputs}.\\n\",\n0055:                 \"To do this, you will interleave next_thought, next_tool_name, and next_tool_args in each turn, and also when finishing the task.\",\n0056:                 \"After each tool call, you receive a resulting observation, which gets appended to your trajectory.\\n\",\n0057:                 \"When writing next_thought, you may reason about the current situation and plan for future steps.\",\n0058:                 \"When selecting the next_tool_name and its next_tool_args, the tool must be one of:\\n\",\n0059:             ]\n0060:         )\n0061: \n0062:         tools[\"finish\"] = Tool(\n0063:             func=lambda: \"Completed.\",\n0064:             name=\"finish\",\n0065:             desc=f\"Marks the task as complete. That is, signals that all information for producing the outputs, i.e. {outputs}, are now available to be extracted.\",\n0066:             args={},\n0067:         )\n0068: \n0069:         for idx, tool in enumerate(tools.values()):\n0070:             instr.append(f\"({idx + 1}) {tool}\")\n0071:         instr.append(\"When providing `next_tool_args`, the value inside the field must be in JSON format\")\n0072: \n0073:         react_signature = (\n0074:             dspy.Signature({**signature.input_fields}, \"\\n\".join(instr))\n0075:             .append(\"trajectory\", dspy.InputField(), type_=str)\n0076:             .append(\"next_thought\", dspy.OutputField(), type_=str)\n0077:             .append(\"next_tool_name\", dspy.OutputField(), type_=Literal[tuple(tools.keys())])\n0078:             .append(\"next_tool_args\", dspy.OutputField(), type_=dict[str, Any])\n0079:         )"
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/predict/react.py",
+    "start_line": 81,
+    "end_line": 88,
+    "excerpt": "0081:         fallback_signature = dspy.Signature(\n0082:             {**signature.input_fields, **signature.output_fields},\n0083:             signature.instructions,\n0084:         ).append(\"trajectory\", dspy.InputField(), type_=str)\n0085: \n0086:         self.tools = tools\n0087:         self.react = dspy.Predict(react_signature)\n0088:         self.extract = dspy.ChainOfThought(fallback_signature)"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/predict/react.py",
+    "start_line": 98,
+    "end_line": 118,
+    "excerpt": "0098:         for idx in range(max_iters):\n0099:             try:\n0100:                 pred = self._call_with_potential_trajectory_truncation(self.react, trajectory, **input_args)\n0101:             except ValueError as err:\n0102:                 logger.warning(f\"Ending the trajectory: Agent failed to select a valid tool: {_fmt_exc(err)}\")\n0103:                 break\n0104: \n0105:             trajectory[f\"thought_{idx}\"] = pred.next_thought\n0106:             trajectory[f\"tool_name_{idx}\"] = pred.next_tool_name\n0107:             trajectory[f\"tool_args_{idx}\"] = pred.next_tool_args\n0108: \n0109:             try:\n0110:                 trajectory[f\"observation_{idx}\"] = self.tools[pred.next_tool_name](**pred.next_tool_args)\n0111:             except Exception as err:\n0112:                 trajectory[f\"observation_{idx}\"] = f\"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}\"\n0113: \n0114:             if pred.next_tool_name == \"finish\":\n0115:                 break\n0116: \n0117:         extract = self._call_with_potential_trajectory_truncation(self.extract, trajectory, **input_args)\n0118:         return dspy.Prediction(trajectory=trajectory, **extract)"
+  }
+]
+
+## Whole evidence files
+### dspy/predict/react.py
+0001: import logging
+0002: from typing import TYPE_CHECKING, Any, Callable, Literal
+0003: 
+0004: import dspy
+0005: from dspy.adapters.types.tool import Tool
+0006: from dspy.primitives.module import Module
+0007: from dspy.signatures.signature import ensure_signature
+0008: from dspy.utils.exceptions import ContextWindowExceededError
+0009: 
+0010: logger = logging.getLogger(__name__)
+0011: 
+0012: if TYPE_CHECKING:
+0013:     from dspy.signatures.signature import Signature
+0014: 
+0015: 
+0016: class ReAct(Module):
+0017:     def __init__(self, signature: type["Signature"], tools: list[Callable], max_iters: int = 20):
+0018:         """
+0019:         ReAct stands for "Reasoning and Acting," a popular paradigm for building tool-using agents.
+0020:         In this approach, the language model is iteratively provided with a list of tools and has
+0021:         to reason about the current situation. The model decides whether to call a tool to gather more
+0022:         information or to finish the task based on its reasoning process. The DSPy version of ReAct is
+0023:         generalized to work over any signature, thanks to signature polymorphism.
+0024: 
+0025:         Args:
+0026:             signature: The signature of the module, which defines the input and output of the react module.
+0027:             tools (list[Callable]): A list of functions, callable objects, or `dspy.Tool` instances.
+0028:             max_iters (Optional[int]): The maximum number of iterations to run. Defaults to 10.
+0029: 
+0030:         Examples:
+0031: 
+0032:         ```python
+0033:         def get_weather(city: str) -> str:
+0034:             return f"The weather in {city} is sunny."
+0035: 
+0036:         react = dspy.ReAct(signature="question->answer", tools=[get_weather])
+0037:         pred = react(question="What is the weather in Tokyo?")
+0038:         ```
+0039:         """
+0040:         super().__init__()
+0041:         self.signature = signature = ensure_signature(signature)
+0042:         self.max_iters = max_iters
+0043: 
+0044:         tools = [t if isinstance(t, Tool) else Tool(t) for t in tools]
+0045:         tools = {tool.name: tool for tool in tools}
+0046: 
+0047:         inputs = ", ".join([f"`{k}`" for k in signature.input_fields.keys()])
+0048:         outputs = ", ".join([f"`{k}`" for k in signature.output_fields.keys()])
+0049:         instr = [f"{signature.instructions}\n"] if signature.instructions else []
+0050: 
+0051:         instr.extend(
+0052:             [
+0053:                 f"You are an Agent. In each episode, you will be given the fields {inputs} as input. And you can see your past trajectory so far.",
+0054:                 f"Your goal is to use one or more of the supplied tools to collect any necessary information for producing {outputs}.\n",
+0055:                 "To do this, you will interleave next_thought, next_tool_name, and next_tool_args in each turn, and also when finishing the task.",
+0056:                 "After each tool call, you receive a resulting observation, which gets appended to your trajectory.\n",
+0057:                 "When writing next_thought, you may reason about the current situation and plan for future steps.",
+0058:                 "When selecting the next_tool_name and its next_tool_args, the tool must be one of:\n",
+0059:             ]
+0060:         )
+0061: 
+0062:         tools["finish"] = Tool(
+0063:             func=lambda: "Completed.",
+0064:             name="finish",
+0065:             desc=f"Marks the task as complete. That is, signals that all information for producing the outputs, i.e. {outputs}, are now available to be extracted.",
+0066:             args={},
+0067:         )
+0068: 
+0069:         for idx, tool in enumerate(tools.values()):
+0070:             instr.append(f"({idx + 1}) {tool}")
+0071:         instr.append("When providing `next_tool_args`, the value inside the field must be in JSON format")
+0072: 
+0073:         react_signature = (
+0074:             dspy.Signature({**signature.input_fields}, "\n".join(instr))
+0075:             .append("trajectory", dspy.InputField(), type_=str)
+0076:             .append("next_thought", dspy.OutputField(), type_=str)
+0077:             .append("next_tool_name", dspy.OutputField(), type_=Literal[tuple(tools.keys())])
+0078:             .append("next_tool_args", dspy.OutputField(), type_=dict[str, Any])
+0079:         )
+0080: 
+0081:         fallback_signature = dspy.Signature(
+0082:             {**signature.input_fields, **signature.output_fields},
+0083:             signature.instructions,
+0084:         ).append("trajectory", dspy.InputField(), type_=str)
+0085: 
+0086:         self.tools = tools
+0087:         self.react = dspy.Predict(react_signature)
+0088:         self.extract = dspy.ChainOfThought(fallback_signature)
+0089: 
+0090:     def _format_trajectory(self, trajectory: dict[str, Any]):
+0091:         adapter = dspy.settings.adapter or dspy.ChatAdapter()
+0092:         trajectory_signature = dspy.Signature(f"{', '.join(trajectory.keys())} -> x")
+0093:         return adapter.format_user_message_content(trajectory_signature, trajectory)
+0094: 
+0095:     def forward(self, **input_args):
+0096:         trajectory = {}
+0097:         max_iters = input_args.pop("max_iters", self.max_iters)
+0098:         for idx in range(max_iters):
+0099:             try:
+0100:                 pred = self._call_with_potential_trajectory_truncation(self.react, trajectory, **input_args)
+0101:             except ValueError as err:
+0102:                 logger.warning(f"Ending the trajectory: Agent failed to select a valid tool: {_fmt_exc(err)}")
+0103:                 break
+0104: 
+0105:             trajectory[f"thought_{idx}"] = pred.next_thought
+0106:             trajectory[f"tool_name_{idx}"] = pred.next_tool_name
+0107:             trajectory[f"tool_args_{idx}"] = pred.next_tool_args
+0108: 
+0109:             try:
+0110:                 trajectory[f"observation_{idx}"] = self.tools[pred.next_tool_name](**pred.next_tool_args)
+0111:             except Exception as err:
+0112:                 trajectory[f"observation_{idx}"] = f"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}"
+0113: 
+0114:             if pred.next_tool_name == "finish":
+0115:                 break
+0116: 
+0117:         extract = self._call_with_potential_trajectory_truncation(self.extract, trajectory, **input_args)
+0118:         return dspy.Prediction(trajectory=trajectory, **extract)
+0119: 
+0120:     async def aforward(self, **input_args):
+0121:         trajectory = {}
+0122:         max_iters = input_args.pop("max_iters", self.max_iters)
+0123:         for idx in range(max_iters):
+0124:             try:
+0125:                 pred = await self._async_call_with_potential_trajectory_truncation(self.react, trajectory, **input_args)
+0126:             except ValueError as err:
+0127:                 logger.warning(f"Ending the trajectory: Agent failed to select a valid tool: {_fmt_exc(err)}")
+0128:                 break
+0129: 
+0130:             trajectory[f"thought_{idx}"] = pred.next_thought
+0131:             trajectory[f"tool_name_{idx}"] = pred.next_tool_name
+0132:             trajectory[f"tool_args_{idx}"] = pred.next_tool_args
+0133: 
+0134:             try:
+0135:                 trajectory[f"observation_{idx}"] = await self.tools[pred.next_tool_name].acall(**pred.next_tool_args)
+0136:             except Exception as err:
+0137:                 trajectory[f"observation_{idx}"] = f"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}"
+0138: 
+0139:             if pred.next_tool_name == "finish":
+0140:                 break
+0141: 
+0142:         extract = await self._async_call_with_potential_trajectory_truncation(self.extract, trajectory, **input_args)
+0143:         return dspy.Prediction(trajectory=trajectory, **extract)
+0144: 
+0145:     def _call_with_potential_trajectory_truncation(self, module, trajectory, **input_args):
+0146:         for _ in range(3):
+0147:             try:
+0148:                 return module(
+0149:                     **input_args,
+0150:                     trajectory=self._format_trajectory(trajectory),
+0151:                 )
+0152:             except ContextWindowExceededError:
+0153:                 logger.warning("Trajectory exceeded the context window, truncating the oldest tool call information.")
+0154:                 trajectory = self.truncate_trajectory(trajectory)
+0155:         raise ValueError("The context window was exceeded even after 3 attempts to truncate the trajectory.")
+0156: 
+0157:     async def _async_call_with_potential_trajectory_truncation(self, module, trajectory, **input_args):
+0158:         for _ in range(3):
+0159:             try:
+0160:                 return await module.acall(
+0161:                     **input_args,
+0162:                     trajectory=self._format_trajectory(trajectory),
+0163:                 )
+0164:             except ContextWindowExceededError:
+0165:                 logger.warning("Trajectory exceeded the context window, truncating the oldest tool call information.")
+0166:                 trajectory = self.truncate_trajectory(trajectory)
+0167:         raise ValueError("The context window was exceeded even after 3 attempts to truncate the trajectory.")
+0168: 
+0169:     def truncate_trajectory(self, trajectory):
+0170:         """Truncates the trajectory so that it fits in the context window.
+0171: 
+0172:         Users can override this method to implement their own truncation logic.
+0173:         """
+0174:         keys = list(trajectory.keys())
+0175:         if len(keys) < 4:
+0176:             # Every tool call has 4 keys: thought, tool_name, tool_args, and observation.
+0177:             raise ValueError(
+0178:                 "The trajectory is too long so your prompt exceeded the context window, but the trajectory cannot be "
+0179:                 "truncated because it only has one tool call."
+0180:             )
+0181: 
+0182:         for key in keys[:4]:
+0183:             trajectory.pop(key)
+0184: 
+0185:         return trajectory
+0186: 
+0187: 
+0188: def _fmt_exc(err: BaseException, *, limit: int = 5) -> str:
+0189:     """
+0190:     Return a one-string traceback summary.
+0191:     * `limit` - how many stack frames to keep (from the innermost outwards).
+0192:     """
+0193: 
+0194:     import traceback
+0195: 
+0196:     return "\n" + "".join(traceback.format_exception(type(err), err, err.__traceback__, limit=limit)).strip()
+0197: 
+0198: 
+0199: """
+0200: Thoughts and Planned Improvements for dspy.ReAct.
+0201: 
+0202: TOPIC 01: How Trajectories are Formatted, or rather when they are formatted.
+0203: 
+0204: Right now, both sub-modules are invoked with a `trajectory` argument, which is a string formatted in `forward`. Though
+0205: the formatter uses a general adapter.format_fields, the tracing of DSPy only sees the string, not the formatting logic.
+0206: 
+0207: What this means is that, in demonstrations, even if the user adjusts the adapter for a fixed program, the demos' format
+0208: will not update accordingly, but the inference-time trajectories will.
+0209: 
+0210: One way to fix this is to support `format=fn` in the dspy.InputField() for "trajectory" in the signatures. But this
+0211: means that care must be taken that the adapter is accessed at `forward` runtime, not signature definition time.
+0212: 
+0213: Another potential fix is to more natively support a "variadic" input field, where the input is a list of dictionaries,
+0214: or a big dictionary, and have each adapter format it accordingly.
+0215: 
+0216: Trajectories also affect meta-programming modules that view the trace later. It's inefficient O(n^2) to view the
+0217: trace of every module repeating the prefix.
+0218: 
+0219: 
+0220: TOPIC 03: Simplifying ReAct's __init__ by moving modular logic to the Tool class.
+0221:     * Handling exceptions and error messages.
+0222:     * More cleanly defining the "finish" tool, perhaps as a runtime-defined function?
+0223: 
+0224: 
+0225: TOPIC 04: Default behavior when the trajectory gets too long.
+0226: 
+0227: 
+0228: TOPIC 05: Adding more structure around how the instruction is formatted.
+0229:     * Concretely, it's now a string, so an optimizer can and does rewrite it freely.
+0230:     * An alternative would be to add more structure, such that a certain template is fixed but values are variable?
+0231: 
+0232: 
+0233: TOPIC 06: Idiomatically allowing tools that maintain state across iterations, but not across different `forward` calls.
+0234:     * So the tool would be newly initialized at the start of each `forward` call, but maintain state across iterations.
+0235:     * This is pretty useful for allowing the agent to keep notes or count certain things, etc.
+0236: """
+
+Return JSON that matches the schema exactly.

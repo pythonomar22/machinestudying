@@ -1,0 +1,132 @@
+{
+ "id": "dspy_fb29e63b0d82",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I'm building signatures from strings because parts of my program are generated at runtime, and I need to know exactly how DSPy resolves custom types from the caller's scope. Local aliases and dotted nested types seem to work, but an unqualified nested name does not.\n\nI want one self-contained repro that proves the success cases and the failure case side by side, because this directly affects how I generate runtime signatures.\n\nGive me a complete, runnable Python program that creates local and nested Pydantic types, builds string-based signatures from them, and proves which spellings resolve and which one raises an error.",
+ "gold_answer": "```python\nimport pydantic\nimport dspy\n\ndef build():\n    class LocalType(pydantic.BaseModel):\n        value: str\n    class Box:\n        class Inner(pydantic.BaseModel):\n            value: str\n    Alias = Box.Inner\n    a = dspy.Signature('input: LocalType -> output: LocalType')\n    b = dspy.Signature('input: Box.Inner -> output: Box.Inner')\n    c = dspy.Signature('input: Alias -> output: Alias')\n    try:\n        dspy.Signature('input: Inner -> output: Inner')\n    except ValueError as e:\n        err = str(e)\n    else:\n        raise AssertionError('expected failure for unqualified nested name')\n    return a, b, c, err, LocalType, Box, Alias\n\na, b, c, err, LocalType, Box, Alias = build()\nassert a.input_fields['input'].annotation is LocalType\nassert b.output_fields['output'].annotation is Box.Inner\nassert c.output_fields['output'].annotation is Alias\nprint(a.input_fields['input'].annotation)\nprint(b.output_fields['output'].annotation)\nprint(c.output_fields['output'].annotation)\nprint(err)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "A correct repro must rely on `dspy.Signature(\"...\")` auto-detecting custom types from the caller namespace when `custom_types` is omitted, so the custom classes or aliases need to be bound in the scope visible to the `Signature(...)` call.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "It must define a function-local `pydantic.BaseModel` and show that a simple local name like `LocalType` resolves in a string signature without explicit `custom_types`, with the resulting field annotation equal to that local class.",
+   "span_ids": [
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "It must define a nested `pydantic.BaseModel` inside another class and show that a dotted spelling like `Box.Inner` resolves to the nested class in the signature annotations.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "It must also bind an alias such as `Alias = Box.Inner` and show that the alias spelling resolves to the same nested class in the signature annotations.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "It must demonstrate that an unqualified nested name such as `Inner` does not resolve unless separately bound, and that `dspy.Signature(...)` raises `ValueError` for that case.",
+   "span_ids": [
+    "s3",
+    "s8"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 42,
+   "end_line": 50,
+   "excerpt": "0042:     def __call__(cls, *args, **kwargs):\n0043:         if cls is Signature:\n0044:             # We don't create an actual Signature instance, instead, we create a new Signature class.\n0045:             custom_types = kwargs.pop(\"custom_types\", None)\n0046: \n0047:             if custom_types is None and args and isinstance(args[0], str):\n0048:                 custom_types = cls._detect_custom_types_from_caller(args[0])\n0049: \n0050:             return make_signature(*args, custom_types=custom_types, **kwargs)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 100,
+   "end_line": 109,
+   "excerpt": "0100:             while frame and needed_types and frame_count < max_frames:\n0101:                 frame_count += 1\n0102: \n0103:                 for type_name in list(needed_types):\n0104:                     if type_name in frame.f_locals:\n0105:                         found_types[type_name] = frame.f_locals[type_name]\n0106:                         needed_types.remove(type_name)\n0107:                     elif frame.f_globals and type_name in frame.f_globals:\n0108:                         found_types[type_name] = frame.f_globals[type_name]\n0109:                         needed_types.remove(type_name)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 680,
+   "end_line": 702,
+   "excerpt": "0680:     def resolve_name(type_name: str):\n0681:         # Check if it's a built-in known type or in the provided names\n0682:         if type_name in names:\n0683:             return names[type_name]\n0684:         # Common built-in types\n0685:         builtin_types = [int, str, float, bool, list, tuple, dict, set, frozenset, complex, bytes, bytearray]\n0686: \n0687:         # Check if it matches any known built-in type by name\n0688:         for t in builtin_types:\n0689:             if t.__name__ == type_name:\n0690:                 return t\n0691: \n0692:         # Attempt to import a module with this name dynamically\n0693:         # This allows handling of module-based annotations like `dspy.Image`.\n0694:         try:\n0695:             mod = importlib.import_module(type_name)\n0696:             names[type_name] = mod\n0697:             return mod\n0698:         except ImportError:\n0699:             pass\n0700: \n0701:         # If we don't know the type or module, raise an error\n0702:         raise ValueError(f\"Unknown name: {type_name}\")"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 712,
+   "end_line": 727,
+   "excerpt": "0712:     if isinstance(node, ast.Name):\n0713:         return resolve_name(node.id)\n0714: \n0715:     if isinstance(node, ast.Attribute):\n0716:         base = _parse_type_node(node.value, names)\n0717:         attr_name = node.attr\n0718: \n0719:         if hasattr(base, attr_name):\n0720:             return getattr(base, attr_name)\n0721: \n0722:         if isinstance(node.value, ast.Name):\n0723:             full_name = f\"{node.value.id}.{attr_name}\"\n0724:             if full_name in names:\n0725:                 return names[full_name]\n0726: \n0727:         raise ValueError(f\"Unknown attribute: {attr_name} on {base}\")"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/signatures/test_custom_types.py",
+   "start_line": 11,
+   "end_line": 23,
+   "excerpt": "0011:     class CustomType(pydantic.BaseModel):\n0012:         value: str\n0013: \n0014:     # Custom types can be explicitly mapped\n0015:     explicit_sig = Signature(\n0016:         \"input: CustomType -> output: str\",\n0017:         custom_types={\"CustomType\": CustomType}\n0018:     )\n0019:     assert explicit_sig.input_fields[\"input\"].annotation == CustomType\n0020: \n0021:     # Custom types can also be auto-resolved from caller's scope\n0022:     auto_sig = Signature(\"input: CustomType -> output: str\")\n0023:     assert auto_sig.input_fields[\"input\"].annotation == CustomType"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/signatures/test_custom_types.py",
+   "start_line": 36,
+   "end_line": 43,
+   "excerpt": "0036:     class Container2:\n0037:         class Query(pydantic.BaseModel):\n0038:             text: str\n0039:         class Score(pydantic.BaseModel):\n0040:             score: float\n0041: \n0042:     signature = dspy.Signature(\"query: Container2.Query -> score: Container2.Score\")\n0043:     assert signature.output_fields[\"score\"].annotation == Container2.Score"
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/signatures/test_custom_types.py",
+   "start_line": 28,
+   "end_line": 34,
+   "excerpt": "0028:     class Container:\n0029:         class NestedType(pydantic.BaseModel):\n0030:             value: str\n0031: \n0032:     NestedType = Container.NestedType\n0033:     alias_sig = Signature(\"input: str -> output: NestedType\")\n0034:     assert alias_sig.output_fields[\"output\"].annotation == Container.NestedType"
+  },
+  {
+   "span_id": "s8",
+   "path": "tests/signatures/test_custom_types.py",
+   "start_line": 93,
+   "end_line": 96,
+   "excerpt": "0093: def test_expected_failure():\n0094:     # InnerType DNE when not OuterContainer.InnerTypes, so this type shouldnt be resolved\n0095:     with pytest.raises(ValueError):\n0096:         Signature(\"input: str -> output: InnerType\")"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Shows the automatic type lookup rules that matter when signatures are generated from strings at runtime.",
+ "source_index": 31,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

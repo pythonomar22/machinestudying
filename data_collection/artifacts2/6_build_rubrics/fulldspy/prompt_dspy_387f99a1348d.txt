@@ -1,0 +1,408 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_387f99a1348d`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I'm collecting execution traces for optimizer-style reflection, and one of my model completions occasionally comes back in the wrong format. What I need to know is whether DSPy drops that row completely or preserves the raw bad completion and some kind of score so I can feed it back into debugging.
+
+This is exactly the sort of thing that's too easy to infer incorrectly from source comments. Give me a complete, runnable Python program that stays offline with `DummyLM`, forces one well-formed output and one malformed output during trace capture, and prints/asserts the bad row's type, raw completion text, score-like field, and trace presence.`
+- Gold answer:
+```python
+import dspy
+from dspy.dsp.utils.utils import dotdict
+from dspy.teleprompt.bootstrap_trace import FailedPrediction, bootstrap_trace_data
+from dspy.utils.dummies import DummyLM
+
+
+class StringToInt(dspy.Signature):
+    text: str = dspy.InputField()
+    number: int = dspy.OutputField()
+
+
+class MalformedDummyLM(DummyLM):
+    def __init__(self):
+        super().__init__([{"number": 1}], adapter=dspy.JSONAdapter())
+        self.calls = 0
+
+    def forward(self, prompt=None, messages=None, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return super().forward(prompt=prompt, messages=messages, **kwargs)
+        return dotdict(
+            choices=[dotdict(message=dotdict(content="not json at all", tool_calls=None), finish_reason="stop")],
+            usage=dotdict(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+            model="dummy",
+        )
+
+
+def exact_match(example, prediction, trace=None):
+    return example.number == prediction.number
+
+
+lm = MalformedDummyLM()
+dspy.configure(lm=lm, adapter=dspy.JSONAdapter())
+program = dspy.Predict(StringToInt)
+dataset = [
+    dspy.Example(text="one", number=1).with_inputs("text"),
+    dspy.Example(text="two", number=2).with_inputs("text"),
+]
+
+rows = bootstrap_trace_data(
+    program=program,
+    dataset=dataset,
+    metric=exact_match,
+    raise_on_error=False,
+    capture_failed_parses=True,
+)
+
+print("row_types:", [type(row["prediction"]).__name__ for row in rows])
+bad = rows[1]["prediction"]
+print("bad_completion:", bad.completion_text)
+print("bad_format_reward:", bad.format_reward)
+print("bad_trace_len:", len(rows[1]["trace"]))
+assert isinstance(bad, FailedPrediction)
+assert bad.completion_text == "not json at all"
+assert bad.format_reward is not None
+assert len(rows[1]["trace"]) > 0
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/teleprompt/bootstrap_trace.py",
+    "symbol": "bootstrap_trace_data"
+  },
+  {
+    "file": "dspy/teleprompt/bootstrap_trace.py",
+    "symbol": "FailedPrediction"
+  },
+  {
+    "file": "tests/teleprompt/test_bootstrap_trace.py",
+    "symbol": "test_bootstrap_trace_data"
+  }
+]
+
+## Full evidence files
+### dspy/teleprompt/bootstrap_trace.py
+0001: import logging
+0002: from dataclasses import dataclass
+0003: from types import MethodType
+0004: from typing import Any, Callable, TypedDict
+0005: 
+0006: import dspy
+0007: from dspy.evaluate.evaluate import Evaluate
+0008: from dspy.primitives.example import Example
+0009: from dspy.primitives.module import Module
+0010: from dspy.primitives.prediction import Prediction
+0011: from dspy.utils.exceptions import AdapterParseError
+0012: 
+0013: logger = logging.getLogger(__name__)
+0014: 
+0015: 
+0016: @dataclass
+0017: class FailedPrediction:
+0018:     completion_text: str
+0019:     format_reward: float | None = None
+0020: 
+0021: 
+0022: class TraceData(TypedDict):
+0023:     example_ind: int
+0024:     example: Example
+0025:     prediction: Prediction
+0026:     trace: list[tuple[Any, dict[str, Any], Prediction]]
+0027:     score: float | None
+0028: 
+0029: 
+0030: def bootstrap_trace_data(
+0031:     program: Module,
+0032:     dataset: list[Example],
+0033:     metric: Callable | None = None,
+0034:     num_threads: int | None = None,
+0035:     raise_on_error=True,
+0036:     capture_failed_parses=False,
+0037:     failure_score: float = 0,
+0038:     format_failure_score: float = -1,
+0039:     log_format_failures: bool = False,
+0040:     callback_metadata: dict[str, Any] | None = None,
+0041: ) -> list[TraceData]:
+0042:     # Return a list of dicts with the following keys: example_ind, example, prediction, trace, and score
+0043:     # (if metric != None)
+0044:     evaluator = Evaluate(
+0045:         devset=dataset,
+0046:         num_threads=num_threads,
+0047:         display_progress=True,
+0048:         provide_traceback=False,  # TODO(check with team)
+0049:         max_errors=len(dataset) * 10,  # TODO(check with team)
+0050:         failure_score=failure_score,
+0051:     )
+0052: 
+0053:     def wrapped_metric(example, prediction, trace=None):
+0054:         prediction, _ = prediction
+0055:         if isinstance(prediction, FailedPrediction):
+0056:             return prediction.format_reward or format_failure_score
+0057:         return metric(example, prediction, trace) if metric else True
+0058: 
+0059:     # Use `object.__getattribute__` to bypass the custom hook `Module.__getattribute__` so that we avoid
+0060:     # the warning that `forward` is not accessed through `__call__`.
+0061:     original_forward = object.__getattribute__(program, "forward")
+0062: 
+0063:     def patched_forward(program_to_use: Module, **kwargs):
+0064:         with dspy.context(trace=[]):
+0065:             try:
+0066:                 return original_forward(**kwargs), dspy.settings.trace.copy()
+0067:             except AdapterParseError as e:
+0068:                 completion_str = e.lm_response
+0069:                 parsed_result = e.parsed_result
+0070:                 failed_signature = e.signature
+0071:                 failed_inputs = kwargs
+0072: 
+0073:                 present = list(parsed_result.keys()) if parsed_result else None
+0074:                 expected = list(failed_signature.output_fields.keys())
+0075: 
+0076:                 found_pred = None
+0077:                 for pred in program_to_use.predictors():
+0078:                     if pred.signature == failed_signature:
+0079:                         found_pred = pred
+0080:                         break
+0081:                 if found_pred is None:
+0082:                     raise ValueError(f"Failed to find the predictor for the failed signature: {failed_signature}")
+0083: 
+0084:                 trace = dspy.settings.trace.copy()
+0085:                 # Trace is Tuple[signature, inputs, prediction outputs]
+0086:                 if present:
+0087:                     failed_pred = FailedPrediction(
+0088:                         completion_text=completion_str,
+0089:                         format_reward=format_failure_score
+0090:                         + (failure_score - format_failure_score) * (present / expected),
+0091:                     )
+0092:                 else:
+0093:                     failed_pred = FailedPrediction(completion_text=completion_str, format_reward=format_failure_score)
+0094: 
+0095:                 trace.append(
+0096:                     (
+0097:                         found_pred,
+0098:                         failed_inputs,
+0099:                         failed_pred,
+0100:                     )
+0101:                 )
+0102: 
+0103:                 if log_format_failures:
+0104:                     logging.warning(
+0105:                         "Failed to parse output for example. This is likely due to the LLM response not following "
+0106:                         "the adapter's formatting."
+0107:                     )
+0108: 
+0109:                 return failed_pred, trace
+0110: 
+0111:     program.forward = MethodType(patched_forward, program)
+0112: 
+0113:     try:
+0114:         results = evaluator(
+0115:             program,
+0116:             metric=wrapped_metric,
+0117:             callback_metadata=callback_metadata,
+0118:         ).results
+0119:     finally:
+0120:         program.forward = original_forward
+0121: 
+0122:     data = []
+0123:     for example_ind, (example, prediction, score) in enumerate(results):
+0124:         try:
+0125:             prediction, trace = prediction
+0126:         except ValueError as ve:
+0127:             # TODO(GRPO Team): Often during GRPO bootstrapping, the LLM response does not follow dspy formatting. This
+0128:             # leads to a value error. To reproduce this issue, try Qwen/Qwen2.5-Coder-0.5B-Instruct with MATH dataset.
+0129:             # Proposal(Lakshya): We should capture the incorrectly-formatted LLM response, and store it in the trace,
+0130:             # and pass it to in the GRPO group with a high-negative user-configurable score.
+0131:             logger.warning(
+0132:                 "Failed to unpack prediction and trace. This is likely due to the LLM response not following "
+0133:                 "dspy formatting."
+0134:             )
+0135:             if raise_on_error:
+0136:                 raise ve
+0137:             else:
+0138:                 continue
+0139:         data_dict = {"example": example, "prediction": prediction, "trace": trace, "example_ind": example_ind}
+0140:         if metric:
+0141:             data_dict["score"] = score
+0142:         data.append(data_dict)
+0143: 
+0144:     return data
+
+### tests/teleprompt/test_bootstrap_trace.py
+0001: from typing import Any
+0002: from unittest import mock
+0003: 
+0004: from litellm import Choices, Message, ModelResponse
+0005: 
+0006: import dspy
+0007: from dspy.primitives.example import Example
+0008: from dspy.teleprompt.bootstrap_trace import FailedPrediction, bootstrap_trace_data
+0009: 
+0010: 
+0011: def test_bootstrap_trace_data():
+0012:     """Test bootstrap_trace_data function with single dspy.Predict program."""
+0013: 
+0014:     # Define signature for string -> int conversion
+0015:     class StringToIntSignature(dspy.Signature):
+0016:         """Convert a string number to integer"""
+0017: 
+0018:         text: str = dspy.InputField()
+0019:         number: int = dspy.OutputField()
+0020: 
+0021:     # Create program with single dspy.Predict
+0022:     program = dspy.Predict(StringToIntSignature)
+0023: 
+0024:     # Create dummy dataset of size 5
+0025:     dataset = [
+0026:         Example(text="one", number=1).with_inputs("text"),
+0027:         Example(text="two", number=2).with_inputs("text"),
+0028:         Example(text="three", number=3).with_inputs("text"),
+0029:         Example(text="four", number=4).with_inputs("text"),
+0030:         Example(text="five", number=5).with_inputs("text"),
+0031:     ]
+0032: 
+0033:     # Define exact match metric
+0034:     def exact_match_metric(example, prediction, trace=None):
+0035:         return example.number == prediction.number
+0036: 
+0037:     # Configure dspy
+0038:     dspy.configure(lm=dspy.LM(model="openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter())
+0039: 
+0040:     # Mock litellm completion responses
+0041:     # 4 successful responses and 1 that will trigger AdapterParseError
+0042:     successful_responses = [
+0043:         ModelResponse(
+0044:             choices=[Choices(message=Message(content='```json\n{"number": 1}\n```'))],
+0045:             model="openai/gpt-4o-mini",
+0046:         ),
+0047:         ModelResponse(
+0048:             choices=[Choices(message=Message(content='```json\n{"number": 2}\n```'))],
+0049:             model="openai/gpt-4o-mini",
+0050:         ),
+0051:         ModelResponse(
+0052:             choices=[Choices(message=Message(content='```json\n{"number": 3}\n```'))],
+0053:             model="openai/gpt-4o-mini",
+0054:         ),
+0055:         ModelResponse(
+0056:             choices=[Choices(message=Message(content='```json\n{"number": 4}\n```'))],
+0057:             model="openai/gpt-4o-mini",
+0058:         ),
+0059:     ]
+0060: 
+0061:     # Create a side effect that will trigger AdapterParseError on the 3rd call (index 2)
+0062:     def completion_side_effect(*args, **kwargs):
+0063:         call_count = completion_side_effect.call_count
+0064:         completion_side_effect.call_count += 1
+0065: 
+0066:         if call_count == 5:  # Third call (0-indexed)
+0067:             # Return malformed response that will cause AdapterParseError
+0068:             return ModelResponse(
+0069:                 choices=[Choices(message=Message(content="This is an invalid JSON!"))],
+0070:                 model="openai/gpt-4o-mini",
+0071:             )
+0072:         else:
+0073:             return successful_responses[call_count]
+0074: 
+0075:     completion_side_effect.call_count = 0
+0076: 
+0077:     with mock.patch("litellm.completion", side_effect=completion_side_effect):
+0078:         # Call bootstrap_trace_data
+0079:         results = bootstrap_trace_data(
+0080:             program=program,
+0081:             dataset=dataset,
+0082:             metric=exact_match_metric,
+0083:             raise_on_error=False,
+0084:             capture_failed_parses=True,
+0085:         )
+0086: 
+0087:     # Verify results
+0088:     assert len(results) == 5, f"Expected 5 results, got {len(results)}"
+0089: 
+0090:     # Count successful and failed predictions
+0091:     successful_count = 0
+0092:     failed_count = 0
+0093: 
+0094:     for result in results:
+0095:         assert "example" in result
+0096:         assert "prediction" in result
+0097:         assert "trace" in result
+0098:         assert "example_ind" in result
+0099:         assert "score" in result
+0100: 
+0101:         if isinstance(result["prediction"], FailedPrediction):
+0102:             failed_count += 1
+0103:             # Verify failed prediction structure
+0104:             assert hasattr(result["prediction"], "completion_text")
+0105:             assert hasattr(result["prediction"], "format_reward")
+0106:             assert result["prediction"].completion_text == "This is an invalid JSON!"
+0107:         else:
+0108:             successful_count += 1
+0109:             # Verify successful prediction structure
+0110:             assert hasattr(result["prediction"], "number")
+0111: 
+0112:     # Verify we have the expected number of successful and failed bootstrapping
+0113:     assert successful_count == 4, f"Expected 4 successful predictions, got {successful_count}"
+0114:     assert failed_count == 1, f"Expected 1 failed prediction, got {failed_count}"
+0115: 
+0116:     # Verify that traces are present
+0117:     for result in results:
+0118:         assert len(result["trace"]) > 0, "Trace should not be empty"
+0119:         # Each trace entry should be a tuple of (predictor, inputs, prediction)
+0120:         for trace_entry in result["trace"]:
+0121:             assert len(trace_entry) == 3, "Trace entry should have 3 elements"
+0122: 
+0123: 
+0124: def test_bootstrap_trace_data_passes_callback_metadata(monkeypatch):
+0125:     from dspy.teleprompt import bootstrap_trace as bootstrap_trace_module
+0126: 
+0127:     class DummyProgram(dspy.Module):
+0128:         def forward(self, **kwargs):  # pragma: no cover - stub forward
+0129:             return dspy.Prediction()
+0130: 
+0131:     captured_metadata: dict[str, Any] = {}
+0132: 
+0133:     class DummyEvaluate:
+0134:         def __init__(self, *args, **kwargs):
+0135:             pass
+0136: 
+0137:         def __call__(self, *args, callback_metadata=None, **kwargs):
+0138:             captured_metadata["value"] = callback_metadata
+0139: 
+0140:             class _Result:
+0141:                 results: list[Any] = []
+0142: 
+0143:             return _Result()
+0144: 
+0145:     monkeypatch.setattr(bootstrap_trace_module, "Evaluate", DummyEvaluate)
+0146: 
+0147:     bootstrap_trace_module.bootstrap_trace_data(
+0148:         program=DummyProgram(),
+0149:         dataset=[],
+0150:         callback_metadata={"disable_logging": True},
+0151:     )
+0152: 
+0153:     assert captured_metadata["value"] == {"disable_logging": True}
+
+Return JSON that matches the schema exactly.

@@ -1,0 +1,784 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_54519f0aadd3`
+- Label: `prompt_compilation_customization_and_inspection`
+- Question: `I have image inputs nested inside a richer object, and I want to make sure a custom adapter does not serialize them into marker text before the model sees them. I need to inspect the actual message content blocks, not a stringified approximation.
+
+What matters is both the few-shot example and the live query, because I have seen systems preserve one and flatten the other. I want a tiny offline harness that makes the split explicit.
+
+Give me a complete, runnable Python program that formats one demo plus one live request through an XML-style adapter, prints both user-message contents, and asserts that the demo keeps three structured image blocks, the live request keeps one, and no custom-type sentinel text leaks through.`
+- Model answer:
+```python
+import pydantic
+
+import dspy
+
+
+class ImageWrapper(pydantic.BaseModel):
+    images: list[dspy.Image]
+    tag: list[str]
+
+
+class MySig(dspy.Signature):
+    image: ImageWrapper = dspy.InputField()
+    text: str = dspy.OutputField()
+
+
+def count_image_blocks(content):
+    if not isinstance(content, list):
+        return 0
+    return sum(1 for item in content if isinstance(item, dict) and item.get('type') == 'image_url')
+
+
+demo_wrapper = ImageWrapper(
+    images=[
+        dspy.Image('https://example.com/1.jpg'),
+        dspy.Image('https://example.com/2.jpg'),
+        dspy.Image('https://example.com/3.jpg'),
+    ],
+    tag=['demo'],
+)
+query_wrapper = ImageWrapper(images=[dspy.Image('https://example.com/4.jpg')], tag=['query'])
+
+demos = [dspy.Example(image=demo_wrapper, text='demo text')]
+messages = dspy.XMLAdapter().format(MySig, demos, {'image': query_wrapper})
+
+print(messages[1]['content'])
+print(messages[-1]['content'])
+
+assert count_image_blocks(messages[1]['content']) == 3
+assert count_image_blocks(messages[-1]['content']) == 1
+assert 'CUSTOM-TYPE-START-IDENTIFIER' not in str(messages)
+```
+
+## Gold answer
+```python
+import pydantic
+
+import dspy
+
+
+class ImageWrapper(pydantic.BaseModel):
+    images: list[dspy.Image]
+    tag: list[str]
+
+
+class MySig(dspy.Signature):
+    image: ImageWrapper = dspy.InputField()
+    text: str = dspy.OutputField()
+
+
+def count_image_blocks(content):
+    if not isinstance(content, list):
+        return 0
+    return sum(1 for item in content if isinstance(item, dict) and item.get('type') == 'image_url')
+
+
+demo_wrapper = ImageWrapper(
+    images=[
+        dspy.Image('https://example.com/1.jpg'),
+        dspy.Image('https://example.com/2.jpg'),
+        dspy.Image('https://example.com/3.jpg'),
+    ],
+    tag=['demo'],
+)
+query_wrapper = ImageWrapper(images=[dspy.Image('https://example.com/4.jpg')], tag=['query'])
+
+demos = [dspy.Example(image=demo_wrapper, text='demo text')]
+messages = dspy.XMLAdapter().format(MySig, demos, {'image': query_wrapper})
+
+print(messages[1]['content'])
+print(messages[-1]['content'])
+
+assert count_image_blocks(messages[1]['content']) == 3
+assert count_image_blocks(messages[-1]['content']) == 1
+assert 'CUSTOM-TYPE-START-IDENTIFIER' not in str(messages)
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 15,
+    "statement": "The program defines a nested wrapper model whose `images` field is `list[dspy.Image]`, and uses that wrapper as the `image` input field of a DSPy signature.",
+    "span_ids": [
+      "s1"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The harness constructs one few-shot demo wrapper holding three images and one live-query wrapper holding one image, wraps the demo with `dspy.Example`, and formats them with `dspy.XMLAdapter().format(...)`.",
+    "span_ids": [
+      "s2"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 15,
+    "statement": "It directly inspects the user-message `content` entries at `messages[1]` and `messages[-1]`, using the structured content-block lists returned after custom-type splitting rather than a single flattened prompt string.",
+    "span_ids": [
+      "s3",
+      "s5",
+      "s6"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The demo-side check distinguishes three preserved structured `image_url` blocks for the three example images in the few-shot user message.",
+    "span_ids": [
+      "s2",
+      "s3"
+    ]
+  },
+  {
+    "claim_id": "c5",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The live-query check distinguishes a single preserved structured `image_url` block for the query image in the final user message.",
+    "span_ids": [
+      "s2",
+      "s3"
+    ]
+  },
+  {
+    "claim_id": "c6",
+    "claim_type": "supporting",
+    "weight": 10,
+    "statement": "The program asserts that no `CUSTOM-TYPE-START-IDENTIFIER` marker text remains in the formatted messages, reflecting that custom-type sentinel serialization is converted back into content blocks before the final user messages are returned.",
+    "span_ids": [
+      "s4",
+      "s5",
+      "s6"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "tests/adapters/test_xml_adapter.py",
+    "start_line": 187,
+    "end_line": 193,
+    "excerpt": "0187:     class ImageWrapper(pydantic.BaseModel):\n0188:         images: list[dspy.Image]\n0189:         tag: list[str]\n0190: \n0191:     class MySignature(dspy.Signature):\n0192:         image: ImageWrapper = dspy.InputField()\n0193:         text: str = dspy.OutputField()"
+  },
+  {
+    "span_id": "s2",
+    "path": "tests/adapters/test_xml_adapter.py",
+    "start_line": 195,
+    "end_line": 209,
+    "excerpt": "0195:     image1 = dspy.Image(url=\"https://example.com/image1.jpg\")\n0196:     image2 = dspy.Image(url=\"https://example.com/image2.jpg\")\n0197:     image3 = dspy.Image(url=\"https://example.com/image3.jpg\")\n0198: \n0199:     image_wrapper = ImageWrapper(images=[image1, image2, image3], tag=[\"test\", \"example\"])\n0200:     demos = [\n0201:         dspy.Example(\n0202:             image=image_wrapper,\n0203:             text=\"This is a test image\",\n0204:         ),\n0205:     ]\n0206: \n0207:     image_wrapper_2 = ImageWrapper(images=[dspy.Image(url=\"https://example.com/image4.jpg\")], tag=[\"test\", \"example\"])\n0208:     adapter = dspy.XMLAdapter()\n0209:     messages = adapter.format(MySignature, demos, {\"image\": image_wrapper_2})"
+  },
+  {
+    "span_id": "s3",
+    "path": "tests/adapters/test_xml_adapter.py",
+    "start_line": 211,
+    "end_line": 222,
+    "excerpt": "0211:     assert len(messages) == 4\n0212: \n0213:     # Image information in the few-shot example's user message\n0214:     expected_image1_content = {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/image1.jpg\"}}\n0215:     expected_image2_content = {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/image2.jpg\"}}\n0216:     expected_image3_content = {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/image3.jpg\"}}\n0217:     assert expected_image1_content in messages[1][\"content\"]\n0218:     assert expected_image2_content in messages[1][\"content\"]\n0219:     assert expected_image3_content in messages[1][\"content\"]\n0220: \n0221:     # The query image is formatted in the last user message\n0222:     assert {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/image4.jpg\"}} in messages[-1][\"content\"]"
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/adapters/types/base_type.py",
+    "start_line": 70,
+    "end_line": 77,
+    "excerpt": "0070:     @pydantic.model_serializer()\n0071:     def serialize_model(self):\n0072:         formatted = self.format()\n0073:         if isinstance(formatted, list):\n0074:             return (\n0075:                 f\"{CUSTOM_TYPE_START_IDENTIFIER}{json.dumps(formatted, ensure_ascii=False)}{CUSTOM_TYPE_END_IDENTIFIER}\"\n0076:             )\n0077:         return formatted"
+  },
+  {
+    "span_id": "s5",
+    "path": "dspy/adapters/types/base_type.py",
+    "start_line": 161,
+    "end_line": 178,
+    "excerpt": "0161:     for message in messages:\n0162:         if message[\"role\"] != \"user\":\n0163:             # Custom type messages are only in user messages\n0164:             continue\n0165: \n0166:         pattern = rf\"{CUSTOM_TYPE_START_IDENTIFIER}(.*?){CUSTOM_TYPE_END_IDENTIFIER}\"\n0167:         result = []\n0168:         last_end = 0\n0169:         # DSPy adapter always formats user input into a string content before custom type splitting\n0170:         content: str = message[\"content\"]\n0171: \n0172:         for match in re.finditer(pattern, content, re.DOTALL):\n0173:             start, end = match.span()\n0174: \n0175:             # Add text before the current block\n0176:             if start > last_end:\n0177:                 result.append({\"type\": \"text\", \"text\": content[last_end:start]})\n0178: "
+  },
+  {
+    "span_id": "s6",
+    "path": "dspy/adapters/types/base_type.py",
+    "start_line": 179,
+    "end_line": 209,
+    "excerpt": "0179:             # Parse the JSON inside the block\n0180:             custom_type_content = match.group(1).strip()\n0181:             parsed = None\n0182: \n0183:             for parse_fn in [json.loads, _parse_doubly_quoted_json, json_repair.loads]:\n0184:                 try:\n0185:                     parsed = parse_fn(custom_type_content)\n0186:                     break\n0187:                 except json.JSONDecodeError:\n0188:                     continue\n0189: \n0190:             if parsed:\n0191:                 for custom_type_content in parsed:\n0192:                     result.append(custom_type_content)\n0193:             else:\n0194:                 # fallback to raw string if it's not valid JSON\n0195:                 result.append({\"type\": \"text\", \"text\": custom_type_content})\n0196: \n0197:             last_end = end\n0198: \n0199:         if last_end == 0:\n0200:             # No custom type found, return the original message\n0201:             continue\n0202: \n0203:         # Add any remaining text after the last match\n0204:         if last_end < len(content):\n0205:             result.append({\"type\": \"text\", \"text\": content[last_end:]})\n0206: \n0207:         message[\"content\"] = result\n0208: \n0209:     return messages"
+  }
+]
+
+## Whole evidence files
+### tests/adapters/test_xml_adapter.py
+0001: import sys
+0002: from unittest import mock
+0003: 
+0004: import pydantic
+0005: import pytest
+0006: from litellm import Choices, Message, ModelResponse
+0007: 
+0008: import dspy
+0009: from dspy.adapters.chat_adapter import FieldInfoWithName
+0010: from dspy.adapters.xml_adapter import XMLAdapter
+0011: 
+0012: 
+0013: def test_xml_adapter_format_and_parse_basic():
+0014:     class TestSignature(dspy.Signature):
+0015:         question: str = dspy.InputField()
+0016:         answer: str = dspy.OutputField()
+0017: 
+0018:     adapter = XMLAdapter()
+0019:     # Format output fields as XML
+0020:     fields_with_values = {FieldInfoWithName(name="answer", info=TestSignature.output_fields["answer"]): "Paris"}
+0021:     xml = adapter.format_field_with_value(fields_with_values)
+0022:     assert xml.strip() == "<answer>\nParis\n</answer>"
+0023: 
+0024:     # Parse XML output
+0025:     completion = "<answer>Paris</answer>"
+0026:     parsed = adapter.parse(TestSignature, completion)
+0027:     assert parsed == {"answer": "Paris"}
+0028: 
+0029: 
+0030: def test_xml_adapter_parse_multiple_fields():
+0031:     class TestSignature(dspy.Signature):
+0032:         question: str = dspy.InputField()
+0033:         answer: str = dspy.OutputField()
+0034:         explanation: str = dspy.OutputField()
+0035: 
+0036:     adapter = XMLAdapter()
+0037:     completion = """
+0038: <answer>Paris</answer>
+0039: <explanation>The capital of France is Paris.</explanation>
+0040: """
+0041:     parsed = adapter.parse(TestSignature, completion)
+0042:     assert parsed == {"answer": "Paris", "explanation": "The capital of France is Paris."}
+0043: 
+0044: 
+0045: def test_xml_adapter_parse_raises_on_missing_field():
+0046:     class TestSignature(dspy.Signature):
+0047:         question: str = dspy.InputField()
+0048:         answer: str = dspy.OutputField()
+0049:         explanation: str = dspy.OutputField()
+0050: 
+0051:     adapter = XMLAdapter()
+0052:     completion = "<answer>Paris</answer>"
+0053:     with pytest.raises(dspy.utils.exceptions.AdapterParseError) as e:
+0054:         adapter.parse(TestSignature, completion)
+0055:     assert e.value.adapter_name == "XMLAdapter"
+0056:     assert e.value.signature == TestSignature
+0057:     assert e.value.lm_response == "<answer>Paris</answer>"
+0058:     assert "explanation" in str(e.value)
+0059: 
+0060: 
+0061: def test_xml_adapter_parse_casts_types():
+0062:     class TestSignature(dspy.Signature):
+0063:         number: int = dspy.OutputField()
+0064:         flag: bool = dspy.OutputField()
+0065: 
+0066:     adapter = XMLAdapter()
+0067:     completion = """
+0068: <number>42</number>
+0069: <flag>true</flag>
+0070: """
+0071:     parsed = adapter.parse(TestSignature, completion)
+0072:     assert parsed == {"number": 42, "flag": True}
+0073: 
+0074: 
+0075: def test_xml_adapter_parse_raises_on_type_error():
+0076:     class TestSignature(dspy.Signature):
+0077:         number: int = dspy.OutputField()
+0078: 
+0079:     adapter = XMLAdapter()
+0080:     completion = "<number>not_a_number</number>"
+0081:     with pytest.raises(dspy.utils.exceptions.AdapterParseError) as e:
+0082:         adapter.parse(TestSignature, completion)
+0083:     assert "Failed to parse field" in str(e.value)
+0084: 
+0085: 
+0086: def test_xml_adapter_format_and_parse_nested_model():
+0087:     class InnerModel(pydantic.BaseModel):
+0088:         value: int
+0089:         label: str
+0090: 
+0091:     class TestSignature(dspy.Signature):
+0092:         question: str = dspy.InputField()
+0093:         result: InnerModel = dspy.OutputField()
+0094: 
+0095:     adapter = XMLAdapter()
+0096:     # Format output fields as XML
+0097:     fields_with_values = {
+0098:         FieldInfoWithName(name="result", info=TestSignature.output_fields["result"]): InnerModel(value=5, label="foo")
+0099:     }
+0100:     xml = adapter.format_field_with_value(fields_with_values)
+0101:     # The output will be a JSON string inside the XML tag
+0102:     assert xml.strip().startswith("<result>")
+0103:     assert '"value": 5' in xml
+0104:     assert '"label": "foo"' in xml
+0105:     assert xml.strip().endswith("</result>")
+0106: 
+0107:     # Parse XML output (should parse as string, not as model)
+0108:     completion = '<result>{"value": 5, "label": "foo"}</result>'
+0109:     parsed = adapter.parse(TestSignature, completion)
+0110:     # The parse_value helper will try to cast to InnerModel
+0111:     assert isinstance(parsed["result"], InnerModel)
+0112:     assert parsed["result"].value == 5
+0113:     assert parsed["result"].label == "foo"
+0114: 
+0115: 
+0116: def test_xml_adapter_format_and_parse_list_of_models():
+0117:     class Item(pydantic.BaseModel):
+0118:         name: str
+0119:         score: float
+0120: 
+0121:     class TestSignature(dspy.Signature):
+0122:         items: list[Item] = dspy.OutputField()
+0123: 
+0124:     adapter = XMLAdapter()
+0125:     items = [Item(name="a", score=1.1), Item(name="b", score=2.2)]
+0126:     fields_with_values = {FieldInfoWithName(name="items", info=TestSignature.output_fields["items"]): items}
+0127:     xml = adapter.format_field_with_value(fields_with_values)
+0128:     assert xml.strip().startswith("<items>")
+0129:     assert '"name": "a"' in xml
+0130:     assert '"score": 2.2' in xml
+0131:     assert xml.strip().endswith("</items>")
+0132: 
+0133:     # Parse XML output
+0134:     import json
+0135: 
+0136:     completion = f"<items>{json.dumps([i.model_dump() for i in items])}</items>"
+0137:     parsed = adapter.parse(TestSignature, completion)
+0138:     assert isinstance(parsed["items"], list)
+0139:     assert all(isinstance(i, Item) for i in parsed["items"])
+0140:     assert parsed["items"][0].name == "a"
+0141:     assert parsed["items"][1].score == 2.2
+0142: 
+0143: 
+0144: def test_xml_adapter_with_tool_like_output():
+0145:     # XMLAdapter does not natively support tool calls, but we can test structured output
+0146:     class ToolCall(pydantic.BaseModel):
+0147:         name: str
+0148:         args: dict
+0149:         result: str
+0150: 
+0151:     class TestSignature(dspy.Signature):
+0152:         question: str = dspy.InputField()
+0153:         tool_calls: list[ToolCall] = dspy.OutputField()
+0154:         answer: str = dspy.OutputField()
+0155: 
+0156:     adapter = XMLAdapter()
+0157:     tool_calls = [
+0158:         ToolCall(name="get_weather", args={"city": "Tokyo"}, result="Sunny"),
+0159:         ToolCall(name="get_population", args={"country": "Japan", "year": 2023}, result="125M"),
+0160:     ]
+0161:     fields_with_values = {
+0162:         FieldInfoWithName(name="tool_calls", info=TestSignature.output_fields["tool_calls"]): tool_calls,
+0163:         FieldInfoWithName(
+0164:             name="answer", info=TestSignature.output_fields["answer"]
+0165:         ): "The weather is Sunny. Population is 125M.",
+0166:     }
+0167:     xml = adapter.format_field_with_value(fields_with_values)
+0168:     assert xml.strip().startswith("<tool_calls>")
+0169:     assert '"name": "get_weather"' in xml
+0170:     assert '"result": "125M"' in xml
+0171:     assert xml.strip().endswith("</answer>")
+0172: 
+0173:     import json
+0174: 
+0175:     completion = (
+0176:         f"<tool_calls>{json.dumps([tc.model_dump() for tc in tool_calls])}</tool_calls>"
+0177:         f"\n<answer>The weather is Sunny. Population is 125M.</answer>"
+0178:     )
+0179:     parsed = adapter.parse(TestSignature, completion)
+0180:     assert isinstance(parsed["tool_calls"], list)
+0181:     assert parsed["tool_calls"][0].name == "get_weather"
+0182:     assert parsed["tool_calls"][1].result == "125M"
+0183:     assert parsed["answer"] == "The weather is Sunny. Population is 125M."
+0184: 
+0185: 
+0186: def test_xml_adapter_formats_nested_images():
+0187:     class ImageWrapper(pydantic.BaseModel):
+0188:         images: list[dspy.Image]
+0189:         tag: list[str]
+0190: 
+0191:     class MySignature(dspy.Signature):
+0192:         image: ImageWrapper = dspy.InputField()
+0193:         text: str = dspy.OutputField()
+0194: 
+0195:     image1 = dspy.Image(url="https://example.com/image1.jpg")
+0196:     image2 = dspy.Image(url="https://example.com/image2.jpg")
+0197:     image3 = dspy.Image(url="https://example.com/image3.jpg")
+0198: 
+0199:     image_wrapper = ImageWrapper(images=[image1, image2, image3], tag=["test", "example"])
+0200:     demos = [
+0201:         dspy.Example(
+0202:             image=image_wrapper,
+0203:             text="This is a test image",
+0204:         ),
+0205:     ]
+0206: 
+0207:     image_wrapper_2 = ImageWrapper(images=[dspy.Image(url="https://example.com/image4.jpg")], tag=["test", "example"])
+0208:     adapter = dspy.XMLAdapter()
+0209:     messages = adapter.format(MySignature, demos, {"image": image_wrapper_2})
+0210: 
+0211:     assert len(messages) == 4
+0212: 
+0213:     # Image information in the few-shot example's user message
+0214:     expected_image1_content = {"type": "image_url", "image_url": {"url": "https://example.com/image1.jpg"}}
+0215:     expected_image2_content = {"type": "image_url", "image_url": {"url": "https://example.com/image2.jpg"}}
+0216:     expected_image3_content = {"type": "image_url", "image_url": {"url": "https://example.com/image3.jpg"}}
+0217:     assert expected_image1_content in messages[1]["content"]
+0218:     assert expected_image2_content in messages[1]["content"]
+0219:     assert expected_image3_content in messages[1]["content"]
+0220: 
+0221:     # The query image is formatted in the last user message
+0222:     assert {"type": "image_url", "image_url": {"url": "https://example.com/image4.jpg"}} in messages[-1]["content"]
+0223: 
+0224: 
+0225: def test_xml_adapter_with_code():
+0226:     # Test with code as input field
+0227:     class CodeAnalysis(dspy.Signature):
+0228:         """Analyze the time complexity of the code"""
+0229: 
+0230:         code: dspy.Code = dspy.InputField()
+0231:         result: str = dspy.OutputField()
+0232: 
+0233:     adapter = dspy.XMLAdapter()
+0234:     messages = adapter.format(CodeAnalysis, [], {"code": "print('Hello, world!')"})
+0235: 
+0236:     assert len(messages) == 2
+0237: 
+0238:     # The output field type description should be included in the system message even if the output field is nested
+0239:     assert dspy.Code.description() in messages[0]["content"]
+0240: 
+0241:     # The user message should include the question and the tools
+0242:     assert "print('Hello, world!')" in messages[1]["content"]
+0243: 
+0244:     # Test with code as output field
+0245:     class CodeGeneration(dspy.Signature):
+0246:         """Generate code to answer the question"""
+0247: 
+0248:         question: str = dspy.InputField()
+0249:         code: dspy.Code = dspy.OutputField()
+0250: 
+0251:     adapter = dspy.XMLAdapter()
+0252:     with mock.patch("litellm.completion") as mock_completion:
+0253:         mock_completion.return_value = ModelResponse(
+0254:             choices=[Choices(message=Message(content='<code>print("Hello, world!")</code>'))],
+0255:             model="openai/gpt-4o-mini",
+0256:         )
+0257:         result = adapter(
+0258:             dspy.LM(model="openai/gpt-4o-mini", cache=False),
+0259:             {},
+0260:             CodeGeneration,
+0261:             [],
+0262:             {"question": "Write a python program to print 'Hello, world!'"},
+0263:         )
+0264:         assert result[0]["code"].code == 'print("Hello, world!")'
+0265: 
+0266: 
+0267: def test_xml_adapter_full_prompt():
+0268:     class QA(dspy.Signature):
+0269:         query: str = dspy.InputField()
+0270:         context: str | None = dspy.InputField()
+0271:         answer: str = dspy.OutputField()
+0272: 
+0273:     adapter = dspy.XMLAdapter()
+0274:     messages = adapter.format(QA, [], {"query": "when was Marie Curie born"})
+0275: 
+0276:     assert len(messages) == 2
+0277:     assert messages[0]["role"] == "system"
+0278:     assert messages[1]["role"] == "user"
+0279: 
+0280:     union_type_repr = "Union[str, NoneType]" if sys.version_info >= (3, 14) else "UnionType[str, NoneType]"
+0281: 
+0282:     expected_system = (
+0283:         "Your input fields are:\n"
+0284:         "1. `query` (str): \n"
+0285:         f"2. `context` ({union_type_repr}):\n"
+0286:         "Your output fields are:\n"
+0287:         "1. `answer` (str):\n"
+0288:         "All interactions will be structured in the following way, with the appropriate values filled in.\n\n"
+0289:         "<query>\n{query}\n</query>\n\n"
+0290:         "<context>\n{context}\n</context>\n\n"
+0291:         "<answer>\n{answer}\n</answer>\n"
+0292:         "In adhering to this structure, your objective is: \n"
+0293:         "        Given the fields `query`, `context`, produce the fields `answer`."
+0294:     )
+0295: 
+0296:     expected_user = (
+0297:         "<query>\nwhen was Marie Curie born\n</query>\n\n"
+0298:         "Respond with the corresponding output fields wrapped in XML tags `<answer>`."
+0299:     )
+0300: 
+0301:     assert messages[0]["content"] == expected_system
+0302:     assert messages[1]["content"] == expected_user
+0303: 
+0304: 
+0305: def test_format_system_message():
+0306:     class MySignature(dspy.Signature):
+0307:         """Answer the question with multiple answers and scores"""
+0308: 
+0309:         question: str = dspy.InputField()
+0310:         answers: list[str] = dspy.OutputField()
+0311:         scores: list[float] = dspy.OutputField()
+0312: 
+0313:     adapter = dspy.XMLAdapter()
+0314:     system_message = adapter.format_system_message(MySignature)
+0315: 
+0316:     expected_system_message = """Your input fields are:
+0317: 1. `question` (str):
+0318: Your output fields are:
+0319: 1. `answers` (list[str]): 
+0320: 2. `scores` (list[float]):
+0321: All interactions will be structured in the following way, with the appropriate values filled in.
+0322: 
+0323: <question>
+0324: {question}
+0325: </question>
+0326: 
+0327: <answers>
+0328: {answers}        # note: the value you produce must adhere to the JSON schema: {"type": "array", "items": {"type": "string"}}
+0329: </answers>
+0330: 
+0331: <scores>
+0332: {scores}        # note: the value you produce must adhere to the JSON schema: {"type": "array", "items": {"type": "number"}}
+0333: </scores>
+0334: In adhering to this structure, your objective is: 
+0335:         Answer the question with multiple answers and scores"""
+0336:     assert system_message == expected_system_message
+
+### dspy/adapters/types/base_type.py
+0001: import json
+0002: import re
+0003: from typing import TYPE_CHECKING, Any, Optional, get_args, get_origin
+0004: 
+0005: import json_repair
+0006: import pydantic
+0007: 
+0008: from dspy.clients.base_lm import BaseLM
+0009: 
+0010: if TYPE_CHECKING:
+0011:     from litellm import ModelResponseStream
+0012: 
+0013:     from dspy.signatures.signature import Signature
+0014: 
+0015: CUSTOM_TYPE_START_IDENTIFIER = "<<CUSTOM-TYPE-START-IDENTIFIER>>"
+0016: CUSTOM_TYPE_END_IDENTIFIER = "<<CUSTOM-TYPE-END-IDENTIFIER>>"
+0017: 
+0018: 
+0019: class Type(pydantic.BaseModel):
+0020:     """Base class to support creating custom types for DSPy signatures.
+0021: 
+0022:     This is the parent class of DSPy custom types, e.g, dspy.Image. Subclasses must implement the `format` method to
+0023:     return a list of dictionaries (same as the Array of content parts in the OpenAI API user message's content field).
+0024: 
+0025:     Examples:
+0026: 
+0027:         ```python
+0028:         class Image(Type):
+0029:             url: str
+0030: 
+0031:             def format(self) -> list[dict[str, Any]]:
+0032:                 return [{"type": "image_url", "image_url": {"url": self.url}}]
+0033:         ```
+0034:     """
+0035: 
+0036:     def format(self) -> list[dict[str, Any]] | str:
+0037:         raise NotImplementedError
+0038: 
+0039:     @classmethod
+0040:     def description(cls) -> str:
+0041:         """Description of the custom type"""
+0042:         return ""
+0043: 
+0044:     @classmethod
+0045:     def extract_custom_type_from_annotation(cls, annotation):
+0046:         """Extract all custom types from the annotation.
+0047: 
+0048:         This is used to extract all custom types from the annotation of a field, while the annotation can
+0049:         have arbitrary level of nesting. For example, we detect `Tool` is in `list[dict[str, Tool]]`.
+0050:         """
+0051:         # Direct match. Nested type like `list[dict[str, Event]]` passes `isinstance(annotation, type)` in python 3.10
+0052:         # while fails in python 3.11. To accommodate users using python 3.10, we need to capture the error and ignore it.
+0053:         try:
+0054:             if isinstance(annotation, type) and issubclass(annotation, cls):
+0055:                 return [annotation]
+0056:         except TypeError:
+0057:             pass
+0058: 
+0059:         origin = get_origin(annotation)
+0060:         if origin is None:
+0061:             return []
+0062: 
+0063:         result = []
+0064:         # Recurse into all type args
+0065:         for arg in get_args(annotation):
+0066:             result.extend(cls.extract_custom_type_from_annotation(arg))
+0067: 
+0068:         return result
+0069: 
+0070:     @pydantic.model_serializer()
+0071:     def serialize_model(self):
+0072:         formatted = self.format()
+0073:         if isinstance(formatted, list):
+0074:             return (
+0075:                 f"{CUSTOM_TYPE_START_IDENTIFIER}{json.dumps(formatted, ensure_ascii=False)}{CUSTOM_TYPE_END_IDENTIFIER}"
+0076:             )
+0077:         return formatted
+0078: 
+0079:     @classmethod
+0080:     def adapt_to_native_lm_feature(
+0081:         cls,
+0082:         signature: type["Signature"],
+0083:         field_name: str,
+0084:         lm: BaseLM,
+0085:         lm_kwargs: dict[str, Any],
+0086:     ) -> type["Signature"]:
+0087:         """Adapt the custom type to the native LM feature if possible.
+0088: 
+0089:         When the LM and configuration supports the related native LM feature, e.g., native tool calling, native
+0090:         reasoning, etc., we adapt the signature and `lm_kwargs` to enable the native LM feature.
+0091: 
+0092:         Args:
+0093:             signature: The DSPy signature for the LM call.
+0094:             field_name: The name of the field in the signature to adapt to the native LM feature.
+0095:             lm: The LM instance.
+0096:             lm_kwargs: The keyword arguments for the LM call, subject to in-place updates if adaptation if required.
+0097: 
+0098:         Returns:
+0099:             The adapted signature. If the custom type is not natively supported by the LM, return the original
+0100:             signature.
+0101:         """
+0102:         return signature
+0103: 
+0104:     @classmethod
+0105:     def is_streamable(cls) -> bool:
+0106:         """Whether the custom type is streamable."""
+0107:         return False
+0108: 
+0109:     @classmethod
+0110:     def parse_stream_chunk(cls, chunk: "ModelResponseStream") -> Optional["Type"]:
+0111:         """
+0112:         Parse a stream chunk into the custom type.
+0113: 
+0114:         Args:
+0115:             chunk: A stream chunk.
+0116: 
+0117:         Returns:
+0118:             A custom type object or None if the chunk is not for this custom type.
+0119:         """
+0120:         return None
+0121: 
+0122:     @classmethod
+0123:     def parse_lm_response(cls, response: str | dict[str, Any]) -> Optional["Type"]:
+0124:         """Parse a LM response into the custom type.
+0125: 
+0126:         Args:
+0127:             response: A LM response.
+0128: 
+0129:         Returns:
+0130:             A custom type object.
+0131:         """
+0132:         return None
+0133: 
+0134: 
+0135: def split_message_content_for_custom_types(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+0136:     """Split user message content into a list of content blocks.
+0137: 
+0138:     This method splits each user message's content in the `messages` list to be a list of content block, so that
+0139:     the custom types like `dspy.Image` can be properly formatted for better quality. For example, the split content
+0140:     may look like below if the user message has a `dspy.Image` object:
+0141: 
+0142:     ```
+0143:     [
+0144:         {"type": "text", "text": "{text_before_image}"},
+0145:         {"type": "image_url", "image_url": {"url": "{image_url}"}},
+0146:         {"type": "text", "text": "{text_after_image}"},
+0147:     ]
+0148:     ```
+0149: 
+0150:     This is implemented by finding the `<<CUSTOM-TYPE-START-IDENTIFIER>>` and `<<CUSTOM-TYPE-END-IDENTIFIER>>`
+0151:     in the user message content and splitting the content around them. The `<<CUSTOM-TYPE-START-IDENTIFIER>>`
+0152:     and `<<CUSTOM-TYPE-END-IDENTIFIER>>` are the reserved identifiers for the custom types as in `dspy.Type`.
+0153: 
+0154:     Args:
+0155:         messages: a list of messages sent to the LM. The format is the same as [OpenAI API's messages
+0156:             format](https://platform.openai.com/docs/guides/chat-completions/response-format).
+0157: 
+0158:     Returns:
+0159:         A list of messages with the content split into a list of content blocks around custom types content.
+0160:     """
+0161:     for message in messages:
+0162:         if message["role"] != "user":
+0163:             # Custom type messages are only in user messages
+0164:             continue
+0165: 
+0166:         pattern = rf"{CUSTOM_TYPE_START_IDENTIFIER}(.*?){CUSTOM_TYPE_END_IDENTIFIER}"
+0167:         result = []
+0168:         last_end = 0
+0169:         # DSPy adapter always formats user input into a string content before custom type splitting
+0170:         content: str = message["content"]
+0171: 
+0172:         for match in re.finditer(pattern, content, re.DOTALL):
+0173:             start, end = match.span()
+0174: 
+0175:             # Add text before the current block
+0176:             if start > last_end:
+0177:                 result.append({"type": "text", "text": content[last_end:start]})
+0178: 
+0179:             # Parse the JSON inside the block
+0180:             custom_type_content = match.group(1).strip()
+0181:             parsed = None
+0182: 
+0183:             for parse_fn in [json.loads, _parse_doubly_quoted_json, json_repair.loads]:
+0184:                 try:
+0185:                     parsed = parse_fn(custom_type_content)
+0186:                     break
+0187:                 except json.JSONDecodeError:
+0188:                     continue
+0189: 
+0190:             if parsed:
+0191:                 for custom_type_content in parsed:
+0192:                     result.append(custom_type_content)
+0193:             else:
+0194:                 # fallback to raw string if it's not valid JSON
+0195:                 result.append({"type": "text", "text": custom_type_content})
+0196: 
+0197:             last_end = end
+0198: 
+0199:         if last_end == 0:
+0200:             # No custom type found, return the original message
+0201:             continue
+0202: 
+0203:         # Add any remaining text after the last match
+0204:         if last_end < len(content):
+0205:             result.append({"type": "text", "text": content[last_end:]})
+0206: 
+0207:         message["content"] = result
+0208: 
+0209:     return messages
+0210: 
+0211: 
+0212: def _parse_doubly_quoted_json(json_str: str) -> Any:
+0213:     """
+0214:     Parse a doubly quoted JSON string into a Python dict.
+0215:     `dspy.Type` can be json-encoded twice if included in either list or dict, e.g., `list[dspy.experimental.Document]`
+0216:     """
+0217:     return json.loads(json.loads(f'"{json_str}"'))
+
+Return JSON that matches the schema exactly.

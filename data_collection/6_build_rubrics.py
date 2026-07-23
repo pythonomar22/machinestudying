@@ -35,13 +35,15 @@ import argparse
 import hashlib
 import importlib.util
 import json
+import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 DC = Path(__file__).resolve().parent
-ARTIFACTS = DC / "artifacts" / "6_build_rubrics"
-FINALISTS_DIR = DC / "artifacts" / "5_critic_selection"
+ART_DIRNAME = os.environ.get("DC_ARTIFACTS", "artifacts")
+ARTIFACTS = DC / ART_DIRNAME / "6_build_rubrics"
+FINALISTS_DIR = DC / ART_DIRNAME / "5_critic_selection"
 
 
 def load_stage3a():
@@ -53,7 +55,7 @@ def load_stage3a():
 
 gen = load_stage3a()
 
-WORKERS = 4          # concurrent codex sessions per scope
+WORKERS = int(os.environ.get("DC_WORKERS", "4"))  # concurrent codex sessions per scope
 MAX_SPAN_LINES = 300  # paper: "never exceed 300 lines"
 
 # ---------------------------------------------------------------------------

@@ -1,0 +1,1178 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_93a8d0228449`
+- Label: `prompt_compilation_customization_and_inspection`
+- Question: `Sometimes my model replies with plain JSON even though the default chat rendering asked for field markers. I want to know whether DSPy will transparently salvage that by switching parsing strategies, and how to force the strict failure mode when I do not want that fallback.
+
+Please keep it offline and reproducible. I want one tiny script that shows both behaviors side by side using a stub LM, so I can keep it as a regression test.
+
+Give me a complete, runnable Python program that first succeeds via the permissive path, then fails via the strict path, prints both outcomes, and asserts the exact split in behavior.`
+- Gold answer:
+```python
+from types import SimpleNamespace
+
+import dspy
+from dspy.utils.dummies import DummyLM
+from dspy.utils.exceptions import AdapterParseError
+
+
+class RawJSONDummy(DummyLM):
+    def __init__(self):
+        super().__init__([{"answer": "unused"}])
+        self.model = "dummy-json"
+
+    def forward(self, prompt=None, messages=None, **kwargs):
+        return SimpleNamespace(
+            choices=[
+                SimpleNamespace(
+                    message=SimpleNamespace(content='{"answer": "Paris"}', tool_calls=None),
+                    finish_reason="stop",
+                )
+            ],
+            usage={},
+            model=self.model,
+        )
+
+
+signature = dspy.make_signature("question -> answer")
+lm = RawJSONDummy()
+
+permissive = dspy.ChatAdapter()
+result = permissive(lm, {}, signature, [], {"question": "What is the capital of France?"})
+print("PERMISSIVE RESULT:", result)
+assert result == [{"answer": "Paris"}]
+
+strict = dspy.ChatAdapter(use_json_adapter_fallback=False)
+try:
+    strict(lm, {}, signature, [], {"question": "What is the capital of France?"})
+    raise AssertionError("Expected AdapterParseError when JSON fallback is disabled")
+except AdapterParseError as exc:
+    print("STRICT ERROR TYPE:", type(exc).__name__)
+    print("STRICT ERROR MESSAGE:\n", exc)
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/adapters/chat_adapter.py",
+    "symbol": "ChatAdapter.__call__"
+  },
+  {
+    "file": "tests/adapters/test_chat_adapter.py",
+    "symbol": "test_chat_adapter_respects_use_json_adapter_fallback_flag"
+  }
+]
+
+## Full evidence files
+### dspy/adapters/chat_adapter.py
+0001: import re
+0002: import textwrap
+0003: from typing import Any, NamedTuple
+0004: 
+0005: from pydantic.fields import FieldInfo
+0006: 
+0007: from dspy.adapters.base import Adapter
+0008: from dspy.adapters.utils import (
+0009:     format_field_value,
+0010:     get_annotation_name,
+0011:     get_field_description_string,
+0012:     parse_value,
+0013:     translate_field_type,
+0014: )
+0015: from dspy.clients.base_lm import BaseLM
+0016: from dspy.signatures.signature import Signature
+0017: from dspy.utils.callback import BaseCallback
+0018: from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
+0019: 
+0020: field_header_pattern = re.compile(r"\[\[ ## (\w+) ## \]\]")
+0021: 
+0022: 
+0023: class FieldInfoWithName(NamedTuple):
+0024:     name: str
+0025:     info: FieldInfo
+0026: 
+0027: 
+0028: class ChatAdapter(Adapter):
+0029:     """Default Adapter for most language models.
+0030: 
+0031:     The ChatAdapter formats DSPy signatures into a format compatible with most language models.
+0032:     It uses delimiter patterns like `[[ ## field_name ## ]]` to clearly separate input and output fields in
+0033:     the message content.
+0034: 
+0035:     Key features:
+0036:         - Structures inputs and outputs using field header markers for clear field delineation.
+0037:         - Provides automatic fallback to JSONAdapter if the chat format fails.
+0038:     """
+0039: 
+0040:     def __init__(
+0041:         self,
+0042:         callbacks: list[BaseCallback] | None = None,
+0043:         use_native_function_calling: bool = False,
+0044:         native_response_types: list[type[type]] | None = None,
+0045:         use_json_adapter_fallback: bool = True,
+0046:     ):
+0047:         """
+0048:         Args:
+0049:             callbacks: List of callback functions to execute during adapter methods.
+0050:             use_native_function_calling: Whether to enable native function calling capabilities.
+0051:             native_response_types: List of output field types handled by native LM features.
+0052:             use_json_adapter_fallback: Whether to automatically fallback to JSONAdapter if the ChatAdapter fails.
+0053:                 If True, when an error occurs (except ContextWindowExceededError), the adapter will retry using
+0054:                 JSONAdapter. Defaults to True.
+0055:         """
+0056:         super().__init__(
+0057:             callbacks=callbacks,
+0058:             use_native_function_calling=use_native_function_calling,
+0059:             native_response_types=native_response_types,
+0060:         )
+0061:         self.use_json_adapter_fallback = use_json_adapter_fallback
+0062: 
+0063:     def __call__(
+0064:         self,
+0065:         lm: BaseLM,
+0066:         lm_kwargs: dict[str, Any],
+0067:         signature: type[Signature],
+0068:         demos: list[dict[str, Any]],
+0069:         inputs: dict[str, Any],
+0070:     ) -> list[dict[str, Any]]:
+0071:         try:
+0072:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)
+0073:         except Exception as e:
+0074:             # fallback to JSONAdapter
+0075:             from dspy.adapters.json_adapter import JSONAdapter
+0076: 
+0077:             if (
+0078:                 isinstance(e, ContextWindowExceededError)
+0079:                 or isinstance(self, JSONAdapter)
+0080:                 or not self.use_json_adapter_fallback
+0081:             ):
+0082:                 # On context window exceeded error, already using JSONAdapter, or use_json_adapter_fallback is False
+0083:                 # we don't want to retry with a different adapter. Raise the original error instead of the fallback error.
+0084:                 raise e
+0085:             return JSONAdapter()(lm, lm_kwargs, signature, demos, inputs)
+0086: 
+0087:     async def acall(
+0088:         self,
+0089:         lm: BaseLM,
+0090:         lm_kwargs: dict[str, Any],
+0091:         signature: type[Signature],
+0092:         demos: list[dict[str, Any]],
+0093:         inputs: dict[str, Any],
+0094:     ) -> list[dict[str, Any]]:
+0095:         try:
+0096:             return await super().acall(lm, lm_kwargs, signature, demos, inputs)
+0097:         except Exception as e:
+0098:             # fallback to JSONAdapter
+0099:             from dspy.adapters.json_adapter import JSONAdapter
+0100: 
+0101:             if (
+0102:                 isinstance(e, ContextWindowExceededError)
+0103:                 or isinstance(self, JSONAdapter)
+0104:                 or not self.use_json_adapter_fallback
+0105:             ):
+0106:                 # On context window exceeded error, already using JSONAdapter, or use_json_adapter_fallback is False
+0107:                 # we don't want to retry with a different adapter. Raise the original error instead of the fallback error.
+0108:                 raise e
+0109:             return await JSONAdapter().acall(lm, lm_kwargs, signature, demos, inputs)
+0110: 
+0111:     def format_field_description(self, signature: type[Signature]) -> str:
+0112:         return (
+0113:             f"Your input fields are:\n{get_field_description_string(signature.input_fields)}\n"
+0114:             f"Your output fields are:\n{get_field_description_string(signature.output_fields)}"
+0115:         )
+0116: 
+0117:     def format_field_structure(self, signature: type[Signature]) -> str:
+0118:         """
+0119:         `ChatAdapter` requires input and output fields to be in their own sections, with section header using markers
+0120:         `[[ ## field_name ## ]]`. An arbitrary field `completed` ([[ ## completed ## ]]) is added to the end of the
+0121:         output fields section to indicate the end of the output fields.
+0122:         """
+0123:         parts = []
+0124:         parts.append("All interactions will be structured in the following way, with the appropriate values filled in.")
+0125: 
+0126:         def format_signature_fields_for_instructions(fields: dict[str, FieldInfo]):
+0127:             return self.format_field_with_value(
+0128:                 fields_with_values={
+0129:                     FieldInfoWithName(name=field_name, info=field_info): translate_field_type(field_name, field_info)
+0130:                     for field_name, field_info in fields.items()
+0131:                 },
+0132:             )
+0133: 
+0134:         parts.append(format_signature_fields_for_instructions(signature.input_fields))
+0135:         parts.append(format_signature_fields_for_instructions(signature.output_fields))
+0136:         parts.append("[[ ## completed ## ]]\n")
+0137:         return "\n\n".join(parts).strip()
+0138: 
+0139:     def format_task_description(self, signature: type[Signature]) -> str:
+0140:         instructions = textwrap.dedent(signature.instructions)
+0141:         objective = ("\n" + " " * 8).join([""] + instructions.splitlines())
+0142:         return f"In adhering to this structure, your objective is: {objective}"
+0143: 
+0144:     def format_user_message_content(
+0145:         self,
+0146:         signature: type[Signature],
+0147:         inputs: dict[str, Any],
+0148:         prefix: str = "",
+0149:         suffix: str = "",
+0150:         main_request: bool = False,
+0151:     ) -> str:
+0152:         messages = [prefix]
+0153:         for k, v in signature.input_fields.items():
+0154:             if k in inputs:
+0155:                 value = inputs.get(k)
+0156:                 formatted_field_value = format_field_value(field_info=v, value=value)
+0157:                 messages.append(f"[[ ## {k} ## ]]\n{formatted_field_value}")
+0158: 
+0159:         if main_request:
+0160:             output_requirements = self.user_message_output_requirements(signature)
+0161:             if output_requirements is not None:
+0162:                 messages.append(output_requirements)
+0163: 
+0164:         messages.append(suffix)
+0165:         return "\n\n".join(messages).strip()
+0166: 
+0167:     def user_message_output_requirements(self, signature: type[Signature]) -> str:
+0168:         """Returns a simplified format reminder for the language model.
+0169: 
+0170:         In chat-based interactions, language models may lose track of the required output format
+0171:         as the conversation context grows longer. This method generates a concise reminder of
+0172:         the expected output structure that can be included in user messages.
+0173: 
+0174:         Args:
+0175:             signature (Type[Signature]): The DSPy signature defining the expected input/output fields.
+0176: 
+0177:         Returns:
+0178:             str: A simplified description of the required output format.
+0179: 
+0180:         Note:
+0181:             This is a more lightweight version of `format_field_structure` specifically designed
+0182:             for inline reminders within chat messages.
+0183:         """
+0184: 
+0185:         def type_info(v):
+0186:             if v.annotation is not str:
+0187:                 return f" (must be formatted as a valid Python {get_annotation_name(v.annotation)})"
+0188:             else:
+0189:                 return ""
+0190: 
+0191:         message = "Respond with the corresponding output fields, starting with the field "
+0192:         message += ", then ".join(f"`[[ ## {f} ## ]]`{type_info(v)}" for f, v in signature.output_fields.items())
+0193:         message += ", and then ending with the marker for `[[ ## completed ## ]]`."
+0194:         return message
+0195: 
+0196:     def format_assistant_message_content(
+0197:         self,
+0198:         signature: type[Signature],
+0199:         outputs: dict[str, Any],
+0200:         missing_field_message=None,
+0201:     ) -> str:
+0202:         assistant_message_content = self.format_field_with_value(
+0203:             {
+0204:                 FieldInfoWithName(name=k, info=v): outputs.get(k, missing_field_message)
+0205:                 for k, v in signature.output_fields.items()
+0206:             },
+0207:         )
+0208:         assistant_message_content += "\n\n[[ ## completed ## ]]\n"
+0209:         return assistant_message_content
+0210: 
+0211:     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
+0212:         sections = [(None, [])]
+0213: 
+0214:         for line in completion.splitlines():
+0215:             match = field_header_pattern.match(line.strip())
+0216:             if match:
+0217:                 # If the header pattern is found, split the rest of the line as content
+0218:                 header = match.group(1)
+0219:                 remaining_content = line[match.end() :].strip()
+0220:                 sections.append((header, [remaining_content] if remaining_content else []))
+0221:             else:
+0222:                 sections[-1][1].append(line)
+0223: 
+0224:         sections = [(k, "\n".join(v).strip()) for k, v in sections]
+0225: 
+0226:         fields = {}
+0227:         for k, v in sections:
+0228:             if (k not in fields) and (k in signature.output_fields):
+0229:                 try:
+0230:                     fields[k] = parse_value(v, signature.output_fields[k].annotation)
+0231:                 except Exception as e:
+0232:                     raise AdapterParseError(
+0233:                         adapter_name="ChatAdapter",
+0234:                         signature=signature,
+0235:                         lm_response=completion,
+0236:                         message=f"Failed to parse field {k} with value {v} from the LM response. Error message: {e}",
+0237:                     )
+0238:         if fields.keys() != signature.output_fields.keys():
+0239:             raise AdapterParseError(
+0240:                 adapter_name="ChatAdapter",
+0241:                 signature=signature,
+0242:                 lm_response=completion,
+0243:                 parsed_result=fields,
+0244:             )
+0245: 
+0246:         return fields
+0247: 
+0248:     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any]) -> str:
+0249:         """
+0250:         Formats the values of the specified fields according to the field's DSPy type (input or output),
+0251:         annotation (e.g. str, int, etc.), and the type of the value itself. Joins the formatted values
+0252:         into a single string, which is is a multiline string if there are multiple fields.
+0253: 
+0254:         Args:
+0255:             fields_with_values: A dictionary mapping information about a field to its corresponding
+0256:                 value.
+0257: 
+0258:         Returns:
+0259:             The joined formatted values of the fields, represented as a string
+0260:         """
+0261:         output = []
+0262:         for field, field_value in fields_with_values.items():
+0263:             formatted_field_value = format_field_value(field_info=field.info, value=field_value)
+0264:             output.append(f"[[ ## {field.name} ## ]]\n{formatted_field_value}")
+0265: 
+0266:         return "\n\n".join(output).strip()
+0267: 
+0268:     def format_finetune_data(
+0269:         self,
+0270:         signature: type[Signature],
+0271:         demos: list[dict[str, Any]],
+0272:         inputs: dict[str, Any],
+0273:         outputs: dict[str, Any],
+0274:     ) -> dict[str, list[Any]]:
+0275:         """
+0276:         Format the call data into finetuning data according to the OpenAI API specifications.
+0277: 
+0278:         For the chat adapter, this means formatting the data as a list of messages, where each message is a dictionary
+0279:         with a "role" and "content" key. The role can be "system", "user", or "assistant". Then, the messages are
+0280:         wrapped in a dictionary with a "messages" key.
+0281:         """
+0282:         system_user_messages = self.format(  # returns a list of dicts with the keys "role" and "content"
+0283:             signature=signature, demos=demos, inputs=inputs
+0284:         )
+0285:         assistant_message_content = self.format_assistant_message_content(  # returns a string, without the role
+0286:             signature=signature, outputs=outputs
+0287:         )
+0288:         assistant_message = {"role": "assistant", "content": assistant_message_content}
+0289:         messages = system_user_messages + [assistant_message]
+0290:         return {"messages": messages}
+
+### tests/adapters/test_chat_adapter.py
+0001: from typing import Literal
+0002: from unittest import mock
+0003: 
+0004: import pydantic
+0005: import pytest
+0006: from litellm.utils import ChatCompletionMessageToolCall, Choices, Function, Message, ModelResponse
+0007: 
+0008: import dspy
+0009: from dspy.experimental import Citations
+0010: 
+0011: 
+0012: @pytest.mark.parametrize(
+0013:     "input_literal, output_literal, input_value, expected_input_str, expected_output_str",
+0014:     [
+0015:         # Scenario 1: double quotes escaped within strings
+0016:         (
+0017:             Literal["one", "two", 'three"'],
+0018:             Literal["four", "five", 'six"'],
+0019:             "two",
+0020:             "Literal['one', 'two', 'three\"']",
+0021:             "Literal['four', 'five', 'six\"']",
+0022:         ),
+0023:         # Scenario 2: Single quotes inside strings
+0024:         (
+0025:             Literal["she's here", "okay", "test"],
+0026:             Literal["done", "maybe'soon", "later"],
+0027:             "she's here",
+0028:             "Literal[\"she's here\", 'okay', 'test']",
+0029:             "Literal['done', \"maybe'soon\", 'later']",
+0030:         ),
+0031:         # Scenario 3: Strings containing both single and double quotes
+0032:         (
+0033:             Literal["both\"and'", "another"],
+0034:             Literal["yet\"another'", "plain"],
+0035:             "another",
+0036:             "Literal['both\"and\\'', 'another']",
+0037:             "Literal['yet\"another\\'', 'plain']",
+0038:         ),
+0039:         # Scenario 4: No quotes at all (check the default)
+0040:         (
+0041:             Literal["foo", "bar"],
+0042:             Literal["baz", "qux"],
+0043:             "foo",
+0044:             "Literal['foo', 'bar']",
+0045:             "Literal['baz', 'qux']",
+0046:         ),
+0047:         # Scenario 5: Mixed types
+0048:         (
+0049:             Literal[1, "bar"],
+0050:             Literal[True, 3, "foo"],
+0051:             "bar",
+0052:             "Literal[1, 'bar']",
+0053:             "Literal[True, 3, 'foo']",
+0054:         ),
+0055:     ],
+0056: )
+0057: def test_chat_adapter_quotes_literals_as_expected(
+0058:     input_literal, output_literal, input_value, expected_input_str, expected_output_str
+0059: ):
+0060:     """
+0061:     This test verifies that when we declare Literal fields with various mixes
+0062:     of single/double quotes, the generated content string includes those
+0063:     Literals exactly as we want them to appear (like IPython does).
+0064:     """
+0065: 
+0066:     class TestSignature(dspy.Signature):
+0067:         input_text: input_literal = dspy.InputField()
+0068:         output_text: output_literal = dspy.OutputField()
+0069: 
+0070:     program = dspy.Predict(TestSignature)
+0071: 
+0072:     dspy.configure(lm=dspy.LM(model="openai/gpt-4o"), adapter=dspy.ChatAdapter())
+0073: 
+0074:     with mock.patch("litellm.completion") as mock_completion:
+0075:         program(input_text=input_value)
+0076: 
+0077:     mock_completion.assert_called_once()
+0078:     _, call_kwargs = mock_completion.call_args
+0079:     content = call_kwargs["messages"][0]["content"]
+0080: 
+0081:     assert expected_input_str in content
+0082:     assert expected_output_str in content
+0083: 
+0084: 
+0085: def test_chat_adapter_sync_call():
+0086:     signature = dspy.make_signature("question->answer")
+0087:     adapter = dspy.ChatAdapter()
+0088:     lm = dspy.utils.DummyLM([{"answer": "Paris"}])
+0089:     result = adapter(lm, {}, signature, [], {"question": "What is the capital of France?"})
+0090:     assert result == [{"answer": "Paris"}]
+0091: 
+0092: 
+0093: @pytest.mark.asyncio
+0094: async def test_chat_adapter_async_call():
+0095:     signature = dspy.make_signature("question->answer")
+0096:     adapter = dspy.ChatAdapter()
+0097:     lm = dspy.utils.DummyLM([{"answer": "Paris"}])
+0098:     result = await adapter.acall(lm, {}, signature, [], {"question": "What is the capital of France?"})
+0099:     assert result == [{"answer": "Paris"}]
+0100: 
+0101: 
+0102: def test_chat_adapter_with_pydantic_models():
+0103:     """
+0104:     This test verifies that ChatAdapter can handle different input and output field types, both basic and nested.
+0105:     """
+0106: 
+0107:     class DogClass(pydantic.BaseModel):
+0108:         dog_breeds: list[str] = pydantic.Field(description="List of the breeds of dogs")
+0109:         num_dogs: int = pydantic.Field(description="Number of dogs the owner has", ge=0, le=10)
+0110: 
+0111:     class PetOwner(pydantic.BaseModel):
+0112:         name: str = pydantic.Field(description="Name of the owner")
+0113:         num_pets: int = pydantic.Field(description="Amount of pets the owner has", ge=0, le=100)
+0114:         dogs: DogClass = pydantic.Field(description="Nested Pydantic class with dog specific information ")
+0115: 
+0116:     class Answer(pydantic.BaseModel):
+0117:         result: str
+0118:         analysis: str
+0119: 
+0120:     class TestSignature(dspy.Signature):
+0121:         owner: PetOwner = dspy.InputField()
+0122:         question: str = dspy.InputField()
+0123:         output: Answer = dspy.OutputField()
+0124: 
+0125:     dspy.configure(lm=dspy.LM(model="openai/gpt-4o"), adapter=dspy.ChatAdapter())
+0126:     program = dspy.Predict(TestSignature)
+0127: 
+0128:     with mock.patch("litellm.completion") as mock_completion:
+0129:         program(
+0130:             owner=PetOwner(name="John", num_pets=5, dogs=DogClass(dog_breeds=["labrador", "chihuahua"], num_dogs=2)),
+0131:             question="How many non-dog pets does John have?",
+0132:         )
+0133: 
+0134:     mock_completion.assert_called_once()
+0135:     _, call_kwargs = mock_completion.call_args
+0136: 
+0137:     system_content = call_kwargs["messages"][0]["content"]
+0138:     user_content = call_kwargs["messages"][1]["content"]
+0139:     assert "1. `owner` (PetOwner)" in system_content
+0140:     assert "2. `question` (str)" in system_content
+0141:     assert "1. `output` (Answer)" in system_content
+0142: 
+0143:     assert "name" in user_content
+0144:     assert "num_pets" in user_content
+0145:     assert "dogs" in user_content
+0146:     assert "dog_breeds" in user_content
+0147:     assert "num_dogs" in user_content
+0148:     assert "How many non-dog pets does John have?" in user_content
+0149: 
+0150: 
+0151: def test_chat_adapter_signature_information():
+0152:     """
+0153:     This test ensures that the signature information sent to the LM follows an expected format.
+0154:     """
+0155: 
+0156:     class TestSignature(dspy.Signature):
+0157:         input1: str = dspy.InputField(desc="String Input")
+0158:         input2: int = dspy.InputField(desc="Integer Input")
+0159:         output: str = dspy.OutputField(desc="String Output")
+0160: 
+0161:     dspy.configure(lm=dspy.LM(model="openai/gpt-4o"), adapter=dspy.ChatAdapter())
+0162:     program = dspy.Predict(TestSignature)
+0163: 
+0164:     with mock.patch("litellm.completion") as mock_completion:
+0165:         program(input1="Test", input2=11)
+0166: 
+0167:     mock_completion.assert_called_once()
+0168:     _, call_kwargs = mock_completion.call_args
+0169: 
+0170:     assert len(call_kwargs["messages"]) == 2
+0171:     assert call_kwargs["messages"][0]["role"] == "system"
+0172:     assert call_kwargs["messages"][1]["role"] == "user"
+0173: 
+0174:     system_content = call_kwargs["messages"][0]["content"]
+0175:     user_content = call_kwargs["messages"][1]["content"]
+0176: 
+0177:     assert "1. `input1` (str)" in system_content
+0178:     assert "2. `input2` (int)" in system_content
+0179:     assert "1. `output` (str)" in system_content
+0180:     assert "[[ ## input1 ## ]]\n{input1}" in system_content
+0181:     assert "[[ ## input2 ## ]]\n{input2}" in system_content
+0182:     assert "[[ ## output ## ]]\n{output}" in system_content
+0183:     assert "[[ ## completed ## ]]" in system_content
+0184: 
+0185:     assert "[[ ## input1 ## ]]" in user_content
+0186:     assert "[[ ## input2 ## ]]" in user_content
+0187:     assert "[[ ## output ## ]]" in user_content
+0188:     assert "[[ ## completed ## ]]" in user_content
+0189: 
+0190: 
+0191: def test_chat_adapter_exception_raised_on_failure():
+0192:     """
+0193:     This test ensures that on an error, ChatAdapter raises an explicit exception.
+0194:     """
+0195:     signature = dspy.make_signature("question->answer")
+0196:     adapter = dspy.ChatAdapter()
+0197:     invalid_completion = "{'output':'mismatched value'}"
+0198:     with pytest.raises(dspy.utils.exceptions.AdapterParseError, match="Adapter ChatAdapter failed to parse*"):
+0199:         adapter.parse(signature, invalid_completion)
+0200: 
+0201: 
+0202: def test_chat_adapter_formats_image():
+0203:     # Test basic image formatting
+0204:     image = dspy.Image(url="https://example.com/image.jpg")
+0205: 
+0206:     class MySignature(dspy.Signature):
+0207:         image: dspy.Image = dspy.InputField()
+0208:         text: str = dspy.OutputField()
+0209: 
+0210:     adapter = dspy.ChatAdapter()
+0211:     messages = adapter.format(MySignature, [], {"image": image})
+0212: 
+0213:     assert len(messages) == 2
+0214:     user_message_content = messages[1]["content"]
+0215:     assert user_message_content is not None
+0216: 
+0217:     # The message should have 3 chunks of types: text, image_url, text
+0218:     assert len(user_message_content) == 3
+0219:     assert user_message_content[0]["type"] == "text"
+0220:     assert user_message_content[2]["type"] == "text"
+0221: 
+0222:     # Assert that the image is formatted correctly
+0223:     expected_image_content = {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
+0224:     assert expected_image_content in user_message_content
+0225: 
+0226: 
+0227: def test_chat_adapter_formats_image_with_few_shot_examples():
+0228:     class MySignature(dspy.Signature):
+0229:         image: dspy.Image = dspy.InputField()
+0230:         text: str = dspy.OutputField()
+0231: 
+0232:     adapter = dspy.ChatAdapter()
+0233: 
+0234:     demos = [
+0235:         dspy.Example(
+0236:             image=dspy.Image(url="https://example.com/image1.jpg"),
+0237:             text="This is a test image",
+0238:         ),
+0239:         dspy.Example(
+0240:             image=dspy.Image(url="https://example.com/image2.jpg"),
+0241:             text="This is another test image",
+0242:         ),
+0243:     ]
+0244:     messages = adapter.format(MySignature, demos, {"image": dspy.Image(url="https://example.com/image3.jpg")})
+0245: 
+0246:     # 1 system message, 2 few shot examples (1 user and assistant message for each example), 1 user message
+0247:     assert len(messages) == 6
+0248: 
+0249:     assert "[[ ## completed ## ]]\n" in messages[2]["content"]
+0250:     assert "[[ ## completed ## ]]\n" in messages[4]["content"]
+0251: 
+0252:     assert {"type": "image_url", "image_url": {"url": "https://example.com/image1.jpg"}} in messages[1]["content"]
+0253:     assert {"type": "image_url", "image_url": {"url": "https://example.com/image2.jpg"}} in messages[3]["content"]
+0254:     assert {"type": "image_url", "image_url": {"url": "https://example.com/image3.jpg"}} in messages[5]["content"]
+0255: 
+0256: 
+0257: def test_chat_adapter_formats_image_with_nested_images():
+0258:     class ImageWrapper(pydantic.BaseModel):
+0259:         images: list[dspy.Image]
+0260:         tag: list[str]
+0261: 
+0262:     class MySignature(dspy.Signature):
+0263:         image: ImageWrapper = dspy.InputField()
+0264:         text: str = dspy.OutputField()
+0265: 
+0266:     image1 = dspy.Image(url="https://example.com/image1.jpg")
+0267:     image2 = dspy.Image(url="https://example.com/image2.jpg")
+0268:     image3 = dspy.Image(url="https://example.com/image3.jpg")
+0269: 
+0270:     image_wrapper = ImageWrapper(images=[image1, image2, image3], tag=["test", "example"])
+0271: 
+0272:     adapter = dspy.ChatAdapter()
+0273:     messages = adapter.format(MySignature, [], {"image": image_wrapper})
+0274: 
+0275:     expected_image1_content = {"type": "image_url", "image_url": {"url": "https://example.com/image1.jpg"}}
+0276:     expected_image2_content = {"type": "image_url", "image_url": {"url": "https://example.com/image2.jpg"}}
+0277:     expected_image3_content = {"type": "image_url", "image_url": {"url": "https://example.com/image3.jpg"}}
+0278: 
+0279:     assert expected_image1_content in messages[1]["content"]
+0280:     assert expected_image2_content in messages[1]["content"]
+0281:     assert expected_image3_content in messages[1]["content"]
+0282: 
+0283: 
+0284: def test_chat_adapter_formats_image_with_few_shot_examples_with_nested_images():
+0285:     class ImageWrapper(pydantic.BaseModel):
+0286:         images: list[dspy.Image]
+0287:         tag: list[str]
+0288: 
+0289:     class MySignature(dspy.Signature):
+0290:         image: ImageWrapper = dspy.InputField()
+0291:         text: str = dspy.OutputField()
+0292: 
+0293:     image1 = dspy.Image(url="https://example.com/image1.jpg")
+0294:     image2 = dspy.Image(url="https://example.com/image2.jpg")
+0295:     image3 = dspy.Image(url="https://example.com/image3.jpg")
+0296: 
+0297:     image_wrapper = ImageWrapper(images=[image1, image2, image3], tag=["test", "example"])
+0298:     demos = [
+0299:         dspy.Example(
+0300:             image=image_wrapper,
+0301:             text="This is a test image",
+0302:         ),
+0303:     ]
+0304: 
+0305:     image_wrapper_2 = ImageWrapper(images=[dspy.Image(url="https://example.com/image4.jpg")], tag=["test", "example"])
+0306:     adapter = dspy.ChatAdapter()
+0307:     messages = adapter.format(MySignature, demos, {"image": image_wrapper_2})
+0308: 
+0309:     assert len(messages) == 4
+0310: 
+0311:     # Image information in the few-shot example's user message
+0312:     expected_image1_content = {"type": "image_url", "image_url": {"url": "https://example.com/image1.jpg"}}
+0313:     expected_image2_content = {"type": "image_url", "image_url": {"url": "https://example.com/image2.jpg"}}
+0314:     expected_image3_content = {"type": "image_url", "image_url": {"url": "https://example.com/image3.jpg"}}
+0315:     assert expected_image1_content in messages[1]["content"]
+0316:     assert expected_image2_content in messages[1]["content"]
+0317:     assert expected_image3_content in messages[1]["content"]
+0318: 
+0319:     # The query image is formatted in the last user message
+0320:     assert {"type": "image_url", "image_url": {"url": "https://example.com/image4.jpg"}} in messages[-1]["content"]
+0321: 
+0322: 
+0323: def test_chat_adapter_with_tool():
+0324:     class MySignature(dspy.Signature):
+0325:         """Answer question with the help of the tools"""
+0326: 
+0327:         question: str = dspy.InputField()
+0328:         tools: list[dspy.Tool] = dspy.InputField()
+0329:         answer: str = dspy.OutputField()
+0330:         tool_calls: dspy.ToolCalls = dspy.OutputField()
+0331: 
+0332:     def get_weather(city: str) -> str:
+0333:         """Get the weather for a city"""
+0334:         return f"The weather in {city} is sunny"
+0335: 
+0336:     def get_population(country: str, year: int) -> str:
+0337:         """Get the population for a country"""
+0338:         return f"The population of {country} in {year} is 1000000"
+0339: 
+0340:     tools = [dspy.Tool(get_weather), dspy.Tool(get_population)]
+0341: 
+0342:     adapter = dspy.ChatAdapter()
+0343:     messages = adapter.format(MySignature, [], {"question": "What is the weather in Tokyo?", "tools": tools})
+0344: 
+0345:     assert len(messages) == 2
+0346: 
+0347:     # The output field type description should be included in the system message even if the output field is nested
+0348:     assert dspy.ToolCalls.description() in messages[0]["content"]
+0349: 
+0350:     # The user message should include the question and the tools
+0351:     assert "What is the weather in Tokyo?" in messages[1]["content"]
+0352:     assert "get_weather" in messages[1]["content"]
+0353:     assert "get_population" in messages[1]["content"]
+0354: 
+0355:     # Tool arguments format should be included in the user message
+0356:     assert "{'city': {'type': 'string'}}" in messages[1]["content"]
+0357:     assert "{'country': {'type': 'string'}, 'year': {'type': 'integer'}}" in messages[1]["content"]
+0358: 
+0359: 
+0360: def test_chat_adapter_with_code():
+0361:     # Test with code as input field
+0362:     class CodeAnalysis(dspy.Signature):
+0363:         """Analyze the time complexity of the code"""
+0364: 
+0365:         code: dspy.Code = dspy.InputField()
+0366:         result: str = dspy.OutputField()
+0367: 
+0368:     adapter = dspy.ChatAdapter()
+0369:     messages = adapter.format(CodeAnalysis, [], {"code": "print('Hello, world!')"})
+0370: 
+0371:     assert len(messages) == 2
+0372: 
+0373:     # The output field type description should be included in the system message even if the output field is nested
+0374:     assert dspy.Code.description() in messages[0]["content"]
+0375: 
+0376:     # The user message should include the question and the tools
+0377:     assert "print('Hello, world!')" in messages[1]["content"]
+0378: 
+0379:     # Test with code as output field
+0380:     class CodeGeneration(dspy.Signature):
+0381:         """Generate code to answer the question"""
+0382: 
+0383:         question: str = dspy.InputField()
+0384:         code: dspy.Code = dspy.OutputField()
+0385: 
+0386:     adapter = dspy.ChatAdapter()
+0387:     with mock.patch("litellm.completion") as mock_completion:
+0388:         mock_completion.return_value = ModelResponse(
+0389:             choices=[Choices(message=Message(content='[[ ## code ## ]]\nprint("Hello, world!")'))],
+0390:             model="openai/gpt-4o-mini",
+0391:         )
+0392:         result = adapter(
+0393:             dspy.LM(model="openai/gpt-4o-mini", cache=False),
+0394:             {},
+0395:             CodeGeneration,
+0396:             [],
+0397:             {"question": "Write a python program to print 'Hello, world!'"},
+0398:         )
+0399:         assert result[0]["code"].code == 'print("Hello, world!")'
+0400: 
+0401: 
+0402: def test_code_output_field_omits_json_schema_in_prompt():
+0403:     """Regression test for #9251: dspy.Code should avoid duplicating large JSON schema text."""
+0404:     class CodeGeneration(dspy.Signature):
+0405:         """Generate code to answer the question"""
+0406:         question: str = dspy.InputField()
+0407:         code: dspy.Code = dspy.OutputField()
+0408: 
+0409:     adapter = dspy.ChatAdapter()
+0410:     messages = adapter.format(CodeGeneration, [], {"question": "Hello"})
+0411:     system_content = messages[0]["content"]
+0412: 
+0413:     assert dspy.Code.description() in system_content
+0414:     assert "JSON schema" not in system_content
+0415:     assert '"properties"' not in system_content
+0416:     assert "Code type in DSPy" not in system_content
+0417: 
+0418: 
+0419: def test_citations_output_field_keeps_json_schema_in_prompt():
+0420:     """Non-Code custom types should keep schema guidance for structured output reliability."""
+0421: 
+0422:     class CitationGeneration(dspy.Signature):
+0423:         question: str = dspy.InputField()
+0424:         citations: Citations = dspy.OutputField()
+0425: 
+0426:     adapter = dspy.ChatAdapter()
+0427:     messages = adapter.format(CitationGeneration, [], {"question": "Hello"})
+0428:     system_content = messages[0]["content"]
+0429: 
+0430:     assert "must adhere to the JSON schema" in system_content
+0431:     assert "Type description of Citations" in system_content
+0432: 
+0433: 
+0434: def test_chat_adapter_formats_conversation_history():
+0435:     class MySignature(dspy.Signature):
+0436:         question: str = dspy.InputField()
+0437:         history: dspy.History = dspy.InputField()
+0438:         answer: str = dspy.OutputField()
+0439: 
+0440:     history = dspy.History(
+0441:         messages=[
+0442:             {"question": "What is the capital of France?", "answer": "Paris"},
+0443:             {"question": "What is the capital of Germany?", "answer": "Berlin"},
+0444:         ]
+0445:     )
+0446: 
+0447:     adapter = dspy.ChatAdapter()
+0448:     messages = adapter.format(MySignature, [], {"question": "What is the capital of France?", "history": history})
+0449: 
+0450:     assert len(messages) == 6
+0451:     assert messages[1]["content"] == "[[ ## question ## ]]\nWhat is the capital of France?"
+0452:     assert messages[2]["content"] == "[[ ## answer ## ]]\nParis\n\n[[ ## completed ## ]]\n"
+0453:     assert messages[3]["content"] == "[[ ## question ## ]]\nWhat is the capital of Germany?"
+0454:     assert messages[4]["content"] == "[[ ## answer ## ]]\nBerlin\n\n[[ ## completed ## ]]\n"
+0455: 
+0456: 
+0457: def test_chat_adapter_fallback_to_json_adapter_on_exception():
+0458:     signature = dspy.make_signature("question->answer")
+0459:     adapter = dspy.ChatAdapter()
+0460: 
+0461:     with mock.patch("litellm.completion") as mock_completion:
+0462:         # Mock returning a response compatible with JSONAdapter but not ChatAdapter
+0463:         mock_completion.return_value = ModelResponse(
+0464:             choices=[Choices(message=Message(content="{'answer': 'Paris'}"))],
+0465:             model="openai/gpt-4o-mini",
+0466:         )
+0467: 
+0468:         lm = dspy.LM("openai/gpt-4o-mini", cache=False)
+0469: 
+0470:         with mock.patch("dspy.adapters.json_adapter.JSONAdapter.__call__") as mock_json_adapter_call:
+0471:             adapter(lm, {}, signature, [], {"question": "What is the capital of France?"})
+0472:             mock_json_adapter_call.assert_called_once()
+0473: 
+0474:         # The parse should succeed
+0475:         result = adapter(lm, {}, signature, [], {"question": "What is the capital of France?"})
+0476:         assert result == [{"answer": "Paris"}]
+0477: 
+0478: 
+0479: def test_chat_adapter_respects_use_json_adapter_fallback_flag():
+0480:     signature = dspy.make_signature("question->answer")
+0481:     adapter = dspy.ChatAdapter(use_json_adapter_fallback=False)
+0482: 
+0483:     with mock.patch("litellm.completion") as mock_completion:
+0484:         mock_completion.return_value = ModelResponse(
+0485:             choices=[Choices(message=Message(content="nonsense"))],
+0486:             model="openai/gpt-4o-mini",
+0487:         )
+0488: 
+0489:         lm = dspy.LM("openai/gpt-4o-mini", cache=False)
+0490: 
+0491:         with mock.patch("dspy.adapters.json_adapter.JSONAdapter.__call__") as mock_json_adapter_call:
+0492:             with pytest.raises(dspy.utils.exceptions.AdapterParseError):
+0493:                 adapter(lm, {}, signature, [], {"question": "What is the capital of France?"})
+0494:         mock_json_adapter_call.assert_not_called()
+0495: 
+0496: 
+0497: @pytest.mark.asyncio
+0498: async def test_chat_adapter_fallback_to_json_adapter_on_exception_async():
+0499:     signature = dspy.make_signature("question->answer")
+0500:     adapter = dspy.ChatAdapter()
+0501: 
+0502:     with mock.patch("litellm.acompletion") as mock_completion:
+0503:         # Mock returning a response compatible with JSONAdapter but not ChatAdapter
+0504:         mock_completion.return_value = ModelResponse(
+0505:             choices=[Choices(message=Message(content="{'answer': 'Paris'}"))],
+0506:             model="openai/gpt-4o-mini",
+0507:         )
+0508: 
+0509:         lm = dspy.LM("openai/gpt-4o-mini", cache=False)
+0510: 
+0511:         with mock.patch("dspy.adapters.json_adapter.JSONAdapter.acall") as mock_json_adapter_acall:
+0512:             await adapter.acall(lm, {}, signature, [], {"question": "What is the capital of France?"})
+0513:             mock_json_adapter_acall.assert_called_once()
+0514: 
+0515:         # The parse should succeed
+0516:         result = await adapter.acall(lm, {}, signature, [], {"question": "What is the capital of France?"})
+0517:         assert result == [{"answer": "Paris"}]
+0518: 
+0519: 
+0520: def test_chat_adapter_toolcalls_native_function_calling():
+0521:     class MySignature(dspy.Signature):
+0522:         question: str = dspy.InputField()
+0523:         tools: list[dspy.Tool] = dspy.InputField()
+0524:         answer: str = dspy.OutputField()
+0525:         tool_calls: dspy.ToolCalls = dspy.OutputField()
+0526: 
+0527:     def get_weather(city: str) -> str:
+0528:         return f"The weather in {city} is sunny"
+0529: 
+0530:     tools = [dspy.Tool(get_weather)]
+0531: 
+0532:     adapter = dspy.JSONAdapter(use_native_function_calling=True)
+0533: 
+0534:     # Case 1: Tool calls are present in the response, while content is None.
+0535:     with mock.patch("litellm.completion") as mock_completion:
+0536:         mock_completion.return_value = ModelResponse(
+0537:             choices=[
+0538:                 Choices(
+0539:                     finish_reason="tool_calls",
+0540:                     index=0,
+0541:                     message=Message(
+0542:                         content=None,
+0543:                         role="assistant",
+0544:                         tool_calls=[
+0545:                             ChatCompletionMessageToolCall(
+0546:                                 function=Function(arguments='{"city":"Paris"}', name="get_weather"),
+0547:                                 id="call_pQm8ajtSMxgA0nrzK2ivFmxG",
+0548:                                 type="function",
+0549:                             )
+0550:                         ],
+0551:                     ),
+0552:                 ),
+0553:             ],
+0554:             model="openai/gpt-4o-mini",
+0555:         )
+0556:         result = adapter(
+0557:             dspy.LM(model="openai/gpt-4o-mini", cache=False),
+0558:             {},
+0559:             MySignature,
+0560:             [],
+0561:             {"question": "What is the weather in Paris?", "tools": tools},
+0562:         )
+0563: 
+0564:         assert result[0]["tool_calls"] == dspy.ToolCalls(
+0565:             tool_calls=[dspy.ToolCalls.ToolCall(name="get_weather", args={"city": "Paris"})]
+0566:         )
+0567:         # `answer` is not present, so we set it to None
+0568:         assert result[0]["answer"] is None
+0569: 
+0570:     # Case 2: Tool calls are not present in the response, while content is present.
+0571:     with mock.patch("litellm.completion") as mock_completion:
+0572:         mock_completion.return_value = ModelResponse(
+0573:             choices=[Choices(message=Message(content="{'answer': 'Paris'}"))],
+0574:             model="openai/gpt-4o-mini",
+0575:         )
+0576:         result = adapter(
+0577:             dspy.LM(model="openai/gpt-4o-mini", cache=False),
+0578:             {},
+0579:             MySignature,
+0580:             [],
+0581:             {"question": "What is the weather in Paris?", "tools": tools},
+0582:         )
+0583:         assert result[0]["answer"] == "Paris"
+0584:         assert result[0]["tool_calls"] is None
+0585: 
+0586: 
+0587: def test_chat_adapter_toolcalls_vague_match():
+0588:     class MySignature(dspy.Signature):
+0589:         question: str = dspy.InputField()
+0590:         tools: list[dspy.Tool] = dspy.InputField()
+0591:         tool_calls: dspy.ToolCalls = dspy.OutputField()
+0592: 
+0593:     def get_weather(city: str) -> str:
+0594:         return f"The weather in {city} is sunny"
+0595: 
+0596:     tools = [dspy.Tool(get_weather)]
+0597: 
+0598:     adapter = dspy.ChatAdapter()
+0599: 
+0600:     with mock.patch("litellm.completion") as mock_completion:
+0601:         # Case 1: tool_calls field is a list of dicts
+0602:         mock_completion.return_value = ModelResponse(
+0603:             choices=[
+0604:                 Choices(
+0605:                     message=Message(
+0606:                         content="[[ ## tool_calls ## ]]\n[{'name': 'get_weather', 'args': {'city': 'Paris'}]"
+0607:                     )
+0608:                 )
+0609:             ],
+0610:             model="openai/gpt-4o-mini",
+0611:         )
+0612:         result = adapter(
+0613:             dspy.LM(model="openai/gpt-4o-mini", cache=False),
+0614:             {},
+0615:             MySignature,
+0616:             [],
+0617:             {"question": "What is the weather in Paris?", "tools": tools},
+0618:         )
+0619:         assert result[0]["tool_calls"] == dspy.ToolCalls(
+0620:             tool_calls=[dspy.ToolCalls.ToolCall(name="get_weather", args={"city": "Paris"})]
+0621:         )
+0622: 
+0623:     with mock.patch("litellm.completion") as mock_completion:
+0624:         # Case 2: tool_calls field is a single dict with "name" and "args" keys
+0625:         mock_completion.return_value = ModelResponse(
+0626:             choices=[
+0627:                 Choices(
+0628:                     message=Message(
+0629:                         content="[[ ## tool_calls ## ]]\n{'name': 'get_weather', 'args': {'city': 'Paris'}}"
+0630:                     )
+0631:                 )
+0632:             ],
+0633:             model="openai/gpt-4o-mini",
+0634:         )
+0635:         result = adapter(
+0636:             dspy.LM(model="openai/gpt-4o-mini", cache=False),
+0637:             {},
+0638:             MySignature,
+0639:             [],
+0640:             {"question": "What is the weather in Paris?", "tools": tools},
+0641:         )
+0642:         assert result[0]["tool_calls"] == dspy.ToolCalls(
+0643:             tool_calls=[dspy.ToolCalls.ToolCall(name="get_weather", args={"city": "Paris"})]
+0644:         )
+0645: 
+0646: 
+0647: def test_chat_adapter_native_reasoning():
+0648:     class MySignature(dspy.Signature):
+0649:         question: str = dspy.InputField()
+0650:         reasoning: dspy.Reasoning = dspy.OutputField()
+0651:         answer: str = dspy.OutputField()
+0652: 
+0653:     adapter = dspy.ChatAdapter()
+0654: 
+0655:     with mock.patch("litellm.completion") as mock_completion:
+0656:         mock_completion.return_value = ModelResponse(
+0657:             choices=[
+0658:                 Choices(
+0659:                     message=Message(
+0660:                         content="[[ ## answer ## ]]\nParis\n[[ ## completion ## ]]",
+0661:                         reasoning_content="Step-by-step thinking about the capital of France",
+0662:                     ),
+0663:                 )
+0664:             ],
+0665:             model="anthropic/claude-3-7-sonnet-20250219",
+0666:         )
+0667:         modified_signature = adapter._call_preprocess(
+0668:             dspy.LM(model="anthropic/claude-3-7-sonnet-20250219", reasoning_effort="low", cache=False),
+0669:             {},
+0670:             MySignature,
+0671:             {"question": "What is the capital of France?"},
+0672:         )
+0673:         assert "reasoning" not in modified_signature.output_fields
+0674: 
+0675:         result = adapter(
+0676:             dspy.LM(model="anthropic/claude-3-7-sonnet-20250219", reasoning_effort="low", cache=False),
+0677:             {},
+0678:             MySignature,
+0679:             [],
+0680:             {"question": "What is the capital of France?"},
+0681:         )
+0682:         assert result[0]["reasoning"] == dspy.Reasoning(content="Step-by-step thinking about the capital of France")
+0683: 
+0684: 
+0685: def test_chat_adapter_parses_float_with_underscores():
+0686:     """
+0687:     This test verifies that ChatAdapter can parse float numbers with underscores.
+0688:     After json-repair version 0.54.1, floats like "123_456.789" are treated as normal float numbers.
+0689:     """
+0690: 
+0691:     class Score(pydantic.BaseModel):
+0692:         score: float
+0693: 
+0694:     class MySignature(dspy.Signature):
+0695:         question: str = dspy.InputField()
+0696:         score: Score = dspy.OutputField()
+0697: 
+0698:     adapter = dspy.ChatAdapter()
+0699: 
+0700:     # Simulate a response with a float number containing underscores
+0701:     with mock.patch("litellm.completion") as mock_completion:
+0702:         mock_completion.return_value = ModelResponse(
+0703:             choices=[
+0704:                 Choices(message=Message(content="[[ ## score ## ]]\n{'score': 123_456.789}\n[[ ## completed ## ]]"))
+0705:             ],
+0706:             model="openai/gpt-4o-mini",
+0707:         )
+0708: 
+0709:         lm = dspy.LM("openai/gpt-4o-mini", cache=False)
+0710:         result = adapter(lm, {}, MySignature, [], {"question": "What is the score?"})
+0711: 
+0712:         # The underscore-separated float should be parsed as a normal float
+0713:         assert result[0]["score"].score == 123456.789
+0714: 
+0715: 
+0716: def test_format_system_message():
+0717:     class MySignature(dspy.Signature):
+0718:         """Answer the question with multiple answers and scores"""
+0719: 
+0720:         question: str = dspy.InputField()
+0721:         answers: list[str] = dspy.OutputField()
+0722:         scores: list[float] = dspy.OutputField()
+0723: 
+0724:     adapter = dspy.ChatAdapter()
+0725:     system_message = adapter.format_system_message(MySignature)
+0726:     expected_system_message = """Your input fields are:
+0727: 1. `question` (str):
+0728: Your output fields are:
+0729: 1. `answers` (list[str]): 
+0730: 2. `scores` (list[float]):
+0731: All interactions will be structured in the following way, with the appropriate values filled in.
+0732: 
+0733: [[ ## question ## ]]
+0734: {question}
+0735: 
+0736: [[ ## answers ## ]]
+0737: {answers}        # note: the value you produce must adhere to the JSON schema: {"type": "array", "items": {"type": "string"}}
+0738: 
+0739: [[ ## scores ## ]]
+0740: {scores}        # note: the value you produce must adhere to the JSON schema: {"type": "array", "items": {"type": "number"}}
+0741: 
+0742: [[ ## completed ## ]]
+0743: In adhering to this structure, your objective is: 
+0744:         Answer the question with multiple answers and scores"""
+0745:     assert system_message == expected_system_message
+0746: 
+0747: 
+0748: def test_null_content_raises_adapter_parse_error():
+0749:     """When the LM returns content=None with no tool calls (e.g. content filter),
+0750:     the adapter should raise AdapterParseError instead of silently returning None fields."""
+0751:     from dspy.utils.exceptions import AdapterParseError
+0752: 
+0753:     lm = dspy.LM("openai/gpt-4o-mini", cache=False)
+0754:     response = ModelResponse(
+0755:         choices=[Choices(message=Message(content=None))],
+0756:         model="openai/gpt-4o-mini",
+0757:     )
+0758: 
+0759:     with dspy.context(lm=lm):
+0760:         with mock.patch("litellm.completion", return_value=response):
+0761:             cot = dspy.ChainOfThought("question -> answer")
+0762:             with pytest.raises(AdapterParseError):
+0763:                 cot(question="test")
+0764: 
+0765: 
+0766: def test_empty_string_content_raises_adapter_parse_error():
+0767:     """Same as above but with empty string content."""
+0768:     from dspy.utils.exceptions import AdapterParseError
+0769: 
+0770:     lm = dspy.LM("openai/gpt-4o-mini", cache=False)
+0771:     response = ModelResponse(
+0772:         choices=[Choices(message=Message(content=""))],
+0773:         model="openai/gpt-4o-mini",
+0774:     )
+0775: 
+0776:     with dspy.context(lm=lm):
+0777:         with mock.patch("litellm.completion", return_value=response):
+0778:             cot = dspy.ChainOfThought("question -> answer")
+0779:             with pytest.raises(AdapterParseError):
+0780:                 cot(question="test")
+0781: 
+0782: 
+0783: def test_tool_call_with_null_content_does_not_raise():
+0784:     """Tool-call-only responses legitimately have content=None.
+0785:     _call_postprocess must NOT raise when tool_calls are present."""
+0786:     adapter = dspy.ChatAdapter(use_native_function_calling=True)
+0787:     sig_cls = dspy.Signature("question, tools: list[dspy.Tool] -> answer, tool_calls: dspy.ToolCalls")
+0788: 
+0789:     outputs = [{"text": None, "tool_calls": [
+0790:         {"function": {"name": "search", "arguments": '{"query": "test"}'}, "id": "call_1", "type": "function"}
+0791:     ]}]
+0792: 
+0793:     result = adapter._call_postprocess(sig_cls, sig_cls, outputs, None, {})
+0794:     assert result is not None
+0795:     assert len(result) == 1
+
+Return JSON that matches the schema exactly.

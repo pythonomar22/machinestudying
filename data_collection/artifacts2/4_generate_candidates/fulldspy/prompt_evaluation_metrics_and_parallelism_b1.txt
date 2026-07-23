@@ -1,0 +1,195 @@
+You are generating benchmark-grade DSPy expert QA inside the official DSPy repository.
+
+## About DSPy
+DSPy is a declarative framework for programming --- rather than prompting --- language models. Users compose typed modules (such as `dspy.Predict`, `dspy.ChainOfThought`, and `dspy.ReAct`) whose input/output behavior is declared by signatures; adapters translate signatures into provider-specific prompts and parse completions back into typed fields; optimizers tune prompts and demonstrations against metrics.
+
+Deliverable contract (hard requirement for every candidate):
+- Every question must END by explicitly asking for a small, self-contained, RUNNABLE Python program (a repro, harness, working example, or module) as its deliverable, phrased the way a real user asks ('Give me a complete, runnable program that ...', 'Write the metric plus a tiny harness that ...', 'Show me the idiomatic DSPy program that ...'), and must ask for printed output or assertions that PROVE the behavior in question.
+- Questions should read like a real support thread: 2-4 short paragraphs --- the setup and goal, what was tried and what was observed (symptoms, error messages as the user saw them), then the deliverable ask.
+- Every gold `answer` must BE that program: exactly one fenced ```python block and NOTHING outside it, with any needed explanation as inline comments, ending with the prints/assertions the question demands.
+- Programs must run offline with no API key --- whenever a language model is needed, use the offline LM stub the library itself ships for its own tests (`dspy.utils.dummies.DummyLM`) --- so that every reference answer can be executed and verified in a sandbox.
+
+## Mission
+- Target primary label: `evaluation_metrics_and_parallelism`
+- Label description: `Users in this cluster are trying to evaluate DSPy programs and drive teleprompter/optimizer compilation with custom evaluators, including boolean vs. numeric scores, LLM-graded metrics, callable or async metrics, and multiple metrics. They also need those evaluation and optimization runs to execute correctly and efficiently through threading, batching, concurrency controls, Parallel, and async LM/tool calls.`
+- Produce exactly `20` candidate QA pairs.
+- The final benchmark will evaluate an answering agent that has access to the DSPy.
+- You may use both code and docs right now to understand DSPy deeply, but every final answer must be recoverable from the code roots listed below alone (no docs at answer time).
+
+## Available context
+- DSPy code roots the answering agent will also see:
+- `dspy/` --- the DSPy library source
+- `tests/` --- its test suite
+- Documentation under `docs/` for privileged generation-time orientation only (the answering agent might or might not have these)
+- Sampled community QA sessions below, which represent realistic user-question distribution for the target label
+
+## How to use the sampled community QA
+- The sampled community sessions are the **distribution we want to match**, not just a tone reference. Real DSPy users hit real friction --- that is the question gold mine. Anchor each generated question in what a user in the seeds was actually trying to do or observing.
+- Real community questions are often vague, mis-framed, or mixed with multiple issues. Your job is to **sharpen, not imitate**: keep the user framing ("I'm trying to X and I see Y"), drop the noise, and commit to one crisp locator-hard question.
+- **Do not trust the community answer as ground truth.** The answers in the seed sessions were written by a weaker assistant and are frequently wrong, incomplete, or out of date. Treat them only as hints about what the user was confused about. Your gold `answer` must be re-derived from the actual DSPy source and docs --- read the code, verify the behavior, and cite `code_evidence` by file and symbol. If the community answer contradicts the code, the code wins.
+- Do **not** copy or lightly paraphrase a sampled question; upscale by sharpening the behavioral framing.
+
+## Naming discipline (critical --- the locator is the challenge)
+The answering agent has grep/glob/read over the full DSPy repo and tests. If the question text names the specific class, method, file, or internal helper that **is** the answer, you've given away the page number and turned this into a trivia question. The whole point of the benchmark is that *locating* the right code is half the work.
+
+**OK to name (brand-level, user-facing concepts that a real user would type):**
+- Public branded module and concept names a real user would type: `dspy.Predict`, `dspy.ChainOfThought`, `dspy.ReAct`, `dspy.Module`, `dspy.Signature`, `dspy.Example`, `dspy.Evaluate`, `dspy.LM`, `dspy.configure` / `dspy.context`, `DummyLM`.
+- User-facing concepts at brand granularity: signatures, input/output fields, demos, adapters (as a concept), optimizers / teleprompters (as a concept), metrics, tools, trajectories, conversation history, streaming, async, caching, saving/loading compiled programs.
+- User-visible exception or error names exactly as they appear in a traceback or error message the user would paste.
+- Anything the community user in the seed session typed first, at the same granularity they typed it.
+
+**Not OK to name (these attach the question to a specific implementation and leak the locator):**
+- The method or attribute on a branded class that contains the answer --- name the behavior, not the method.
+- Internal adapter / handler / parser / helper classes.
+- Internal helper functions, file paths, test-file names, private config flags, snake_case function names with dot-paths.
+- **Do not refer to "the X example / tutorial / notebook / walkthrough / demo / README / guide".** These phrasings are awkward and underspecified --- they point at an artifact as if a shared referent exists ("in the repo's multihop RAG example, ..."). A strong question stands on its own: describe the *scenario* or *setup* itself ("in a multi-hop retrieval pipeline where the model refines its query across hops, ..."), not the artifact that demonstrates it.
+- Examples for this codebase:
+- Internal adapter/parser/formatter classes or their methods --- name the formatting or parsing *behavior* instead.
+- Any `Class.method` attachment point (for example a branded class name with a `.method` suffix that is where the answer lives).
+- Internal helpers or dotted snake_case paths, and file paths such as `dspy/some/module.py` or `tests/some/test_file.py`.
+- Private flags or keyword arguments that only appear inside the implementation.
+
+Rule of thumb: if a reader can `grep -R "<token>"` and land within a few files of the answer, the token belongs in the gold `answer` and `code_evidence`, not in the question.
+
+**Bad (names the attachment point):**
+- "What does `Predict._forward_preprocess` do when the demo list is empty?" (names the internal helper --- the locator is given away)
+- "In `dspy/teleprompt/bootstrap.py`, how does the retry loop select candidate demonstrations?" (names the file path)
+
+**Good (forces the agent to locate):**
+- "I compiled a program with an optimizer, saved it, and loaded it in a fresh process --- my demos came back, but a piece of my configuration silently did not. Give me a complete, runnable round-trip program (save, then load in a fresh instance, offline with `DummyLM`, no API key) that reproduces this and prints the loaded program's state at the end, proving exactly what survives the round-trip and what resets." (behavioral symptom; the agent must locate the persistence logic; the deliverable is a program that proves the answer)
+- "Two of my output fields have similar names, and one sometimes comes back empty even though the raw completion clearly contains the text. Write a minimal offline repro --- a small signature plus `DummyLM`-driven calls --- that triggers the failure, then prints the parsed fields so the empty-field behavior is undeniable." (describes observed behavior; forces locating the parsing mechanism; demands a runnable proof)
+
+Walk this line carefully: a good question is **specific enough** that a careful reader of the repo converges on one well-defined answer, and **general enough** in wording that no symbol name gives the answer away. If the question could match a dozen unrelated places in the repo, it's too generic; tighten by adding behavioral constraints, not by naming the class.
+
+## Required quality bar
+- Questions should read like a thoughtful senior user describing **what they observed or what they want to accomplish**, not like an exam asking about a specific symbol.
+- Questions must be difficult enough that they require synthesis across files, abstractions, behavior, tests, edge cases, or design tradeoffs.
+- Prefer questions whose answers require reading implementation and tests together.
+- Gold answers should be concise but precise, and must be supported by `code_evidence` pointing into actual DSPy source (not just paraphrased from the seed's community answer).
+- `code_evidence` must cite only real files under the code roots (`dspy/`, `tests/`), and each cited filename must match the pattern `*.py` (files with other extensions are out of scope and will be rejected).
+- Provide at least two evidence items per candidate.
+- Difficulty must be either `hard` or `very_hard`.
+
+## Hard bans
+- No documentation-only questions.
+- No questions about exact wording from docs, tutorials, README, notebooks, or guides.
+- No "in the X example / tutorial / notebook / walkthrough / demo / README / guide" phrasings. Describe the scenario itself.
+- No trivial "does DSPy have X?" or single-symbol existence questions.
+- No one-grep questions with an obvious single-line answer.
+- No ambiguous or underspecified questions.
+- No questions whose answers depend on privileged docs rather than code/tests.
+- No questions that violate the naming discipline above (no internal class/method/helper names, no file paths, no `Class.method` attachment points).
+- No questions whose gold answer rests on "the seed said so" rather than on verified code behavior.
+
+## Sampling anchors
+The JSON block below contains the sampled community sessions for the target label. Use it to preserve the real-world distribution while raising the quality bar sharply.
+
+[
+  {
+    "number": 145,
+    "question": "Support for continuously valued validation metric \"losses\"\n\nIs it possible for validation metrics to return non-boolean answers?\nThis could bring a lot more control over the optimization strategy, e.g. loss weighting for different metrics.\nAnother idea is natural language \"losses\", kind of like RLAIF. AKA self-critique.",
+    "community_answers": [
+      "This is absolutely on the short-term map. We just need to identify exactly how to use these scores for building demonstrations though.\r\n\r\nright now, you can implement a threshold function (if score > threshold, return true).\r\n\r\nDid you have a particular pattern in mind",
+      "Oh btw. Continuous metrics are already fully supported for optimization but not for candidate selection.\r\n\r\nThis may already be all you need.\r\n\r\nIf `trace` is None, you can return a continuous score and that will be used for random search or Optuna optimization. ",
+      "> Oh btw. Continuous metrics are already fully supported for optimization but not for candidate selection.\r\n> \r\n> This may already be all you need.\r\n> \r\n> If `trace` is None, you can return a continuous score and that will be used for random search or Optuna optimization.\r\n\r\nHello, @okhat \r\nWould you please elaborate more on this? What is `trace` here?\r\nthanks!"
+    ]
+  },
+  {
+    "number": 1786,
+    "question": "support for async dspy.LM\n\nHi, does Dspy currently support the asynchronous version of dspy.LM?\nwhich might be equivalent to the following:\n[code]",
+    "community_answers": [
+      "Hey @JacksonCakes ! See #1734 and let us know what you think!",
+      "Wonderful. May I ask what you need async for? We're considering the right form of async to merge.",
+      "Would you find this #1690 useful? We're probably going to go with that."
+    ]
+  },
+  {
+    "number": 1426,
+    "question": "Evaluate: numerical metric can result in logging e.g. \"Average Metric: 49 / 10\"\n\nWhen using a metric that can be higher than 1, evaluate can produce logs like \"Average Metric: 49 / 10\"\nThis is due to the score being added to the count of correct answers, without normalising:\nhttps://github.com/stanfordnlp/dspy/blob/4323844ccae2289d7505a8f2922183140ed289fa/dspy/evaluate/evaluate.py#L120\nMaybe for now the docs should mention that scores should be normalised between 0 and 1?",
+    "community_answers": [
+      "Thanks @raphaelmerx ! I don't see a problem here. The score can exceed 1.0 and it's OK."
+    ]
+  },
+  {
+    "number": 767,
+    "question": "Would suggest COPRO ignore \"return_outputs\"\n\nIf \"return_outputs\" is set to true in the eval_kwargs, the evaluator will return a tuple with examples, prediction, and score I believe. If you accidentally include this parameter when using COPRO you'll get an error like this: **TypeError: '>' not supported between instances of 'Example' and 'Example'**.\nRemoving the parameter resolved the issue. I'm wondering if it might make sense to have COPRO ignore the return_outputs parameter when calling an evaluator so that other folks don't run into this issue?",
+    "community_answers": [
+      "Hi @oekekezie , thanks for raising this issue. \r\n\r\nI believe this is because `return_outputs` returns a tuple of the evaluation score and a list of outputs with Example types (which is handled in various conditions within Evaluate [here](https://github.com/stanfordnlp/dspy/blob/696f2d2e1f96f173abb36302c71a725d564dfadb/dspy/evaluate/evaluate.py#L228))\r\nbut those return types are not accounted for in COPRO's [evaluate call](https://github.com/stanfordnlp/dspy/blob/696f2d2e1f96f173abb36302c71a725d564dfadb/dspy/teleprompt/copro_optimizer.py#L223C21-L223C83) which only returns a score, likely triggering the error in the [comparison](https://github.com/stanfordnlp/dspy/blob/696f2d2e1f96f173abb36302c71a725d564dfadb/dspy/teleprompt/copro_optimizer.py#L236).\r\n\r\nlmk if this is indeed the issue and if adding that condition within COPRO handles it. Feel free to push a PR for it if so or share your program and stack trace so we can take a closer look. Thanks again for finding this! "
+    ]
+  },
+  {
+    "number": 8753,
+    "question": "How to make dspy faster\n\nAnyone else notice that compared to other frameworks dspy requests seems slower or maybe I am doing something incorrectly.\nDoes DSPy load the LM everytime I call this function?\nAlso I know a smaller max_token makes requests faster, any techniques.\nI have a fastapi based backend that should be much faster, my API tiers are okay (Tier 2 or Tier 3)\nasync def update_model_settings(\nsettings: ModelSettings,\napp_state = Depends(get_app_state),\nsession_id: str = Depends(get_session_id_dependency)\n):\ntry:\nif not settings.api_key:\nif settings.provider.lower() == \"groq\":\nsettings.api_key = os.getenv(\"GROQ_API_KEY\")\nelif settings.provider.lower() == \"openai\":\nsettings.api_key = os.getenv(\"OPENAI_API_KEY\")\nelif settings.provider.lower() == \"anthropic\":\nsettings.api_key = os.getenv(\"ANTHROPIC_API_KEY\")\nelif settings.provider.lower() == \"gemini\":\nsettings.api_key = os.getenv(\"GEMINI_API_KEY\")\nsession_state = app_state.get_session_state(session_id)\nif 'gpt-5' in str(settings.model):\nmodel_config = {\n\"provider\": settings.provider,\n\"model\": settings.model,\n\"api_key\": settings.api_key,\n\"temperature\": settings.temperature,\n\"max_tokens\":None,\n\"max_completion_tokens\": 10000\n}\nelse:\nmodel_config = {\n\"provider\": settings.provider,\n\"model\": settings.model,\n\"api_key\": settings.api_key,\n\"temperature\": settings.temperature,\n\"max_tokens\": settings.max_tokens\n}\nsession_state[\"model_config\"] = model_config\napp_state.model_config = model_config\napp_state._session_manager._app_model_config = model_config\nimport dspy\nif settings.provider.lower() == \"groq\":\nlogger.log_message(f\"Groq Model: {settings.model}\", level=logging.INFO)\nlm = dspy.LM(\nmodel=f\"groq/{settings.model}\",\napi_key=settings.api_key,\ntemperature=settings.temperature,\nmax_tokens=settings.max_tokens\n)\nelif settings.provider.lower() == \"anthropic\":\nlogger.log_message(f\"Anthropic Model: {settings.model}\", level=logging.INFO)\nlm = dspy.LM(\nmodel=f\"anthropic/{settings.model}\",\napi_key=settings.api_key,\ntemperature=settings.temperature,\nmax_tokens=settings.max_tokens\n)\nelif settings.provider.lower() == \"gemini\":\nlogger.log_message(f\"Gemini Model: {settings.model}, API Key: {settings.api_key}, Temperature: {settings.temperature}, Max Tokens: {settings.max_tokens}\", level=logging.INFO)\nlm = dspy.LM(\nmodel=f\"gemini/{settings.model}\",\napi_key=settings.api_key,\ntemperature=settings.temperature,\nmax_tokens=settings.max_tokens\n)\nelif settings.provider.lower() == \"openai\": # OpenAI is the default\nlogger.log_message(f\"OpenAI Model: {settings.model}\", level=logging.INFO)\nprint(settings.model.lower())\nif 'gpt-5' in settings.model.lower():\nlm = dspy.LM(\nmodel=f\"openai/{settings.model}\",\napi_key=settings.api_key,\ntemperature=settings.temperature,\nmax_tokens = None,\nmax_completion_tokens= 10000\n)\nelse:\nlm = dspy.LM(\nmodel=f\"openai/{settings.model}\",\napi_key=settings.api_key,\ntemperature=settings.temperature,\nmax_tokens=settings.max_tokens\n)\ntry:\nreturn {\"message\": \"Model settings updated successfully\"}\nexcept E",
+    "community_answers": [
+      "Hi, @ArslanS1997. Are you saying you observed slower responses when you call dspy.LM directly like your code in the description? If so, can you elaborate on how you compare the latency with other libraries? For the quicker response, you can utilize dspy cache for the quicker responses, please take a look at https://dspy.ai/tutorials/cache/.",
+      "Stale"
+    ]
+  },
+  {
+    "number": 991,
+    "question": "Support for batching for LM clients (OpenAI, vLLM etc)\n\nI have seen conversations where it has been mentioned that Evaluate has `num_threads` parameters that can parallelize but I am not completely sure if it provides significant performance gains compared to batching.\nReasoning:\n* Python doesn't truly support multi-threading.\n* Bottleneck in performance is sending data over to the GPU.\nSolution:\n* Send a batch of data even when running the dspy.Predict()\nFor example:\n[code]",
+    "community_answers": [
+      "The main blocker to this change would be that [graph compilation is not supported for `n>1`](https://github.com/stanfordnlp/dspy/blob/b05394bb20722444648a33b4447156bcef202fd6/dsp/primitives/predict.py#L157) - however, I'm not sure what you mean exactly in this case that python doesn't support multi-threading, and the bottleneck is sending data to the GPU? \r\n\r\nIn your example, the loading of the tokens into gpu memory is handled by the huggingface client on `localhost:8000` - which has nothing to do with dspy or the process in which dspy is running. I'm not sure that sending the prompts across to that port is the bottleneck in performance? In any case, [vllm supports continuous batching](https://docs.vllm.ai/en/latest/index.html#welcome-to-vllm:~:text=Continuous%20batching%20of%20incoming%20requests) so the batch size for the actual inference (and any sending of data across to the GPU) will be determined by vLLM based on a whole host of things. \r\n\r\nAs for threadpool executors - which is how dspy runs multiple `Predict`s at once - [its probably the best choice for sending off a bunch of concurrent http requests](https://docs.python.org/3/library/concurrent.futures.html#threadpoolexecutor-example) as dspy does. The polling overhead is pretty insubstantial when compared to inference time and `num_threads` is not likely to get anywhere near the sorts of numbers where it could become a problem.",
+      "Thank you @AmoghM , @mikeedjones ! We don't plan to add batching. But we will add utilities for easier parallelism. Multi-threading is actually perfectly fine since the bottleneck is always on the server not the client.",
+      "I just found out about batching, was super excited about it, then found this thread.  I use LM Studio for it's API, but I can't run agents with a single thread, so I guess I'm going to need to find an alternative, but it would be awesome if you could eventually support it."
+    ]
+  },
+  {
+    "number": 8351,
+    "question": "[Ask]dspy.Evaluate\n\nWhen I run the program using Evaluate, the number of my test cases is about 1k, the metric is also a dspy callable object, the number of processes is 32, and it becomes very slow when running to about the last 30 cases. Why is this?",
+    "community_answers": [
+      "I suggest checking if you are getting rate limited by the LM, and run multiple times with cache disabled `dspy.LM(cache=False)` to verify if the behavior is persistent.\n\nClosing the issue because this is most likely not a DSPy issue. "
+    ]
+  },
+  {
+    "number": 975,
+    "question": "Make multi-threaded Evaluate(.) easier to interrupt\n\nThis gist seems like a great approach.\nhttps://gist.github.com/mrdrozdov/832cce1dd7d5830e66898486712fdea5",
+    "community_answers": [
+      "closed by https://github.com/stanfordnlp/dspy/pull/981?"
+    ]
+  },
+  {
+    "number": 1236,
+    "question": "How to set the concurrency when using a custom api to access the model?\n\nMy api access concurrency is 5, I want to know how dspy handles concurrency when sending requests? Where can I set this parameter?",
+    "community_answers": [
+      "Set num_threads in classes that accept that parameter like when compiling or evaluating"
+    ]
+  },
+  {
+    "number": 663,
+    "question": "Support terminal for displaying table when evaluating metrics\n\nRight now the Evaluate class only support displaying in Colab. It would be nice if we also support terminal output given it is already supported in pandas.",
+    "community_answers": [
+      "There was a recent discussion of this, I forget where.\r\nI think this could be nice as well.",
+      "Happy to merge a PR on this, sounds like it's already in pandas",
+      "@okhat can u close this issue because this issue is already ,done in the \r\n\r\n[link](https://github.com/stanfordnlp/dspy/blob/main/dspy/evaluate/evaluate.py)"
+    ]
+  }
+]
+
+Return JSON that matches the provided schema and nothing else.
+
+## Previously generated candidates (cross-batch uniqueness)
+This is batch 2 of a larger generation for the same label. The questions below were already generated in earlier batches for this label. Do NOT duplicate, lightly rephrase, or re-anchor on the same mechanism-plus-scenario as any of them; cover different mechanisms, APIs, edge cases, and user scenarios within the label.
+
+[
+  "I'm using a graded metric for a QA program where exact matches get 1.0, near-misses get 0.5, and bad answers get 0.0. I want to use the same style of metric for evaluation and later compilation, but I'm not sure whether DSPy treats non-boolean scores as real numeric values or just truthy/falsy passes.\n\nI already saw the overall score printed as a percentage, which made me wonder whether it's averaging the raw floats or silently thresholding them. I don't want a prose explanation because this is the sort of thing that's easy to misunderstand from logs alone.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, evaluates a tiny `dspy.Predict` program on three examples with scores 1.0, 0.5, and 0.0, and prints/asserts the final percentage so the aggregation behavior is undeniable.",
+  "I'm moving a custom evaluator from a plain function to a stateful callable object because I need constructor arguments. The evaluation itself works, but when I save results I can't tell what DSPy uses as the metric column name anymore.\n\nI need a repro that shows this with no network calls and no guessing from source comments. Give me a complete, runnable Python program that uses `DummyLM` offline, evaluates one tiny example with a callable metric object, writes JSON results, and prints/asserts the exact key name DSPy stores for that metric.",
+  "I want my evaluator to return more than a bare float. In addition to the numeric score, I want per-example feedback text that I can inspect after the run, but I don't know whether DSPy keeps that structured object or flattens it away when computing the aggregate.\n\nWhat I need is a tiny offline proof, not a description. Give me a complete, runnable Python program that uses `DummyLM`, returns a structured score-plus-feedback object from the metric, and then prints/asserts both the aggregate percentage and the preserved per-example feedback inside the evaluation results.",
+  "I'm trying to reuse an async evaluator because my judge already lives in async code. Passing it into a normal DSPy evaluation run doesn't seem to get awaited, and the failure mode is confusing enough that I'd rather have a minimal repro than keep guessing.\n\nPlease give me a complete, runnable Python program that uses `DummyLM` offline, passes an async metric into a normal evaluation run, and prints/asserts the exact kind of failure you get when DSPy treats that metric synchronously.",
+  "My acceptance logic needs the execution trace, not just gold and prediction. The confusing part is that it seems fine during prompt compilation, then blows up when I try to run a plain evaluation pass over the same program.\n\nI want a small repro that demonstrates both sides of that mismatch in one place. Give me a complete, runnable Python program that uses `DummyLM` offline, shows a trace-requiring metric failing under plain evaluation, then shows the same metric working during few-shot bootstrapping, with prints/assertions proving both outcomes.",
+  "I'm using DSPy's built-in semantic F1 metric and I want to reuse it in two places: regular evaluation and optimizer-style acceptance checks. I suspect it changes behavior depending on whether a trace is being passed, but I want proof of the exact types and values it returns.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, calls that metric once like a normal evaluation metric and once with a trace-like third argument, and prints/asserts whether the score is a float in one case and a boolean in the other.",
+  "I have a mixed-quality dev set where a few examples can raise exceptions inside the program, but I don't want one bad item to abort the whole run. I also need to know exactly what DSPy puts into the per-example results for the failed row and how that affects the aggregate score.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, makes one example raise during evaluation, keeps the run going with a non-default failure score, and prints/asserts the placeholder prediction and the final percentage.",
+  "I also need to know the other side of that behavior: when DSPy stops instead of tolerating failures. If I cap the allowed error count at one, I want a proof that the run cancels immediately rather than quietly filling in defaults for the rest of the dataset.\n\nPlease give me a complete, runnable Python program that triggers that situation offline and prints/asserts the exact cancellation exception DSPy raises.",
+  "I have evaluator code that depends on main-thread-only state, so `num_threads=1` needs to really mean 'stay on the main thread', not 'use a thread pool with one worker'. I don't want to infer that from implementation details.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, records which thread the metric runs on when evaluation is configured with one worker, and prints/asserts that every call stayed on the main thread.",
+  "I'm using a graded acceptance metric during few-shot bootstrapping, and I hit something surprising: tiny nonzero scores seem to behave like successes unless I set an explicit threshold. I want a repro that shows whether a score like 0.1 is accepted as 'good enough' when no threshold is configured.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, compiles the same tiny program twice with a metric that always returns 0.1, once without a threshold and once with a stricter threshold, and prints/asserts the resulting demo counts so the acceptance rule is obvious.",
+  "I asked the random-search few-shot optimizer for only one candidate set, but the compiled program came back carrying more scored variants than I requested. I suspect DSPy is always evaluating a few built-in baselines before it starts counting random candidates, but I want a repro that proves the exact count.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, asks for one candidate set, and prints/asserts both the stored count and the stored seed identifiers if DSPy records them.",
+  "I'm also trying to understand early stopping in that same search. If the very first baseline already reaches the target score, I want proof that DSPy stops right there instead of still building out the remaining random candidates.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, sets an early-stop score that the first baseline can hit, and prints/asserts how many scored variants survive in the compiled result.",
+  "My custom evaluator for `dspy.GEPA` only takes gold and prediction, and the optimizer rejects it before the run even starts. I need a tiny repro that shows what signature is actually required, plus a matching version that is accepted.\n\nGive me a complete, runnable Python program that stays offline, first shows the rejection for a two-argument metric, then constructs the optimizer successfully with the right five-argument metric signature, and prints/asserts both outcomes.",
+  "I assumed that setting a global LM was enough before compiling with the finetune optimizer, but I'm seeing an error that a predictor doesn't have an LM assigned. I want a minimal repro that proves whether this optimizer really requires predictor-local LM attachment instead of just the global default.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, sets only the global LM, tries to compile a tiny program with the finetune optimizer, and prints/asserts the exact error about needing to assign an LM to the predictor.",
+  "I have a small multi-step program and I'm trying to finetune it offline. Even with just one local LM, the compile step can complain that `num_threads` is too small, which makes me think the job count might be based on predictors rather than models in some cases.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, builds a two-predictor module, compiles with the finetune optimizer in a configuration that triggers that thread-count check, and prints/asserts the error so the job-count rule is obvious.",
+  "I'm trying to optimize against one aggregate reward while still carrying several field-level subscores and feedback alongside it. I don't need multiple objectives for selection right now, but I do need proof that DSPy's stochastic optimizer path can keep the auxiliary metadata around instead of dropping everything except the main score.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, runs a tiny program through the same metric-wrapping path that `SIMBA` uses, and prints/asserts the aggregate score plus the preserved auxiliary metadata.",
+  "I'm doing batch inference over a dataset where a few examples can fail, but I still need the successful outputs, the original failed inputs, and the exception objects in one call. I don't want a prose summary of the API; I want a proof of exactly what comes back.\n\nGive me a complete, runnable Python program that batches a tiny module offline, intentionally fails one example, and prints/asserts the results list, the failed example values, and the captured exceptions.",
+  "I'm running the same program in parallel with per-example LM overrides inside the module. The thing I'm nervous about is cross-talk: one thread picking up another thread's LM or leaking its override back to the main thread.\n\nGive me a complete, runnable Python program that uses two different `DummyLM` instances offline, runs two calls through DSPy's parallel executor at the same time, and prints/asserts that each input gets the answer from its own LM while the main thread keeps the original default LM.",
+  "I have a slow, non-idempotent scoring/function call and I'm trying to understand the parallel executor's straggler handling. My concern is that a timeout-based retry might launch the same work twice, which would be dangerous for anything with side effects.\n\nGive me a complete, runnable Python program that uses DSPy's parallel executor offline with an intentionally slow callable, and prints/asserts whether the callable's side effect happened more than once for a single logical task.",
+  "I can see that DSPy modules have `acall`, but I want proof that concurrent offline calls actually overlap instead of serializing under the hood. This matters because my evaluation pipeline does a lot of independent LM calls and the difference is huge.\n\nGive me a complete, runnable Python program that uses a sleeping `DummyLM` offline, fires several `dspy.Predict(...).acall(...)` requests with `asyncio.gather`, and prints/asserts both the answers and a wall-clock bound showing that the calls overlapped."
+]

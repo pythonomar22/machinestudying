@@ -1,0 +1,435 @@
+{
+ "cluster_id": 3,
+ "label": "module_composition_and_runtime_interoperability",
+ "batch": 2,
+ "seed_numbers": [
+  7767,
+  8738,
+  575,
+  1518,
+  8265,
+  954,
+  650,
+  1318,
+  7783,
+  1631
+ ],
+ "candidates": [
+  {
+   "question": "I'm wrapping a predictor inside a `dspy.Module`, and sometimes I return the full `Prediction`, while other callers only want the final string field. I need to know whether `track_usage=True` treats those two module shapes the same.\n\nWhat I observe is confusing: the string-returning version does not crash, but usage seems to disappear, while the prediction-returning version keeps it. I want a proof that this is about the module's return shape, not about caching or the underlying LM.\n\nGive me a complete, runnable Python program that uses `DummyLM`, turns usage tracking on, runs both module variants, captures the warning from the string-returning case, and uses prints/assertions to prove the prediction-returning module gets LM usage attached while the string-returning one still returns successfully but only logs the warning.",
+   "answer": "```python\nimport logging\n\nimport dspy\nfrom dspy.dsp.utils.settings import settings\nfrom dspy.utils.dummies import DummyLM\n\n\nclass UsageDummyLM(DummyLM):\n    # Inject fake usage so the module-level usage attachment path is exercised offline.\n    def __call__(self, *args, **kwargs):\n        outputs = super().__call__(*args, **kwargs)\n        tracker = settings.usage_tracker\n        if tracker is not None:\n            tracker.add_usage(\n                self.model,\n                {\"prompt_tokens\": 3, \"completion_tokens\": 4, \"total_tokens\": 7},\n            )\n        return outputs\n\n\nclass ReturnPrediction(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predict = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predict(question=question)\n\n\nclass ReturnString(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predict = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predict(question=question).answer\n\n\nlm = UsageDummyLM([{\"answer\": \"Paris\"}, {\"answer\": \"Rome\"}])\ndspy.configure(lm=lm, track_usage=True)\n\nlogger = logging.getLogger(\"dspy.primitives.module\")\nmessages = []\n\nclass Handler(logging.Handler):\n    def emit(self, record):\n        messages.append(record.getMessage())\n\nhandler = Handler()\nlogger.addHandler(handler)\ntry:\n    good = ReturnPrediction()\n    bad = ReturnString()\n\n    pred = good(question=\"What is the capital of France?\")\n    text = bad(question=\"What is the capital of Italy?\")\n\n    assert pred.answer == \"Paris\"\n    assert pred.get_lm_usage()[\"dummy\"][\"total_tokens\"] == 7\n\n    assert text == \"Rome\"\n    assert any(\"Failed to set LM usage\" in message for message in messages)\n\n    print(pred.get_lm_usage())\n    print(messages[-1])\nfinally:\n    logger.removeHandler(handler)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module._set_lm_usage"
+    },
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.__call__"
+    },
+    {
+     "file": "tests/primitives/test_base_module.py",
+     "symbol": "test_usage_tracker_no_side_effect"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I pickle whole DSPy programs between stages of a pipeline, and I do not want old runtime history or callback registrations to leak into the restored object.\n\nThe awkward part is that I do want the actual program structure and ordinary attributes to survive. I'm not asking about JSON state files here; I want to see what happens to a live module object when it is pickled and unpickled in memory.\n\nGive me a complete, runnable Python program that uses `DummyLM`, populates a module's history, pickles and unpickles the module entirely in memory, and uses prints/assertions to prove history and callbacks were reset while normal program attributes still survived.",
+   "answer": "```python\nimport cloudpickle\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass MyProgram(dspy.Module):\n    def __init__(self):\n        super().__init__(callbacks=[\"keep-out\"])\n        self.label = \"persist-me\"\n        self.predict = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predict(question=question)\n\n\ndspy.configure(lm=DummyLM([{\"answer\": \"Paris\"}]))\nprogram = MyProgram()\nresult = program(question=\"What is the capital of France?\")\n\nassert result.answer == \"Paris\"\nassert len(program.history) == 1\nassert program.callbacks == [\"keep-out\"]\n\nrestored = cloudpickle.loads(cloudpickle.dumps(program))\n\nassert restored.label == \"persist-me\"\nassert hasattr(restored, \"predict\")\nassert restored.history == []\nassert restored.callbacks == []\nassert restored.predict.history == []\nassert restored.predict.callbacks == []\n\nprint(program.history[0][\"outputs\"])\nprint(restored.label, restored.history, restored.callbacks)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.__getstate__"
+    },
+    {
+     "file": "dspy/primitives/module.py",
+     "symbol": "Module.__setstate__"
+    },
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM.update_history"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm running `batch` over a list of `dspy.Example`s, and one row can raise a normal Python exception inside my module.\n\nI need to know the exact failure contract before I build downstream bookkeeping. In particular, I want to see whether DSPy preserves output ordering with a placeholder, and whether it gives me back the original failed example plus the caught exception object.\n\nGive me a complete, runnable Python program that defines a tiny failing module, runs `batch` with one bad example, and uses prints/assertions to prove the result list keeps its position with `None`, while the returned failed example and exception point to the bad row.",
+   "answer": "```python\nimport dspy\n\n\nclass FailingModule(dspy.Module):\n    def forward(self, value: int) -> str:\n        if value == 42:\n            raise ValueError(\"test error\")\n        return f\"success-{value}\"\n\n\nmodule = FailingModule()\nexamples = [\n    dspy.Example(value=1).with_inputs(\"value\"),\n    dspy.Example(value=42).with_inputs(\"value\"),\n    dspy.Example(value=3).with_inputs(\"value\"),\n]\n\nresults, failed_examples, exceptions = module.batch(\n    examples,\n    return_failed_examples=True,\n    provide_traceback=True,\n)\n\nassert results == [\"success-1\", None, \"success-3\"]\nassert len(failed_examples) == 1\nassert failed_examples[0].inputs()[\"value\"] == 42\nassert len(exceptions) == 1\nassert isinstance(exceptions[0], ValueError)\nassert str(exceptions[0]) == \"test error\"\n\nprint(results)\nprint(failed_examples[0].toDict(), str(exceptions[0]))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/parallel.py",
+     "symbol": "Parallel.forward"
+    },
+    {
+     "file": "dspy/utils/parallelizer.py",
+     "symbol": "ParallelExecutor._process_outcome"
+    },
+    {
+     "file": "tests/predict/test_parallel.py",
+     "symbol": "test_batch_with_failed_examples"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm composing a program that uses `dspy.Parallel` inside another `dspy.Parallel`, because one branch fans out again instead of returning a single prediction.\n\nBefore I rely on that shape, I need a proof that DSPy preserves the nested structure rather than flattening everything into one list or silently reordering the inner branch into the outer level.\n\nGive me a complete, runnable Python program that uses `DummyLM`, runs one outer parallel call with one nested parallel branch inside it, and uses prints/assertions to prove the return value is still nested and that all four predictions are present.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass MyProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predict1 = dspy.Predict(\"input -> output\")\n        self.predict2 = dspy.Predict(\"input -> output\")\n        self.parallel = dspy.Parallel(num_threads=2)\n\n    def forward(self, input):\n        return self.parallel(\n            [\n                (self.predict1, input),\n                (self.predict2, input),\n                (\n                    self.parallel,\n                    [\n                        (self.predict2, input),\n                        (self.predict1, input),\n                    ],\n                ),\n            ]\n        )\n\n\ndspy.configure(\n    lm=DummyLM(\n        [\n            {\"output\": \"test output 1\"},\n            {\"output\": \"test output 2\"},\n            {\"output\": \"test output 3\"},\n            {\"output\": \"test output 4\"},\n        ]\n    )\n)\n\noutput = MyProgram()(dspy.Example(input=\"test input\").with_inputs(\"input\"))\n\nassert isinstance(output, list)\nassert len(output) == 3\nassert isinstance(output[2], list)\nassert len(output[2]) == 2\n\nall_outputs = {\n    output[0].output,\n    output[1].output,\n    output[2][0].output,\n    output[2][1].output,\n}\nassert all_outputs == {\n    \"test output 1\",\n    \"test output 2\",\n    \"test output 3\",\n    \"test output 4\",\n}\n\nprint(type(output[2]).__name__, [pred.output for pred in output[2]])\nprint(sorted(all_outputs))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/parallel.py",
+     "symbol": "Parallel.forward"
+    },
+    {
+     "file": "tests/predict/test_parallel.py",
+     "symbol": "test_nested_parallel_module"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I have a larger pipeline that passes a shared kwargs dict into `dspy.Predict`, so some keys are not in the signature, and one of my real input fields has a default.\n\nWhat I need to pin down is the exact prompt-side behavior: the defaulted field should still be inserted, the unknown keys should be ignored, and DSPy should warn instead of silently pretending it used everything.\n\nGive me a complete, runnable Python program that uses `DummyLM`, calls one predictor with a missing defaulted field plus extra kwargs, captures the warning, and uses prints/assertions to prove the default value reached the LM prompt while the extra keys did not.",
+   "answer": "```python\nimport logging\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SignatureWithDefault(dspy.Signature):\n    context: str = dspy.InputField(default=\"DEFAULT_CONTEXT\")\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nlm = DummyLM([{\"answer\": \"test output\"}])\ndspy.configure(lm=lm)\npredictor = dspy.Predict(SignatureWithDefault)\n\nlogger = logging.getLogger(\"dspy.predict.predict\")\nmessages = []\n\nclass Handler(logging.Handler):\n    def emit(self, record):\n        messages.append(record.getMessage())\n\nhandler = Handler()\nlogger.addHandler(handler)\ntry:\n    result = predictor(question=\"What is 1+1?\", extra_field=\"ignore me\", another=\"ignore me too\")\n    user_message = lm.history[-1][\"messages\"][-1][\"content\"]\n\n    assert result.answer == \"test output\"\n    assert \"DEFAULT_CONTEXT\" in user_message\n    assert \"extra_field\" not in user_message\n    assert \"another\" not in user_message\n    assert any(\"not in signature\" in message for message in messages)\n\n    print(user_message)\n    print(messages[-1])\nfinally:\n    logger.removeHandler(handler)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict._forward_preprocess"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_input_field_default_value"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_extra_fields_warning"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I have an optimized `dspy.ReAct` checkpoint from an older DSPy release, and I want to know whether a fresh agent instance can still load it without reconstructing the optimized inner state by hand.\n\nMy concern is not just \"does load succeed\". I need to see that both inner stages recover the old instructions and that the saved demonstrations come back on each stage, because otherwise a silent partial load is hard to notice.\n\nGive me a complete, runnable Python program that loads the bundled legacy `dspy.ReAct` checkpoint from the repo into a fresh agent and uses prints/assertions to prove the two inner instruction strings and the two demo counts were restored.",
+   "answer": "```python\nfrom pathlib import Path\n\nimport dspy\n\n\npath = Path(\"tests/primitives/resources/saved_program.json\")\nassert path.exists(), path\n\nloaded = dspy.ReAct(\"question->answer\", tools=[])\nloaded.load(path)\n\nreact_instructions = loaded.react.signature.instructions\nextract_instructions = loaded.extract.predict.signature.instructions\n\nassert \"Imagine you are a detective racing against time to solve a high-profile\" in react_instructions\nassert \"Given the very verbose fields `question`\" in extract_instructions\nassert len(loaded.react.demos) == 2\nassert len(loaded.extract.predict.demos) == 2\n\nprint(len(loaded.react.demos), len(loaded.extract.predict.demos))\nprint(react_instructions.splitlines()[0])\nprint(extract_instructions.splitlines()[0])\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/primitives/base_module.py",
+     "symbol": "BaseModule.load"
+    },
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct.__init__"
+    },
+    {
+     "file": "tests/primitives/test_module.py",
+     "symbol": "test_load_dspy_program_cross_version"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm reusing the same class-based signature across different modules, and one branch runs under `JSONAdapter` with structured outputs enabled.\n\nThe subtle failure I want to rule out is signature mutation: I do not want one call to permanently rewrite my original output-field definitions just because DSPy generated a temporary response schema for the provider.\n\nGive me a complete, runnable Python program that uses `DummyLM`, runs one `JSONAdapter` prediction with structured outputs enabled, and uses prints/assertions to prove a response schema class was sent to the LM while the original signature metadata stayed unchanged afterward.",
+   "answer": "```python\nimport pydantic\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass OutputField3(pydantic.BaseModel):\n    subfield1: int\n    subfield2: float\n\n\nclass TestSignature(dspy.Signature):\n    input1: str = dspy.InputField()\n    output1: str = dspy.OutputField()\n    output2: bool = dspy.OutputField(desc=\"Boolean output field\")\n    output3: OutputField3 = dspy.OutputField(desc=\"Nested output field\")\n    output4_unannotated = dspy.OutputField(desc=\"Unannotated output field\")\n\n\nclass SchemaAwareDummyLM(DummyLM):\n    @property\n    def supported_params(self):\n        return {\"response_format\"}\n\n    @property\n    def supports_response_schema(self):\n        return True\n\n\ndef snapshot(signature):\n    return {\n        name: (field.annotation, dict(field.json_schema_extra))\n        for name, field in signature.output_fields.items()\n    }\n\n\nadapter = dspy.JSONAdapter()\nlm = SchemaAwareDummyLM(\n    [\n        {\n            \"output1\": \"hello\",\n            \"output2\": True,\n            \"output3\": {\"subfield1\": 1, \"subfield2\": 2.5},\n            \"output4_unannotated\": \"plain\",\n        }\n    ],\n    adapter=adapter,\n)\ndspy.configure(lm=lm, adapter=adapter)\n\npredictor = dspy.Predict(TestSignature)\nbefore = snapshot(TestSignature)\nresult = predictor(input1=\"Test input\")\nafter = snapshot(TestSignature)\n\nresponse_format = lm.history[-1][\"kwargs\"][\"response_format\"]\n\nassert result.output1 == \"hello\"\nassert issubclass(response_format, pydantic.BaseModel)\nassert set(response_format.model_fields) == {\"output1\", \"output2\", \"output3\", \"output4_unannotated\"}\nassert before == after\n\nprint(sorted(response_format.model_fields.keys()))\nprint(before == after)\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter.__call__"
+    },
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "_get_structured_outputs_response_format"
+    },
+    {
+     "file": "tests/adapters/test_json_adapter.py",
+     "symbol": "test_json_adapter_with_structured_outputs_does_not_mutate_original_signature"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm testing a provider that advertises generic JSON mode but not full response-schema support, and I want to know what DSPy actually sends on the first request.\n\nThis matters because I do not want to confuse a direct JSON-mode request with a failed structured-output retry. I want a proof that DSPy chooses plain `json_object` up front for that capability mix.\n\nGive me a complete, runnable Python program that uses `DummyLM`, simulates a model with `response_format` support but no response-schema support, and uses prints/assertions to prove `JSONAdapter` sends `{\"type\": \"json_object\"}` immediately and still parses the answer.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass JsonOnlyDummyLM(DummyLM):\n    @property\n    def supported_params(self):\n        return {\"response_format\"}\n\n    @property\n    def supports_response_schema(self):\n        return False\n\n\nclass TestSignature(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField(desc=\"String output field\")\n\n\nadapter = dspy.JSONAdapter()\nlm = JsonOnlyDummyLM([{\"answer\": \"Test output\"}], adapter=adapter)\ndspy.configure(lm=lm, adapter=adapter)\n\nprogram = dspy.Predict(TestSignature)\nresult = program(question=\"Dummy question!\")\n\nassert result.answer == \"Test output\"\nassert lm.history[-1][\"kwargs\"][\"response_format\"] == {\"type\": \"json_object\"}\n\nprint(lm.history[-1][\"kwargs\"][\"response_format\"])\nprint(result.answer)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter._json_adapter_call_common"
+    },
+    {
+     "file": "tests/adapters/test_json_adapter.py",
+     "symbol": "test_json_adapter_json_mode_no_structured_outputs"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I keep a few-shot predictor in memory, then transfer its state into a fresh predictor instance later. My demos include image inputs, and I do not want those examples to degrade into placeholder text during the round-trip.\n\nThe specific symptom I want to rule out is this: after the state round-trip, the live prompt still needs one real image block for the saved demo and one real image block for the new request, not opaque image markers or plain strings.\n\nGive me a complete, runnable Python program that uses `DummyLM`, round-trips a predictor with one image demo into a fresh predictor instance, and uses prints/assertions to prove the next LM call contains two image blocks and no image-placeholder sentinel text.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\ndef count_blocks(messages, block_type):\n    total = 0\n    for message in messages:\n        content = message.get(\"content\")\n        if isinstance(content, list):\n            total += sum(1 for block in content if isinstance(block, dict) and block.get(\"type\") == block_type)\n    return total\n\n\nclass Signature(dspy.Signature):\n    image: dspy.Image = dspy.InputField()\n    caption: str = dspy.OutputField()\n\n\npredictor = dspy.Predict(Signature)\npredictor.demos = [\n    dspy.Example(image=dspy.Image(\"https://example.com/demo.jpg\"), caption=\"Demo caption\")\n]\n\nstate = predictor.dump_state()\nloaded = dspy.Predict(Signature)\nloaded.load_state(state)\n\nlm = DummyLM([{\"caption\": \"Live caption\"}])\ndspy.configure(lm=lm)\nresult = loaded(image=dspy.Image(\"https://example.com/live.jpg\"))\n\nmessages = lm.history[-1][\"messages\"]\nassert result.caption == \"Live caption\"\nassert count_blocks(messages, \"image_url\") == 2\nassert \"<DSPY_IMAGE_START>\" not in str(messages)\n\nprint(count_blocks(messages, \"image_url\"))\nprint(str(messages))\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.dump_state"
+    },
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.load_state"
+    },
+    {
+     "file": "tests/signatures/test_adapter_image.py",
+     "symbol": "test_predictor_save_load"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm doing the same kind of predictor-state handoff, but with file inputs instead of images. Some runs use embedded file bytes in demos, while later live calls use file IDs.\n\nI want a concrete proof that the few-shot file example still formats as a real file content block after the state round-trip, and that a new live file input adds its own file block on top of it.\n\nGive me a complete, runnable Python program that uses `DummyLM`, round-trips a predictor with one file demo into a fresh predictor instance, and uses prints/assertions to prove the next LM call contains two file blocks.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\ndef count_blocks(messages, block_type):\n    total = 0\n    for message in messages:\n        content = message.get(\"content\")\n        if isinstance(content, list):\n            total += sum(1 for block in content if isinstance(block, dict) and block.get(\"type\") == block_type)\n    return total\n\n\nclass Signature(dspy.Signature):\n    document: dspy.File = dspy.InputField()\n    summary: str = dspy.OutputField()\n\n\npredictor = dspy.Predict(Signature)\npredictor.demos = [\n    dspy.Example(document=dspy.File.from_bytes(b\"demo-bytes\", filename=\"demo.txt\"), summary=\"Demo summary\")\n]\n\nstate = predictor.dump_state()\nloaded = dspy.Predict(Signature)\nloaded.load_state(state)\n\nlm = DummyLM([{\"summary\": \"Live summary\"}])\ndspy.configure(lm=lm)\nresult = loaded(document=dspy.File.from_file_id(\"file-live\", filename=\"live.txt\"))\n\nmessages = lm.history[-1][\"messages\"]\nassert result.summary == \"Live summary\"\nassert count_blocks(messages, \"file\") == 2\n\nprint(count_blocks(messages, \"file\"))\nprint(str(messages))\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.dump_state"
+    },
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.load_state"
+    },
+    {
+     "file": "tests/signatures/test_adapter_file.py",
+     "symbol": "test_save_load_file_signature"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "My signature takes a Pydantic model that itself contains an image plus an optional list of more images. I do not want to assume this survives a predictor-state round-trip just because plain `dspy.Image` fields do.\n\nThe failure mode I care about is nested multimodal loss: if the inner model gets flattened incorrectly, the prompt will stop carrying the right number of image blocks even though the Python object still looks valid.\n\nGive me a complete, runnable Python program that uses `DummyLM`, round-trips a predictor with a demo built from a Pydantic model containing nested images, and uses prints/assertions to prove the next LM call still contains all four expected image blocks.",
+   "answer": "```python\nimport pydantic\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\ndef count_blocks(messages, block_type):\n    total = 0\n    for message in messages:\n        content = message.get(\"content\")\n        if isinstance(content, list):\n            total += sum(1 for block in content if isinstance(block, dict) and block.get(\"type\") == block_type)\n    return total\n\n\nclass ImageModel(pydantic.BaseModel):\n    image: dspy.Image\n    image_list: list[dspy.Image] | None = None\n    output: str\n\n\nclass Signature(dspy.Signature):\n    model_input: ImageModel = dspy.InputField()\n    output: str = dspy.OutputField()\n\n\nmodel_input = ImageModel(\n    image=dspy.Image(\"https://example.com/dog.jpg\"),\n    image_list=[dspy.Image(\"https://example.com/cat.jpg\")],\n    output=\"Multiple photos\",\n)\n\npredictor = dspy.Predict(Signature)\npredictor.demos = [dspy.Example(model_input=model_input, output=\"Multiple photos\")]\n\nstate = predictor.dump_state()\nloaded = dspy.Predict(Signature)\nloaded.load_state(state)\n\nlm = DummyLM([{\"output\": \"Multiple photos\"}])\ndspy.configure(lm=lm)\nresult = loaded(model_input=model_input)\n\nmessages = lm.history[-1][\"messages\"]\nassert result.output == \"Multiple photos\"\nassert count_blocks(messages, \"image_url\") == 4\nassert \"<DSPY_IMAGE_START>\" not in str(messages)\n\nprint(count_blocks(messages, \"image_url\"))\nprint(str(messages))\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "serialize_object"
+    },
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.dump_state"
+    },
+    {
+     "file": "tests/signatures/test_adapter_image.py",
+     "symbol": "test_save_load_pydantic_model"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I attach rich Pydantic metadata to demos before moving predictor state between processes. The metadata includes things like URLs and datetimes, so I need to know whether DSPy makes them JSON-safe or whether I have to pre-serialize them myself.\n\nWhat I want is a proof at the state payload level, not a guess based on one successful load. The URL should already be a plain string and the datetime should already be ISO text inside the dumped demo state.\n\nGive me a complete, runnable Python program that builds such a demo, dumps predictor state offline, and uses prints/assertions to prove the URL and datetime were converted into JSON-friendly strings inside the serialized demo.",
+   "answer": "```python\nimport json\nfrom datetime import datetime\n\nfrom pydantic import BaseModel, HttpUrl\n\nimport dspy\n\n\nclass WebsiteInfo(BaseModel):\n    name: str\n    url: HttpUrl\n    description: str | None = None\n    created_at: datetime\n\n\nclass Signature(dspy.Signature):\n    website_info: WebsiteInfo = dspy.InputField()\n    summary: str = dspy.OutputField()\n\n\nwebsite_info = WebsiteInfo(\n    name=\"Example\",\n    url=\"https://www.example.com\",\n    description=\"Test website\",\n    created_at=datetime(2021, 1, 1, 12, 0, 0),\n)\n\npredictor = dspy.Predict(Signature)\npredictor.demos = [{\"website_info\": website_info, \"summary\": \"This is a test website.\"}]\n\nstate = predictor.dump_state()\ndemo_data = state[\"demos\"][0][\"website_info\"]\n\nassert demo_data[\"url\"] == \"https://www.example.com/\"\nassert demo_data[\"created_at\"] == \"2021-01-01T12:00:00\"\njson.dumps(state)\n\nprint(demo_data)\nprint(json.dumps(state, sort_keys=True)[:200])\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "serialize_object"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_dump_state_pydantic_non_primitive_types"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "One branch of my program passes a Pydantic wrapper that contains a list of DSPy documents, not just plain strings. I need to know whether `JSONAdapter` keeps those as actual document content blocks or collapses them into JSON text.\n\nThis matters because downstream citation-capable models only work if the user message really contains document blocks. I want the proof at the formatted-message level.\n\nGive me a complete, runnable Python program that builds such a wrapped input and uses prints/assertions to prove the formatted `JSONAdapter` user message contains two real document blocks.",
+   "answer": "```python\nimport pydantic\n\nimport dspy\n\n\nclass DocumentWrapper(pydantic.BaseModel):\n    documents: list[dspy.experimental.Document]\n\n\nclass Signature(dspy.Signature):\n    document: DocumentWrapper = dspy.InputField()\n    text: str = dspy.OutputField()\n\n\nadapter = dspy.JSONAdapter()\nwrapped = DocumentWrapper(\n    documents=[\n        dspy.experimental.Document(data=\"Hello, world!\"),\n        dspy.experimental.Document(data=\"Hello, world 2!\"),\n    ]\n)\nmessages = adapter.format(Signature, [], {\"document\": wrapped})\ncontent = messages[1][\"content\"]\ndocument_blocks = [block for block in content if isinstance(block, dict) and block.get(\"type\") == \"document\"]\n\nassert len(document_blocks) == 2\nassert document_blocks[0][\"source\"][\"data\"] == \"Hello, world!\"\nassert document_blocks[1][\"source\"][\"data\"] == \"Hello, world 2!\"\n\nprint(len(document_blocks))\nprint(document_blocks)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format"
+    },
+    {
+     "file": "dspy/adapters/utils.py",
+     "symbol": "format_field_value"
+    },
+    {
+     "file": "tests/adapters/test_json_adapter.py",
+     "symbol": "test_json_adapter_formats_with_nested_documents"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I sometimes parse tool calls first and execute them later, without passing an explicit tool registry every time. In a notebook or long script, that means there can be both local and global functions with the same name.\n\nI need to know the lookup rule DSPy uses in that situation, because the wrong precedence would silently call the wrong function and still look successful.\n\nGive me a complete, runnable Python program that constructs a parsed tool call, defines a same-named local and global function with different behavior, executes the tool call without an explicit registry, and uses prints/assertions to prove the local function wins.",
+   "answer": "```python\nimport dspy\n\n\ndef local_add(a: int, b: int) -> int:\n    return a + b + 1000\n\n\ndef main():\n    def local_add(a: int, b: int) -> int:\n        return a + b\n\n    tool_call = dspy.ToolCalls.ToolCall(name=\"local_add\", args={\"a\": 1, \"b\": 2})\n    result = tool_call.execute()\n\n    assert result == 3\n    print(result)\n    print(\"local beats global\")\n\nmain()\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/types/tool.py",
+     "symbol": "ToolCalls.ToolCall.execute"
+    },
+    {
+     "file": "tests/adapters/test_tool.py",
+     "symbol": "test_tool_call_execute_with_local_functions"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "My tool signature is more complex than a single Pydantic object: it takes a nested list of models. The LM side will naturally give me dictionaries, but the actual Python tool body needs the nested items turned back into real model instances.\n\nI want a tiny proof that DSPy does that recursive coercion for tool arguments instead of leaving me with raw dicts deep inside the structure.\n\nGive me a complete, runnable Python program that wraps such a tool, calls it with nested dict arguments, and uses prints/assertions to prove the tool received real Pydantic model instances inside the nested list.",
+   "answer": "```python\nfrom pydantic import BaseModel\n\nimport dspy\n\n\nclass DummyModel(BaseModel):\n    field1: str = \"hello\"\n    field2: int\n\n\ndef nested_tool(x: list[list[DummyModel]]):\n    return x\n\n\ntool = dspy.Tool(nested_tool)\nresult = tool(\n    x=[\n        [\n            {\n                \"field1\": \"hello\",\n                \"field2\": 123,\n            }\n        ]\n    ]\n)\n\nassert isinstance(result[0][0], DummyModel)\nassert result[0][0].field1 == \"hello\"\nassert result[0][0].field2 == 123\n\nprint(type(result[0][0]).__name__)\nprint(result)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/types/tool.py",
+     "symbol": "Tool._validate_and_parse_args"
+    },
+    {
+     "file": "tests/adapters/test_tool.py",
+     "symbol": "test_tool_call_parses_nested_list_of_pydantic_model"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I have one tool that intentionally accepts arbitrary extra kwargs from my pipeline and another that should reject any undeclared extras. At the same time, I still want typed arguments to be validated in both cases.\n\nI need one repro that makes the contract obvious: extra kwargs should survive only when the underlying callable accepts them, while bad types for declared args should still be rejected.\n\nGive me a complete, runnable Python program that builds both tool shapes and uses prints/assertions to prove the extra-kwargs difference and the shared type-validation behavior.",
+   "answer": "```python\nimport dspy\n\n\ndef with_kwargs(x: int, **kwargs):\n    return kwargs\n\n\ndef without_kwargs(x: int):\n    return x\n\n\ntool_with_kwargs = dspy.Tool(with_kwargs)\ntool_without_kwargs = dspy.Tool(without_kwargs)\n\nforwarded = tool_with_kwargs(x=1, y=2, z=3)\nassert forwarded == {\"y\": 2, \"z\": 3}\n\ntry:\n    tool_without_kwargs(x=1, y=2)\n    raise AssertionError(\"Expected undeclared extra arg to fail\")\nexcept ValueError as exc:\n    extra_arg_error = str(exc)\n\ntry:\n    tool_with_kwargs(x=\"not an integer\")\n    raise AssertionError(\"Expected typed arg validation to fail\")\nexcept ValueError as exc:\n    type_error = str(exc)\n\nassert \"not in the tool's args\" in extra_arg_error\nassert \"invalid\" in type_error\n\nprint(forwarded)\nprint(extra_arg_error)\nprint(type_error)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/types/tool.py",
+     "symbol": "Tool._validate_and_parse_args"
+    },
+    {
+     "file": "tests/adapters/test_tool.py",
+     "symbol": "test_tool_call_kwarg"
+    },
+    {
+     "file": "tests/adapters/test_tool.py",
+     "symbol": "test_invalid_function_call"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm feeding a deeply nested Pydantic tool into DSPy, then forwarding its generated schema to another system that does not like `$ref`-heavy schemas.\n\nBefore I build more plumbing, I want proof that DSPy already resolves those nested references inside the tool schema, including the optional list-of-models branch, instead of leaving `$defs` around.\n\nGive me a complete, runnable Python program that defines such a nested tool and uses prints/assertions to prove the generated argument schema contains the nested properties directly and does not contain `$defs`.",
+   "answer": "```python\nfrom typing import Any\n\nfrom pydantic import BaseModel\n\nimport dspy\n\n\nclass Address(BaseModel):\n    street: str\n    city: str\n    zip_code: str\n    is_primary: bool = False\n\n\nclass ContactInfo(BaseModel):\n    email: str\n    phone: str | None = None\n    addresses: list[Address]\n\n\nclass UserProfile(BaseModel):\n    user_id: int\n    name: str\n    age: int | None = None\n    contact: ContactInfo\n    tags: list[str] = []\n\n\nclass Note(BaseModel):\n    content: str\n    author: str\n\n\ndef complex_tool(profile: UserProfile, priority: int, notes: list[Note] | None = None) -> dict[str, Any]:\n    return {\"ok\": True}\n\n\ntool = dspy.Tool(complex_tool)\n\nassert \"$defs\" not in str(tool.args[\"notes\"])\nassert tool.args[\"profile\"][\"properties\"][\"contact\"][\"properties\"][\"email\"][\"type\"] == \"string\"\nassert tool.args[\"notes\"][\"anyOf\"][0][\"items\"][\"properties\"][\"content\"][\"type\"] == \"string\"\nassert tool.args[\"notes\"][\"anyOf\"][0][\"items\"][\"properties\"][\"author\"][\"type\"] == \"string\"\n\nprint(tool.args[\"profile\"][\"properties\"][\"contact\"])\nprint(tool.args[\"notes\"])\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/types/tool.py",
+     "symbol": "_resolve_json_schema_reference"
+    },
+    {
+     "file": "dspy/adapters/types/tool.py",
+     "symbol": "Tool._parse_function"
+    },
+    {
+     "file": "tests/adapters/test_tool.py",
+     "symbol": "test_tool_from_function_with_pydantic_nesting"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "In text-mode tool planning, the model sometimes emits the tool-call field in a sloppy but human-readable way: sometimes as a single `{name, args}` dict, sometimes as a list of those dicts, without wrapping it in anything fancy.\n\nI need to know whether DSPy normalizes those shapes into the same structured tool-call object, because I do not want a tiny format drift to break my manual tool-execution path.\n\nGive me a complete, runnable Python program that builds a minimal signature, parses both text variants through `ChatAdapter`, and uses prints/assertions to prove they become the same structured tool-call representation.",
+   "answer": "```python\nimport dspy\n\n\nclass Signature(dspy.Signature):\n    question: str = dspy.InputField()\n    tool_calls: dspy.ToolCalls = dspy.OutputField()\n\n\nadapter = dspy.ChatAdapter()\nparsed_list = adapter.parse(\n    Signature,\n    \"[[ ## tool_calls ## ]]\\n[{'name': 'get_weather', 'args': {'city': 'Paris'}}]\",\n)\nparsed_single = adapter.parse(\n    Signature,\n    \"[[ ## tool_calls ## ]]\\n{'name': 'get_weather', 'args': {'city': 'Paris'}}\",\n)\n\nexpected = dspy.ToolCalls(\n    tool_calls=[dspy.ToolCalls.ToolCall(name=\"get_weather\", args={\"city\": \"Paris\"})]\n)\n\nassert parsed_list[\"tool_calls\"] == expected\nassert parsed_single[\"tool_calls\"] == expected\n\nprint(parsed_list[\"tool_calls\"])\nprint(parsed_single[\"tool_calls\"])\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.parse"
+    },
+    {
+     "file": "dspy/adapters/utils.py",
+     "symbol": "parse_value"
+    },
+    {
+     "file": "tests/adapters/test_chat_adapter.py",
+     "symbol": "test_chat_adapter_toolcalls_vague_match"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm harvesting DSPy traces for debugging, but I only want the most recent few calls in memory. What I need is the exact cap behavior once the limit is exceeded.\n\nThis is easy to misread from casual testing because the program still works either way. I want a deterministic proof that the trace acts like a FIFO buffer and keeps only the newest entries once the cap is reached.\n\nGive me a complete, runnable Python program that uses `DummyLM`, makes more calls than the trace limit, and uses prints/assertions to prove only the newest traced inputs remain.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nprogram = dspy.Predict(\"question -> answer\")\ndspy.configure(\n    lm=DummyLM([{\"answer\": \"Paris\"}] * 10),\n    trace=[],\n    max_trace_size=3,\n)\n\nfor idx in range(5):\n    result = program(question=f\"Q{idx}\")\n    assert result.answer == \"Paris\"\n\nkept_questions = [kwargs[\"question\"] for _module, kwargs, _pred in dspy.settings.trace]\nassert kept_questions == [\"Q2\", \"Q3\", \"Q4\"]\n\nprint(kept_questions)\nprint(len(dspy.settings.trace))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict._forward_postprocess"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_trace_size_limit"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I pass `dspy.History` into a predictor that runs under `JSONAdapter`, and I want to see the exact message pattern that reaches the LM. My concern is that prior assistant answers might be reformatted incorrectly or merged into the live request.\n\nWhat I want to pin down is whether prior turns become alternating user / assistant messages, with the assistant side rendered as JSON for the output fields, and the live request still appended afterward.\n\nGive me a complete, runnable Python program that builds a small history object, formats one `JSONAdapter` call, and uses prints/assertions to prove the message count and the exact placement of the prior questions and JSON-formatted prior answers.",
+   "answer": "```python\nimport dspy\n\n\nclass Signature(dspy.Signature):\n    question: str = dspy.InputField()\n    history: dspy.History = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nhistory = dspy.History(\n    messages=[\n        {\"question\": \"What is the capital of France?\", \"answer\": \"Paris\"},\n        {\"question\": \"What is the capital of Germany?\", \"answer\": \"Berlin\"},\n    ]\n)\n\nadapter = dspy.JSONAdapter()\nmessages = adapter.format(\n    Signature,\n    [],\n    {\"question\": \"What is the capital of Italy?\", \"history\": history},\n)\n\nassert len(messages) == 6\nassert messages[1][\"content\"] == \"[[ ## question ## ]]\\nWhat is the capital of France?\"\nassert messages[2][\"content\"] == '{\\n  \"answer\": \"Paris\"\\n}'\nassert messages[3][\"content\"] == \"[[ ## question ## ]]\\nWhat is the capital of Germany?\"\nassert messages[4][\"content\"] == '{\\n  \"answer\": \"Berlin\"\\n}'\nassert messages[5][\"content\"].startswith(\"[[ ## question ## ]]\\nWhat is the capital of Italy?\")\n\nprint(len(messages))\nprint(messages[1][\"content\"])\nprint(messages[2][\"content\"])\nprint(messages[5][\"content\"])\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format_conversation_history"
+    },
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter.format_assistant_message_content"
+    },
+    {
+     "file": "tests/adapters/test_json_adapter.py",
+     "symbol": "test_json_adapter_formats_conversation_history"
+    }
+   ],
+   "note": "",
+   "topic": "module_composition_and_runtime_interoperability",
+   "smalldspy_scope": false
+  }
+ ]
+}

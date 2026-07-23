@@ -1,0 +1,134 @@
+{
+ "id": "dspy_3904c8e728fc",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I have one program where I want to pass a provider-style predicted-output object through to the LM, and another program where I literally named one of my inputs `prediction`. I need a minimal proof that DSPy treats those two cases differently instead of always hijacking that field.\n\nThe behavior I care about is subtle: the standardized predicted-output payload should move into the LM kwargs, but a normal signature field with the same name should stay in the prompt as regular user input. I want both cases in one harness so the difference is impossible to miss.\n\nGive me a complete, runnable Python program that uses `DummyLM`, records the outgoing LM kwargs and messages, and proves the two different behaviors.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\nclass LM(DummyLM):\n    def __init__(self, answers):\n        super().__init__(answers)\n        self.calls = []\n    def forward(self, prompt=None, messages=None, **kwargs):\n        self.calls.append({'messages': messages, 'kwargs': dict(kwargs)})\n        return super().forward(prompt=prompt, messages=messages, **kwargs)\n\nlm = LM([{'answer': 'Because it wanted to.'}, {'judgement': 'looks plausible'}])\ndspy.configure(lm=lm)\n\nplain = dspy.Predict('question -> answer')\nout1 = plain(question='Why?', prediction={'type': 'content', 'content': 'draft'})\nassert out1.answer == 'Because it wanted to.'\nassert lm.calls[0]['kwargs']['prediction'] == {'type': 'content', 'content': 'draft'}\nassert 'prediction' not in lm.calls[0]['messages'][-1]['content']\n\nfield_prog = dspy.Predict('question, prediction -> judgement')\nout2 = field_prog(question='Why?', prediction='Because.')\nassert out2.judgement == 'looks plausible'\nassert 'prediction' not in lm.calls[1]['kwargs']\nassert '[[ ## prediction ## ]]' in lm.calls[1]['messages'][-1]['content']\nprint(lm.calls[0]['kwargs'])\nprint(lm.calls[1]['messages'][-1]['content'])\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "The proof harness uses an instrumented `DummyLM`-based test double that records each LM call’s `messages` and `kwargs`, so the assertions inspect the actual outbound payload instead of only the returned prediction object.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "One case must instantiate `Predict(\"question -> answer\")`, pass `prediction` as the standardized predicted-output dict with `type == \"content\"` and a `content` field, and assert that exact dict is forwarded in the outgoing LM kwargs.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "For that standardized predicted-output case, the proof must also show that `prediction` is absent from the rendered prompt/messages, since DSPy removes it from input kwargs before building prompt inputs.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "A second case must instantiate `Predict(\"question, prediction -> judgement\")`, pass a normal string `prediction` value, and assert that `prediction` is not forwarded in the LM kwargs.",
+   "span_ids": [
+    "s4",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "For the signature-field case, the proof must inspect the recorded prompt/messages and show that the `prediction` input remains ordinary prompt content rather than being hijacked into LM kwargs.",
+   "span_ids": [
+    "s4",
+    "s5",
+    "s8"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 71,
+   "end_line": 76,
+   "excerpt": "0071: def test_call_method():\n0072:     predict_instance = Predict(\"input -> output\")\n0073:     lm = DummyLM([{\"output\": \"test output\"}])\n0074:     dspy.configure(lm=lm)\n0075:     result = predict_instance(input=\"test input\")\n0076:     assert result.output == \"test output\""
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 685,
+   "end_line": 695,
+   "excerpt": "0685:     class SpyLM(dspy.LM):\n0686:         def __init__(self, *args, return_json=False, **kwargs):\n0687:             super().__init__(*args, **kwargs)\n0688:             self.calls = []\n0689:             self.return_json = return_json\n0690: \n0691:         def __call__(self, prompt=None, messages=None, **kwargs):\n0692:             self.calls.append({\"prompt\": prompt, \"messages\": messages, \"kwargs\": kwargs})\n0693:             if self.return_json:\n0694:                 return [\"{'answer':'100%'}\"]\n0695:             return [\"[[ ## answer ## ]]\\n100%!\"]"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 716,
+   "end_line": 724,
+   "excerpt": "0716:     # Verify the LM was called with correct messages\n0717:     assert len(lm.calls) == 1\n0718:     messages = lm.calls[0][\"messages\"]\n0719: \n0720:     assert len(messages) == 4\n0721: \n0722:     assert \"what's the capital of france?\" in messages[1][\"content\"]\n0723:     assert \"paris\" in messages[2][\"content\"]\n0724:     assert \"are you sure that's correct\" in messages[3][\"content\"]"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/predict/predict.py",
+   "start_line": 171,
+   "end_line": 180,
+   "excerpt": "0171:         if \"prediction\" in kwargs:\n0172:             if (\n0173:                 isinstance(kwargs[\"prediction\"], dict)\n0174:                 and kwargs[\"prediction\"].get(\"type\") == \"content\"\n0175:                 and \"content\" in kwargs[\"prediction\"]\n0176:             ):\n0177:                 # If the `prediction` is the standard predicted outputs format\n0178:                 # (https://platform.openai.com/docs/guides/predicted-outputs), we remove it from input kwargs and add it\n0179:                 # to the lm kwargs.\n0180:                 config[\"prediction\"] = kwargs.pop(\"prediction\")"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/predict/predict.py",
+   "start_line": 243,
+   "end_line": 254,
+   "excerpt": "0243:     def forward(self, **kwargs):\n0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)\n0245: \n0246:         adapter = settings.adapter or ChatAdapter()\n0247: \n0248:         if self._should_stream():\n0249:             with settings.context(caller_predict=self):\n0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0251:         else:\n0252:             with settings.context(send_stream=None):\n0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0254: "
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 894,
+   "end_line": 907,
+   "excerpt": "0894: def test_predicted_outputs_piped_from_predict_to_lm_call():\n0895:     program = Predict(\"question -> answer\")\n0896:     dspy.configure(lm=dspy.LM(\"openai/gpt-4o-mini\"))\n0897: \n0898:     with patch(\"litellm.completion\") as mock_completion:\n0899:         program(\n0900:             question=\"Why did a chicken cross the kitchen?\",\n0901:             prediction={\"type\": \"content\", \"content\": \"A chicken crossing the kitchen\"},\n0902:         )\n0903: \n0904:         assert mock_completion.call_args[1][\"prediction\"] == {\n0905:             \"type\": \"content\",\n0906:             \"content\": \"A chicken crossing the kitchen\",\n0907:         }"
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 909,
+   "end_line": 915,
+   "excerpt": "0909:     # If the signature has prediction as an input field, and the prediction is not set as the standard predicted output\n0910:     # format, it should not be passed to the LM.\n0911:     program = Predict(\"question, prediction -> judgement\")\n0912:     with patch(\"litellm.completion\") as mock_completion:\n0913:         program(question=\"Why did a chicken cross the kitchen?\", prediction=\"To get to the other side!\")\n0914: \n0915:     assert \"prediction\" not in mock_completion.call_args[1]"
+  },
+  {
+   "span_id": "s8",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 1010,
+   "end_line": 1016,
+   "excerpt": "1010:     lm = SpyLM()\n1011:     dspy.configure(lm=lm)\n1012:     predictor = Predict(SignatureWithDefault)\n1013:     predictor(question=\"test\")\n1014: \n1015:     user_message = lm.calls[0][\"messages\"][-1][\"content\"]\n1016:     assert \"DEFAULT_CONTEXT\" in user_message"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Shows the privileged predicted-output transport path versus an ordinary signature field with the same name.",
+ "source_index": 14,
+ "smalldspy_scope": true,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

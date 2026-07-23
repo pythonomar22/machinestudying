@@ -1,0 +1,146 @@
+{
+ "id": "dspy_1b7e66f63e5d",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm giving different compile-time knobs to the prompt step and the weight step inside `dspy.BetterTogether`. My concern is that DSPy might either broadcast every extra argument to every optimizer or silently drop step-specific ones.\n\nI need a tiny repro that makes the routing visible, not a summary. The proof I want is that one optimizer receives only its own custom argument and the other one receives only its own.\n\nGive me a complete, runnable Python program that stays offline, runs a two-step `dspy.BetterTogether` strategy with custom per-step compile arguments, and prints/asserts exactly which kwargs each optimizer received.",
+ "gold_answer": "```python\nfrom unittest.mock import Mock, patch\n\nimport dspy\nfrom dspy.teleprompt import BetterTogether\nfrom dspy.teleprompt.teleprompt import Teleprompter\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"input -> output\")\n\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\n\nclass PromptOptimizer(Teleprompter):\n    def __init__(self):\n        self.received_kwargs = None\n\n    def compile(self, student, trainset=None, num_trials=None, **kwargs):\n        self.received_kwargs = {\"trainset\": trainset, \"num_trials\": num_trials, **kwargs}\n        return student\n\n\nclass WeightOptimizer(Teleprompter):\n    def __init__(self):\n        self.received_kwargs = None\n\n    def compile(self, student, trainset=None, num_batches=None, **kwargs):\n        self.received_kwargs = {\"trainset\": trainset, \"num_batches\": num_batches, **kwargs}\n        return student\n\n\ndef metric(example, prediction, trace=None):\n    return 1.0\n\n\nstudent = SimpleModule()\nstudent.set_lm(DummyLM([{\"output\": \"out\"}]))\ntrainset = [dspy.Example(input=\"train\", output=\"out\").with_inputs(\"input\")]\nvalset = [dspy.Example(input=\"val\", output=\"out\").with_inputs(\"input\")]\nprompt_opt = PromptOptimizer()\nweight_opt = WeightOptimizer()\noptimizer = BetterTogether(metric=metric, p=prompt_opt, w=weight_opt)\n\nwith patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\", return_value=Mock(score=0.85)):\n    with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n        with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n            with patch.object(optimizer, \"_models_changed\", return_value=False):\n                optimizer.compile(\n                    student,\n                    trainset=trainset,\n                    valset=valset,\n                    strategy=\"p -> w\",\n                    optimizer_compile_args={\"p\": {\"num_trials\": 10}, \"w\": {\"num_batches\": 5}},\n                )\n\nprint(\"prompt_kwargs:\", prompt_opt.received_kwargs)\nprint(\"weight_kwargs:\", weight_opt.received_kwargs)\nassert prompt_opt.received_kwargs == {\"trainset\": trainset, \"num_trials\": 10}\nassert weight_opt.received_kwargs == {\"trainset\": trainset, \"num_batches\": 5}\n\ntry:\n    optimizer.compile(\n        student,\n        trainset=trainset,\n        valset=valset,\n        strategy=\"p -> w\",\n        optimizer_compile_args={\"p\": {\"num_batches\": 99}},\n    )\n    raise AssertionError(\"invalid step-specific args should raise ValueError\")\nexcept ValueError as exc:\n    assert \"Invalid compile arguments for optimizer 'p'\" in str(exc)\n    assert \"num_batches\" in str(exc)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 12,
+   "statement": "The program defines two custom `Teleprompter` optimizers whose `compile()` signatures use different step-specific knobs (`num_trials` for the prompt step and `num_batches` for the weight step), and each captures the kwargs it receives.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The repro uses a minimal DSPy student module built from `Predict(\"input -> output\")`, instantiates it, and assigns a `DummyLM` before compilation.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 18,
+   "statement": "The compile call instantiates `BetterTogether(metric=..., p=..., w=...)`, runs strategy `\"p -> w\"`, and passes `optimizer_compile_args={\"p\": {\"num_trials\": 10}, \"w\": {\"num_batches\": 5}}` so each step has its own custom compile args.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The program also verifies that `BetterTogether` rejects an invalid step-specific key for optimizer `p` (`num_batches`) with a `ValueError`, rather than silently accepting it.",
+   "span_ids": [
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "`BetterTogether._run_and_evaluate_step()` merges shared inputs with the current step's custom args, filters that dict to parameters accepted by the current optimizer's `compile()`, and calls only that optimizer with the filtered kwargs.",
+   "span_ids": [
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The repro proves routing by asserting that the prompt optimizer has `num_trials == 10` and `num_batches` absent or `None`, while the weight optimizer has `num_batches == 5` and `num_trials` absent or `None`.",
+   "span_ids": [
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c7",
+   "claim_type": "supporting",
+   "weight": 5,
+   "statement": "The run patches `eval_candidate_program`, `launch_lms`, and `kill_lms`, and overrides `_models_changed` to `False`, so the demonstration avoids real evaluation and LM relaunch side effects.",
+   "span_ids": [
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "tests/teleprompt/test_bettertogether.py",
+   "start_line": 32,
+   "end_line": 38,
+   "excerpt": "0032: class SimpleModule(dspy.Module):\n0033:     def __init__(self, signature):\n0034:         super().__init__()\n0035:         self.predictor = Predict(signature)\n0036: \n0037:     def forward(self, **kwargs):\n0038:         return self.predictor(**kwargs)"
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/teleprompt/test_bettertogether.py",
+   "start_line": 310,
+   "end_line": 312,
+   "excerpt": "0310:     student = SimpleModule(\"input -> output\")\n0311:     lm = DummyLM([{\"output\": \"test\"}])\n0312:     student.set_lm(lm)"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/teleprompt/test_bettertogether.py",
+   "start_line": 314,
+   "end_line": 337,
+   "excerpt": "0314:     # Create mock Teleprompters that capture their compile kwargs\n0315:     class PromptOptimizer(Teleprompter):\n0316:         def __init__(self):\n0317:             self.received_kwargs = {}\n0318: \n0319:         def compile(self, student, trainset=None, num_trials=None, **kwargs):\n0320:             self.received_kwargs = {\n0321:                 \"trainset\": trainset,\n0322:                 \"num_trials\": num_trials,\n0323:                 **kwargs\n0324:             }\n0325:             return student\n0326: \n0327:     class WeightOptimizer(Teleprompter):\n0328:         def __init__(self):\n0329:             self.received_kwargs = {}\n0330: \n0331:         def compile(self, student, trainset=None, num_batches=None, **kwargs):\n0332:             self.received_kwargs = {\n0333:                 \"trainset\": trainset,\n0334:                 \"num_batches\": num_batches,\n0335:                 **kwargs\n0336:             }\n0337:             return student"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/teleprompt/test_bettertogether.py",
+   "start_line": 339,
+   "end_line": 360,
+   "excerpt": "0339:     mock_p = PromptOptimizer()\n0340:     mock_w = WeightOptimizer()\n0341:     optimizer = BetterTogether(metric=simple_metric, p=mock_p, w=mock_w)\n0342: \n0343:     # Define different compile args for each optimizer\n0344:     compile_args = {\n0345:         \"p\": {\"num_trials\": 10},\n0346:         \"w\": {\"num_batches\": 5}\n0347:     }\n0348: \n0349:     with patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\") as mock_eval:\n0350:         mock_eval.return_value = Mock(score=0.85)\n0351:         with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n0352:             with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n0353:                 with patch.object(optimizer, \"_models_changed\", return_value=False):\n0354:                     optimizer.compile(\n0355:                         student,\n0356:                         trainset=trainset,\n0357:                         valset=valset,\n0358:                         strategy=\"p -> w\",\n0359:                         optimizer_compile_args=compile_args\n0360:                     )"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/teleprompt/test_bettertogether.py",
+   "start_line": 362,
+   "end_line": 371,
+   "excerpt": "0362:     # Verify each optimizer received its specific args\n0363:     assert mock_p.received_kwargs is not None, \"Optimizer 'p' compile was not called\"\n0364:     assert \"num_trials\" in mock_p.received_kwargs, \"num_trials not passed to optimizer 'p'\"\n0365:     assert mock_p.received_kwargs[\"num_trials\"] == 10, \"num_trials value incorrect for 'p'\"\n0366:     assert mock_p.received_kwargs.get(\"num_batches\") is None, \"Optimizer 'p' should not receive 'w' args\"\n0367: \n0368:     assert mock_w.received_kwargs is not None, \"Optimizer 'w' compile was not called\"\n0369:     assert \"num_batches\" in mock_w.received_kwargs, \"num_batches not passed to optimizer 'w'\"\n0370:     assert mock_w.received_kwargs[\"num_batches\"] == 5, \"num_batches value incorrect for 'w'\"\n0371:     assert mock_w.received_kwargs.get(\"num_trials\") is None, \"Optimizer 'w' should not receive 'p' args\""
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/teleprompt/bettertogether.py",
+   "start_line": 373,
+   "end_line": 407,
+   "excerpt": "0373:         for optimizer_key, compile_args in optimizer_compile_args.items():\n0374:             if optimizer_key not in self.optimizers:\n0375:                 raise ValueError(\n0376:                     f\"Invalid optimizer key '{optimizer_key}'. \"\n0377:                     f\"Valid keys are: {list(self.optimizers.keys())}\"\n0378:                 )\n0379:             optimizer = self.optimizers[optimizer_key]\n0380:             self._validate_compile_args(optimizer, optimizer_key, compile_args)\n0381: \n0382:             # Special checks\n0383:             if optimizer.__class__.__name__ == \"GEPA\":\n0384:                 # GEPA accepts a teacher argument, but raises an error if it's set.\n0385:                 if teacher is not None:\n0386:                     raise ValueError(\n0387:                         \"GEPA does not accept a teacher argument. Please remove the teacher argument.\"\n0388:                     )\n0389: \n0390:         return optimizer_compile_args\n0391: \n0392:     def _validate_compile_args(\n0393:         self, optimizer: Teleprompter, optimizer_key: str, compile_args: dict[str, Any]\n0394:     ) -> None:\n0395:         if \"student\" in compile_args:\n0396:             raise ValueError(\n0397:                 f\"'student' is not allowed in optimizer_compile_args for optimizer '{optimizer_key}'. \"\n0398:                 \"The same student is used throughout compilation.\"\n0399:             )\n0400: \n0401:         valid_params = inspect.signature(optimizer.compile).parameters\n0402:         invalid_args = set(compile_args.keys()) - set(valid_params.keys())\n0403:         if invalid_args:\n0404:             raise ValueError(\n0405:                 f\"Invalid compile arguments for optimizer '{optimizer_key}': {sorted(invalid_args)}. \"\n0406:                 f\"{optimizer.__class__.__name__}.compile() accepts: {list(valid_params.keys())}\"\n0407:             )"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/teleprompt/bettertogether.py",
+   "start_line": 544,
+   "end_line": 550,
+   "excerpt": "0544:         # Build compile args with standard parameters, filtering to only what the optimizer accepts\n0545:         potential_args = {\"trainset\": trainset, \"teacher\": teacher, \"valset\": valset, **compile_args}\n0546:         sig = inspect.signature(optimizer.compile)\n0547:         accepted_params = set(sig.parameters.keys())\n0548:         filtered_compile_args = {k: v for k, v in potential_args.items() if k in accepted_params}\n0549: \n0550:         student = optimizer.compile(student, **filtered_compile_args)"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "",
+ "source_index": 33,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 1,
+  "revised": true,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [
+     "self-grade: claim c4 scored 0.5: Uses optimizer-specific `compile()` signatures with valid step args, but does not actually test or assert that invalid keys are rejected."
+    ],
+    "self_score": 92.5
+   },
+   {
+    "round": 1,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

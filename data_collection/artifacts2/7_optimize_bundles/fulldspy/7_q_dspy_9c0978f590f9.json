@@ -1,0 +1,111 @@
+{
+ "id": "dspy_9c0978f590f9",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I'm trying to audit the instructions that `dspy.ReAct` synthesizes around my tools. I don't just care that the agent works; I need to know exactly what extra text DSPy adds about the tool list, the synthetic finish action, and the requirement that tool arguments be JSON.\n\nI want a tiny introspection harness, not a prose summary. It should build a minimal agent and show me the final instruction text that would drive the reasoning/tool-selection step.\n\nGive me a complete, runnable Python program that prints the generated instruction text for a one-tool `dspy.ReAct` agent and asserts that it contains my tool description, the built-in finish tool, and the JSON-arguments reminder.",
+ "gold_answer": "```python\nimport dspy\n\n\ndef get_weather(city: str) -> str:\n    \"\"\"Get the weather for a city.\"\"\"\n    return f\"The weather in {city} is sunny\"\n\n\nagent = dspy.ReAct(\"question -> answer\", tools=[get_weather])\ninstructions = agent.react.signature.instructions\nsystem_message = dspy.ChatAdapter().format_system_message(agent.react.signature)\n\nprint(\"INSTRUCTIONS:\\n\", instructions)\nprint(\"SYSTEM MESSAGE:\\n\", system_message)\n\nassert \"get_weather\" in instructions\nassert \"Get the weather for a city.\" in instructions\nassert \"finish\" in instructions\nassert \"When providing `next_tool_args`, the value inside the field must be in JSON format\" in instructions\nassert \"next_tool_name\" in system_message\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The program instantiates a minimal `dspy.ReAct` agent for the `\"question -> answer\"` task with exactly one tool.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The harness reads the synthesized reasoning/tool-selection instructions from `agent.react.signature.instructions` and prints that generated text for inspection.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "It asserts that the generated instructions contain the custom tool's name and description.",
+   "span_ids": [
+    "s1",
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "It asserts that the generated instructions contain DSPy's synthetic `finish` tool entry.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "It asserts that the generated instructions contain the reminder that `next_tool_args` must be provided in JSON format.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "It also formats `agent.react.signature` as a system message and checks for `next_tool_name`, matching the ReAct step signature's output fields.",
+   "span_ids": [
+    "s2"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/react.py",
+   "start_line": 44,
+   "end_line": 71,
+   "excerpt": "0044:         tools = [t if isinstance(t, Tool) else Tool(t) for t in tools]\n0045:         tools = {tool.name: tool for tool in tools}\n0046: \n0047:         inputs = \", \".join([f\"`{k}`\" for k in signature.input_fields.keys()])\n0048:         outputs = \", \".join([f\"`{k}`\" for k in signature.output_fields.keys()])\n0049:         instr = [f\"{signature.instructions}\\n\"] if signature.instructions else []\n0050: \n0051:         instr.extend(\n0052:             [\n0053:                 f\"You are an Agent. In each episode, you will be given the fields {inputs} as input. And you can see your past trajectory so far.\",\n0054:                 f\"Your goal is to use one or more of the supplied tools to collect any necessary information for producing {outputs}.\\n\",\n0055:                 \"To do this, you will interleave next_thought, next_tool_name, and next_tool_args in each turn, and also when finishing the task.\",\n0056:                 \"After each tool call, you receive a resulting observation, which gets appended to your trajectory.\\n\",\n0057:                 \"When writing next_thought, you may reason about the current situation and plan for future steps.\",\n0058:                 \"When selecting the next_tool_name and its next_tool_args, the tool must be one of:\\n\",\n0059:             ]\n0060:         )\n0061: \n0062:         tools[\"finish\"] = Tool(\n0063:             func=lambda: \"Completed.\",\n0064:             name=\"finish\",\n0065:             desc=f\"Marks the task as complete. That is, signals that all information for producing the outputs, i.e. {outputs}, are now available to be extracted.\",\n0066:             args={},\n0067:         )\n0068: \n0069:         for idx, tool in enumerate(tools.values()):\n0070:             instr.append(f\"({idx + 1}) {tool}\")\n0071:         instr.append(\"When providing `next_tool_args`, the value inside the field must be in JSON format\")"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/react.py",
+   "start_line": 73,
+   "end_line": 88,
+   "excerpt": "0073:         react_signature = (\n0074:             dspy.Signature({**signature.input_fields}, \"\\n\".join(instr))\n0075:             .append(\"trajectory\", dspy.InputField(), type_=str)\n0076:             .append(\"next_thought\", dspy.OutputField(), type_=str)\n0077:             .append(\"next_tool_name\", dspy.OutputField(), type_=Literal[tuple(tools.keys())])\n0078:             .append(\"next_tool_args\", dspy.OutputField(), type_=dict[str, Any])\n0079:         )\n0080: \n0081:         fallback_signature = dspy.Signature(\n0082:             {**signature.input_fields, **signature.output_fields},\n0083:             signature.instructions,\n0084:         ).append(\"trajectory\", dspy.InputField(), type_=str)\n0085: \n0086:         self.tools = tools\n0087:         self.react = dspy.Predict(react_signature)\n0088:         self.extract = dspy.ChainOfThought(fallback_signature)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/types/tool.py",
+   "start_line": 81,
+   "end_line": 117,
+   "excerpt": "0081:         annotations_func = func if inspect.isfunction(func) or inspect.ismethod(func) else func.__call__\n0082:         name = getattr(func, \"__name__\", type(func).__name__)\n0083:         desc = getattr(func, \"__doc__\", None) or getattr(annotations_func, \"__doc__\", \"\")\n0084:         args = {}\n0085:         arg_types = {}\n0086: \n0087:         # Use inspect.signature to get all arg names\n0088:         sig = inspect.signature(annotations_func)\n0089:         # Get available type hints\n0090:         available_hints = get_type_hints(annotations_func)\n0091:         # Build a dictionary of arg name -> type (defaulting to Any when missing)\n0092:         hints = {param_name: available_hints.get(param_name, Any) for param_name in sig.parameters.keys()}\n0093:         default_values = {param_name: sig.parameters[param_name].default for param_name in sig.parameters.keys()}\n0094: \n0095:         # Process each argument's type to generate its JSON schema.\n0096:         for k, v in hints.items():\n0097:             arg_types[k] = v\n0098:             if k == \"return\":\n0099:                 continue\n0100:             # Check if the type (or its origin) is a subclass of Pydantic's BaseModel\n0101:             origin = get_origin(v) or v\n0102:             if isinstance(origin, type) and issubclass(origin, BaseModel):\n0103:                 # Get json schema, and replace $ref with the actual schema\n0104:                 v_json_schema = _resolve_json_schema_reference(v.model_json_schema())\n0105:                 args[k] = v_json_schema\n0106:             else:\n0107:                 args[k] = _resolve_json_schema_reference(TypeAdapter(v).json_schema())\n0108:             if default_values[k] is not inspect.Parameter.empty:\n0109:                 args[k][\"default\"] = default_values[k]\n0110:             if arg_desc and k in arg_desc:\n0111:                 args[k][\"description\"] = arg_desc[k]\n0112: \n0113:         self.name = self.name or name\n0114:         self.desc = self.desc or desc\n0115:         self.args = self.args if self.args is not None else args\n0116:         self.arg_types = self.arg_types if self.arg_types is not None else arg_types\n0117:         self.has_kwargs = any(param.kind == param.VAR_KEYWORD for param in sig.parameters.values())"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/types/tool.py",
+   "start_line": 256,
+   "end_line": 259,
+   "excerpt": "0256:     def __str__(self):\n0257:         desc = f\", whose description is <desc>{self.desc}</desc>.\".replace(\"\\n\", \"  \") if self.desc else \".\"\n0258:         arg_desc = f\"It takes arguments {self.args}.\"\n0259:         return f\"{self.name}{desc} {arg_desc}\""
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Keeps the tool-planning prompt synthesis itself as the target, not generic agent execution.",
+ "source_index": 13,
+ "smalldspy_scope": true,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

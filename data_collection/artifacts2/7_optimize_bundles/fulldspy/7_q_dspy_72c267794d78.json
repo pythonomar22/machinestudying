@@ -1,0 +1,126 @@
+{
+ "id": "dspy_72c267794d78",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I'm using a signature that includes tool information as an ordinary output field because I want to handle tool execution myself. If I disable native tool calling, I need to know whether DSPy still tries to build a strict structured-output schema, or whether it immediately drops back to plain JSON mode for stability.\n\nWhat I want is a minimal repro that proves the request-side behavior, not just the parsed result. The program should show the exact `response_format` that reached the LM when native tool calling is disabled, while still parsing the returned tool-call data correctly.\n\nGive me a complete, runnable Python program that uses `DummyLM`, a tool-aware signature, and proves the request format plus the parsed answer and tool-call fields.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\nclass Sig(dspy.Signature):\n    question: str = dspy.InputField()\n    tools: list[dspy.Tool] = dspy.InputField()\n    answer: str = dspy.OutputField()\n    tool_calls: dspy.ToolCalls = dspy.OutputField()\n\ndef weather(city: str) -> str:\n    return city\n\nclass LM(DummyLM):\n    def __init__(self):\n        super().__init__([{'answer': 'sunny', 'tool_calls': {'tool_calls': []}}], adapter=dspy.JSONAdapter())\n        self.formats = []\n    @property\n    def supported_params(self):\n        return {'response_format'}\n    @property\n    def supports_response_schema(self):\n        return True\n    def forward(self, prompt=None, messages=None, **kwargs):\n        self.formats.append(kwargs.get('response_format'))\n        return super().forward(prompt=prompt, messages=messages, **kwargs)\n\nlm = LM()\nwith dspy.context(lm=lm, adapter=dspy.JSONAdapter(use_native_function_calling=False)):\n    out = dspy.Predict(Sig)(question='weather?', tools=[dspy.Tool(weather)])\n\nassert lm.formats[0] == {'type': 'json_object'}\nassert out.answer == 'sunny'\nassert out.tool_calls == dspy.ToolCalls(tool_calls=[])\nprint(lm.formats[0])\nprint(out.answer, out.tool_calls.model_dump())\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "Defines a tool-aware signature with `question` and `tools: list[dspy.Tool]` as inputs, `answer` and `tool_calls: dspy.ToolCalls` as outputs, and passes at least one `dspy.Tool(...)` into the call.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "Activates `dspy.JSONAdapter(use_native_function_calling=False)` for the actual prediction call so native tool calling is explicitly disabled in the repro.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Uses `DummyLM` or a `DummyLM` subclass as the LM test double, instrumented to expose the outbound `response_format` seen by the LM.",
+   "span_ids": [
+    "s6",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "Proves request-side behavior by showing that when `ToolCalls` is an output and native function calling is disabled, DSPy skips structured-output schema generation and sends `response_format == {\"type\": \"json_object\"}`.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Makes the LM advertise `response_format` support and response-schema support, so the JSON fallback is specifically caused by the `ToolCalls` plus `use_native_function_calling=False` branch rather than by unsupported LM capabilities.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Returns dummy JSON containing both `answer` and `tool_calls`, and verifies the parsed result is `out.answer == \"sunny\"` and `out.tool_calls == dspy.ToolCalls(tool_calls=[])`.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 859,
+   "end_line": 868,
+   "excerpt": "0859:     class MySignature(dspy.Signature):\n0860:         question: str = dspy.InputField()\n0861:         tools: list[dspy.Tool] = dspy.InputField()\n0862:         answer: str = dspy.OutputField()\n0863:         tool_calls: dspy.ToolCalls = dspy.OutputField()\n0864: \n0865:     def get_weather(city: str) -> str:\n0866:         return f\"The weather in {city} is sunny\"\n0867: \n0868:     tools = [dspy.Tool(get_weather)]"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 41,
+   "end_line": 56,
+   "excerpt": "0041:     def __init__(self, callbacks: list[BaseCallback] | None = None, use_native_function_calling: bool = True):\n0042:         # JSONAdapter uses native function calling by default.\n0043:         super().__init__(callbacks=callbacks, use_native_function_calling=use_native_function_calling)\n0044: \n0045:     def _json_adapter_call_common(self, lm, lm_kwargs, signature, demos, inputs, call_fn):\n0046:         \"\"\"Common call logic to be used for both sync and async calls.\"\"\"\n0047:         if \"response_format\" not in lm.supported_params:\n0048:             return call_fn(lm, lm_kwargs, signature, demos, inputs)\n0049: \n0050:         has_tool_calls = any(field.annotation == ToolCalls for field in signature.output_fields.values())\n0051: \n0052:         if _has_open_ended_mapping(signature) or (not self.use_native_function_calling and has_tool_calls) or not lm.supports_response_schema:\n0053:             # We found that structured output mode doesn't work well with dspy.ToolCalls as output field.\n0054:             # So we fall back to json mode if native function calling is disabled and ToolCalls is present.\n0055:             lm_kwargs[\"response_format\"] = {\"type\": \"json_object\"}\n0056:             return call_fn(lm, lm_kwargs, signature, demos, inputs)"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 870,
+   "end_line": 887,
+   "excerpt": "0870:     # Patch _get_structured_outputs_response_format to track calls\n0871:     with mock.patch(\"dspy.adapters.json_adapter._get_structured_outputs_response_format\") as mock_structured:\n0872:         # Patch litellm.completion to return a dummy response\n0873:         with mock.patch(\"litellm.completion\") as mock_completion:\n0874:             mock_completion.return_value = ModelResponse(\n0875:                 choices=[Choices(message=Message(content=\"{'answer': 'sunny', 'tool_calls': {'tool_calls': []}}\"))],\n0876:                 model=\"openai/gpt-4o-mini\",\n0877:             )\n0878:             adapter = dspy.JSONAdapter(use_native_function_calling=False)\n0879:             lm = dspy.LM(model=\"openai/gpt-4o-mini\", cache=False)\n0880:             adapter(lm, {}, MySignature, [], {\"question\": \"What is the weather in Tokyo?\", \"tools\": tools})\n0881: \n0882:         # _get_structured_outputs_response_format is not called because without using native function calling,\n0883:         # JSONAdapter falls back to json mode for stable quality.\n0884:         mock_structured.assert_not_called()\n0885:         mock_completion.assert_called_once()\n0886:         _, call_kwargs = mock_completion.call_args\n0887:         assert call_kwargs[\"response_format\"] == {\"type\": \"json_object\"}"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 66,
+   "end_line": 79,
+   "excerpt": "0066:         result = self._json_adapter_call_common(lm, lm_kwargs, signature, demos, inputs, super().__call__)\n0067:         if result:\n0068:             return result\n0069: \n0070:         try:\n0071:             structured_output_model = _get_structured_outputs_response_format(\n0072:                 signature, self.use_native_function_calling\n0073:             )\n0074:             lm_kwargs[\"response_format\"] = structured_output_model\n0075:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)\n0076:         except Exception:\n0077:             logger.warning(\"Failed to use structured output format, falling back to JSON mode.\")\n0078:             lm_kwargs[\"response_format\"] = {\"type\": \"json_object\"}\n0079:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 166,
+   "end_line": 181,
+   "excerpt": "0166:         fields = {k: v for k, v in fields.items() if k in signature.output_fields}\n0167: \n0168:         # Attempt to cast each value to type signature.output_fields[k].annotation.\n0169:         for k, v in fields.items():\n0170:             if k in signature.output_fields:\n0171:                 fields[k] = parse_value(v, signature.output_fields[k].annotation)\n0172: \n0173:         if fields.keys() != signature.output_fields.keys():\n0174:             raise AdapterParseError(\n0175:                 adapter_name=\"JSONAdapter\",\n0176:                 signature=signature,\n0177:                 lm_response=completion,\n0178:                 parsed_result=fields,\n0179:             )\n0180: \n0181:         return fields"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 109,
+   "end_line": 124,
+   "excerpt": "0109: def test_json_adapter_sync_call():\n0110:     signature = dspy.make_signature(\"question->answer\")\n0111:     adapter = dspy.JSONAdapter()\n0112:     lm = dspy.utils.DummyLM([{\"answer\": \"Paris\"}], adapter=adapter)\n0113:     with dspy.context(adapter=adapter):\n0114:         result = adapter(lm, {}, signature, [], {\"question\": \"What is the capital of France?\"})\n0115:     assert result == [{\"answer\": \"Paris\"}]\n0116: \n0117: \n0118: @pytest.mark.asyncio\n0119: async def test_json_adapter_async_call():\n0120:     signature = dspy.make_signature(\"question->answer\")\n0121:     adapter = dspy.JSONAdapter()\n0122:     lm = dspy.utils.DummyLM([{\"answer\": \"Paris\"}], adapter=adapter)\n0123:     with dspy.context(adapter=adapter):\n0124:         result = await adapter.acall(lm, {}, signature, [], {\"question\": \"What is the capital of France?\"})"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Focuses on the request-side fallback choice for manual tool handling.",
+ "source_index": 9,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

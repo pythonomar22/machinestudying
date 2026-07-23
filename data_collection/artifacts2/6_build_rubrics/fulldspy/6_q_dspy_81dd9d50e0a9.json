@@ -1,0 +1,81 @@
+{
+ "id": "dspy_81dd9d50e0a9",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I am calling a predictor with multiple generations and then using `inspect_history` for debugging. What I need to know is whether the history printer shows every completion verbatim or only one completion plus some summary text.\n\nPlease keep it offline and machine-checkable. I want one real call that produces three different completions, a captured history dump, and assertions that prove exactly what the printer did with the extra generations.\n\nGive me a complete, runnable Python program that runs offline with `DummyLM`, captures `inspect_history` output to a string buffer, prints that text, and asserts that only the first completion is shown while the later completions are summarized by count.",
+ "gold_answer": "```python\nimport io\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nlm = DummyLM([{\"answer\": \"first\"}, {\"answer\": \"second\"}, {\"answer\": \"third\"}])\n\nwith dspy.context(lm=lm):\n    program = dspy.Predict(\"question -> answer\", n=3)\n    prediction = program(question=\"test\")\n\nbuffer = io.StringIO()\nlm.inspect_history(n=1, file=buffer)\nhistory_text = buffer.getvalue()\n\nprint(history_text)\n\nassert prediction.answer == \"first\"\nassert \"first\" in history_text\nassert \"second\" not in history_text\nassert \"third\" not in history_text\nassert \"and 2 other completions\" in history_text\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The program captures the LM's printed history by calling the LM instance's `inspect_history` with `n=1` and a file-like buffer such as `StringIO`, instead of reconstructing the history text manually.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 40,
+   "statement": "The answer must show or assert that the history printer emits only the first completion verbatim as the displayed response text, because it prints `outputs[0]` rather than iterating over every completion.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The answer must show or assert that extra generations are summarized only by count; with three completions total, the captured history should contain `and 2 other completions`.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "The program includes concrete substring assertions over the captured history proving the first completion appears, the later completion strings do not appear verbatim, and the summary-count text does appear.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s1"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 219,
+   "end_line": 220,
+   "excerpt": "0219:     def inspect_history(self, n: int = 1, file: \"TextIO | None\" = None) -> None:\n0220:         pretty_print_history(self.history, n, file=file)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/utils/inspect_history.py",
+   "start_line": 25,
+   "end_line": 36,
+   "excerpt": "0025: def pretty_print_history(history: list[dict[str, Any]], n: int = 1, file: TextIO | None = None) -> None:\n0026:     \"\"\"Print the last n prompts and their completions.\n0027: \n0028:     Args:\n0029:         history: The history list to print from.\n0030:         n: Number of recent entries to display. Defaults to 1.\n0031:         file: An optional file-like object to write output to (must have a\n0032:             `.write()` method). When provided, ANSI color codes are\n0033:             automatically disabled. Defaults to `None` (prints to stdout).\n0034:     \"\"\"\n0035:     out = file or sys.stdout\n0036:     use_colors = file is None"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/utils/inspect_history.py",
+   "start_line": 80,
+   "end_line": 91,
+   "excerpt": "0080:         if isinstance(outputs[0], dict):\n0081:             if outputs[0][\"text\"]:\n0082:                 print(_red(\"Response:\", use_colors=use_colors), file=out)\n0083:                 print(_green(outputs[0][\"text\"].strip(), use_colors=use_colors), file=out)\n0084: \n0085:             if outputs[0].get(\"tool_calls\"):\n0086:                 print(_red(\"Tool calls:\", use_colors=use_colors), file=out)\n0087:                 for tool_call in outputs[0][\"tool_calls\"]:\n0088:                     print(_green(f\"{tool_call['function']['name']}: {tool_call['function']['arguments']}\", use_colors=use_colors), file=out)\n0089:         else:\n0090:             print(_red(\"Response:\", use_colors=use_colors), file=out)\n0091:             print(_green(outputs[0].strip(), use_colors=use_colors), file=out)"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/utils/inspect_history.py",
+   "start_line": 93,
+   "end_line": 95,
+   "excerpt": "0093:         if len(outputs) > 1:\n0094:             choices_text = f\" \\t (and {len(outputs) - 1} other completions)\"\n0095:             print(_red(choices_text, end=\"\", use_colors=use_colors), file=out)"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Good tracing/inspection item: it targets the exact history presentation logic for multi-completion calls.",
+ "source_index": 57,
+ "smalldspy_scope": false
+}

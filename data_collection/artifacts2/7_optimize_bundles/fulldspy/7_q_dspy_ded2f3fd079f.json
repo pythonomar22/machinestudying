@@ -1,0 +1,102 @@
+{
+ "id": "dspy_ded2f3fd079f",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I'm pointing DSPy at an OpenAI-compatible server that already works through the OpenAI client. The confusing part is that the same base URL behaves differently depending on whether I configure the model as chat-style or text-style, and I want to see the exact request shape DSPy produces before I blame the proxy.\n\nI suspect one path keeps the messages list and the other flattens everything into a single prompt, which would explain why one server route works and the other 404s. Give me a complete, runnable Python program that patches DSPy's outbound calls, creates one `dspy.LM` in chat mode and one in text mode against the same fake base URL, and prints/asserts which call path was used, what payload was sent, and that the text-style prompt ends with the exact response marker DSPy adds.",
+ "gold_answer": "```python\nimport json\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n    usage = {}\n\n    def __init__(self):\n        super().__init__({\"choices\": []})\n        self.model = \"offline\"\n\n\nchat_calls = []\ntext_calls = []\n\n\ndef fake_chat(*, cache, num_retries, retry_strategy, headers=None, **request):\n    chat_calls.append({\"headers\": headers, **request})\n    return FakeResp()\n\n\ndef fake_text(*, cache, model, api_key, api_base, prompt, num_retries, retry_strategy, headers=None, **request):\n    text_calls.append(\n        {\n            \"model\": model,\n            \"api_key\": api_key,\n            \"api_base\": api_base,\n            \"prompt\": prompt,\n            \"headers\": headers,\n            **request,\n        }\n    )\n    return FakeResp()\n\n\nwith patch(\"litellm.completion\", side_effect=fake_chat), patch(\"litellm.text_completion\", side_effect=fake_text):\n    chat_lm = dspy.LM(\n        \"openai/my-chat-model\",\n        model_type=\"chat\",\n        api_base=\"http://localhost:8000/v1\",\n        api_key=\"test\",\n        cache=False,\n    )\n    text_lm = dspy.LM(\n        \"openai/my-text-model\",\n        model_type=\"text\",\n        api_base=\"http://localhost:8000/v1\",\n        api_key=\"test\",\n        cache=False,\n    )\n\n    chat_lm.forward(prompt=\"ping\")\n    text_lm.forward(prompt=\"ping\")\n\nassert len(chat_calls) == 1\nassert len(text_calls) == 1\nassert chat_calls[0][\"messages\"] == [{\"role\": \"user\", \"content\": \"ping\"}]\nassert text_calls[0][\"prompt\"] == \"ping\\n\\nBEGIN RESPONSE:\"\nassert text_calls[0][\"model\"] == \"text-completion-openai/my-text-model\"\nassert text_calls[0][\"api_base\"] == \"http://localhost:8000/v1\"\n\nprint(\"chat_path=completion\")\nprint(json.dumps({\"messages\": chat_calls[0][\"messages\"], \"api_base\": chat_calls[0][\"api_base\"]}, indent=2))\nprint(\"text_path=text_completion\")\nprint(json.dumps({\"prompt\": text_calls[0][\"prompt\"], \"model\": text_calls[0][\"model\"], \"api_base\": text_calls[0][\"api_base\"]}, indent=2))\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program exercises both `LM.forward` branches by creating one `dspy.LM` in `model_type=\"chat\"` and one in `model_type=\"text\"`, then calling `forward(prompt=\"ping\")` on each; DSPy chooses the helper from `model_type`.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer intercepts the final outbound chat and text call sites and verifies that exactly one chat completion call and exactly one text completion call were made.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The recorded chat payload must preserve the prompt as `messages == [{\"role\": \"user\", \"content\": \"ping\"}]`; the chat path forwards the message list instead of flattening it into a single prompt string.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The recorded text payload must show DSPy's text-mode rewrite: the same message content becomes `prompt == \"ping\\n\\nBEGIN RESPONSE:\"`, the model name is rewritten from `openai/my-text-model` to `text-completion-openai/my-text-model`, and `api_base` is passed through on the text completion request.",
+   "span_ids": [
+    "s1",
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 167,
+   "end_line": 183,
+   "excerpt": "0167:         cache = kwargs.pop(\"cache\", self.cache)\n0168: \n0169:         messages = messages or [{\"role\": \"user\", \"content\": prompt}]\n0170:         if self.use_developer_role and self.model_type == \"responses\":\n0171:             messages = [{**m, \"role\": \"developer\"} if m.get(\"role\") == \"system\" else m for m in messages]\n0172:         kwargs = {**self.kwargs, **kwargs}\n0173:         self._warn_zero_temp_rollout(kwargs.get(\"temperature\"), kwargs.get(\"rollout_id\"))\n0174:         if kwargs.get(\"rollout_id\") is None:\n0175:             kwargs.pop(\"rollout_id\", None)\n0176: \n0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 185,
+   "end_line": 190,
+   "excerpt": "0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,\n0189:                 cache=litellm_cache_args,\n0190:             )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 385,
+   "end_line": 398,
+   "excerpt": "0385: def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0386:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0387:     request = dict(request)\n0388:     request.pop(\"rollout_id\", None)\n0389:     headers = _add_dspy_identifier_to_headers(request.pop(\"headers\", None))\n0390:     stream_completion = _get_stream_completion_fn(request, cache, sync=True, headers=headers)\n0391:     if stream_completion is None:\n0392:         return litellm.completion(\n0393:             cache=cache,\n0394:             num_retries=num_retries,\n0395:             retry_strategy=\"exponential_backoff_retry\",\n0396:             headers=headers,\n0397:             **request,\n0398:         )"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/lm.py",
+   "start_line": 403,
+   "end_line": 419,
+   "excerpt": "0403: def litellm_text_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0404:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0405:     request = dict(request)\n0406:     request.pop(\"rollout_id\", None)\n0407:     headers = request.pop(\"headers\", None)\n0408:     # Extract the provider and model from the model string.\n0409:     # TODO: Not all the models are in the format of \"provider/model\"\n0410:     model = request.pop(\"model\").split(\"/\", 1)\n0411:     provider, model = model[0] if len(model) > 1 else \"openai\", model[-1]\n0412: \n0413:     # Use the API key and base from the request, or from the environment.\n0414:     api_key = request.pop(\"api_key\", None) or os.getenv(f\"{provider}_API_KEY\")\n0415:     api_base = request.pop(\"api_base\", None) or os.getenv(f\"{provider}_API_BASE\")\n0416: \n0417:     # Build the prompt from the messages.\n0418:     prompt = \"\\n\\n\".join([x[\"content\"] for x in request.pop(\"messages\")] + [\"BEGIN RESPONSE:\"])\n0419: "
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/lm.py",
+   "start_line": 420,
+   "end_line": 430,
+   "excerpt": "0420:     return litellm.text_completion(\n0421:         cache=cache,\n0422:         model=f\"text-completion-openai/{model}\",\n0423:         api_key=api_key,\n0424:         api_base=api_base,\n0425:         prompt=prompt,\n0426:         num_retries=num_retries,\n0427:         retry_strategy=\"exponential_backoff_retry\",\n0428:         headers=_add_dspy_identifier_to_headers(headers),\n0429:         **request,\n0430:     )"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "OpenAI-compatible chat vs text dispatch.",
+ "source_index": 0,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

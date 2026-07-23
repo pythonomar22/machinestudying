@@ -33,13 +33,15 @@ from __future__ import annotations
 import argparse
 import importlib.util
 import json
+import os
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 DC = Path(__file__).resolve().parent
-ARTIFACTS = DC / "artifacts" / "5_critic_selection"
-CANDIDATES_DIR = DC / "artifacts" / "4_generate_candidates"
+ART_DIRNAME = os.environ.get("DC_ARTIFACTS", "artifacts")
+ARTIFACTS = DC / ART_DIRNAME / "5_critic_selection"
+CANDIDATES_DIR = DC / ART_DIRNAME / "4_generate_candidates"
 
 
 def load_stage3a():
@@ -51,8 +53,9 @@ def load_stage3a():
 
 gen = load_stage3a()
 
-# Paper: 5 finalists from 12 candidates; we keep the same proportion of our 20.
-NUM_FINAL = round(gen.NUM_CANDIDATES * 5 / 12)
+# Paper: 5 finalists from 12 candidates; we keep the same proportion of our
+# per-topic pool (20 -> 8; the 3-batch rev-3 pool of 60 -> 25).
+NUM_FINAL = round(gen.TOTAL_CANDIDATES * 5 / 12)
 
 # ---------------------------------------------------------------------------
 # A.3 critic template, transcribed VERBATIM from the paper appendix.
@@ -146,7 +149,7 @@ def critic_violations(selections: list[dict], repo: Path) -> list[str]:
     indices = [item["source_index"] for item in selections]
     if len(set(indices)) != len(indices):
         problems.append("duplicate source_index across selections")
-    out_of_range = [i for i in indices if not 0 <= i < gen.NUM_CANDIDATES]
+    out_of_range = [i for i in indices if not 0 <= i < gen.TOTAL_CANDIDATES]
     if out_of_range:
         problems.append(f"source_index out of range: {out_of_range}")
     return problems
@@ -299,9 +302,12 @@ def run_scope(scope: str, sessions: dict[int, dict]) -> None:
                    "read-only sandbox",
         "repository": str(repo),
         "commit": gen.PINNED_COMMIT,
-        "num_candidates_per_topic": gen.NUM_CANDIDATES,
+        "num_candidates_per_topic": gen.TOTAL_CANDIDATES,
         "num_final_per_topic": NUM_FINAL,
-        "selection_ratio_note": "paper keeps 5/12; we keep round(20 * 5/12) = 8 of 20",
+        "selection_ratio_note": (
+            f"paper keeps 5/12; we keep round({gen.TOTAL_CANDIDATES} * 5/12) "
+            f"= {NUM_FINAL} of {gen.TOTAL_CANDIDATES}"
+        ),
         "topics": [
             {k: result[k] for k in ("cluster_id", "label", "kept_indices",
                                     "rejected_indices", "selection_notes")}

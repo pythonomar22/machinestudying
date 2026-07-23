@@ -1,0 +1,1112 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_2261d88b6e24`
+- Label: `lm_provider_integration_and_configuration`
+- Question: `We run two OpenAI-compatible gateways behind different base URLs. I changed only `api_base`, kept the same prompt, and still got the first cluster's answer back out of cache, which makes me think DSPy might be ignoring endpoint fields when it computes its cache key.
+
+Give me a complete, runnable Python program that enables DSPy's cache, patches the outbound chat call to return a different answer per base URL, then proves with printed output and assertions that the second call reuses the first cached answer even though `api_base` and `api_key` changed.`
+- Model answer:
+```python
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import dspy
+
+
+class FakeResp(dict):
+    cache_hit = False
+
+    def __init__(self, text):
+        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason="stop")
+        super().__init__({"choices": [choice]})
+        self.choices = [choice]
+        self.usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        self.model = "openai/cache-demo"
+
+
+original_cache = dspy.cache
+call_bases = []
+
+
+def fake_chat(*, cache, num_retries, retry_strategy, headers=None, api_base=None, api_key=None, **request):
+    call_bases.append(api_base)
+    return FakeResp(f"response from {api_base}")
+
+
+try:
+    dspy.configure_cache(enable_disk_cache=False, enable_memory_cache=True)
+
+    with patch("litellm.completion", side_effect=fake_chat):
+        lm = dspy.LM("openai/cache-demo", cache=True)
+        first = lm("same prompt", api_base="http://cluster-a/v1", api_key="key-a")
+        second = lm("same prompt", api_base="http://cluster-b/v1", api_key="key-b")
+
+    assert first == ["response from http://cluster-a/v1"]
+    assert second == ["response from http://cluster-a/v1"]
+    assert call_bases == ["http://cluster-a/v1"]
+    assert len(dspy.cache.memory_cache) == 1
+
+    print("first_result=", first)
+    print("second_result=", second)
+    print("underlying_calls=", call_bases)
+finally:
+    dspy.cache = original_cache
+```
+
+## Gold answer
+```python
+from types import SimpleNamespace
+from unittest.mock import patch
+
+import dspy
+
+
+class FakeResp(dict):
+    cache_hit = False
+
+    def __init__(self, text):
+        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason="stop")
+        super().__init__({"choices": [choice]})
+        self.choices = [choice]
+        self.usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        self.model = "openai/cache-demo"
+
+
+original_cache = dspy.cache
+call_bases = []
+
+
+def fake_chat(*, cache, num_retries, retry_strategy, headers=None, api_base=None, api_key=None, **request):
+    call_bases.append(api_base)
+    return FakeResp(f"response from {api_base}")
+
+
+try:
+    dspy.configure_cache(enable_disk_cache=False, enable_memory_cache=True)
+
+    with patch("litellm.completion", side_effect=fake_chat):
+        lm = dspy.LM("openai/cache-demo", cache=True)
+        first = lm("same prompt", api_base="http://cluster-a/v1", api_key="key-a")
+        second = lm("same prompt", api_base="http://cluster-b/v1", api_key="key-b")
+
+    assert first == ["response from http://cluster-a/v1"]
+    assert second == ["response from http://cluster-a/v1"]
+    assert call_bases == ["http://cluster-a/v1"]
+    assert len(dspy.cache.memory_cache) == 1
+
+    print("first_result=", first)
+    print("second_result=", second)
+    print("underlying_calls=", call_bases)
+finally:
+    dspy.cache = original_cache
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The answer should patch `litellm.completion`, because chat-mode `dspy.LM` calls route through `litellm_completion`, which forwards the request kwargs to that function; the fake backend should use `api_base` to emit a different response per base URL.",
+    "span_ids": [
+      "s1",
+      "s3"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 30,
+    "statement": "The program should use DSPy's cache-enabled chat path, where `forward` wraps the completion function with `request_cache` and `_get_cached_completion_fn` explicitly excludes `api_key`, `api_base`, and `base_url` from the DSPy cache key.",
+    "span_ids": [
+      "s1",
+      "s2"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The proof should rely on `request_cache` behavior: it builds the cached request from the `request` kwarg plus a function identifier, checks `dspy.cache` before invoking the backend, and stores the first result after a miss, so a second call with the same cache key does not re-execute the provider call.",
+    "span_ids": [
+      "s4",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "supporting",
+    "weight": 15,
+    "statement": "The two LM calls should keep the model/prompt/request content the same and change only `api_base` and `api_key`, because `Cache.cache_key` hashes the request after dropping ignored fields; endpoint-only changes therefore produce the same DSPy cache key.",
+    "span_ids": [
+      "s1",
+      "s6"
+    ]
+  },
+  {
+    "claim_id": "c5",
+    "claim_type": "supporting",
+    "weight": 15,
+    "statement": "The demonstration should include assertions and printed evidence that the second returned result is still the first cluster's text and that the fake completion function ran only once, since cache hits are returned from `dspy.cache.get` without a second backend call.",
+    "span_ids": [
+      "s5",
+      "s7"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/clients/lm.py",
+    "start_line": 165,
+    "end_line": 183,
+    "excerpt": "0165:         # Build the request.\n0166:         kwargs = dict(kwargs)\n0167:         cache = kwargs.pop(\"cache\", self.cache)\n0168: \n0169:         messages = messages or [{\"role\": \"user\", \"content\": prompt}]\n0170:         if self.use_developer_role and self.model_type == \"responses\":\n0171:             messages = [{**m, \"role\": \"developer\"} if m.get(\"role\") == \"system\" else m for m in messages]\n0172:         kwargs = {**self.kwargs, **kwargs}\n0173:         self._warn_zero_temp_rollout(kwargs.get(\"temperature\"), kwargs.get(\"rollout_id\"))\n0174:         if kwargs.get(\"rollout_id\") is None:\n0175:             kwargs.pop(\"rollout_id\", None)\n0176: \n0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)"
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/clients/lm.py",
+    "start_line": 147,
+    "end_line": 157,
+    "excerpt": "0147:     def _get_cached_completion_fn(self, completion_fn, cache):\n0148:         ignored_args_for_cache_key = [\"api_key\", \"api_base\", \"base_url\"]\n0149:         if cache:\n0150:             completion_fn = request_cache(\n0151:                 cache_arg_name=\"request\",\n0152:                 ignored_args_for_cache_key=ignored_args_for_cache_key,\n0153:             )(completion_fn)\n0154: \n0155:         litellm_cache_args = {\"no-cache\": True, \"no-store\": True}\n0156: \n0157:         return completion_fn, litellm_cache_args"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/clients/lm.py",
+    "start_line": 385,
+    "end_line": 398,
+    "excerpt": "0385: def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0386:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0387:     request = dict(request)\n0388:     request.pop(\"rollout_id\", None)\n0389:     headers = _add_dspy_identifier_to_headers(request.pop(\"headers\", None))\n0390:     stream_completion = _get_stream_completion_fn(request, cache, sync=True, headers=headers)\n0391:     if stream_completion is None:\n0392:         return litellm.completion(\n0393:             cache=cache,\n0394:             num_retries=num_retries,\n0395:             retry_strategy=\"exponential_backoff_retry\",\n0396:             headers=headers,\n0397:             **request,\n0398:         )"
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/clients/cache.py",
+    "start_line": 216,
+    "end_line": 235,
+    "excerpt": "0216:     def decorator(fn):\n0217:         @wraps(fn)\n0218:         def process_request(args, kwargs):\n0219:             # Use fully qualified function name for uniqueness\n0220:             fn_identifier = f\"{fn.__module__}.{fn.__qualname__}\"\n0221: \n0222:             # Create a modified request that includes the function identifier so that it's incorporated into the cache\n0223:             # key. Deep copy is required because litellm sometimes modifies the kwargs in place.\n0224:             if cache_arg_name:\n0225:                 # When `cache_arg_name` is provided, use the value of the argument with this name as the request for\n0226:                 # caching.\n0227:                 modified_request = copy.deepcopy(kwargs[cache_arg_name])\n0228:             else:\n0229:                 # When `cache_arg_name` is not provided, use the entire kwargs as the request for caching.\n0230:                 modified_request = copy.deepcopy(kwargs)\n0231:                 for i, arg in enumerate(args):\n0232:                     modified_request[f\"positional_arg_{i}\"] = arg\n0233:             modified_request[\"_fn_identifier\"] = fn_identifier\n0234: \n0235:             return modified_request"
+  },
+  {
+    "span_id": "s5",
+    "path": "dspy/clients/cache.py",
+    "start_line": 237,
+    "end_line": 257,
+    "excerpt": "0237:         @wraps(fn)\n0238:         def sync_wrapper(*args, **kwargs):\n0239:             import dspy\n0240: \n0241:             cache = dspy.cache\n0242:             modified_request = process_request(args, kwargs)\n0243: \n0244:             # Retrieve from cache if available\n0245:             cached_result = cache.get(modified_request, ignored_args_for_cache_key)\n0246: \n0247:             if cached_result is not None:\n0248:                 return cached_result\n0249: \n0250:             # Otherwise, compute and store the result\n0251:             # Make a copy of the original request in case it's modified in place, e.g., deleting some fields\n0252:             original_request = copy.deepcopy(modified_request)\n0253:             result = fn(*args, **kwargs)\n0254:             # `enable_memory_cache` can be provided at call time to avoid indefinite growth.\n0255:             cache.put(original_request, result, ignored_args_for_cache_key, enable_memory_cache)\n0256: \n0257:             return result"
+  },
+  {
+    "span_id": "s6",
+    "path": "dspy/clients/cache.py",
+    "start_line": 69,
+    "end_line": 100,
+    "excerpt": "0069:     def cache_key(self, request: dict[str, Any], ignored_args_for_cache_key: list[str] | None = None) -> str:\n0070:         \"\"\"\n0071:         Obtain a unique cache key for the given request dictionary by hashing its JSON\n0072:         representation. For request fields having types that are known to be JSON-incompatible,\n0073:         convert them to a JSON-serializable format before hashing.\n0074:         \"\"\"\n0075: \n0076:         ignored_args_for_cache_key = ignored_args_for_cache_key or []\n0077: \n0078:         def transform_value(value):\n0079:             if isinstance(value, type) and issubclass(value, pydantic.BaseModel):\n0080:                 return value.model_json_schema()\n0081:             elif isinstance(value, pydantic.BaseModel):\n0082:                 return value.model_dump(mode=\"json\")\n0083:             elif callable(value):\n0084:                 # Try to get the source code of the callable if available\n0085:                 import inspect\n0086: \n0087:                 try:\n0088:                     # For regular functions, we can get the source code\n0089:                     return f\"<callable_source:{inspect.getsource(value)}>\"\n0090:                 except (TypeError, OSError):\n0091:                     # For lambda functions or other callables where source isn't available,\n0092:                     # use a string representation\n0093:                     return f\"<callable:{value.__name__ if hasattr(value, '__name__') else 'lambda'}>\"\n0094:             elif isinstance(value, dict):\n0095:                 return {k: transform_value(v) for k, v in value.items()}\n0096:             else:\n0097:                 return value\n0098: \n0099:         params = {k: transform_value(v) for k, v in request.items() if k not in ignored_args_for_cache_key}\n0100:         return sha256(orjson.dumps(params, option=orjson.OPT_SORT_KEYS)).hexdigest()"
+  },
+  {
+    "span_id": "s7",
+    "path": "dspy/clients/cache.py",
+    "start_line": 102,
+    "end_line": 130,
+    "excerpt": "0102:     def get(self, request: dict[str, Any], ignored_args_for_cache_key: list[str] | None = None) -> Any:\n0103: \n0104:         if not self.enable_memory_cache and not self.enable_disk_cache:\n0105:             return None\n0106: \n0107:         try:\n0108:             key = self.cache_key(request, ignored_args_for_cache_key)\n0109:         except Exception:\n0110:             logger.debug(f\"Failed to generate cache key for request: {request}\")\n0111:             return None\n0112: \n0113:         if self.enable_memory_cache and key in self.memory_cache:\n0114:             with self._lock:\n0115:                 response = self.memory_cache[key]\n0116:         elif self.enable_disk_cache and key in self.disk_cache:\n0117:             # Found on disk but not in memory cache, add to memory cache\n0118:             response = self.disk_cache[key]\n0119:             if self.enable_memory_cache:\n0120:                 with self._lock:\n0121:                     self.memory_cache[key] = response\n0122:         else:\n0123:             return None\n0124: \n0125:         response = copy.deepcopy(response)\n0126:         if hasattr(response, \"usage\"):\n0127:             # Clear the usage data when cache is hit, because no LM call is made\n0128:             response.usage = {}\n0129:             response.cache_hit = True\n0130:         return response"
+  }
+]
+
+## Whole evidence files
+### dspy/clients/lm.py
+0001: import logging
+0002: import os
+0003: import re
+0004: import threading
+0005: import warnings
+0006: from typing import Any, Literal, cast
+0007: 
+0008: import litellm
+0009: import pydantic
+0010: from anyio.streams.memory import MemoryObjectSendStream
+0011: from asyncer import syncify
+0012: from litellm import ContextWindowExceededError as LitellmContextWindowExceededError
+0013: 
+0014: import dspy
+0015: from dspy.clients.cache import request_cache
+0016: from dspy.clients.openai import OpenAIProvider
+0017: from dspy.clients.provider import Provider, ReinforceJob, TrainingJob
+0018: from dspy.clients.utils_finetune import TrainDataFormat
+0019: from dspy.dsp.utils.settings import settings
+0020: from dspy.utils.callback import BaseCallback
+0021: from dspy.utils.exceptions import ContextWindowExceededError
+0022: 
+0023: from .base_lm import BaseLM
+0024: 
+0025: logger = logging.getLogger(__name__)
+0026: 
+0027: 
+0028: class LM(BaseLM):
+0029:     """
+0030:     A language model supporting chat or text completion requests for use with DSPy modules.
+0031:     """
+0032: 
+0033:     def __init__(
+0034:         self,
+0035:         model: str,
+0036:         model_type: Literal["chat", "text", "responses"] = "chat",
+0037:         temperature: float | None = None,
+0038:         max_tokens: int | None = None,
+0039:         cache: bool = True,
+0040:         callbacks: list[BaseCallback] | None = None,
+0041:         num_retries: int = 3,
+0042:         provider: Provider | None = None,
+0043:         finetuning_model: str | None = None,
+0044:         launch_kwargs: dict[str, Any] | None = None,
+0045:         train_kwargs: dict[str, Any] | None = None,
+0046:         use_developer_role: bool = False,
+0047:         **kwargs,
+0048:     ):
+0049:         """
+0050:         Create a new language model instance for use with DSPy modules and programs.
+0051: 
+0052:         Args:
+0053:             model: The model to use. This should be a string of the form ``"llm_provider/llm_name"``
+0054:                    supported by LiteLLM. For example, ``"openai/gpt-4o"``.
+0055:             model_type: The type of the model, either ``"chat"`` or ``"text"``.
+0056:             temperature: The sampling temperature to use when generating responses.
+0057:             max_tokens: The maximum number of tokens to generate per response.
+0058:             cache: Whether to cache the model responses for reuse to improve performance
+0059:                    and reduce costs.
+0060:             callbacks: A list of callback functions to run before and after each request.
+0061:             num_retries: The number of times to retry a request if it fails transiently due to
+0062:                          network error, rate limiting, etc. Requests are retried with exponential
+0063:                          backoff.
+0064:             provider: The provider to use. If not specified, the provider will be inferred from the model.
+0065:             finetuning_model: The model to finetune. In some providers, the models available for finetuning is different
+0066:                 from the models available for inference.
+0067:             rollout_id: Optional integer used to differentiate cache entries for otherwise
+0068:                 identical requests. Different values bypass DSPy's caches while still caching
+0069:                 future calls with the same inputs and rollout ID. Note that `rollout_id`
+0070:                 only affects generation when `temperature` is non-zero. This argument is
+0071:                 stripped before sending requests to the provider.
+0072:         """
+0073:         # Remember to update LM.copy() if you modify the constructor!
+0074:         self.model = model
+0075:         self.model_type = model_type
+0076:         self.cache = cache
+0077:         self.provider = provider or self.infer_provider()
+0078:         self.callbacks = callbacks or []
+0079:         self.history = []
+0080:         self.num_retries = num_retries
+0081:         self.finetuning_model = finetuning_model
+0082:         self.launch_kwargs = launch_kwargs or {}
+0083:         self.train_kwargs = train_kwargs or {}
+0084:         self.use_developer_role = use_developer_role
+0085:         self._warned_zero_temp_rollout = False
+0086: 
+0087:         # Handle model-specific configuration for different model families
+0088:         model_family = model.split("/")[-1].lower() if "/" in model else model.lower()
+0089: 
+0090:         # Recognize OpenAI reasoning models (o1, o3, o4, gpt-5 family)
+0091:         # Exclude non-reasoning variants like gpt-5-chat this is in azure ai foundry
+0092:         # Allow date suffixes like -2023-01-01 after model name or mini/nano/pro
+0093:         # For gpt-5, use negative lookahead to exclude -chat and allow other suffixes
+0094:         model_pattern = re.match(
+0095:             r"^(?:o[1345](?:-(?:mini|nano|pro))?(?:-\d{4}-\d{2}-\d{2})?|gpt-5(?!-chat)(?:-.*)?)$",
+0096:             model_family,
+0097:         )
+0098: 
+0099:         if model_pattern:
+0100:             if (temperature and temperature != 1.0) or (max_tokens and max_tokens < 16000):
+0101:                 raise ValueError(
+0102:                     "OpenAI's reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None to "
+0103:                     "`dspy.LM(...)`, e.g., dspy.LM('openai/gpt-5', temperature=1.0, max_tokens=16000)"
+0104:                 )
+0105:             self.kwargs = dict(temperature=temperature, max_completion_tokens=max_tokens, **kwargs)
+0106:             if self.kwargs.get("rollout_id") is None:
+0107:                 self.kwargs.pop("rollout_id", None)
+0108:         else:
+0109:             self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)
+0110:             if self.kwargs.get("rollout_id") is None:
+0111:                 self.kwargs.pop("rollout_id", None)
+0112: 
+0113:         self._warn_zero_temp_rollout(self.kwargs.get("temperature"), self.kwargs.get("rollout_id"))
+0114: 
+0115:     @property
+0116:     def _provider_name(self) -> str:
+0117:         """Extract the provider name from the model string (e.g., 'openai' from 'openai/gpt-4o')."""
+0118:         if "/" in self.model:
+0119:             return self.model.split("/", 1)[0]
+0120:         return "openai"
+0121: 
+0122:     @property
+0123:     def supports_function_calling(self) -> bool:
+0124:         return litellm.supports_function_calling(model=self.model)
+0125: 
+0126:     @property
+0127:     def supports_reasoning(self) -> bool:
+0128:         return litellm.supports_reasoning(self.model)
+0129: 
+0130:     @property
+0131:     def supports_response_schema(self) -> bool:
+0132:         return litellm.supports_response_schema(model=self.model, custom_llm_provider=self._provider_name)
+0133: 
+0134:     @property
+0135:     def supported_params(self) -> set[str]:
+0136:         params = litellm.get_supported_openai_params(model=self.model, custom_llm_provider=self._provider_name)
+0137:         return set(params) if params else set()
+0138: 
+0139:     def _warn_zero_temp_rollout(self, temperature: float | None, rollout_id):
+0140:         if not self._warned_zero_temp_rollout and rollout_id is not None and temperature == 0:
+0141:             warnings.warn(
+0142:                 "rollout_id has no effect when temperature=0; set temperature>0 to bypass the cache.",
+0143:                 stacklevel=3,
+0144:             )
+0145:             self._warned_zero_temp_rollout = True
+0146: 
+0147:     def _get_cached_completion_fn(self, completion_fn, cache):
+0148:         ignored_args_for_cache_key = ["api_key", "api_base", "base_url"]
+0149:         if cache:
+0150:             completion_fn = request_cache(
+0151:                 cache_arg_name="request",
+0152:                 ignored_args_for_cache_key=ignored_args_for_cache_key,
+0153:             )(completion_fn)
+0154: 
+0155:         litellm_cache_args = {"no-cache": True, "no-store": True}
+0156: 
+0157:         return completion_fn, litellm_cache_args
+0158: 
+0159:     def forward(
+0160:         self,
+0161:         prompt: str | None = None,
+0162:         messages: list[dict[str, Any]] | None = None,
+0163:         **kwargs
+0164:     ):
+0165:         # Build the request.
+0166:         kwargs = dict(kwargs)
+0167:         cache = kwargs.pop("cache", self.cache)
+0168: 
+0169:         messages = messages or [{"role": "user", "content": prompt}]
+0170:         if self.use_developer_role and self.model_type == "responses":
+0171:             messages = [{**m, "role": "developer"} if m.get("role") == "system" else m for m in messages]
+0172:         kwargs = {**self.kwargs, **kwargs}
+0173:         self._warn_zero_temp_rollout(kwargs.get("temperature"), kwargs.get("rollout_id"))
+0174:         if kwargs.get("rollout_id") is None:
+0175:             kwargs.pop("rollout_id", None)
+0176: 
+0177:         if self.model_type == "chat":
+0178:             completion = litellm_completion
+0179:         elif self.model_type == "text":
+0180:             completion = litellm_text_completion
+0181:         elif self.model_type == "responses":
+0182:             completion = litellm_responses_completion
+0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)
+0184: 
+0185:         try:
+0186:             results = completion(
+0187:                 request=dict(model=self.model, messages=messages, **kwargs),
+0188:                 num_retries=self.num_retries,
+0189:                 cache=litellm_cache_args,
+0190:             )
+0191:         except LitellmContextWindowExceededError as e:
+0192:             raise ContextWindowExceededError(model=self.model) from e
+0193: 
+0194:         self._check_truncation(results)
+0195: 
+0196:         if not getattr(results, "cache_hit", False) and dspy.settings.usage_tracker and hasattr(results, "usage"):
+0197:             settings.usage_tracker.add_usage(self.model, dict(results.usage))
+0198:         return results
+0199: 
+0200:     async def aforward(
+0201:         self,
+0202:         prompt: str | None = None,
+0203:         messages: list[dict[str, Any]] | None = None,
+0204:         **kwargs,
+0205:     ):
+0206:         # Build the request.
+0207:         kwargs = dict(kwargs)
+0208:         cache = kwargs.pop("cache", self.cache)
+0209: 
+0210:         messages = messages or [{"role": "user", "content": prompt}]
+0211:         if self.use_developer_role and self.model_type == "responses":
+0212:             messages = [{**m, "role": "developer"} if m.get("role") == "system" else m for m in messages]
+0213:         kwargs = {**self.kwargs, **kwargs}
+0214:         self._warn_zero_temp_rollout(kwargs.get("temperature"), kwargs.get("rollout_id"))
+0215:         if kwargs.get("rollout_id") is None:
+0216:             kwargs.pop("rollout_id", None)
+0217: 
+0218:         if self.model_type == "chat":
+0219:             completion = alitellm_completion
+0220:         elif self.model_type == "text":
+0221:             completion = alitellm_text_completion
+0222:         elif self.model_type == "responses":
+0223:             completion = alitellm_responses_completion
+0224:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)
+0225: 
+0226:         try:
+0227:             results = await completion(
+0228:                 request=dict(model=self.model, messages=messages, **kwargs),
+0229:                 num_retries=self.num_retries,
+0230:                 cache=litellm_cache_args,
+0231:             )
+0232:         except LitellmContextWindowExceededError as e:
+0233:             raise ContextWindowExceededError(model=self.model) from e
+0234: 
+0235:         self._check_truncation(results)
+0236: 
+0237:         if not getattr(results, "cache_hit", False) and dspy.settings.usage_tracker and hasattr(results, "usage"):
+0238:             settings.usage_tracker.add_usage(self.model, dict(results.usage))
+0239:         return results
+0240: 
+0241:     def launch(self, launch_kwargs: dict[str, Any] | None = None):
+0242:         self.provider.launch(self, launch_kwargs)
+0243: 
+0244:     def kill(self, launch_kwargs: dict[str, Any] | None = None):
+0245:         self.provider.kill(self, launch_kwargs)
+0246: 
+0247:     def finetune(
+0248:         self,
+0249:         train_data: list[dict[str, Any]],
+0250:         train_data_format: TrainDataFormat | None,
+0251:         train_kwargs: dict[str, Any] | None = None,
+0252:     ) -> TrainingJob:
+0253:         from dspy import settings as settings
+0254: 
+0255:         if not self.provider.finetunable:
+0256:             raise ValueError(
+0257:                 f"Provider {self.provider} does not support fine-tuning, please specify your provider by explicitly "
+0258:                 "setting `provider` when creating the `dspy.LM` instance. For example, "
+0259:                 "`dspy.LM('openai/gpt-4.1-mini-2025-04-14', provider=dspy.OpenAIProvider())`."
+0260:             )
+0261: 
+0262:         def thread_function_wrapper():
+0263:             return self._run_finetune_job(job)
+0264: 
+0265:         thread = threading.Thread(target=thread_function_wrapper)
+0266:         train_kwargs = train_kwargs or self.train_kwargs
+0267:         model_to_finetune = self.finetuning_model or self.model
+0268:         job = self.provider.TrainingJob(
+0269:             thread=thread,
+0270:             model=model_to_finetune,
+0271:             train_data=train_data,
+0272:             train_data_format=train_data_format,
+0273:             train_kwargs=train_kwargs,
+0274:         )
+0275:         thread.start()
+0276: 
+0277:         return job
+0278: 
+0279:     def reinforce(self, train_kwargs) -> ReinforceJob:
+0280:         # TODO(GRPO Team): Should we return an initialized job here?
+0281:         from dspy import settings as settings
+0282: 
+0283:         err = f"Provider {self.provider} does not implement the reinforcement learning interface."
+0284:         assert self.provider.reinforceable, err
+0285: 
+0286:         job = self.provider.ReinforceJob(lm=self, train_kwargs=train_kwargs)
+0287:         job.initialize()
+0288:         return job
+0289: 
+0290:     def _run_finetune_job(self, job: TrainingJob):
+0291:         # TODO(enhance): We should listen for keyboard interrupts somewhere.
+0292:         # Requires TrainingJob.cancel() to be implemented for each provider.
+0293:         try:
+0294:             model = self.provider.finetune(
+0295:                 job=job,
+0296:                 model=job.model,
+0297:                 train_data=job.train_data,
+0298:                 train_data_format=job.train_data_format,
+0299:                 train_kwargs=job.train_kwargs,
+0300:             )
+0301:             lm = self.copy(model=model)
+0302:             job.set_result(lm)
+0303:         except Exception as err:
+0304:             logger.error(err)
+0305:             job.set_result(err)
+0306: 
+0307:     def infer_provider(self) -> Provider:
+0308:         if OpenAIProvider.is_provider_model(self.model):
+0309:             return OpenAIProvider()
+0310:         return Provider()
+0311: 
+0312:     def dump_state(self):
+0313:         state_keys = [
+0314:             "model",
+0315:             "model_type",
+0316:             "cache",
+0317:             "num_retries",
+0318:             "finetuning_model",
+0319:             "launch_kwargs",
+0320:             "train_kwargs",
+0321:         ]
+0322:         # Exclude api_key from kwargs to prevent API keys from being saved in plain text
+0323:         filtered_kwargs = {k: v for k, v in self.kwargs.items() if k != "api_key"}
+0324:         return {key: getattr(self, key) for key in state_keys} | filtered_kwargs
+0325: 
+0326:     def _check_truncation(self, results):
+0327:         if self.model_type != "responses" and any(c.finish_reason == "length" for c in results["choices"]):
+0328:             logger.warning(
+0329:                 f"LM response was truncated due to exceeding max_tokens={self.kwargs['max_tokens']}. "
+0330:                 "You can inspect the latest LM interactions with `dspy.inspect_history()`. "
+0331:                 "To avoid truncation, consider passing a larger max_tokens when setting up dspy.LM. "
+0332:                 f"You may also consider increasing the temperature (currently {self.kwargs['temperature']}) "
+0333:                 " if the reason for truncation is repetition."
+0334:             )
+0335: 
+0336: 
+0337: def _get_stream_completion_fn(
+0338:     request: dict[str, Any],
+0339:     cache_kwargs: dict[str, Any],
+0340:     sync=True,
+0341:     headers: dict[str, Any] | None = None,
+0342: ):
+0343:     stream = dspy.settings.send_stream
+0344:     caller_predict = dspy.settings.caller_predict
+0345: 
+0346:     if stream is None:
+0347:         return None
+0348: 
+0349:     # The stream is already opened, and will be closed by the caller.
+0350:     stream = cast(MemoryObjectSendStream, stream)
+0351:     caller_predict_id = id(caller_predict) if caller_predict else None
+0352: 
+0353:     if dspy.settings.track_usage:
+0354:         request["stream_options"] = {"include_usage": True}
+0355: 
+0356:     async def stream_completion(request: dict[str, Any], cache_kwargs: dict[str, Any]):
+0357:         response = await litellm.acompletion(
+0358:             cache=cache_kwargs,
+0359:             stream=True,
+0360:             headers=headers,
+0361:             **request,
+0362:         )
+0363:         chunks = []
+0364:         async for chunk in response:
+0365:             if caller_predict_id:
+0366:                 # Add the predict id to the chunk so that the stream listener can identify which predict produces it.
+0367:                 chunk.predict_id = caller_predict_id
+0368:             chunks.append(chunk)
+0369:             await stream.send(chunk)
+0370:         return litellm.stream_chunk_builder(chunks)
+0371: 
+0372:     def sync_stream_completion():
+0373:         syncified_stream_completion = syncify(stream_completion)
+0374:         return syncified_stream_completion(request, cache_kwargs)
+0375: 
+0376:     async def async_stream_completion():
+0377:         return await stream_completion(request, cache_kwargs)
+0378: 
+0379:     if sync:
+0380:         return sync_stream_completion
+0381:     else:
+0382:         return async_stream_completion
+0383: 
+0384: 
+0385: def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
+0386:     cache = cache or {"no-cache": True, "no-store": True}
+0387:     request = dict(request)
+0388:     request.pop("rollout_id", None)
+0389:     headers = _add_dspy_identifier_to_headers(request.pop("headers", None))
+0390:     stream_completion = _get_stream_completion_fn(request, cache, sync=True, headers=headers)
+0391:     if stream_completion is None:
+0392:         return litellm.completion(
+0393:             cache=cache,
+0394:             num_retries=num_retries,
+0395:             retry_strategy="exponential_backoff_retry",
+0396:             headers=headers,
+0397:             **request,
+0398:         )
+0399: 
+0400:     return stream_completion()
+0401: 
+0402: 
+0403: def litellm_text_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
+0404:     cache = cache or {"no-cache": True, "no-store": True}
+0405:     request = dict(request)
+0406:     request.pop("rollout_id", None)
+0407:     headers = request.pop("headers", None)
+0408:     # Extract the provider and model from the model string.
+0409:     # TODO: Not all the models are in the format of "provider/model"
+0410:     model = request.pop("model").split("/", 1)
+0411:     provider, model = model[0] if len(model) > 1 else "openai", model[-1]
+0412: 
+0413:     # Use the API key and base from the request, or from the environment.
+0414:     api_key = request.pop("api_key", None) or os.getenv(f"{provider}_API_KEY")
+0415:     api_base = request.pop("api_base", None) or os.getenv(f"{provider}_API_BASE")
+0416: 
+0417:     # Build the prompt from the messages.
+0418:     prompt = "\n\n".join([x["content"] for x in request.pop("messages")] + ["BEGIN RESPONSE:"])
+0419: 
+0420:     return litellm.text_completion(
+0421:         cache=cache,
+0422:         model=f"text-completion-openai/{model}",
+0423:         api_key=api_key,
+0424:         api_base=api_base,
+0425:         prompt=prompt,
+0426:         num_retries=num_retries,
+0427:         retry_strategy="exponential_backoff_retry",
+0428:         headers=_add_dspy_identifier_to_headers(headers),
+0429:         **request,
+0430:     )
+0431: 
+0432: 
+0433: async def alitellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
+0434:     cache = cache or {"no-cache": True, "no-store": True}
+0435:     request = dict(request)
+0436:     request.pop("rollout_id", None)
+0437:     headers = request.pop("headers", None)
+0438:     stream_completion = _get_stream_completion_fn(request, cache, sync=False)
+0439:     if stream_completion is None:
+0440:         return await litellm.acompletion(
+0441:             cache=cache,
+0442:             num_retries=num_retries,
+0443:             retry_strategy="exponential_backoff_retry",
+0444:             headers=_add_dspy_identifier_to_headers(headers),
+0445:             **request,
+0446:         )
+0447: 
+0448:     return await stream_completion()
+0449: 
+0450: 
+0451: async def alitellm_text_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
+0452:     cache = cache or {"no-cache": True, "no-store": True}
+0453:     request = dict(request)
+0454:     request.pop("rollout_id", None)
+0455:     model = request.pop("model").split("/", 1)
+0456:     headers = request.pop("headers", None)
+0457:     provider, model = model[0] if len(model) > 1 else "openai", model[-1]
+0458: 
+0459:     # Use the API key and base from the request, or from the environment.
+0460:     api_key = request.pop("api_key", None) or os.getenv(f"{provider}_API_KEY")
+0461:     api_base = request.pop("api_base", None) or os.getenv(f"{provider}_API_BASE")
+0462: 
+0463:     # Build the prompt from the messages.
+0464:     prompt = "\n\n".join([x["content"] for x in request.pop("messages")] + ["BEGIN RESPONSE:"])
+0465: 
+0466:     return await litellm.atext_completion(
+0467:         cache=cache,
+0468:         model=f"text-completion-openai/{model}",
+0469:         api_key=api_key,
+0470:         api_base=api_base,
+0471:         prompt=prompt,
+0472:         num_retries=num_retries,
+0473:         retry_strategy="exponential_backoff_retry",
+0474:         headers=_add_dspy_identifier_to_headers(headers),
+0475:         **request,
+0476:     )
+0477: 
+0478: 
+0479: def litellm_responses_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
+0480:     cache = cache or {"no-cache": True, "no-store": True}
+0481:     request = dict(request)
+0482:     request.pop("rollout_id", None)
+0483:     headers = request.pop("headers", None)
+0484:     request = _convert_chat_request_to_responses_request(request)
+0485: 
+0486:     return litellm.responses(
+0487:         cache=cache,
+0488:         num_retries=num_retries,
+0489:         retry_strategy="exponential_backoff_retry",
+0490:         headers=_add_dspy_identifier_to_headers(headers),
+0491:         **request,
+0492:     )
+0493: 
+0494: 
+0495: async def alitellm_responses_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):
+0496:     cache = cache or {"no-cache": True, "no-store": True}
+0497:     request = dict(request)
+0498:     request.pop("rollout_id", None)
+0499:     headers = request.pop("headers", None)
+0500:     request = _convert_chat_request_to_responses_request(request)
+0501: 
+0502:     return await litellm.aresponses(
+0503:         cache=cache,
+0504:         num_retries=num_retries,
+0505:         retry_strategy="exponential_backoff_retry",
+0506:         headers=_add_dspy_identifier_to_headers(headers),
+0507:         **request,
+0508:     )
+0509: 
+0510: 
+0511: def _convert_chat_request_to_responses_request(request: dict[str, Any]):
+0512:     """
+0513:     Convert a chat request to a responses request
+0514:     See https://platform.openai.com/docs/api-reference/responses/create for the responses API specification.
+0515:     Also see https://platform.openai.com/docs/api-reference/chat/create for the chat API specification.
+0516:     """
+0517:     request = dict(request)
+0518:     if "messages" in request:
+0519:         content_blocks = []
+0520:         for msg in request.pop("messages"):
+0521:             c = msg.get("content")
+0522:             if isinstance(c, str):
+0523:                 content_blocks.append({"type": "input_text", "text": c})
+0524:             elif isinstance(c, list):
+0525:                 # Convert each content item from Chat API format to Responses API format
+0526:                 for item in c:
+0527:                     content_blocks.append(_convert_content_item_to_responses_format(item))
+0528:         request["input"] = [{"role": msg.get("role", "user"), "content": content_blocks}]
+0529:     # Convert `reasoning_effort` to reasoning format supported by the Responses API
+0530:     if "reasoning_effort" in request:
+0531:         effort = request.pop("reasoning_effort")
+0532:         request["reasoning"] = {"effort": effort, "summary": "auto"}
+0533: 
+0534:     # Convert `response_format` to `text.format` for Responses API
+0535:     if "response_format" in request:
+0536:         response_format = request.pop("response_format")
+0537:         if isinstance(response_format, type) and issubclass(response_format, pydantic.BaseModel):
+0538:             response_format = {
+0539:                 "name": response_format.__name__,
+0540:                 "type": "json_schema",
+0541:                 "schema": response_format.model_json_schema(),
+0542:             }
+0543:         text = request.pop("text", {})
+0544:         request["text"] = {**text, "format": response_format}
+0545: 
+0546:     return request
+0547: 
+0548: 
+0549: def _convert_content_item_to_responses_format(item: dict[str, Any]) -> dict[str, Any]:
+0550:     """
+0551:     Convert a content item from Chat API format to Responses API format.
+0552: 
+0553:     For images, converts from:
+0554:         {"type": "image_url", "image_url": {"url": "..."}}
+0555:     To:
+0556:         {"type": "input_image", "image_url": "..."}
+0557: 
+0558:     For text, converts from:
+0559:         {"type": "text", "text": "..."}
+0560:     To:
+0561:         {"type": "input_text", "text": "..."}
+0562: 
+0563:     For other types, passes through as-is.
+0564:     """
+0565:     if item.get("type") == "image_url":
+0566:         image_url = item.get("image_url", {}).get("url", "")
+0567:         return {
+0568:             "type": "input_image",
+0569:             "image_url": image_url,
+0570:         }
+0571:     elif item.get("type") == "text":
+0572:         return {
+0573:             "type": "input_text",
+0574:             "text": item.get("text", ""),
+0575:         }
+0576:     elif item.get("type") == "file":
+0577:         file = item.get("file", {})
+0578:         return {
+0579:             "type": "input_file",
+0580:             "file_data": file.get("file_data"),
+0581:             "filename": file.get("filename"),
+0582:             "file_id": file.get("file_id"),
+0583:         }
+0584: 
+0585:     # For other items, return as-is
+0586:     return item
+0587: 
+0588: 
+0589: def _add_dspy_identifier_to_headers(headers: dict[str, Any] | None = None):
+0590:     headers = headers or {}
+0591:     return {
+0592:         "User-Agent": f"DSPy/{dspy.__version__}",
+0593:         **headers,
+0594:     }
+
+### dspy/clients/cache.py
+0001: import copy
+0002: import inspect
+0003: import logging
+0004: import threading
+0005: from functools import wraps
+0006: from hashlib import sha256
+0007: from typing import Any
+0008: 
+0009: import cloudpickle
+0010: import orjson
+0011: import pydantic
+0012: from cachetools import LRUCache
+0013: from diskcache import FanoutCache
+0014: 
+0015: logger = logging.getLogger(__name__)
+0016: 
+0017: 
+0018: class Cache:
+0019:     """DSPy Cache
+0020: 
+0021:     `Cache` provides 2 levels of caching (in the given order):
+0022:         1. In-memory cache - implemented with cachetools.LRUCache
+0023:         2. On-disk cache - implemented with diskcache.FanoutCache
+0024:     """
+0025: 
+0026:     def __init__(
+0027:         self,
+0028:         enable_disk_cache: bool,
+0029:         enable_memory_cache: bool,
+0030:         disk_cache_dir: str,
+0031:         disk_size_limit_bytes: int | None = 1024 * 1024 * 10,
+0032:         memory_max_entries: int = 1000000,
+0033:     ):
+0034:         """
+0035:         Args:
+0036:             enable_disk_cache: Whether to enable on-disk cache.
+0037:             enable_memory_cache: Whether to enable in-memory cache.
+0038:             disk_cache_dir: The directory where the disk cache is stored.
+0039:             disk_size_limit_bytes: The maximum size of the disk cache (in bytes).
+0040:             memory_max_entries: The maximum size of the in-memory cache (in number of items).
+0041:         """
+0042: 
+0043:         self.enable_disk_cache = enable_disk_cache
+0044:         self.enable_memory_cache = enable_memory_cache
+0045:         if self.enable_memory_cache:
+0046:             if memory_max_entries is None:
+0047:                 raise ValueError("`memory_max_entries` cannot be None. Use `math.inf` if you need an unbounded cache.")
+0048:             elif memory_max_entries <= 0:
+0049:                 raise ValueError(f"`memory_max_entries` must be a positive number, but received {memory_max_entries}")
+0050:             self.memory_cache = LRUCache(maxsize=memory_max_entries)
+0051:         else:
+0052:             self.memory_cache = {}
+0053:         if self.enable_disk_cache:
+0054:             self.disk_cache = FanoutCache(
+0055:                 shards=16,
+0056:                 timeout=10,
+0057:                 directory=disk_cache_dir,
+0058:                 size_limit=disk_size_limit_bytes,
+0059:             )
+0060:         else:
+0061:             self.disk_cache = {}
+0062: 
+0063:         self._lock = threading.RLock()
+0064: 
+0065:     def __contains__(self, key: str) -> bool:
+0066:         """Check if a key is in the cache."""
+0067:         return key in self.memory_cache or key in self.disk_cache
+0068: 
+0069:     def cache_key(self, request: dict[str, Any], ignored_args_for_cache_key: list[str] | None = None) -> str:
+0070:         """
+0071:         Obtain a unique cache key for the given request dictionary by hashing its JSON
+0072:         representation. For request fields having types that are known to be JSON-incompatible,
+0073:         convert them to a JSON-serializable format before hashing.
+0074:         """
+0075: 
+0076:         ignored_args_for_cache_key = ignored_args_for_cache_key or []
+0077: 
+0078:         def transform_value(value):
+0079:             if isinstance(value, type) and issubclass(value, pydantic.BaseModel):
+0080:                 return value.model_json_schema()
+0081:             elif isinstance(value, pydantic.BaseModel):
+0082:                 return value.model_dump(mode="json")
+0083:             elif callable(value):
+0084:                 # Try to get the source code of the callable if available
+0085:                 import inspect
+0086: 
+0087:                 try:
+0088:                     # For regular functions, we can get the source code
+0089:                     return f"<callable_source:{inspect.getsource(value)}>"
+0090:                 except (TypeError, OSError):
+0091:                     # For lambda functions or other callables where source isn't available,
+0092:                     # use a string representation
+0093:                     return f"<callable:{value.__name__ if hasattr(value, '__name__') else 'lambda'}>"
+0094:             elif isinstance(value, dict):
+0095:                 return {k: transform_value(v) for k, v in value.items()}
+0096:             else:
+0097:                 return value
+0098: 
+0099:         params = {k: transform_value(v) for k, v in request.items() if k not in ignored_args_for_cache_key}
+0100:         return sha256(orjson.dumps(params, option=orjson.OPT_SORT_KEYS)).hexdigest()
+0101: 
+0102:     def get(self, request: dict[str, Any], ignored_args_for_cache_key: list[str] | None = None) -> Any:
+0103: 
+0104:         if not self.enable_memory_cache and not self.enable_disk_cache:
+0105:             return None
+0106: 
+0107:         try:
+0108:             key = self.cache_key(request, ignored_args_for_cache_key)
+0109:         except Exception:
+0110:             logger.debug(f"Failed to generate cache key for request: {request}")
+0111:             return None
+0112: 
+0113:         if self.enable_memory_cache and key in self.memory_cache:
+0114:             with self._lock:
+0115:                 response = self.memory_cache[key]
+0116:         elif self.enable_disk_cache and key in self.disk_cache:
+0117:             # Found on disk but not in memory cache, add to memory cache
+0118:             response = self.disk_cache[key]
+0119:             if self.enable_memory_cache:
+0120:                 with self._lock:
+0121:                     self.memory_cache[key] = response
+0122:         else:
+0123:             return None
+0124: 
+0125:         response = copy.deepcopy(response)
+0126:         if hasattr(response, "usage"):
+0127:             # Clear the usage data when cache is hit, because no LM call is made
+0128:             response.usage = {}
+0129:             response.cache_hit = True
+0130:         return response
+0131: 
+0132:     def put(
+0133:         self,
+0134:         request: dict[str, Any],
+0135:         value: Any,
+0136:         ignored_args_for_cache_key: list[str] | None = None,
+0137:         enable_memory_cache: bool = True,
+0138:     ) -> None:
+0139:         enable_memory_cache = self.enable_memory_cache and enable_memory_cache
+0140: 
+0141:         # Early return to avoid computing cache key if both memory and disk cache are disabled
+0142:         if not enable_memory_cache and not self.enable_disk_cache:
+0143:             return
+0144: 
+0145:         try:
+0146:             key = self.cache_key(request, ignored_args_for_cache_key)
+0147:         except Exception:
+0148:             logger.debug(f"Failed to generate cache key for request: {request}")
+0149:             return
+0150: 
+0151:         if enable_memory_cache:
+0152:             with self._lock:
+0153:                 self.memory_cache[key] = value
+0154: 
+0155:         if self.enable_disk_cache:
+0156:             try:
+0157:                 self.disk_cache[key] = value
+0158:             except Exception as e:
+0159:                 # Disk cache writing can fail for different reasons, e.g. disk full or the `value` is not picklable.
+0160:                 logger.debug(f"Failed to put value in disk cache: {value}, {e}")
+0161: 
+0162:     def reset_memory_cache(self) -> None:
+0163:         if not self.enable_memory_cache:
+0164:             return
+0165: 
+0166:         with self._lock:
+0167:             self.memory_cache.clear()
+0168: 
+0169:     def save_memory_cache(self, filepath: str) -> None:
+0170:         if not self.enable_memory_cache:
+0171:             return
+0172: 
+0173:         with self._lock:
+0174:             with open(filepath, "wb") as f:
+0175:                 cloudpickle.dump(self.memory_cache, f)
+0176: 
+0177:     def load_memory_cache(self, filepath: str, allow_pickle: bool = False) -> None:
+0178:         if not allow_pickle:
+0179:             raise ValueError("Loading untrusted .pkl files can run arbitrary code, which may be dangerous. \
+0180:             Set `allow_pickle=True` to load if you are running in a trusted environment and the file is from a trusted source.")
+0181: 
+0182:         if not self.enable_memory_cache:
+0183:             return
+0184: 
+0185:         with self._lock:
+0186:             with open(filepath, "rb") as f:
+0187:                 self.memory_cache = cloudpickle.load(f)
+0188: 
+0189: 
+0190: def request_cache(
+0191:     cache_arg_name: str | None = None,
+0192:     ignored_args_for_cache_key: list[str] | None = None,
+0193:     enable_memory_cache: bool = True,
+0194:     *,  # everything after this is keyword-only
+0195:     maxsize: int | None = None,  # legacy / no-op
+0196: ):
+0197:     """
+0198:     Decorator for applying caching to a function based on the request argument.
+0199: 
+0200:     Args:
+0201:         cache_arg_name: The name of the argument that contains the request. If not provided, the entire kwargs is used
+0202:             as the request.
+0203:         ignored_args_for_cache_key: A list of arguments to ignore when computing the cache key from the request.
+0204:         enable_memory_cache: Whether to enable in-memory cache at call time. If False, the memory cache will not be
+0205:             written to on new data.
+0206:     """
+0207:     ignored_args_for_cache_key = ignored_args_for_cache_key or ["api_key", "api_base", "base_url"]
+0208:     # Deprecation notice
+0209:     if maxsize is not None:
+0210:         logger.warning(
+0211:             "[DEPRECATION] `maxsize` is deprecated and no longer does anything; "
+0212:             "the cache is now handled internally by `dspy.cache`. "
+0213:             "This parameter will be removed in a future release.",
+0214:         )
+0215: 
+0216:     def decorator(fn):
+0217:         @wraps(fn)
+0218:         def process_request(args, kwargs):
+0219:             # Use fully qualified function name for uniqueness
+0220:             fn_identifier = f"{fn.__module__}.{fn.__qualname__}"
+0221: 
+0222:             # Create a modified request that includes the function identifier so that it's incorporated into the cache
+0223:             # key. Deep copy is required because litellm sometimes modifies the kwargs in place.
+0224:             if cache_arg_name:
+0225:                 # When `cache_arg_name` is provided, use the value of the argument with this name as the request for
+0226:                 # caching.
+0227:                 modified_request = copy.deepcopy(kwargs[cache_arg_name])
+0228:             else:
+0229:                 # When `cache_arg_name` is not provided, use the entire kwargs as the request for caching.
+0230:                 modified_request = copy.deepcopy(kwargs)
+0231:                 for i, arg in enumerate(args):
+0232:                     modified_request[f"positional_arg_{i}"] = arg
+0233:             modified_request["_fn_identifier"] = fn_identifier
+0234: 
+0235:             return modified_request
+0236: 
+0237:         @wraps(fn)
+0238:         def sync_wrapper(*args, **kwargs):
+0239:             import dspy
+0240: 
+0241:             cache = dspy.cache
+0242:             modified_request = process_request(args, kwargs)
+0243: 
+0244:             # Retrieve from cache if available
+0245:             cached_result = cache.get(modified_request, ignored_args_for_cache_key)
+0246: 
+0247:             if cached_result is not None:
+0248:                 return cached_result
+0249: 
+0250:             # Otherwise, compute and store the result
+0251:             # Make a copy of the original request in case it's modified in place, e.g., deleting some fields
+0252:             original_request = copy.deepcopy(modified_request)
+0253:             result = fn(*args, **kwargs)
+0254:             # `enable_memory_cache` can be provided at call time to avoid indefinite growth.
+0255:             cache.put(original_request, result, ignored_args_for_cache_key, enable_memory_cache)
+0256: 
+0257:             return result
+0258: 
+0259:         @wraps(fn)
+0260:         async def async_wrapper(*args, **kwargs):
+0261:             import dspy
+0262: 
+0263:             cache = dspy.cache
+0264:             modified_request = process_request(args, kwargs)
+0265: 
+0266:             # Retrieve from cache if available
+0267:             cached_result = cache.get(modified_request, ignored_args_for_cache_key)
+0268:             if cached_result is not None:
+0269:                 return cached_result
+0270: 
+0271:             # Otherwise, compute and store the result
+0272:             # Make a copy of the original request in case it's modified in place, e.g., deleting some fields
+0273:             original_request = copy.deepcopy(modified_request)
+0274:             result = await fn(*args, **kwargs)
+0275:             cache.put(original_request, result, ignored_args_for_cache_key, enable_memory_cache)
+0276: 
+0277:             return result
+0278: 
+0279:         if inspect.iscoroutinefunction(fn):
+0280:             return async_wrapper
+0281:         else:
+0282:             return sync_wrapper
+0283: 
+0284:     return decorator
+
+Return JSON that matches the schema exactly.

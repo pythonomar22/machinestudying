@@ -1,0 +1,639 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_8362f336668b`
+- Label: `lm_provider_integration_and_configuration`
+- Question: `My registered Databricks model name contains dots, and I can't tell whether DSPy creates a fresh serving endpoint or updates an existing one. I also have both chat and completion fine-tuned models, so I need to see which readiness probe DSPy sends after provisioning.
+
+Give me a complete, runnable Python program that patches the Databricks deployment path offline, runs one existing-endpoint case and one create-new case, and prints/asserts the sanitized endpoint name, whether DSPy used PUT or POST, and whether it probed with chat or completion requests.`
+- Model answer:
+```python
+from types import SimpleNamespace
+from unittest import mock
+
+from dspy.clients.databricks import DatabricksProvider
+from dspy.clients.utils_finetune import TrainDataFormat
+
+class FakeResponse:
+    def __init__(self, json_data, status_code):
+        self._json_data = json_data
+        self.status_code = status_code
+
+    def json(self):
+        return self._json_data
+
+class ModelVersions:
+    def list(self, model):
+        return iter([SimpleNamespace(version='7')])
+
+def make_client():
+    return SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=mock.Mock(return_value=object()))),
+        completions=SimpleNamespace(create=mock.Mock(return_value=object())),
+    )
+
+workspace = SimpleNamespace(
+    config=SimpleNamespace(host='https://workspace.example', token='workspace-token'),
+    model_versions=ModelVersions(),
+)
+
+client_existing = make_client()
+with mock.patch('dspy.clients.databricks._get_workspace_client', return_value=workspace), \
+     mock.patch('requests.get', side_effect=[
+         FakeResponse({'optimizable': True, 'throughput_chunk_size': 8}, 200),
+         FakeResponse({}, 200),
+     ]), \
+     mock.patch('requests.put', return_value=FakeResponse({}, 200)) as put_req, \
+     mock.patch('requests.post', return_value=FakeResponse({}, 200)) as post_req_existing, \
+     mock.patch('openai.OpenAI', return_value=client_existing):
+    DatabricksProvider.deploy_finetuned_model('main.schema.model', data_format=TrainDataFormat.CHAT, deploy_timeout=60)
+    existing_name = put_req.call_args.kwargs['json']['served_entities'][0]['name']
+    assert not post_req_existing.called
+    assert client_existing.chat.completions.create.called
+
+client_new = make_client()
+with mock.patch('dspy.clients.databricks._get_workspace_client', return_value=workspace), \
+     mock.patch('requests.get', side_effect=[
+         FakeResponse({'optimizable': True, 'throughput_chunk_size': 8}, 200),
+         FakeResponse({}, 404),
+     ]), \
+     mock.patch('requests.put', return_value=FakeResponse({}, 200)) as put_req_new, \
+     mock.patch('requests.post', return_value=FakeResponse({}, 200)) as post_req_new, \
+     mock.patch('openai.OpenAI', return_value=client_new):
+    DatabricksProvider.deploy_finetuned_model('main.schema.model', data_format=TrainDataFormat.COMPLETION, deploy_timeout=60)
+    new_name = post_req_new.call_args.kwargs['json']['name']
+    assert not put_req_new.called
+    assert client_new.completions.create.called
+
+print(existing_name, new_name)
+print('used_put', True, 'used_post', True)
+assert existing_name == 'main_schema_model'
+assert new_name == 'main_schema_model'
+```
+
+## Gold answer
+```python
+from types import SimpleNamespace
+from unittest import mock
+
+from dspy.clients.databricks import DatabricksProvider
+from dspy.clients.utils_finetune import TrainDataFormat
+
+class FakeResponse:
+    def __init__(self, json_data, status_code):
+        self._json_data = json_data
+        self.status_code = status_code
+
+    def json(self):
+        return self._json_data
+
+class ModelVersions:
+    def list(self, model):
+        return iter([SimpleNamespace(version='7')])
+
+def make_client():
+    return SimpleNamespace(
+        chat=SimpleNamespace(completions=SimpleNamespace(create=mock.Mock(return_value=object()))),
+        completions=SimpleNamespace(create=mock.Mock(return_value=object())),
+    )
+
+workspace = SimpleNamespace(
+    config=SimpleNamespace(host='https://workspace.example', token='workspace-token'),
+    model_versions=ModelVersions(),
+)
+
+client_existing = make_client()
+with mock.patch('dspy.clients.databricks._get_workspace_client', return_value=workspace), \
+     mock.patch('requests.get', side_effect=[
+         FakeResponse({'optimizable': True, 'throughput_chunk_size': 8}, 200),
+         FakeResponse({}, 200),
+     ]), \
+     mock.patch('requests.put', return_value=FakeResponse({}, 200)) as put_req, \
+     mock.patch('requests.post', return_value=FakeResponse({}, 200)) as post_req_existing, \
+     mock.patch('openai.OpenAI', return_value=client_existing):
+    DatabricksProvider.deploy_finetuned_model('main.schema.model', data_format=TrainDataFormat.CHAT, deploy_timeout=60)
+    existing_name = put_req.call_args.kwargs['json']['served_entities'][0]['name']
+    assert not post_req_existing.called
+    assert client_existing.chat.completions.create.called
+
+client_new = make_client()
+with mock.patch('dspy.clients.databricks._get_workspace_client', return_value=workspace), \
+     mock.patch('requests.get', side_effect=[
+         FakeResponse({'optimizable': True, 'throughput_chunk_size': 8}, 200),
+         FakeResponse({}, 404),
+     ]), \
+     mock.patch('requests.put', return_value=FakeResponse({}, 200)) as put_req_new, \
+     mock.patch('requests.post', return_value=FakeResponse({}, 200)) as post_req_new, \
+     mock.patch('openai.OpenAI', return_value=client_new):
+    DatabricksProvider.deploy_finetuned_model('main.schema.model', data_format=TrainDataFormat.COMPLETION, deploy_timeout=60)
+    new_name = post_req_new.call_args.kwargs['json']['name']
+    assert not put_req_new.called
+    assert client_new.completions.create.called
+
+print(existing_name, new_name)
+print('used_put', True, 'used_post', True)
+assert existing_name == 'main_schema_model'
+assert new_name == 'main_schema_model'
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The answer uses a dotted registered model name and verifies that DSPy sanitizes the serving-endpoint name by replacing every `.` with `_`, so both branches produce `main_schema_model` from `main.schema.model`.",
+    "span_ids": [
+      "s3",
+      "s4",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "The existing-endpoint scenario is driven by an endpoint lookup that returns status code 200, and the answer verifies that DSPy updates the endpoint with `requests.put` to the `/serving-endpoints/{model_name}/config` path, reading the sanitized name from `json['served_entities'][0]['name']` and confirming no create `POST` was used.",
+    "span_ids": [
+      "s4"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The create-new scenario is driven by an endpoint lookup that returns a non-200 status such as 404, and the answer verifies that DSPy creates the endpoint with `requests.post` to `/serving-endpoints`, reading the sanitized name from the top-level `json['name']` field and confirming no update `PUT` was used.",
+    "span_ids": [
+      "s4",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The answer proves that readiness probing depends on `data_format`: `TrainDataFormat.CHAT` issues `client.chat.completions.create(...)` with a user message, while `TrainDataFormat.COMPLETION` issues `client.completions.create(...)` with a prompt.",
+    "span_ids": [
+      "s6",
+      "s7"
+    ]
+  },
+  {
+    "claim_id": "c5",
+    "claim_type": "supporting",
+    "weight": 10,
+    "statement": "The offline harness supplies a fake workspace client whose `model_versions.list(model)` yields a version and whose `config` provides `host` and `token`, matching the values `deploy_finetuned_model` consumes before any HTTP or OpenAI calls.",
+    "span_ids": [
+      "s1",
+      "s8"
+    ]
+  },
+  {
+    "claim_id": "c6",
+    "claim_type": "supporting",
+    "weight": 5,
+    "statement": "The mocked `requests.get` sequence includes a first response for model-optimization info with `optimizable=True` and `throughput_chunk_size`, followed by the endpoint-existence response, because deployment checks optimization eligibility before choosing update versus create.",
+    "span_ids": [
+      "s2",
+      "s4"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/clients/databricks.py",
+    "start_line": 58,
+    "end_line": 63,
+    "excerpt": "0058:         workspace_client = _get_workspace_client()\n0059:         model_version = next(workspace_client.model_versions.list(model)).version\n0060: \n0061:         # Allow users to override the host and token. This is useful on Databricks hosted runtime.\n0062:         databricks_host = databricks_host or workspace_client.config.host\n0063:         databricks_token = databricks_token or workspace_client.config.token"
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/clients/databricks.py",
+    "start_line": 67,
+    "end_line": 75,
+    "excerpt": "0067:         optimizable_info = requests.get(\n0068:             url=f\"{databricks_host}/api/2.0/serving-endpoints/get-model-optimization-info/{model}/{model_version}\",\n0069:             headers=headers,\n0070:         ).json()\n0071: \n0072:         if \"optimizable\" not in optimizable_info or not optimizable_info[\"optimizable\"]:\n0073:             raise ValueError(f\"Model is not eligible for provisioned throughput: {optimizable_info}\")\n0074: \n0075:         chunk_size = optimizable_info[\"throughput_chunk_size\"]"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/clients/databricks.py",
+    "start_line": 83,
+    "end_line": 85,
+    "excerpt": "0083:         # Databricks serving endpoint names cannot contain \".\".\n0084:         model_name = model.replace(\".\", \"_\")\n0085: "
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/clients/databricks.py",
+    "start_line": 86,
+    "end_line": 109,
+    "excerpt": "0086:         get_endpoint_response = requests.get(\n0087:             url=f\"{databricks_host}/api/2.0/serving-endpoints/{model_name}\", json={\"name\": model_name}, headers=headers\n0088:         )\n0089: \n0090:         if get_endpoint_response.status_code == 200:\n0091:             logger.info(f\"Serving endpoint {model_name} already exists, updating it instead of creating a new one.\")\n0092:             # The serving endpoint already exists, we will update it instead of creating a new one.\n0093:             data = {\n0094:                 \"served_entities\": [\n0095:                     {\n0096:                         \"name\": model_name,\n0097:                         \"entity_name\": model,\n0098:                         \"entity_version\": model_version,\n0099:                         \"min_provisioned_throughput\": min_provisioned_throughput,\n0100:                         \"max_provisioned_throughput\": max_provisioned_throughput,\n0101:                     }\n0102:                 ]\n0103:             }\n0104: \n0105:             response = requests.put(\n0106:                 url=f\"{databricks_host}/api/2.0/serving-endpoints/{model_name}/config\",\n0107:                 json=data,\n0108:                 headers=headers,\n0109:             )"
+  },
+  {
+    "span_id": "s5",
+    "path": "dspy/clients/databricks.py",
+    "start_line": 110,
+    "end_line": 128,
+    "excerpt": "0110:         else:\n0111:             logger.info(f\"Creating serving endpoint {model_name} on Databricks model serving!\")\n0112:             # Send the POST request to create the serving endpoint.\n0113:             data = {\n0114:                 \"name\": model_name,\n0115:                 \"config\": {\n0116:                     \"served_entities\": [\n0117:                         {\n0118:                             \"name\": model_name,\n0119:                             \"entity_name\": model,\n0120:                             \"entity_version\": model_version,\n0121:                             \"min_provisioned_throughput\": min_provisioned_throughput,\n0122:                             \"max_provisioned_throughput\": max_provisioned_throughput,\n0123:                         }\n0124:                     ]\n0125:                 },\n0126:             }\n0127: \n0128:             response = requests.post(url=f\"{databricks_host}/api/2.0/serving-endpoints\", json=data, headers=headers)"
+  },
+  {
+    "span_id": "s6",
+    "path": "dspy/clients/databricks.py",
+    "start_line": 141,
+    "end_line": 146,
+    "excerpt": "0141:         from openai import OpenAI\n0142: \n0143:         client = OpenAI(\n0144:             api_key=databricks_token,\n0145:             base_url=f\"{databricks_host}/serving-endpoints\",\n0146:         )"
+  },
+  {
+    "span_id": "s7",
+    "path": "dspy/clients/databricks.py",
+    "start_line": 147,
+    "end_line": 157,
+    "excerpt": "0147:         # Wait for the deployment to be ready.\n0148:         num_retries = deploy_timeout // 60\n0149:         for _ in range(num_retries):\n0150:             try:\n0151:                 if data_format == TrainDataFormat.CHAT:\n0152:                     client.chat.completions.create(\n0153:                         messages=[{\"role\": \"user\", \"content\": \"hi\"}], model=model_name, max_tokens=1\n0154:                     )\n0155:                 elif data_format == TrainDataFormat.COMPLETION:\n0156:                     client.completions.create(prompt=\"hi\", model=model_name, max_tokens=1)\n0157:                 logger.info(f\"Databricks model serving endpoint {model_name} is ready!\")"
+  },
+  {
+    "span_id": "s8",
+    "path": "dspy/clients/databricks.py",
+    "start_line": 263,
+    "end_line": 270,
+    "excerpt": "0263: def _get_workspace_client() -> \"WorkspaceClient\":\n0264:     try:\n0265:         from databricks.sdk import WorkspaceClient\n0266:     except ImportError:\n0267:         raise ImportError(\n0268:             \"To use Databricks finetuning, please install the databricks-sdk package via `pip install databricks-sdk`.\"\n0269:         )\n0270:     return WorkspaceClient()"
+  }
+]
+
+## Whole evidence files
+### dspy/clients/databricks.py
+0001: import logging
+0002: import os
+0003: import re
+0004: import time
+0005: from typing import TYPE_CHECKING, Any
+0006: 
+0007: import orjson
+0008: import requests
+0009: 
+0010: from dspy.clients.provider import Provider, TrainingJob
+0011: from dspy.clients.utils_finetune import TrainDataFormat, get_finetune_directory
+0012: 
+0013: if TYPE_CHECKING:
+0014:     from databricks.sdk import WorkspaceClient
+0015: 
+0016: logger = logging.getLogger(__name__)
+0017: 
+0018: 
+0019: class TrainingJobDatabricks(TrainingJob):
+0020:     def __init__(self, finetuning_run=None, *args, **kwargs):
+0021:         super().__init__(*args, **kwargs)
+0022:         self.finetuning_run = finetuning_run
+0023:         self.launch_started = False
+0024:         self.launch_completed = False
+0025:         self.endpoint_name = None
+0026: 
+0027:     def status(self):
+0028:         if not self.finetuning_run:
+0029:             return None
+0030:         try:
+0031:             from databricks.model_training import foundation_model as fm
+0032:         except ImportError:
+0033:             raise ImportError(
+0034:                 "To use Databricks finetuning, please install the databricks_genai package via "
+0035:                 "`pip install databricks_genai`."
+0036:             )
+0037:         run = fm.get(self.finetuning_run)
+0038:         return run.status
+0039: 
+0040: 
+0041: class DatabricksProvider(Provider):
+0042:     finetunable = True
+0043:     TrainingJob = TrainingJobDatabricks
+0044: 
+0045:     @staticmethod
+0046:     def is_provider_model(model: str) -> bool:
+0047:         # We don't automatically infer Databricks models because Databricks is not a proprietary model provider.
+0048:         return False
+0049: 
+0050:     @staticmethod
+0051:     def deploy_finetuned_model(
+0052:         model: str,
+0053:         data_format: TrainDataFormat | None = None,
+0054:         databricks_host: str | None = None,
+0055:         databricks_token: str | None = None,
+0056:         deploy_timeout: int = 900,
+0057:     ):
+0058:         workspace_client = _get_workspace_client()
+0059:         model_version = next(workspace_client.model_versions.list(model)).version
+0060: 
+0061:         # Allow users to override the host and token. This is useful on Databricks hosted runtime.
+0062:         databricks_host = databricks_host or workspace_client.config.host
+0063:         databricks_token = databricks_token or workspace_client.config.token
+0064: 
+0065:         headers = {"Context-Type": "text/json", "Authorization": f"Bearer {databricks_token}"}
+0066: 
+0067:         optimizable_info = requests.get(
+0068:             url=f"{databricks_host}/api/2.0/serving-endpoints/get-model-optimization-info/{model}/{model_version}",
+0069:             headers=headers,
+0070:         ).json()
+0071: 
+0072:         if "optimizable" not in optimizable_info or not optimizable_info["optimizable"]:
+0073:             raise ValueError(f"Model is not eligible for provisioned throughput: {optimizable_info}")
+0074: 
+0075:         chunk_size = optimizable_info["throughput_chunk_size"]
+0076: 
+0077:         # Minimum desired provisioned throughput
+0078:         min_provisioned_throughput = 0
+0079: 
+0080:         # Maximum desired provisioned throughput
+0081:         max_provisioned_throughput = chunk_size
+0082: 
+0083:         # Databricks serving endpoint names cannot contain ".".
+0084:         model_name = model.replace(".", "_")
+0085: 
+0086:         get_endpoint_response = requests.get(
+0087:             url=f"{databricks_host}/api/2.0/serving-endpoints/{model_name}", json={"name": model_name}, headers=headers
+0088:         )
+0089: 
+0090:         if get_endpoint_response.status_code == 200:
+0091:             logger.info(f"Serving endpoint {model_name} already exists, updating it instead of creating a new one.")
+0092:             # The serving endpoint already exists, we will update it instead of creating a new one.
+0093:             data = {
+0094:                 "served_entities": [
+0095:                     {
+0096:                         "name": model_name,
+0097:                         "entity_name": model,
+0098:                         "entity_version": model_version,
+0099:                         "min_provisioned_throughput": min_provisioned_throughput,
+0100:                         "max_provisioned_throughput": max_provisioned_throughput,
+0101:                     }
+0102:                 ]
+0103:             }
+0104: 
+0105:             response = requests.put(
+0106:                 url=f"{databricks_host}/api/2.0/serving-endpoints/{model_name}/config",
+0107:                 json=data,
+0108:                 headers=headers,
+0109:             )
+0110:         else:
+0111:             logger.info(f"Creating serving endpoint {model_name} on Databricks model serving!")
+0112:             # Send the POST request to create the serving endpoint.
+0113:             data = {
+0114:                 "name": model_name,
+0115:                 "config": {
+0116:                     "served_entities": [
+0117:                         {
+0118:                             "name": model_name,
+0119:                             "entity_name": model,
+0120:                             "entity_version": model_version,
+0121:                             "min_provisioned_throughput": min_provisioned_throughput,
+0122:                             "max_provisioned_throughput": max_provisioned_throughput,
+0123:                         }
+0124:                     ]
+0125:                 },
+0126:             }
+0127: 
+0128:             response = requests.post(url=f"{databricks_host}/api/2.0/serving-endpoints", json=data, headers=headers)
+0129: 
+0130:         if response.status_code == 200:
+0131:             logger.info(
+0132:                 f"Successfully started creating/updating serving endpoint {model_name} on Databricks model serving!"
+0133:             )
+0134:         else:
+0135:             raise ValueError(f"Failed to create serving endpoint: {response.json()}.")
+0136: 
+0137:         logger.info(
+0138:             f"Waiting for serving endpoint {model_name} to be ready, this might take a few minutes... You can check "
+0139:             f"the status of the endpoint at {databricks_host}/ml/endpoints/{model_name}"
+0140:         )
+0141:         from openai import OpenAI
+0142: 
+0143:         client = OpenAI(
+0144:             api_key=databricks_token,
+0145:             base_url=f"{databricks_host}/serving-endpoints",
+0146:         )
+0147:         # Wait for the deployment to be ready.
+0148:         num_retries = deploy_timeout // 60
+0149:         for _ in range(num_retries):
+0150:             try:
+0151:                 if data_format == TrainDataFormat.CHAT:
+0152:                     client.chat.completions.create(
+0153:                         messages=[{"role": "user", "content": "hi"}], model=model_name, max_tokens=1
+0154:                     )
+0155:                 elif data_format == TrainDataFormat.COMPLETION:
+0156:                     client.completions.create(prompt="hi", model=model_name, max_tokens=1)
+0157:                 logger.info(f"Databricks model serving endpoint {model_name} is ready!")
+0158:                 return
+0159:             except Exception:
+0160:                 time.sleep(60)
+0161: 
+0162:         raise ValueError(
+0163:             f"Failed to create serving endpoint {model_name} on Databricks model serving platform within "
+0164:             f"{deploy_timeout} seconds."
+0165:         )
+0166: 
+0167:     @staticmethod
+0168:     def finetune(
+0169:         job: TrainingJobDatabricks,
+0170:         model: str,
+0171:         train_data: list[dict[str, Any]],
+0172:         train_data_format: TrainDataFormat | str | None = "chat",
+0173:         train_kwargs: dict[str, Any] | None = None,
+0174:     ) -> str:
+0175:         if isinstance(train_data_format, str):
+0176:             if train_data_format == "chat":
+0177:                 train_data_format = TrainDataFormat.CHAT
+0178:             elif train_data_format == "completion":
+0179:                 train_data_format = TrainDataFormat.COMPLETION
+0180:             else:
+0181:                 raise ValueError(
+0182:                     f"String `train_data_format` must be one of 'chat' or 'completion', but received: {train_data_format}."
+0183:                 )
+0184: 
+0185:         if "train_data_path" not in train_kwargs:
+0186:             raise ValueError("The `train_data_path` must be provided to finetune on Databricks.")
+0187:         # Add the file name to the directory path.
+0188:         train_kwargs["train_data_path"] = DatabricksProvider.upload_data(
+0189:             train_data, train_kwargs["train_data_path"], train_data_format
+0190:         )
+0191: 
+0192:         try:
+0193:             from databricks.model_training import foundation_model as fm
+0194:         except ImportError:
+0195:             raise ImportError(
+0196:                 "To use Databricks finetuning, please install the databricks_genai package via "
+0197:                 "`pip install databricks_genai`."
+0198:             )
+0199: 
+0200:         if "register_to" not in train_kwargs:
+0201:             raise ValueError("The `register_to` must be provided to finetune on Databricks.")
+0202: 
+0203:         # Allow users to override the host and token. This is useful on Databricks hosted runtime.
+0204:         databricks_host = train_kwargs.pop("databricks_host", None)
+0205:         databricks_token = train_kwargs.pop("databricks_token", None)
+0206: 
+0207:         skip_deploy = train_kwargs.pop("skip_deploy", False)
+0208:         deploy_timeout = train_kwargs.pop("deploy_timeout", 900)
+0209: 
+0210:         logger.info("Starting finetuning on Databricks... this might take a few minutes to finish.")
+0211:         finetuning_run = fm.create(
+0212:             model=model,
+0213:             **train_kwargs,
+0214:         )
+0215: 
+0216:         job.run = finetuning_run
+0217: 
+0218:         # Wait for the finetuning run to be ready.
+0219:         while True:
+0220:             job.run = fm.get(job.run)
+0221:             if job.run.status.display_name == "Completed":
+0222:                 logger.info("Finetuning run completed successfully!")
+0223:                 break
+0224:             elif job.run.status.display_name == "Failed":
+0225:                 raise ValueError(
+0226:                     f"Finetuning run failed with status: {job.run.status.display_name}. Please check the Databricks "
+0227:                     f"workspace for more details. Finetuning job's metadata: {job.run}."
+0228:                 )
+0229:             else:
+0230:                 time.sleep(60)
+0231: 
+0232:         if skip_deploy:
+0233:             return None
+0234: 
+0235:         job.launch_started = True
+0236:         model_to_deploy = train_kwargs.get("register_to")
+0237:         job.endpoint_name = model_to_deploy.replace(".", "_")
+0238:         DatabricksProvider.deploy_finetuned_model(
+0239:             model_to_deploy, train_data_format, databricks_host, databricks_token, deploy_timeout
+0240:         )
+0241:         job.launch_completed = True
+0242:         # The finetuned model name should be in the format: "databricks/<endpoint_name>".
+0243:         return f"databricks/{job.endpoint_name}"
+0244: 
+0245:     @staticmethod
+0246:     def upload_data(train_data: list[dict[str, Any]], databricks_unity_catalog_path: str, data_format: TrainDataFormat):
+0247:         logger.info("Uploading finetuning data to Databricks Unity Catalog...")
+0248:         file_path = _save_data_to_local_file(train_data, data_format)
+0249: 
+0250:         w = _get_workspace_client()
+0251:         _create_directory_in_databricks_unity_catalog(w, databricks_unity_catalog_path)
+0252: 
+0253:         try:
+0254:             with open(file_path, "rb") as f:
+0255:                 target_path = os.path.join(databricks_unity_catalog_path, os.path.basename(file_path))
+0256:                 w.files.upload(target_path, f, overwrite=True)
+0257:             logger.info("Successfully uploaded finetuning data to Databricks Unity Catalog!")
+0258:             return target_path
+0259:         except Exception as e:
+0260:             raise ValueError(f"Failed to upload finetuning data to Databricks Unity Catalog: {e}")
+0261: 
+0262: 
+0263: def _get_workspace_client() -> "WorkspaceClient":
+0264:     try:
+0265:         from databricks.sdk import WorkspaceClient
+0266:     except ImportError:
+0267:         raise ImportError(
+0268:             "To use Databricks finetuning, please install the databricks-sdk package via `pip install databricks-sdk`."
+0269:         )
+0270:     return WorkspaceClient()
+0271: 
+0272: 
+0273: def _create_directory_in_databricks_unity_catalog(w: "WorkspaceClient", databricks_unity_catalog_path: str):
+0274:     pattern = r"^/Volumes/(?P<catalog>[^/]+)/(?P<schema>[^/]+)/(?P<volume>[^/]+)(/[^/]+)+$"
+0275:     match = re.match(pattern, databricks_unity_catalog_path)
+0276:     if not match:
+0277:         raise ValueError(
+0278:             f"Databricks Unity Catalog path must be in the format '/Volumes/<catalog>/<schema>/<volume>/...', but "
+0279:             f"received: {databricks_unity_catalog_path}."
+0280:         )
+0281: 
+0282:     catalog = match.group("catalog")
+0283:     schema = match.group("schema")
+0284:     volume = match.group("volume")
+0285: 
+0286:     try:
+0287:         volume_path = f"{catalog}.{schema}.{volume}"
+0288:         w.volumes.read(volume_path)
+0289:     except Exception:
+0290:         raise ValueError(
+0291:             f"Databricks Unity Catalog volume does not exist: {volume_path}, please create it on the Databricks "
+0292:             "workspace."
+0293:         )
+0294: 
+0295:     try:
+0296:         w.files.get_directory_metadata(databricks_unity_catalog_path)
+0297:         logger.info(f"Directory {databricks_unity_catalog_path} already exists, skip creating it.")
+0298:     except Exception:
+0299:         # Create the directory if it doesn't exist, we don't raise an error because this is a common case.
+0300:         logger.info(f"Creating directory {databricks_unity_catalog_path} in Databricks Unity Catalog...")
+0301:         w.files.create_directory(databricks_unity_catalog_path)
+0302:         logger.info(f"Successfully created directory {databricks_unity_catalog_path} in Databricks Unity Catalog!")
+0303: 
+0304: 
+0305: def _save_data_to_local_file(train_data: list[dict[str, Any]], data_format: TrainDataFormat):
+0306:     import uuid
+0307: 
+0308:     file_name = f"finetuning_{uuid.uuid4()}.jsonl"
+0309: 
+0310:     finetune_dir = get_finetune_directory()
+0311:     file_path = os.path.join(finetune_dir, file_name)
+0312:     file_path = os.path.abspath(file_path)
+0313:     with open(file_path, "wb") as f:
+0314:         for item in train_data:
+0315:             if data_format == TrainDataFormat.CHAT:
+0316:                 _validate_chat_data(item)
+0317:             elif data_format == TrainDataFormat.COMPLETION:
+0318:                 _validate_completion_data(item)
+0319: 
+0320:             f.write(orjson.dumps(item) + b"\n")
+0321:     return file_path
+0322: 
+0323: 
+0324: def _validate_chat_data(data: dict[str, Any]):
+0325:     if "messages" not in data:
+0326:         raise ValueError(
+0327:             "Each finetuning data must be a dict with a 'messages' key when `task=CHAT_COMPLETION`, but "
+0328:             f"received: {data}"
+0329:         )
+0330: 
+0331:     if not isinstance(data["messages"], list):
+0332:         raise ValueError(
+0333:             "The value of the 'messages' key in each finetuning data must be a list of dicts with keys 'role' and "
+0334:             f"'content' when `task=CHAT_COMPLETION`, but received: {data['messages']}"
+0335:         )
+0336: 
+0337:     for message in data["messages"]:
+0338:         if "role" not in message:
+0339:             raise ValueError(f"Each message in the 'messages' list must contain a 'role' key, but received: {message}.")
+0340:         if "content" not in message:
+0341:             raise ValueError(
+0342:                 f"Each message in the 'messages' list must contain a 'content' key, but received: {message}."
+0343:             )
+0344: 
+0345: 
+0346: def _validate_completion_data(data: dict[str, Any]):
+0347:     if "prompt" not in data:
+0348:         raise ValueError(
+0349:             "Each finetuning data must be a dict with a 'prompt' key when `task=INSTRUCTION_FINETUNE`, but "
+0350:             f"received: {data}"
+0351:         )
+0352:     if "response" not in data and "completion" not in data:
+0353:         raise ValueError(
+0354:             "Each finetuning data must be a dict with a 'response' or 'completion' key when "
+0355:             f"`task=INSTRUCTION_FINETUNE`, but received: {data}"
+0356:         )
+
+Return JSON that matches the schema exactly.

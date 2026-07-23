@@ -1,0 +1,203 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_38e2655eae27`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I'm using an async DSPy module that works when I await it directly, but I need to feed it through a synchronous optimizer pipeline. Before I refactor a bunch of code, I want proof of whether DSPy can adapt that kind of module cleanly for compilation.
+
+The important part is not just one conversion mode. I want to know whether both the in-place conversion and the wrapper-style conversion can make the optimizer complete and actually collect demos.
+
+Give me a complete, runnable Python program that uses `DummyLM` offline, converts the same async module into sync form both ways, compiles each version with a few-shot optimizer, and prints/asserts the resulting demo counts.`
+- Gold answer:
+```python
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+class AsyncProgram(dspy.Module):
+    def __init__(self):
+        self.predict = dspy.Predict("question -> answer")
+
+    async def aforward(self, question: str):
+        return await self.predict.acall(question=question)
+
+
+def metric(example, prediction, trace=None):
+    return True
+
+
+dspy.configure(lm=DummyLM([{"answer": "dummy"} for _ in range(100)]))
+dataset = [dspy.Example(question="question", answer="answer").with_inputs("question") for _ in range(10)]
+optimizer = dspy.BootstrapFewShot(metric=metric, max_bootstrapped_demos=2, max_labeled_demos=0)
+compiled_in_place = optimizer.compile(dspy.syncify(AsyncProgram(), in_place=True), trainset=dataset)
+compiled_wrapped = optimizer.compile(dspy.syncify(AsyncProgram(), in_place=False), trainset=dataset)
+print("in_place_demos:", len(compiled_in_place.predictors()[0].demos))
+print("wrapped_demos:", len(compiled_wrapped.predictors()[0].demos))
+assert len(compiled_in_place.predictors()[0].demos) == 2
+assert len(compiled_wrapped.predictors()[0].demos) == 2
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/utils/syncify.py",
+    "symbol": "syncify"
+  },
+  {
+    "file": "tests/utils/test_syncify.py",
+    "symbol": "test_syncify_works_with_optimizers"
+  },
+  {
+    "file": "tests/utils/test_syncify.py",
+    "symbol": "test_syncify_in_place"
+  },
+  {
+    "file": "tests/utils/test_syncify.py",
+    "symbol": "test_syncify_with_wrapper"
+  }
+]
+
+## Full evidence files
+### dspy/utils/syncify.py
+0001: import asyncio
+0002: from types import MethodType
+0003: from typing import TYPE_CHECKING
+0004: 
+0005: if TYPE_CHECKING:
+0006:     from dspy.primitives.module import Module
+0007: 
+0008: 
+0009: def run_async(coro):
+0010:     """Run an async coroutine from a synchronous context."""
+0011:     try:
+0012:         loop = asyncio.get_running_loop()
+0013:     except RuntimeError:
+0014:         loop = None
+0015: 
+0016:     if loop and loop.is_running():
+0017:         # If we're in a running event loop (e.g., Jupyter), use asyncio.create_task and run until done
+0018:         import nest_asyncio
+0019: 
+0020:         nest_asyncio.apply()
+0021:         return asyncio.get_event_loop().run_until_complete(coro)
+0022:     else:
+0023:         return asyncio.run(coro)
+0024: 
+0025: 
+0026: def syncify(program: "Module", in_place: bool = True) -> "Module":
+0027:     """Convert an async DSPy module to a sync program.
+0028: 
+0029:     There are two modes of this function:
+0030: 
+0031:     - `in_place=True` (recommended): Modify the module in place. But this may not work if you already have a `forward`
+0032:         method which does different things from `aforward`.
+0033:     - `in_place=False`: Return a wrapper module. This changes the module's architecture, but it's more robust.
+0034: 
+0035:     Args:
+0036:         program: The async program to convert, must have an `aforward` method implemented.
+0037:         in_place: If True, modify the module in place. Otherwise, return a wrapper module.
+0038: 
+0039:     Returns:
+0040:         The sync program, which has a `forward` method that can be called from a synchronous context.
+0041:     """
+0042:     if in_place:
+0043: 
+0044:         def forward(self, *args, **kwargs):
+0045:             return run_async(self.aforward(*args, **kwargs))
+0046: 
+0047:         # Create the `forward` method in place.
+0048:         program.forward = MethodType(forward, program)
+0049:         return program
+0050:     else:
+0051:         from dspy.primitives.module import Module
+0052: 
+0053:         class SyncWrapper(Module):
+0054:             def __init__(self, program: "Module"):
+0055:                 self.program = program
+0056: 
+0057:             def forward(self, *args, **kwargs):
+0058:                 return run_async(self.program.aforward(*args, **kwargs))
+0059: 
+0060:         return SyncWrapper(program)
+
+### tests/utils/test_syncify.py
+0001: import asyncio
+0002: 
+0003: import dspy
+0004: 
+0005: 
+0006: def test_syncify_in_place():
+0007:     class MyProgram(dspy.Module):
+0008:         async def aforward(self, x: int) -> int:
+0009:             await asyncio.sleep(0.01)
+0010:             return x + 1
+0011: 
+0012:     sync_program = dspy.syncify(MyProgram())
+0013:     assert sync_program(1) == 2
+0014:     assert sync_program(2) == 3
+0015: 
+0016: 
+0017: def test_syncify_with_wrapper():
+0018:     class MyProgram(dspy.Module):
+0019:         async def aforward(self, x: int) -> int:
+0020:             await asyncio.sleep(0.01)
+0021:             return x + 1
+0022: 
+0023:     sync_program = dspy.syncify(MyProgram(), in_place=False)
+0024:     assert sync_program(1) == 2
+0025:     assert sync_program(2) == 3
+0026: 
+0027: 
+0028: def test_syncify_works_with_optimizers():
+0029:     class MyProgram(dspy.Module):
+0030:         def __init__(self):
+0031:             self.predict = dspy.Predict("question->answer")
+0032: 
+0033:         async def aforward(self, question: str):
+0034:             return await self.predict.acall(question=question)
+0035: 
+0036:     async_program = MyProgram()
+0037: 
+0038:     def dummy_metric(gold, pred, traces=None):
+0039:         return True
+0040: 
+0041:     # We only test the optimizer completes without errors, so the LM response doesn't matter.
+0042:     lm = dspy.utils.DummyLM([{"answer": "dummy"} for _ in range(100)])
+0043:     dspy.configure(lm=lm)
+0044: 
+0045:     dataset = [dspy.Example(question="question", answer="answer").with_inputs("question") for _ in range(10)]
+0046: 
+0047:     optimizer = dspy.BootstrapFewShot(metric=dummy_metric, max_bootstrapped_demos=2, max_labeled_demos=0)
+0048: 
+0049:     # Test syncify in place
+0050:     sync_program = dspy.syncify(async_program, in_place=True)
+0051:     optimized_program = optimizer.compile(sync_program, trainset=dataset)
+0052:     assert len(optimized_program.predictors()[0].demos) == 2
+0053: 
+0054:     # Test syncify with wrapper
+0055:     sync_program = dspy.syncify(async_program, in_place=False)
+0056:     optimized_program = optimizer.compile(sync_program, trainset=dataset)
+0057:     assert len(optimized_program.predictors()[0].demos) == 2
+
+Return JSON that matches the schema exactly.

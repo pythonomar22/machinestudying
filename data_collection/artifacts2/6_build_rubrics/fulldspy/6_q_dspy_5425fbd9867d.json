@@ -1,0 +1,106 @@
+{
+ "id": "dspy_5425fbd9867d",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "My evolutionary optimizer metric can emit predictor-specific feedback with its own subscore, but I'm not sure DSPy actually uses that subscore. The behavior I need to pin down is whether DSPy keeps only the feedback text while silently replacing the predictor-level score with the overall module score, and whether it warns just once or on every example.\n\nGive me a complete, runnable Python program that stays offline, constructs a tiny reflective dataset with two mismatched examples, and prints/asserts the warning count plus the final scores stored on the feedback objects.",
+ "gold_answer": "```python\nimport io\nimport logging\nimport types\n\nimport dspy\nfrom dspy.teleprompt.gepa.gepa_utils import DspyAdapter\n\n\nclass TinyProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\nstudent = TinyProgram()\npredictor = student.predictor\nfeedback_objects = []\n\n\ndef feedback_fn(**kwargs):\n    obj = dspy.Prediction(\n        score=0.1,\n        feedback=f\"feedback-for-{kwargs['predictor_inputs']['question']}\",\n    )\n    feedback_objects.append(obj)\n    return obj\n\n\nadapter = DspyAdapter(\n    student_module=student,\n    metric_fn=lambda *args, **kwargs: 0.9,\n    feedback_map={\"predictor\": feedback_fn},\n    warn_on_score_mismatch=True,\n)\n\neval_batch = types.SimpleNamespace(\n    trajectories=[\n        {\n            \"example\": dspy.Example(question=\"Q1\", answer=\"A\").with_inputs(\"question\"),\n            \"prediction\": dspy.Prediction(answer=\"A\"),\n            \"trace\": [(predictor, {\"question\": \"Q1\"}, dspy.Prediction(answer=\"A\"))],\n            \"score\": 0.9,\n        },\n        {\n            \"example\": dspy.Example(question=\"Q2\", answer=\"A\").with_inputs(\"question\"),\n            \"prediction\": dspy.Prediction(answer=\"A\"),\n            \"trace\": [(predictor, {\"question\": \"Q2\"}, dspy.Prediction(answer=\"A\"))],\n            \"score\": 0.9,\n        },\n    ]\n)\n\nlogger = logging.getLogger(\"dspy.teleprompt.gepa.gepa_utils\")\nstream = io.StringIO()\nhandler = logging.StreamHandler(stream)\nlogger.addHandler(handler)\nlogger.setLevel(logging.WARNING)\ntry:\n    dataset = adapter.make_reflective_dataset(\n        candidate={\"predictor\": predictor.signature.instructions},\n        eval_batch=eval_batch,\n        components_to_update=[\"predictor\"],\n    )\nfinally:\n    logger.removeHandler(handler)\n\nwarning_text = stream.getvalue()\nprint(\"warning_count:\", warning_text.count(\"GEPA does not support predictor level scoring\"))\nprint(\"feedback_scores_after:\", [obj.score for obj in feedback_objects])\nprint(\"dataset_feedbacks:\", [row[\"Feedback\"] for row in dataset[\"predictor\"]])\nassert warning_text.count(\"GEPA does not support predictor level scoring\") == 1\nassert [obj.score for obj in feedback_objects] == [0.9, 0.9]\nassert dataset[\"predictor\"][0][\"Feedback\"] == \"feedback-for-Q1\"\nassert dataset[\"predictor\"][1][\"Feedback\"] == \"feedback-for-Q2\"\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The program models GEPA's predictor-feedback interface by using a predictor-specific callback or metric result that carries both `score` and `feedback`, matching the path where `GEPA.compile` calls the metric with `pred_name` and predictor trace and feeds that object into `DspyAdapter`.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "It constructs a synthetic reflective-dataset run with two trajectory entries for one predictor, each supplying `example`, `prediction`, module `score`, and a matching predictor trace so `make_reflective_dataset` requests predictor feedback twice.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "It verifies that when predictor feedback returns a different `score` than the module score, DSPy overwrites the feedback object's score with the module-level score; the final observed scores on the returned feedback objects are therefore the module scores for both examples, not the original predictor subscore.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "It captures the `dspy.teleprompt.gepa.gepa_utils` warning output and confirms the score-mismatch warning appears exactly once across the two mismatched examples, because the first warning disables further warnings by setting `warn_on_score_mismatch` to `False`.",
+   "span_ids": [
+    "s3",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "It confirms the reflective dataset still keeps the predictor-specific feedback text in each row's `Feedback` field for both examples even though the numeric score is normalized to the module score.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/gepa/gepa.py",
+   "start_line": 27,
+   "end_line": 54,
+   "excerpt": "0027: class GEPAFeedbackMetric(Protocol):\n0028:     def __call__(\n0029:         self,\n0030:         gold: Example,\n0031:         pred: Prediction,\n0032:         trace: Optional[\"DSPyTrace\"],\n0033:         pred_name: str | None,\n0034:         pred_trace: Optional[\"DSPyTrace\"],\n0035:     ) -> Union[float, \"ScoreWithFeedback\"]:\n0036:         \"\"\"\n0037:         This function is called with the following arguments:\n0038:         - gold: The gold example.\n0039:         - pred: The predicted output.\n0040:         - trace: Optional. The trace of the program's execution.\n0041:         - pred_name: Optional. The name of the target predictor currently being optimized by GEPA, for which\n0042:             the feedback is being requested.\n0043:         - pred_trace: Optional. The trace of the target predictor's execution GEPA is seeking feedback for.\n0044: \n0045:         Note the `pred_name` and `pred_trace` arguments. During optimization, GEPA will call the metric to obtain\n0046:         feedback for individual predictors being optimized. GEPA provides the name of the predictor in `pred_name`\n0047:         and the sub-trace (of the trace) corresponding to the predictor in `pred_trace`.\n0048:         If available at the predictor level, the metric should return dspy.Prediction(score: float, feedback: str)\n0049:         corresponding to the predictor.\n0050:         If not available at the predictor level, the metric can also return a text feedback at the program level\n0051:         (using just the gold, pred and trace).\n0052:         If no feedback is returned, GEPA will use a simple text feedback consisting of just the score:\n0053:         f\"This trajectory got a score of {score}.\"\n0054:         \"\"\""
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/gepa/gepa.py",
+   "start_line": 521,
+   "end_line": 560,
+   "excerpt": "0521:         def feedback_fn_creator(pred_name: str, predictor) -> \"PredictorFeedbackFn\":\n0522:             def feedback_fn(\n0523:                 predictor_output: dict[str, Any],\n0524:                 predictor_inputs: dict[str, Any],\n0525:                 module_inputs: Example,\n0526:                 module_outputs: Prediction,\n0527:                 captured_trace: \"DSPyTrace\",\n0528:             ) -> \"ScoreWithFeedback\":\n0529:                 trace_for_pred = [(predictor, predictor_inputs, predictor_output)]\n0530:                 o = self.metric_fn(\n0531:                     module_inputs,\n0532:                     module_outputs,\n0533:                     captured_trace,\n0534:                     pred_name,\n0535:                     trace_for_pred,\n0536:                 )\n0537:                 if hasattr(o, \"feedback\"):\n0538:                     if o[\"feedback\"] is None:\n0539:                         o[\"feedback\"] = f\"This trajectory got a score of {o['score']}.\"\n0540:                     return o\n0541:                 else:\n0542:                     return dict(score=o, feedback=f\"This trajectory got a score of {o}.\")\n0543: \n0544:             return feedback_fn\n0545: \n0546:         feedback_map = {k: feedback_fn_creator(k, v) for k, v in student.named_predictors()}\n0547: \n0548:         # Build the DSPy adapter that encapsulates evaluation, trace capture, feedback extraction, and instruction proposal\n0549:         adapter = DspyAdapter(\n0550:             student_module=student,\n0551:             metric_fn=self.metric_fn,\n0552:             feedback_map=feedback_map,\n0553:             failure_score=self.failure_score,\n0554:             num_threads=self.num_threads,\n0555:             add_format_failure_as_feedback=self.add_format_failure_as_feedback,\n0556:             rng=rng,\n0557:             reflection_lm=self.reflection_lm,\n0558:             custom_instruction_proposer=self.custom_instruction_proposer,\n0559:             warn_on_score_mismatch=self.warn_on_score_mismatch,\n0560:             reflection_minibatch_size=self.reflection_minibatch_size,"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/gepa/gepa_utils.py",
+   "start_line": 17,
+   "end_line": 17,
+   "excerpt": "0017: logger = logging.getLogger(__name__)"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/teleprompt/gepa/gepa_utils.py",
+   "start_line": 216,
+   "end_line": 243,
+   "excerpt": "0216:             for data in eval_batch.trajectories or []:\n0217:                 trace = data[\"trace\"]\n0218:                 example = data[\"example\"]\n0219:                 prediction = data[\"prediction\"]\n0220:                 module_score = data[\"score\"]\n0221:                 if hasattr(module_score, \"score\"):\n0222:                     module_score = module_score[\"score\"]\n0223: \n0224:                 trace_instances = [t for t in trace if t[0].signature.equals(module.signature)]\n0225:                 if not self.add_format_failure_as_feedback:\n0226:                     trace_instances = [t for t in trace_instances if not isinstance(t[2], FailedPrediction)]\n0227:                 if len(trace_instances) == 0:\n0228:                     continue\n0229: \n0230:                 selected = None\n0231:                 for t in trace_instances:\n0232:                     if isinstance(t[2], FailedPrediction):\n0233:                         selected = t\n0234:                         break\n0235: \n0236:                 if selected is None:\n0237:                     if isinstance(prediction, FailedPrediction):\n0238:                         continue\n0239:                     selected = self.rng.choice(trace_instances)\n0240: \n0241:                 inputs = selected[1]\n0242:                 outputs = selected[2]\n0243: "
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/teleprompt/gepa/gepa_utils.py",
+   "start_line": 291,
+   "end_line": 299,
+   "excerpt": "0291:                     feedback_fn = self.feedback_map[pred_name]\n0292:                     fb = feedback_fn(\n0293:                         predictor_output=outputs,\n0294:                         predictor_inputs=inputs,\n0295:                         module_inputs=example,\n0296:                         module_outputs=prediction,\n0297:                         captured_trace=trace,\n0298:                     )\n0299:                     d[\"Feedback\"] = fb[\"feedback\"]"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/teleprompt/gepa/gepa_utils.py",
+   "start_line": 300,
+   "end_line": 307,
+   "excerpt": "0300:                     if fb[\"score\"] != module_score:\n0301:                         if self.warn_on_score_mismatch:\n0302:                             logger.warning(\n0303:                                 \"The score returned by the metric with pred_name is different from the overall metric score. This can indicate 2 things: Either the metric is non-deterministic (e.g., LLM-as-judge, Semantic score, etc.) or the metric returned a score specific to pred_name that differs from the module level score. Currently, GEPA does not support predictor level scoring (support coming soon), and only requires a feedback text to be provided, which can be specific to the predictor or program level. GEPA will ignore the differing score returned, and instead use module level score. You can safely ignore this warning if using a semantic metric, however, if this mismatch is caused due to predictor scoring, please return module-level scores. To disable this warning, set warn_on_score_mismatch=False.\"\n0304:                             )\n0305:                             self.warn_on_score_mismatch = False\n0306:                         fb[\"score\"] = module_score\n0307: "
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "",
+ "source_index": 51,
+ "smalldspy_scope": false
+}

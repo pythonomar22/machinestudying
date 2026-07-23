@@ -1,0 +1,1123 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_6e2868066229`
+- Label: `module_composition_and_runtime_interoperability`
+- Question: `I have a custom DSPy module defined in a local Python file, and I want to save the whole program architecture, not just the state. The awkward part is that loading in a fresh process fails once that original Python module is gone from `sys.path`.
+
+I don't want package-layout advice. I want one tight repro that shows the exact difference between saving a program by reference versus embedding the custom module definition so the saved artifact can be loaded after the original import path disappears.
+
+Give me a complete, runnable Python program that writes a temporary custom module, saves the program both ways, simulates the module becoming unavailable, and proves the first load fails while the second succeeds.`
+- Model answer:
+```python
+import importlib
+import pathlib
+import sys
+import tempfile
+import textwrap
+import dspy
+
+with tempfile.TemporaryDirectory() as tmpdir:
+    root = pathlib.Path(tmpdir)
+    mod_path = root / 'custom_module.py'
+    save_dir = root / 'saved_program'
+    mod_path.write_text(textwrap.dedent('''
+        import dspy
+        class MyModule(dspy.Module):
+            def __init__(self):
+                self.cot = dspy.ChainOfThought(dspy.Signature('q -> a'))
+            def forward(self, q):
+                return self.cot(q=q)
+    '''))
+
+    sys.path.insert(0, str(root))
+    custom_module = importlib.import_module('custom_module')
+    program = custom_module.MyModule()
+    program.save(save_dir, save_program=True)
+    sys.modules.pop('custom_module', None)
+    sys.path.remove(str(root))
+
+    try:
+        dspy.load(save_dir, allow_pickle=True)
+        raise AssertionError('expected missing-module failure')
+    except ModuleNotFoundError as e:
+        print('first:', e)
+
+    sys.path.insert(0, str(root))
+    custom_module = importlib.import_module('custom_module')
+    program.save(save_dir, save_program=True, modules_to_serialize=[custom_module])
+    sys.modules.pop('custom_module', None)
+    sys.path.remove(str(root))
+
+    loaded = dspy.load(save_dir, allow_pickle=True)
+    assert loaded.cot.predict.signature == program.cot.predict.signature
+    print(type(loaded).__name__)
+    print(loaded.cot.predict.signature)
+```
+
+## Gold answer
+```python
+import importlib
+import pathlib
+import sys
+import tempfile
+import textwrap
+import dspy
+
+with tempfile.TemporaryDirectory() as tmpdir:
+    root = pathlib.Path(tmpdir)
+    mod_path = root / 'custom_module.py'
+    save_dir = root / 'saved_program'
+    mod_path.write_text(textwrap.dedent('''
+        import dspy
+        class MyModule(dspy.Module):
+            def __init__(self):
+                self.cot = dspy.ChainOfThought(dspy.Signature('q -> a'))
+            def forward(self, q):
+                return self.cot(q=q)
+    '''))
+
+    sys.path.insert(0, str(root))
+    custom_module = importlib.import_module('custom_module')
+    program = custom_module.MyModule()
+    program.save(save_dir, save_program=True)
+    sys.modules.pop('custom_module', None)
+    sys.path.remove(str(root))
+
+    try:
+        dspy.load(save_dir, allow_pickle=True)
+        raise AssertionError('expected missing-module failure')
+    except ModuleNotFoundError as e:
+        print('first:', e)
+
+    sys.path.insert(0, str(root))
+    custom_module = importlib.import_module('custom_module')
+    program.save(save_dir, save_program=True, modules_to_serialize=[custom_module])
+    sys.modules.pop('custom_module', None)
+    sys.path.remove(str(root))
+
+    loaded = dspy.load(save_dir, allow_pickle=True)
+    assert loaded.cot.predict.signature == program.cot.predict.signature
+    print(type(loaded).__name__)
+    print(loaded.cot.predict.signature)
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "supporting",
+    "weight": 15,
+    "statement": "The script creates a temporary `custom_module.py` that defines a custom `dspy.Module` with a `ChainOfThought(dspy.Signature(\"q -> a\"))`, then makes that file importable by adding the temp directory to `sys.path` and instantiating the module from it.",
+    "span_ids": [
+      "s4"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The first save uses `program.save(save_dir, save_program=True)` with a directory path and without `modules_to_serialize`, so it saves the whole program but does not register the custom module for by-value serialization.",
+    "span_ids": [
+      "s1",
+      "s2",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "To reproduce the by-reference failure, the code removes `custom_module` from `sys.modules` and removes the temp directory from `sys.path`, then calls `dspy.load(save_dir, allow_pickle=True)` and shows that loading raises `ModuleNotFoundError`.",
+    "span_ids": [
+      "s3",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "The second save restores the import path, re-imports `custom_module`, and calls `program.save(save_dir, save_program=True, modules_to_serialize=[custom_module])`, relying on `register_pickle_by_value` so the custom module definition is embedded in the saved artifact.",
+    "span_ids": [
+      "s1",
+      "s2",
+      "s6"
+    ]
+  },
+  {
+    "claim_id": "c5",
+    "claim_type": "core",
+    "weight": 15,
+    "statement": "After removing `custom_module` from `sys.modules` and `sys.path` again, the code loads the saved directory with `dspy.load(save_dir, allow_pickle=True)` successfully and verifies equivalence by asserting `loaded.cot.predict.signature == program.cot.predict.signature`.",
+    "span_ids": [
+      "s3",
+      "s6"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/primitives/base_module.py",
+    "start_line": 168,
+    "end_line": 181,
+    "excerpt": "0168:     def save(self, path, save_program=False, modules_to_serialize=None):\n0169:         \"\"\"Save the module.\n0170: \n0171:         Save the module to a directory or a file. There are two modes:\n0172:         - `save_program=False`: Save only the state of the module to a json or pickle file, based on the value of\n0173:             the file extension.\n0174:         - `save_program=True`: Save the whole module to a directory via cloudpickle, which contains both the state and\n0175:             architecture of the model.\n0176: \n0177:         If `save_program=True` and `modules_to_serialize` are provided, it will register those modules for serialization\n0178:         with cloudpickle's `register_pickle_by_value`. This causes cloudpickle to serialize the module by value rather\n0179:         than by reference, ensuring the module is fully preserved along with the saved program. This is useful\n0180:         when you have custom modules that need to be serialized alongside your program. If None, then no modules\n0181:         will be registered for serialization."
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/primitives/base_module.py",
+    "start_line": 199,
+    "end_line": 218,
+    "excerpt": "0199:         if save_program:\n0200:             if path.suffix:\n0201:                 raise ValueError(\n0202:                     f\"`path` must point to a directory without a suffix when `save_program=True`, but received: {path}\"\n0203:                 )\n0204:             if path.exists() and not path.is_dir():\n0205:                 raise NotADirectoryError(f\"The path '{path}' exists but is not a directory.\")\n0206: \n0207:             if not path.exists():\n0208:                 # Create the directory (and any parent directories)\n0209:                 path.mkdir(parents=True)\n0210:             logger.warning(\"Loading untrusted .pkl files can run arbitrary code, which may be dangerous. To avoid \"\n0211:                           'this, prefer saving using json format using module.save(\"module.json\").')\n0212:             try:\n0213:                 modules_to_serialize = modules_to_serialize or []\n0214:                 for module in modules_to_serialize:\n0215:                     cloudpickle.register_pickle_by_value(module)\n0216: \n0217:                 with open(path / \"program.pkl\", \"wb\") as f:\n0218:                     cloudpickle.dump(self, f)"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/utils/saving.py",
+    "start_line": 27,
+    "end_line": 60,
+    "excerpt": "0027: def load(path: str, allow_pickle: bool = False) -> \"Module\":\n0028:     \"\"\"Load saved DSPy model.\n0029: \n0030:     This method is used to load a saved DSPy model with `save_program=True`, i.e., the model is saved with cloudpickle.\n0031: \n0032:     Args:\n0033:         path (str): Path to the saved model.\n0034:         allow_pickle (bool): Whether to allow loading the model with pickle. This is dangerous and should only be used if you are sure you trust the source of the model.\n0035: \n0036:     Returns:\n0037:         The loaded model, a `dspy.Module` instance.\n0038:     \"\"\"\n0039:     if not allow_pickle:\n0040:         raise ValueError(\"Loading with pickle is not allowed. Please set `allow_pickle=True` if you are sure you trust the source of the model.\")\n0041: \n0042:     path = Path(path)\n0043:     if not path.exists():\n0044:         raise FileNotFoundError(f\"The path '{path}' does not exist.\")\n0045: \n0046:     with open(path / \"metadata.json\") as f:\n0047:         metadata = orjson.loads(f.read())\n0048: \n0049:     dependency_versions = get_dependency_versions()\n0050:     saved_dependency_versions = metadata[\"dependency_versions\"]\n0051:     for key, saved_version in saved_dependency_versions.items():\n0052:         if dependency_versions[key] != saved_version:\n0053:             logger.warning(\n0054:                 f\"There is a mismatch of {key} version between saved model and current environment. You saved with \"\n0055:                 f\"`{key}=={saved_version}`, but now you have `{key}=={dependency_versions[key]}`. This might cause \"\n0056:                 \"errors or performance downgrade on the loaded model, please consider loading the model in the same \"\n0057:                 \"environment as the saving environment.\"\n0058:             )\n0059: \n0060:     with open(path / \"program.pkl\", \"rb\") as f:"
+  },
+  {
+    "span_id": "s4",
+    "path": "tests/primitives/test_base_module.py",
+    "start_line": 135,
+    "end_line": 155,
+    "excerpt": "0135:     # Create a temporary Python file with our custom module\n0136:     custom_module_path = tmp_path / \"custom_module.py\"\n0137:     with open(custom_module_path, \"w\") as f:\n0138:         f.write(\"\"\"\n0139: import dspy\n0140: \n0141: class MyModule(dspy.Module):\n0142:     def __init__(self):\n0143:         self.cot = dspy.ChainOfThought(dspy.Signature(\"q -> a\"))\n0144: \n0145:     def forward(self, q):\n0146:         return self.cot(q=q)\n0147: \"\"\")\n0148: \n0149:     # Add the tmp_path to Python path so we can import the module\n0150:     sys.path.insert(0, str(tmp_path))\n0151:     try:\n0152:         import custom_module\n0153: \n0154:         cot = custom_module.MyModule()\n0155: "
+  },
+  {
+    "span_id": "s5",
+    "path": "tests/primitives/test_base_module.py",
+    "start_line": 156,
+    "end_line": 165,
+    "excerpt": "0156:         cot.save(tmp_path, save_program=True)\n0157:         # Remove the custom module from sys.modules to simulate it not being available\n0158:         sys.modules.pop(\"custom_module\", None)\n0159:         # Also remove it from sys.path\n0160:         sys.path.remove(str(tmp_path))\n0161:         del custom_module\n0162: \n0163:         # Test the loading fails without using `modules_to_serialize`\n0164:         with pytest.raises(ModuleNotFoundError):\n0165:             dspy.load(tmp_path, allow_pickle=True)"
+  },
+  {
+    "span_id": "s6",
+    "path": "tests/primitives/test_base_module.py",
+    "start_line": 167,
+    "end_line": 183,
+    "excerpt": "0167:         sys.path.insert(0, str(tmp_path))\n0168:         import custom_module\n0169: \n0170:         cot.save(\n0171:             tmp_path,\n0172:             modules_to_serialize=[custom_module],\n0173:             save_program=True,\n0174:         )\n0175: \n0176:         # Remove the custom module from sys.modules to simulate it not being available\n0177:         sys.modules.pop(\"custom_module\", None)\n0178:         # Also remove it from sys.path\n0179:         sys.path.remove(str(tmp_path))\n0180:         del custom_module\n0181: \n0182:         loaded_module = dspy.load(tmp_path, allow_pickle=True)\n0183:         assert loaded_module.cot.predict.signature == cot.cot.predict.signature"
+  }
+]
+
+## Whole evidence files
+### dspy/primitives/base_module.py
+0001: import copy
+0002: import logging
+0003: from collections import deque
+0004: from collections.abc import Generator
+0005: from pathlib import Path
+0006: 
+0007: import cloudpickle
+0008: import orjson
+0009: 
+0010: from dspy.utils.saving import get_dependency_versions
+0011: 
+0012: # NOTE: Note: It's important (temporary decision) to maintain named_parameters that's different in behavior from
+0013: # named_sub_modules for the time being.
+0014: 
+0015: 
+0016: logger = logging.getLogger(__name__)
+0017: 
+0018: 
+0019: class BaseModule:
+0020:     def __init__(self):
+0021:         pass
+0022: 
+0023:     def named_parameters(self):
+0024:         """
+0025:         Unlike PyTorch, handles (non-recursive) lists of parameters too.
+0026:         """
+0027: 
+0028:         import dspy
+0029:         from dspy.predict.parameter import Parameter
+0030: 
+0031:         visited = set()
+0032:         named_parameters = []
+0033: 
+0034:         def add_parameter(param_name, param_value):
+0035:             if isinstance(param_value, Parameter):
+0036:                 if id(param_value) not in visited:
+0037:                     visited.add(id(param_value))
+0038:                     named_parameters.append((param_name, param_value))
+0039: 
+0040:             elif isinstance(param_value, dspy.Module):
+0041:                 # When a sub-module is pre-compiled, keep it frozen.
+0042:                 if not getattr(param_value, "_compiled", False):
+0043:                     for sub_name, param in param_value.named_parameters():
+0044:                         add_parameter(f"{param_name}.{sub_name}", param)
+0045: 
+0046:         if isinstance(self, Parameter):
+0047:             add_parameter("self", self)
+0048: 
+0049:         for name, value in self.__dict__.items():
+0050:             if isinstance(value, Parameter):
+0051:                 add_parameter(name, value)
+0052: 
+0053:             elif isinstance(value, dspy.Module):
+0054:                 # When a sub-module is pre-compiled, keep it frozen.
+0055:                 if not getattr(value, "_compiled", False):
+0056:                     for sub_name, param in value.named_parameters():
+0057:                         add_parameter(f"{name}.{sub_name}", param)
+0058: 
+0059:             elif isinstance(value, (list, tuple)):
+0060:                 for idx, item in enumerate(value):
+0061:                     add_parameter(f"{name}[{idx}]", item)
+0062: 
+0063:             elif isinstance(value, dict):
+0064:                 for key, item in value.items():
+0065:                     add_parameter(f"{name}['{key}']", item)
+0066: 
+0067:         return named_parameters
+0068: 
+0069:     def named_sub_modules(self, type_=None, skip_compiled=False) -> Generator[tuple[str, "BaseModule"], None, None]:
+0070:         """Find all sub-modules in the module, as well as their names.
+0071: 
+0072:         Say `self.children[4]['key'].sub_module` is a sub-module. Then the name will be
+0073:         `children[4]['key'].sub_module`. But if the sub-module is accessible at different
+0074:         paths, only one of the paths will be returned.
+0075:         """
+0076:         if type_ is None:
+0077:             type_ = BaseModule
+0078: 
+0079:         queue = deque([("self", self)])
+0080:         seen = {id(self)}
+0081: 
+0082:         def add_to_queue(name, item):
+0083:             if id(item) not in seen:
+0084:                 seen.add(id(item))
+0085:                 queue.append((name, item))
+0086: 
+0087:         while queue:
+0088:             name, item = queue.popleft()
+0089: 
+0090:             if isinstance(item, type_):
+0091:                 yield name, item
+0092: 
+0093:             if isinstance(item, BaseModule):
+0094:                 if skip_compiled and getattr(item, "_compiled", False):
+0095:                     continue
+0096:                 for sub_name, sub_item in item.__dict__.items():
+0097:                     add_to_queue(f"{name}.{sub_name}", sub_item)
+0098: 
+0099:             elif isinstance(item, (list, tuple)):
+0100:                 for i, sub_item in enumerate(item):
+0101:                     add_to_queue(f"{name}[{i}]", sub_item)
+0102: 
+0103:             elif isinstance(item, dict):
+0104:                 for key, sub_item in item.items():
+0105:                     add_to_queue(f"{name}[{key}]", sub_item)
+0106: 
+0107:     def parameters(self):
+0108:         return [param for _, param in self.named_parameters()]
+0109: 
+0110:     def deepcopy(self):
+0111:         """Deep copy the module.
+0112: 
+0113:         This is a tweak to the default python deepcopy that only deep copies `self.parameters()`, and for other
+0114:         attributes, we just do the shallow copy.
+0115:         """
+0116:         try:
+0117:             # If the instance itself is copyable, we can just deep copy it.
+0118:             # Otherwise we will have to create a new instance and copy over the attributes one by one.
+0119:             return copy.deepcopy(self)
+0120:         except Exception:
+0121:             pass
+0122: 
+0123:         # Create an empty instance.
+0124:         new_instance = self.__class__.__new__(self.__class__)
+0125:         # Set attribuetes of the copied instance.
+0126:         for attr, value in self.__dict__.items():
+0127:             if isinstance(value, BaseModule):
+0128:                 setattr(new_instance, attr, value.deepcopy())
+0129:             else:
+0130:                 try:
+0131:                     # Try to deep copy the attribute
+0132:                     setattr(new_instance, attr, copy.deepcopy(value))
+0133:                 except Exception:
+0134:                     logging.warning(
+0135:                         f"Failed to deep copy attribute '{attr}' of {self.__class__.__name__}, "
+0136:                         "falling back to shallow copy or reference copy."
+0137:                     )
+0138:                     try:
+0139:                         # Fallback to shallow copy if deep copy fails
+0140:                         setattr(new_instance, attr, copy.copy(value))
+0141:                     except Exception:
+0142:                         # If even the shallow copy fails, we just copy over the reference.
+0143:                         setattr(new_instance, attr, value)
+0144: 
+0145:         return new_instance
+0146: 
+0147:     def reset_copy(self):
+0148:         """Deep copy the module and reset all parameters."""
+0149:         new_instance = self.deepcopy()
+0150: 
+0151:         for param in new_instance.parameters():
+0152:             param.reset()
+0153: 
+0154:         return new_instance
+0155: 
+0156:     def dump_state(self, json_mode=True):
+0157:         return {name: param.dump_state(json_mode=json_mode) for name, param in self.named_parameters()}
+0158: 
+0159:     def load_state(self, state, *, allow_unsafe_lm_state=False):
+0160:         from dspy.predict.predict import Predict
+0161: 
+0162:         for name, param in self.named_parameters():
+0163:             if isinstance(param, Predict):
+0164:                 param.load_state(state[name], allow_unsafe_lm_state=allow_unsafe_lm_state)
+0165:             else:
+0166:                 param.load_state(state[name])
+0167: 
+0168:     def save(self, path, save_program=False, modules_to_serialize=None):
+0169:         """Save the module.
+0170: 
+0171:         Save the module to a directory or a file. There are two modes:
+0172:         - `save_program=False`: Save only the state of the module to a json or pickle file, based on the value of
+0173:             the file extension.
+0174:         - `save_program=True`: Save the whole module to a directory via cloudpickle, which contains both the state and
+0175:             architecture of the model.
+0176: 
+0177:         If `save_program=True` and `modules_to_serialize` are provided, it will register those modules for serialization
+0178:         with cloudpickle's `register_pickle_by_value`. This causes cloudpickle to serialize the module by value rather
+0179:         than by reference, ensuring the module is fully preserved along with the saved program. This is useful
+0180:         when you have custom modules that need to be serialized alongside your program. If None, then no modules
+0181:         will be registered for serialization.
+0182: 
+0183:         We also save the dependency versions, so that the loaded model can check if there is a version mismatch on
+0184:         critical dependencies or DSPy version.
+0185: 
+0186:         Args:
+0187:             path (str): Path to the saved state file, which should be a .json or .pkl file when `save_program=False`,
+0188:                 and a directory when `save_program=True`.
+0189:             save_program (bool): If True, save the whole module to a directory via cloudpickle, otherwise only save
+0190:                 the state.
+0191:             modules_to_serialize (list): A list of modules to serialize with cloudpickle's `register_pickle_by_value`.
+0192:                 If None, then no modules will be registered for serialization.
+0193: 
+0194:         """
+0195:         metadata = {}
+0196:         metadata["dependency_versions"] = get_dependency_versions()
+0197:         path = Path(path)
+0198: 
+0199:         if save_program:
+0200:             if path.suffix:
+0201:                 raise ValueError(
+0202:                     f"`path` must point to a directory without a suffix when `save_program=True`, but received: {path}"
+0203:                 )
+0204:             if path.exists() and not path.is_dir():
+0205:                 raise NotADirectoryError(f"The path '{path}' exists but is not a directory.")
+0206: 
+0207:             if not path.exists():
+0208:                 # Create the directory (and any parent directories)
+0209:                 path.mkdir(parents=True)
+0210:             logger.warning("Loading untrusted .pkl files can run arbitrary code, which may be dangerous. To avoid "
+0211:                           'this, prefer saving using json format using module.save("module.json").')
+0212:             try:
+0213:                 modules_to_serialize = modules_to_serialize or []
+0214:                 for module in modules_to_serialize:
+0215:                     cloudpickle.register_pickle_by_value(module)
+0216: 
+0217:                 with open(path / "program.pkl", "wb") as f:
+0218:                     cloudpickle.dump(self, f)
+0219:             except Exception as e:
+0220:                 raise RuntimeError(
+0221:                     f"Saving failed with error: {e}. Please remove the non-picklable attributes from your DSPy program, "
+0222:                     "or consider using state-only saving by setting `save_program=False`."
+0223:                 )
+0224:             with open(path / "metadata.json", "wb") as f:
+0225:                 f.write(orjson.dumps(metadata, option=orjson.OPT_INDENT_2 | orjson.OPT_APPEND_NEWLINE))
+0226: 
+0227:             return
+0228: 
+0229:         if path.suffix == ".json":
+0230:             state = self.dump_state()
+0231:             state["metadata"] = metadata
+0232:             try:
+0233:                 with open(path, "wb") as f:
+0234:                     f.write(orjson.dumps(state, option=orjson.OPT_INDENT_2 | orjson.OPT_APPEND_NEWLINE))
+0235:             except Exception as e:
+0236:                 raise RuntimeError(
+0237:                     f"Failed to save state to {path} with error: {e}. Your DSPy program may contain non "
+0238:                     "json-serializable objects, please consider saving the state in .pkl by using `path` ending "
+0239:                     "with `.pkl`, or saving the whole program by setting `save_program=True`."
+0240:                 )
+0241:         elif path.suffix == ".pkl":
+0242:             logger.warning("Loading untrusted .pkl files can run arbitrary code, which may be dangerous. To avoid "
+0243:                           'this, prefer saving using json format using module.save("module.json").')
+0244:             state = self.dump_state(json_mode=False)
+0245:             state["metadata"] = metadata
+0246:             with open(path, "wb") as f:
+0247:                 cloudpickle.dump(state, f)
+0248:         else:
+0249:             raise ValueError(f"`path` must end with `.json` or `.pkl` when `save_program=False`, but received: {path}")
+0250: 
+0251:     def load(self, path, allow_pickle=False, allow_unsafe_lm_state=False):
+0252:         """Load the saved module. You may also want to check out dspy.load, if you want to
+0253:         load an entire program, not just the state for an existing program.
+0254: 
+0255:         Args:
+0256:             path (str): Path to the saved state file, which should be a .json or a .pkl file
+0257:             allow_pickle (bool): If True, allow loading .pkl files, which can run arbitrary code.
+0258:                 This is dangerous and should only be used if you are sure about the source of the file and in a trusted environment.
+0259:             allow_unsafe_lm_state (bool): If True, preserves unsafe LM endpoint keys (e.g.,
+0260:                 `api_base`, `base_url`, and `model_list`) from loaded state. Enable only for trusted files.
+0261:         """
+0262:         path = Path(path)
+0263: 
+0264:         if path.suffix == ".json":
+0265:             with open(path, "rb") as f:
+0266:                 state = orjson.loads(f.read())
+0267:         elif path.suffix == ".pkl":
+0268:             if not allow_pickle:
+0269:                 raise ValueError("Loading .pkl files can run arbitrary code, which may be dangerous. Prefer "
+0270:                                  "saving with .json files if possible. Set `allow_pickle=True` "
+0271:                                  "if you are sure about the source of the file and in a trusted environment.")
+0272:             with open(path, "rb") as f:
+0273:                 state = cloudpickle.load(f)
+0274:         else:
+0275:             raise ValueError(f"`path` must end with `.json` or `.pkl`, but received: {path}")
+0276: 
+0277:         dependency_versions = get_dependency_versions()
+0278:         saved_dependency_versions = state["metadata"]["dependency_versions"]
+0279:         for key, saved_version in saved_dependency_versions.items():
+0280:             if dependency_versions[key] != saved_version:
+0281:                 logger.warning(
+0282:                     f"There is a mismatch of {key} version between saved model and current environment. "
+0283:                     f"You saved with `{key}=={saved_version}`, but now you have "
+0284:                     f"`{key}=={dependency_versions[key]}`. This might cause errors or performance downgrade "
+0285:                     "on the loaded model, please consider loading the model in the same environment as the "
+0286:                     "saving environment."
+0287:                 )
+0288:         self.load_state(state, allow_unsafe_lm_state=allow_unsafe_lm_state)
+
+### dspy/utils/saving.py
+0001: import logging
+0002: import sys
+0003: from pathlib import Path
+0004: from typing import TYPE_CHECKING
+0005: 
+0006: import cloudpickle
+0007: import orjson
+0008: 
+0009: if TYPE_CHECKING:
+0010:     from dspy.primitives.module import Module
+0011: 
+0012: logger = logging.getLogger(__name__)
+0013: 
+0014: 
+0015: def get_dependency_versions():
+0016:     import dspy
+0017: 
+0018:     cloudpickle_version = ".".join(cloudpickle.__version__.split(".")[:2])
+0019: 
+0020:     return {
+0021:         "python": f"{sys.version_info.major}.{sys.version_info.minor}",
+0022:         "dspy": dspy.__version__,
+0023:         "cloudpickle": cloudpickle_version,
+0024:     }
+0025: 
+0026: 
+0027: def load(path: str, allow_pickle: bool = False) -> "Module":
+0028:     """Load saved DSPy model.
+0029: 
+0030:     This method is used to load a saved DSPy model with `save_program=True`, i.e., the model is saved with cloudpickle.
+0031: 
+0032:     Args:
+0033:         path (str): Path to the saved model.
+0034:         allow_pickle (bool): Whether to allow loading the model with pickle. This is dangerous and should only be used if you are sure you trust the source of the model.
+0035: 
+0036:     Returns:
+0037:         The loaded model, a `dspy.Module` instance.
+0038:     """
+0039:     if not allow_pickle:
+0040:         raise ValueError("Loading with pickle is not allowed. Please set `allow_pickle=True` if you are sure you trust the source of the model.")
+0041: 
+0042:     path = Path(path)
+0043:     if not path.exists():
+0044:         raise FileNotFoundError(f"The path '{path}' does not exist.")
+0045: 
+0046:     with open(path / "metadata.json") as f:
+0047:         metadata = orjson.loads(f.read())
+0048: 
+0049:     dependency_versions = get_dependency_versions()
+0050:     saved_dependency_versions = metadata["dependency_versions"]
+0051:     for key, saved_version in saved_dependency_versions.items():
+0052:         if dependency_versions[key] != saved_version:
+0053:             logger.warning(
+0054:                 f"There is a mismatch of {key} version between saved model and current environment. You saved with "
+0055:                 f"`{key}=={saved_version}`, but now you have `{key}=={dependency_versions[key]}`. This might cause "
+0056:                 "errors or performance downgrade on the loaded model, please consider loading the model in the same "
+0057:                 "environment as the saving environment."
+0058:             )
+0059: 
+0060:     with open(path / "program.pkl", "rb") as f:
+0061:         return cloudpickle.load(f)
+
+### tests/primitives/test_base_module.py
+0001: import asyncio
+0002: import logging
+0003: import os
+0004: import threading
+0005: from unittest.mock import patch
+0006: 
+0007: import pytest
+0008: from litellm import Choices, Message, ModelResponse
+0009: from litellm.types.utils import Usage
+0010: 
+0011: import dspy
+0012: from dspy.primitives.prediction import Prediction
+0013: from dspy.utils.dummies import DummyLM
+0014: 
+0015: 
+0016: def test_deepcopy_basic():
+0017:     signature = dspy.Signature("q -> a")
+0018:     cot = dspy.ChainOfThought(signature)
+0019:     cot_copy = cot.deepcopy()
+0020:     assert len(cot.parameters()) == len(cot_copy.parameters())
+0021:     # Parameters should be different objects with the same values.
+0022:     assert id(cot.parameters()[0]) != id(cot_copy.parameters()[0])
+0023:     assert cot.parameters()[0].__dict__ == cot_copy.parameters()[0].__dict__
+0024: 
+0025: 
+0026: def test_deepcopy_with_uncopyable_modules():
+0027:     class CustomClass(dspy.Module):
+0028:         def __init__(self):
+0029:             self.lock = threading.Lock()  # Non-copyable object.
+0030:             self.cot = dspy.ChainOfThought(dspy.Signature("q -> a"))
+0031: 
+0032:     model = CustomClass()
+0033:     model_copy = model.deepcopy()
+0034:     assert len(model.parameters()) == len(model_copy.parameters())
+0035:     # The lock should be refer to the same object (shallow copy).
+0036:     assert id(model.lock) == id(model_copy.lock)
+0037:     # Parameters should be different objects with the same values.
+0038:     assert id(model.parameters()[0]) != id(model_copy.parameters()[0])
+0039:     assert model.parameters()[0].__dict__ == model_copy.parameters()[0].__dict__
+0040: 
+0041: 
+0042: def test_deepcopy_with_nested_modules():
+0043:     class CustomClass1(dspy.Module):
+0044:         def __init__(self):
+0045:             self.lock = threading.Lock()  # Non-copyable object.
+0046:             self.cot = dspy.ChainOfThought(dspy.Signature("q -> a"))
+0047: 
+0048:     class CustomClass2(dspy.Module):
+0049:         def __init__(self):
+0050:             self.submodel = CustomClass1()
+0051: 
+0052:     model = CustomClass2()
+0053:     model_copy = model.deepcopy()
+0054:     assert len(model.parameters()) == len(model_copy.parameters())
+0055:     # The lock should be refer to the same object (shallow copy).
+0056:     assert id(model.submodel.lock) == id(model_copy.submodel.lock)
+0057:     # Parameters should be different objects with the same values.
+0058:     assert id(model.parameters()[0]) != id(model_copy.parameters()[0])
+0059:     assert model.parameters()[0].__dict__ == model_copy.parameters()[0].__dict__
+0060: 
+0061: 
+0062: def test_save_and_load_with_json(tmp_path):
+0063:     model = dspy.ChainOfThought(dspy.Signature("q -> a"))
+0064:     model.predict.signature = model.predict.signature.with_instructions("You are a helpful assistant.")
+0065:     model.predict.demos = [
+0066:         dspy.Example(q="What is the capital of France?", a="Paris", reasoning="n/a").with_inputs("q"),
+0067:         # Nested example
+0068:         dspy.Example(
+0069:             q=[
+0070:                 dspy.Example(q="What is the capital of France?"),
+0071:                 dspy.Example(q="What is actually the capital of France?"),
+0072:             ],
+0073:             a="Paris",
+0074:             reasoning="n/a",
+0075:         ).with_inputs("q"),
+0076:     ]
+0077:     save_path = tmp_path / "model.json"
+0078:     model.save(save_path)
+0079:     new_model = dspy.ChainOfThought(dspy.Signature("q -> a"))
+0080:     new_model.load(save_path)
+0081: 
+0082:     assert str(new_model.predict.signature) == str(model.predict.signature)
+0083:     assert new_model.predict.demos[0] == model.predict.demos[0].toDict()
+0084:     assert new_model.predict.demos[1] == model.predict.demos[1].toDict()
+0085: 
+0086: 
+0087: @pytest.mark.extra
+0088: def test_save_and_load_with_pkl(tmp_path):
+0089:     import datetime
+0090: 
+0091:     # `datetime.date` is not json serializable, so we need to save with pickle.
+0092:     class MySignature(dspy.Signature):
+0093:         """Just a custom signature."""
+0094: 
+0095:         current_date: datetime.date = dspy.InputField()
+0096:         target_date: datetime.date = dspy.InputField()
+0097:         date_diff: int = dspy.OutputField(desc="The difference in days between the current_date and the target_date")
+0098: 
+0099:     trainset = [
+0100:         {"current_date": datetime.date(2024, 1, 1), "target_date": datetime.date(2024, 1, 2), "date_diff": 1},
+0101:         {"current_date": datetime.date(2024, 1, 1), "target_date": datetime.date(2024, 1, 3), "date_diff": 2},
+0102:         {"current_date": datetime.date(2024, 1, 1), "target_date": datetime.date(2024, 1, 4), "date_diff": 3},
+0103:         {"current_date": datetime.date(2024, 1, 1), "target_date": datetime.date(2024, 1, 5), "date_diff": 4},
+0104:         {"current_date": datetime.date(2024, 1, 1), "target_date": datetime.date(2024, 1, 6), "date_diff": 5},
+0105:     ]
+0106:     trainset = [dspy.Example(**example).with_inputs("current_date", "target_date") for example in trainset]
+0107: 
+0108:     dspy.configure(
+0109:         lm=DummyLM([{"date_diff": "1", "reasoning": "n/a"}, {"date_diff": "2", "reasoning": "n/a"}] * 10)
+0110:     )
+0111: 
+0112:     cot = dspy.ChainOfThought(MySignature)
+0113:     cot(current_date=datetime.date(2024, 1, 1), target_date=datetime.date(2024, 1, 2))
+0114: 
+0115:     def dummy_metric(example, pred, trace=None):
+0116:         return True
+0117: 
+0118:     optimizer = dspy.BootstrapFewShot(max_bootstrapped_demos=4, max_labeled_demos=4, max_rounds=5, metric=dummy_metric)
+0119:     compiled_cot = optimizer.compile(cot, trainset=trainset)
+0120:     compiled_cot.predict.signature = compiled_cot.predict.signature.with_instructions("You are a helpful assistant.")
+0121: 
+0122:     save_path = tmp_path / "program.pkl"
+0123:     compiled_cot.save(save_path)
+0124: 
+0125:     new_cot = dspy.ChainOfThought(MySignature)
+0126:     new_cot.load(save_path, allow_pickle=True)
+0127: 
+0128:     assert str(new_cot.predict.signature) == str(compiled_cot.predict.signature)
+0129:     assert new_cot.predict.demos == compiled_cot.predict.demos
+0130: 
+0131: 
+0132: def test_save_with_extra_modules(tmp_path):
+0133:     import sys
+0134: 
+0135:     # Create a temporary Python file with our custom module
+0136:     custom_module_path = tmp_path / "custom_module.py"
+0137:     with open(custom_module_path, "w") as f:
+0138:         f.write("""
+0139: import dspy
+0140: 
+0141: class MyModule(dspy.Module):
+0142:     def __init__(self):
+0143:         self.cot = dspy.ChainOfThought(dspy.Signature("q -> a"))
+0144: 
+0145:     def forward(self, q):
+0146:         return self.cot(q=q)
+0147: """)
+0148: 
+0149:     # Add the tmp_path to Python path so we can import the module
+0150:     sys.path.insert(0, str(tmp_path))
+0151:     try:
+0152:         import custom_module
+0153: 
+0154:         cot = custom_module.MyModule()
+0155: 
+0156:         cot.save(tmp_path, save_program=True)
+0157:         # Remove the custom module from sys.modules to simulate it not being available
+0158:         sys.modules.pop("custom_module", None)
+0159:         # Also remove it from sys.path
+0160:         sys.path.remove(str(tmp_path))
+0161:         del custom_module
+0162: 
+0163:         # Test the loading fails without using `modules_to_serialize`
+0164:         with pytest.raises(ModuleNotFoundError):
+0165:             dspy.load(tmp_path, allow_pickle=True)
+0166: 
+0167:         sys.path.insert(0, str(tmp_path))
+0168:         import custom_module
+0169: 
+0170:         cot.save(
+0171:             tmp_path,
+0172:             modules_to_serialize=[custom_module],
+0173:             save_program=True,
+0174:         )
+0175: 
+0176:         # Remove the custom module from sys.modules to simulate it not being available
+0177:         sys.modules.pop("custom_module", None)
+0178:         # Also remove it from sys.path
+0179:         sys.path.remove(str(tmp_path))
+0180:         del custom_module
+0181: 
+0182:         loaded_module = dspy.load(tmp_path, allow_pickle=True)
+0183:         assert loaded_module.cot.predict.signature == cot.cot.predict.signature
+0184: 
+0185:     finally:
+0186:         # Only need to clean up sys.path
+0187:         if str(tmp_path) in sys.path:
+0188:             sys.path.remove(str(tmp_path))
+0189: 
+0190: 
+0191: def test_load_with_version_mismatch(tmp_path):
+0192:     from dspy.primitives.base_module import logger
+0193: 
+0194:     # Mock versions during save
+0195:     save_versions = {"python": "3.9", "dspy": "2.4.0", "cloudpickle": "2.0"}
+0196: 
+0197:     # Mock versions during load
+0198:     load_versions = {"python": "3.10", "dspy": "2.5.0", "cloudpickle": "2.1"}
+0199: 
+0200:     predict = dspy.Predict("question->answer")
+0201: 
+0202:     # Create a custom handler to capture log messages
+0203:     class ListHandler(logging.Handler):
+0204:         def __init__(self):
+0205:             super().__init__()
+0206:             self.messages = []
+0207: 
+0208:         def emit(self, record):
+0209:             self.messages.append(record.getMessage())
+0210: 
+0211:     # Add handler and set level
+0212:     handler = ListHandler()
+0213:     original_level = logger.level
+0214:     logger.addHandler(handler)
+0215:     logger.setLevel(logging.WARNING)
+0216: 
+0217:     try:
+0218:         save_path = tmp_path / "program.pkl"
+0219:         # Mock version during save
+0220:         with patch("dspy.primitives.base_module.get_dependency_versions", return_value=save_versions):
+0221:             predict.save(save_path)
+0222: 
+0223:         # Mock version during load
+0224:         with patch("dspy.primitives.base_module.get_dependency_versions", return_value=load_versions):
+0225:             loaded_predict = dspy.Predict("question->answer")
+0226:             loaded_predict.load(save_path, allow_pickle=True)
+0227: 
+0228:         # Assert warnings were logged: 1 for pickle loading + 3 for version mismatches
+0229:         assert len(handler.messages) == 4
+0230: 
+0231:         # First message is about pickle loading
+0232:         assert ".pkl" in handler.messages[0]
+0233: 
+0234:         # Rest are version mismatch warnings
+0235:         for msg in handler.messages[1:]:
+0236:             assert "There is a mismatch of" in msg
+0237: 
+0238:         # Verify the model still loads correctly despite version mismatches
+0239:         assert isinstance(loaded_predict, dspy.Predict)
+0240:         assert str(predict.signature) == str(loaded_predict.signature)
+0241: 
+0242:     finally:
+0243:         # Clean up: restore original level and remove handler
+0244:         logger.setLevel(original_level)
+0245:         logger.removeHandler(handler)
+0246: 
+0247: 
+0248: @pytest.mark.llm_call
+0249: def test_single_module_call_with_usage_tracker(lm_for_test):
+0250:     dspy.configure(lm=dspy.LM(lm_for_test, cache=False, temperature=0.0), track_usage=True)
+0251: 
+0252:     predict = dspy.ChainOfThought("question -> answer")
+0253:     output = predict(question="What is the capital of France?")
+0254: 
+0255:     lm_usage = output.get_lm_usage()
+0256:     assert len(lm_usage) == 1
+0257:     assert lm_usage[lm_for_test]["prompt_tokens"] > 0
+0258:     assert lm_usage[lm_for_test]["completion_tokens"] > 0
+0259:     assert lm_usage[lm_for_test]["total_tokens"] > 0
+0260: 
+0261:     # Test no usage being tracked when cache is enabled
+0262:     dspy.configure(lm=dspy.LM(lm_for_test, cache=True, temperature=0.0), track_usage=True)
+0263:     for _ in range(2):
+0264:         output = predict(question="What is the capital of France?")
+0265: 
+0266:     assert len(output.get_lm_usage()) == 0
+0267: 
+0268: 
+0269: @pytest.mark.llm_call
+0270: def test_multi_module_call_with_usage_tracker(lm_for_test):
+0271:     dspy.configure(lm=dspy.LM(lm_for_test, cache=False, temperature=0.0), track_usage=True)
+0272: 
+0273:     class MyProgram(dspy.Module):
+0274:         def __init__(self):
+0275:             self.predict1 = dspy.ChainOfThought("question -> answer")
+0276:             self.predict2 = dspy.ChainOfThought("question, answer -> score")
+0277: 
+0278:         def __call__(self, question: str) -> Prediction:
+0279:             answer = self.predict1(question=question)
+0280:             score = self.predict2(question=question, answer=answer)
+0281:             return score
+0282: 
+0283:     program = MyProgram()
+0284:     output = program(question="What is the capital of France?")
+0285: 
+0286:     lm_usage = output.get_lm_usage()
+0287:     assert len(lm_usage) == 1
+0288:     assert lm_usage[lm_for_test]["prompt_tokens"] > 0
+0289:     assert lm_usage[lm_for_test]["prompt_tokens"] > 0
+0290:     assert lm_usage[lm_for_test]["completion_tokens"] > 0
+0291:     assert lm_usage[lm_for_test]["total_tokens"] > 0
+0292: 
+0293: 
+0294: # TODO: prepare second model for testing this unit test in ci
+0295: @pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="Skip the test if OPENAI_API_KEY is not set.")
+0296: def test_usage_tracker_in_parallel():
+0297:     class MyProgram(dspy.Module):
+0298:         def __init__(self, lm):
+0299:             self.lm = lm
+0300:             self.predict1 = dspy.ChainOfThought("question -> answer")
+0301:             self.predict2 = dspy.ChainOfThought("question, answer -> score")
+0302: 
+0303:         def __call__(self, question: str) -> Prediction:
+0304:             with dspy.context(lm=self.lm):
+0305:                 answer = self.predict1(question=question)
+0306:                 score = self.predict2(question=question, answer=answer)
+0307:                 return score
+0308: 
+0309:     dspy.configure(track_usage=True)
+0310:     program1 = MyProgram(lm=dspy.LM("openai/gpt-4o-mini", cache=False))
+0311:     program2 = MyProgram(lm=dspy.LM("openai/gpt-3.5-turbo", cache=False))
+0312: 
+0313:     parallelizer = dspy.Parallel()
+0314: 
+0315:     results = parallelizer(
+0316:         [
+0317:             (program1, {"question": "What is the meaning of life?"}),
+0318:             (program2, {"question": "why did a chicken cross the kitchen?"}),
+0319:         ]
+0320:     )
+0321: 
+0322:     assert results[0].get_lm_usage() is not None
+0323:     assert results[1].get_lm_usage() is not None
+0324: 
+0325:     assert results[0].get_lm_usage().keys() == set(["openai/gpt-4o-mini"])
+0326:     assert results[1].get_lm_usage().keys() == set(["openai/gpt-3.5-turbo"])
+0327: 
+0328: 
+0329: @pytest.mark.asyncio
+0330: async def test_usage_tracker_async_parallel():
+0331:     program = dspy.Predict("question -> answer")
+0332: 
+0333:     with patch("litellm.acompletion") as mock_completion:
+0334:         mock_completion.return_value = ModelResponse(
+0335:             choices=[Choices(message=Message(content="{'answer': 'Paris'}"))],
+0336:             usage=Usage(
+0337:                 **{
+0338:                     "prompt_tokens": 1117,
+0339:                     "completion_tokens": 46,
+0340:                     "total_tokens": 1163,
+0341:                     "prompt_tokens_details": {"cached_tokens": 0, "audio_tokens": 0},
+0342:                     "completion_tokens_details": {
+0343:                         "reasoning_tokens": 0,
+0344:                         "audio_tokens": 0,
+0345:                         "accepted_prediction_tokens": 0,
+0346:                         "rejected_prediction_tokens": 0,
+0347:                     },
+0348:                 },
+0349:             ),
+0350:             model="openai/gpt-4o-mini",
+0351:         )
+0352: 
+0353:         coroutines = [
+0354:             program.acall(question="What is the capital of France?"),
+0355:             program.acall(question="What is the capital of France?"),
+0356:             program.acall(question="What is the capital of France?"),
+0357:             program.acall(question="What is the capital of France?"),
+0358:         ]
+0359:         with dspy.context(
+0360:             lm=dspy.LM("openai/gpt-4o-mini", cache=False), track_usage=True, adapter=dspy.JSONAdapter()
+0361:         ):
+0362:             results = await asyncio.gather(*coroutines)
+0363: 
+0364:         assert results[0].get_lm_usage() is not None
+0365:         assert results[1].get_lm_usage() is not None
+0366: 
+0367:         lm_usage0 = results[0].get_lm_usage()["openai/gpt-4o-mini"]
+0368:         lm_usage1 = results[1].get_lm_usage()["openai/gpt-4o-mini"]
+0369:         assert lm_usage0["prompt_tokens"] == 1117
+0370:         assert lm_usage1["prompt_tokens"] == 1117
+0371:         assert lm_usage0["completion_tokens"] == 46
+0372:         assert lm_usage1["completion_tokens"] == 46
+0373:         assert lm_usage0["total_tokens"] == 1163
+0374:         assert lm_usage1["total_tokens"] == 1163
+0375: 
+0376: 
+0377: def test_usage_tracker_no_side_effect():
+0378:     class MyProgram(dspy.Module):
+0379:         def __init__(self):
+0380:             self.predict = dspy.Predict("question -> answer")
+0381: 
+0382:         def forward(self, question: str, **kwargs) -> str:
+0383:             return self.predict(question=question).answer
+0384: 
+0385:     program = MyProgram()
+0386:     with dspy.context(lm=DummyLM([{"answer": "Paris"}]), track_usage=True):
+0387:         result = program(question="What is the capital of France?")
+0388:     assert result == "Paris"
+0389: 
+0390: 
+0391: def test_module_history():
+0392:     class MyProgram(dspy.Module):
+0393:         def __init__(self, **kwargs):
+0394:             super().__init__(**kwargs)
+0395:             self.cot = dspy.ChainOfThought("question -> answer")
+0396: 
+0397:         def forward(self, question: str, **kwargs) -> Prediction:
+0398:             return self.cot(question=question)
+0399: 
+0400:     with patch("litellm.completion") as mock_completion:
+0401:         mock_completion.return_value = ModelResponse(
+0402:             choices=[
+0403:                 Choices(message=Message(content="{'reasoning': 'Paris is the capital of France', 'answer': 'Paris'}"))
+0404:             ],
+0405:             model="openai/gpt-4o-mini",
+0406:         )
+0407:         dspy.configure(lm=dspy.LM("openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter())
+0408:         program = MyProgram()
+0409:         program(question="What is the capital of France?")
+0410: 
+0411:         # Second call only call the submodule.
+0412:         program.cot(question="What is the capital of France?")
+0413: 
+0414:         # The LM history entity exists in all the ancestor callers.
+0415:         assert len(program.history) == 1
+0416:         assert len(program.cot.history) == 2
+0417:         assert len(program.cot.predict.history) == 2
+0418: 
+0419:         # The same history entity is shared across all the ancestor callers to reduce memory usage.
+0420:         assert id(program.history[0]) == id(program.cot.history[0])
+0421: 
+0422:         assert program.history[0]["outputs"] == ["{'reasoning': 'Paris is the capital of France', 'answer': 'Paris'}"]
+0423: 
+0424:         dspy.configure(disable_history=True)
+0425: 
+0426:         program(question="What is the capital of France?")
+0427:         # No history is recorded when history is disabled.
+0428:         assert len(program.history) == 1
+0429:         assert len(program.cot.history) == 2
+0430:         assert len(program.cot.predict.history) == 2
+0431: 
+0432:         dspy.configure(disable_history=False)
+0433: 
+0434:         program(question="What is the capital of France?")
+0435:         # History is recorded again when history is enabled.
+0436:         assert len(program.history) == 2
+0437:         assert len(program.cot.history) == 3
+0438:         assert len(program.cot.predict.history) == 3
+0439: 
+0440: 
+0441: def test_module_history_with_concurrency():
+0442:     class MyProgram(dspy.Module):
+0443:         def __init__(self):
+0444:             super().__init__()
+0445:             self.cot = dspy.ChainOfThought("question -> answer")
+0446: 
+0447:         def forward(self, question: str, **kwargs) -> Prediction:
+0448:             return self.cot(question=question)
+0449: 
+0450:     with patch("litellm.completion") as mock_completion:
+0451:         mock_completion.return_value = ModelResponse(
+0452:             choices=[Choices(message=Message(content="{'reasoning': 'N/A', 'answer': 'Holy crab!'}"))],
+0453:             model="openai/gpt-4o-mini",
+0454:         )
+0455:         dspy.configure(lm=dspy.LM("openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter())
+0456:         program = MyProgram()
+0457: 
+0458:         parallelizer = dspy.Parallel()
+0459: 
+0460:         parallelizer(
+0461:             [
+0462:                 (program, {"question": "What is the meaning of life?"}),
+0463:                 (program, {"question": "why did a chicken cross the kitchen?"}),
+0464:             ]
+0465:         )
+0466:         assert len(program.history) == 2
+0467:         assert len(program.cot.history) == 2
+0468:         assert len(program.cot.predict.history) == 2
+0469: 
+0470: 
+0471: @pytest.mark.asyncio
+0472: async def test_module_history_async():
+0473:     class MyProgram(dspy.Module):
+0474:         def __init__(self, **kwargs):
+0475:             super().__init__(**kwargs)
+0476:             self.cot = dspy.ChainOfThought("question -> answer")
+0477: 
+0478:         async def aforward(self, question: str, **kwargs) -> Prediction:
+0479:             return await self.cot.acall(question=question)
+0480: 
+0481:     with patch("litellm.acompletion") as mock_completion:
+0482:         mock_completion.return_value = ModelResponse(
+0483:             choices=[
+0484:                 Choices(message=Message(content="{'reasoning': 'Paris is the capital of France', 'answer': 'Paris'}"))
+0485:             ],
+0486:             model="openai/gpt-4o-mini",
+0487:         )
+0488:         program = MyProgram()
+0489:         with dspy.context(lm=dspy.LM("openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter()):
+0490:             await program.acall(question="What is the capital of France?")
+0491: 
+0492:             # Second call only call the submodule.
+0493:             await program.cot.acall(question="What is the capital of France?")
+0494: 
+0495:         # The LM history entity exists in all the ancestor callers.
+0496:         assert len(program.history) == 1
+0497:         assert len(program.cot.history) == 2
+0498:         assert len(program.cot.predict.history) == 2
+0499: 
+0500:         # The same history entity is shared across all the ancestor callers to reduce memory usage.
+0501:         assert id(program.history[0]) == id(program.cot.history[0])
+0502: 
+0503:         assert program.history[0]["outputs"] == ["{'reasoning': 'Paris is the capital of France', 'answer': 'Paris'}"]
+0504: 
+0505:         with dspy.context(
+0506:             disable_history=True, lm=dspy.LM("openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter()
+0507:         ):
+0508:             await program.acall(question="What is the capital of France?")
+0509: 
+0510:         # No history is recorded when history is disabled.
+0511:         assert len(program.history) == 1
+0512:         assert len(program.cot.history) == 2
+0513:         assert len(program.cot.predict.history) == 2
+0514: 
+0515:         with dspy.context(
+0516:             disable_history=False, lm=dspy.LM("openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter()
+0517:         ):
+0518:             await program.acall(question="What is the capital of France?")
+0519:         # History is recorded again when history is enabled.
+0520:         assert len(program.history) == 2
+0521:         assert len(program.cot.history) == 3
+0522:         assert len(program.cot.predict.history) == 3
+0523: 
+0524: 
+0525: def test_forward_direct_call_warning(capsys):
+0526:     class TestModule(dspy.Module):
+0527:         def forward(self, x):
+0528:             return x
+0529: 
+0530:     module = TestModule()
+0531:     module.forward("test")
+0532:     captured = capsys.readouterr()
+0533:     assert "directly is discouraged" in captured.err
+0534: 
+0535: 
+0536: def test_forward_through_call_no_warning(capsys):
+0537:     class TestModule(dspy.Module):
+0538:         def forward(self, x):
+0539:             return x
+0540: 
+0541:     module = TestModule()
+0542:     module(x="test")
+0543:     captured = capsys.readouterr()
+0544:     assert "directly is discouraged" not in captured.err
+
+Return JSON that matches the schema exactly.

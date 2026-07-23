@@ -1,0 +1,110 @@
+{
+ "id": "dspy_0767302a1fa2",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I have a reasoning-capable chat model and I want DSPy to use the provider's native reasoning channel instead of forcing a visible reasoning field into the text prompt. The confusing part is that I still want the final `Prediction` object to contain reasoning, even though the rendered prompt should no longer ask for it explicitly.\n\nI need an offline repro, so please don't use a real provider. Simulate the model behavior in a small stub built on top of `DummyLM`, then show me the request DSPy renders and the parsed result.\n\nGive me a complete, runnable Python program that prints the system message, the LM kwargs, and the parsed prediction, then asserts that the visible reasoning field disappears from the prompt, `reasoning_effort` is sent, and the returned prediction still contains reasoning.",
+ "gold_answer": "```python\nfrom types import SimpleNamespace\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass NativeReasoningDummy(DummyLM):\n    def __init__(self, adapter):\n        super().__init__([{\"answer\": \"Paris\"}], adapter=adapter)\n        self.model = \"anthropic/claude-3-7-sonnet-20250219\"\n        self.model_type = \"chat\"\n\n    @property\n    def supports_reasoning(self):\n        return True\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        return SimpleNamespace(\n            choices=[\n                SimpleNamespace(\n                    message=SimpleNamespace(\n                        content=\"[[ ## answer ## ]]\\nParis\\n\\n[[ ## completed ## ]]\\n\",\n                        reasoning_content=\"Native reasoning trace\",\n                        tool_calls=None,\n                    ),\n                    finish_reason=\"stop\",\n                )\n            ],\n            usage={},\n            model=self.model,\n        )\n\n\nclass QA(dspy.Signature):\n    question: str = dspy.InputField()\n    reasoning: dspy.Reasoning = dspy.OutputField()\n    answer: str = dspy.OutputField()\n\n\nadapter = dspy.ChatAdapter()\nlm = NativeReasoningDummy(adapter)\ndspy.configure(lm=lm, adapter=adapter)\n\npredict = dspy.Predict(QA)\nresult = predict(question=\"What is the capital of France?\")\nentry = lm.history[-1]\nsystem_message = entry[\"messages\"][0][\"content\"]\n\nprint(system_message)\nprint(\"KWARGS:\", entry[\"kwargs\"])\nprint(\"ANSWER:\", result.answer)\nprint(\"REASONING:\", result.reasoning)\n\nassert \"[[ ## reasoning ## ]]\" not in system_message\nassert entry[\"kwargs\"].get(\"reasoning_effort\") == \"low\"\nassert result.answer == \"Paris\"\nassert str(result.reasoning) == \"Native reasoning trace\"\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The repro stays offline by using `DummyLM` or a small subclass of it with `dspy.ChatAdapter`, instead of a live provider-backed LM.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The signature declares a normal `question` input plus both `reasoning: dspy.Reasoning` and `answer` outputs, so reasoning remains part of the parsed prediction schema even if it is removed from the rendered prompt.",
+   "span_ids": [
+    "s2",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "For an LM that supports native reasoning, DSPy must inject `reasoning_effort` into LM kwargs (defaulting to `\"low\"` when not supplied) and delete the `reasoning` output field before prompt formatting; that deletion is what makes the rendered system prompt omit a visible `[[ ## reasoning ## ]]` section.",
+   "span_ids": [
+    "s1",
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The LM stub's assistant message separates channels: the final answer stays in `message.content`, while the reasoning trace is returned in `message.reasoning_content` rather than as a structured text field in the prompt.",
+   "span_ids": [
+    "s2",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "After parsing, the prediction still contains `reasoning` as `dspy.Reasoning(content=...)`, populated from `reasoning_content` even though the prompt omitted the reasoning field.",
+   "span_ids": [
+    "s2",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 5,
+   "statement": "The program inspects the actual rendered call and surfaces the system message, LM kwargs, and parsed prediction, then asserts that the prompt lacks `[[ ## reasoning ## ]]` and the call carries `reasoning_effort`.",
+   "span_ids": [
+    "s1",
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/types/reasoning.py",
+   "start_line": 45,
+   "end_line": 77,
+   "excerpt": "0045:     @classmethod\n0046:     def adapt_to_native_lm_feature(\n0047:         cls,\n0048:         signature: type[\"Signature\"],\n0049:         field_name: str,\n0050:         lm: BaseLM,\n0051:         lm_kwargs: dict[str, Any],\n0052:     ) -> type[\"Signature\"]:\n0053:         if \"reasoning_effort\" in lm_kwargs:\n0054:             # `lm_kwargs` overrides `lm.kwargs`.\n0055:             reasoning_effort = lm_kwargs[\"reasoning_effort\"]\n0056:         elif \"reasoning_effort\" in lm.kwargs:\n0057:             reasoning_effort = lm.kwargs[\"reasoning_effort\"]\n0058:         else:\n0059:             # Turn on the native reasoning explicitly if Reasoning field is present in the signature and no explicit\n0060:             # reasoning effort is set in `lm_kwargs` or `lm.kwargs`.\n0061:             reasoning_effort = \"low\"\n0062: \n0063:         if reasoning_effort is None or not lm.supports_reasoning:\n0064:             # If users explicitly set `reasoning_effort` to None or the LM doesn't support reasoning, we don't enable\n0065:             # native reasoning.\n0066:             return signature\n0067: \n0068:         if \"gpt-5\" in lm.model and lm.model_type == \"chat\":\n0069:             # There is a caveat of Litellm as 1.79.0 that when using the chat completion API on GPT-5 family models,\n0070:             # the reasoning content is not available in the response. As a workaround, we don't enable the native\n0071:             # reasoning feature for GPT-5 family models when using the chat completion API.\n0072:             # Litellm issue: https://github.com/BerriAI/litellm/issues/14748\n0073:             return signature\n0074: \n0075:         lm_kwargs[\"reasoning_effort\"] = reasoning_effort\n0076:         # Delete the reasoning field from the signature to use the native reasoning feature.\n0077:         return signature.delete(field_name)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/types/reasoning.py",
+   "start_line": 79,
+   "end_line": 84,
+   "excerpt": "0079:     @classmethod\n0080:     def parse_lm_response(cls, response: str | dict[str, Any]) -> Optional[\"Reasoning\"]:\n0081:         \"\"\"Parse the LM response into a Reasoning object.\"\"\"\n0082:         if \"reasoning_content\" in response:\n0083:             return Reasoning(content=response[\"reasoning_content\"])\n0084:         return None"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/adapters/test_chat_adapter.py",
+   "start_line": 85,
+   "end_line": 90,
+   "excerpt": "0085: def test_chat_adapter_sync_call():\n0086:     signature = dspy.make_signature(\"question->answer\")\n0087:     adapter = dspy.ChatAdapter()\n0088:     lm = dspy.utils.DummyLM([{\"answer\": \"Paris\"}])\n0089:     result = adapter(lm, {}, signature, [], {\"question\": \"What is the capital of France?\"})\n0090:     assert result == [{\"answer\": \"Paris\"}]"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/adapters/test_chat_adapter.py",
+   "start_line": 170,
+   "end_line": 183,
+   "excerpt": "0170:     assert len(call_kwargs[\"messages\"]) == 2\n0171:     assert call_kwargs[\"messages\"][0][\"role\"] == \"system\"\n0172:     assert call_kwargs[\"messages\"][1][\"role\"] == \"user\"\n0173: \n0174:     system_content = call_kwargs[\"messages\"][0][\"content\"]\n0175:     user_content = call_kwargs[\"messages\"][1][\"content\"]\n0176: \n0177:     assert \"1. `input1` (str)\" in system_content\n0178:     assert \"2. `input2` (int)\" in system_content\n0179:     assert \"1. `output` (str)\" in system_content\n0180:     assert \"[[ ## input1 ## ]]\\n{input1}\" in system_content\n0181:     assert \"[[ ## input2 ## ]]\\n{input2}\" in system_content\n0182:     assert \"[[ ## output ## ]]\\n{output}\" in system_content\n0183:     assert \"[[ ## completed ## ]]\" in system_content"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/adapters/test_chat_adapter.py",
+   "start_line": 647,
+   "end_line": 682,
+   "excerpt": "0647: def test_chat_adapter_native_reasoning():\n0648:     class MySignature(dspy.Signature):\n0649:         question: str = dspy.InputField()\n0650:         reasoning: dspy.Reasoning = dspy.OutputField()\n0651:         answer: str = dspy.OutputField()\n0652: \n0653:     adapter = dspy.ChatAdapter()\n0654: \n0655:     with mock.patch(\"litellm.completion\") as mock_completion:\n0656:         mock_completion.return_value = ModelResponse(\n0657:             choices=[\n0658:                 Choices(\n0659:                     message=Message(\n0660:                         content=\"[[ ## answer ## ]]\\nParis\\n[[ ## completion ## ]]\",\n0661:                         reasoning_content=\"Step-by-step thinking about the capital of France\",\n0662:                     ),\n0663:                 )\n0664:             ],\n0665:             model=\"anthropic/claude-3-7-sonnet-20250219\",\n0666:         )\n0667:         modified_signature = adapter._call_preprocess(\n0668:             dspy.LM(model=\"anthropic/claude-3-7-sonnet-20250219\", reasoning_effort=\"low\", cache=False),\n0669:             {},\n0670:             MySignature,\n0671:             {\"question\": \"What is the capital of France?\"},\n0672:         )\n0673:         assert \"reasoning\" not in modified_signature.output_fields\n0674: \n0675:         result = adapter(\n0676:             dspy.LM(model=\"anthropic/claude-3-7-sonnet-20250219\", reasoning_effort=\"low\", cache=False),\n0677:             {},\n0678:             MySignature,\n0679:             [],\n0680:             {\"question\": \"What is the capital of France?\"},\n0681:         )\n0682:         assert result[0][\"reasoning\"] == dspy.Reasoning(content=\"Step-by-step thinking about the capital of France\")"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "High-signal native-reasoning question: it covers signature rewriting, LM kwargs, and post-parse reconstruction of reasoning.",
+ "source_index": 7,
+ "smalldspy_scope": false
+}

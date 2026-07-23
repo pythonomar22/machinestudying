@@ -1,0 +1,99 @@
+{
+ "id": "dspy_4974dd0fc9ac",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm letting DSPy's few-shot optimizer retry the same training example across multiple rounds because the first attempt can fail. What I need to know is whether later rounds actually use a fresh rollout configuration or just rerun the exact same LM state and hit the same cache.\n\nDon't tell me what the optimizer is supposed to do. Give me a complete, runnable Python program that stays offline with `DummyLM`, forces a first-round failure and a second-round success, and prints/asserts the LM-copy kwargs and per-call LM kwargs for the two rounds.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.teleprompt import BootstrapFewShot\nfrom dspy.utils.dummies import DummyLM\n\n\nclass RecordingDummyLM(DummyLM):\n    def __init__(self, answers, copy_log=None, call_log=None, adapter=None):\n        super().__init__(answers, adapter=adapter)\n        self.copy_log = [] if copy_log is None else copy_log\n        self.call_log = [] if call_log is None else call_log\n\n    def copy(self, **kwargs):\n        self.copy_log.append(kwargs.copy())\n        clone = RecordingDummyLM(\n            {\"What is 1+1?\": {\"answer\": \"2\"}},\n            copy_log=self.copy_log,\n            call_log=self.call_log,\n            adapter=self.adapter,\n        )\n        clone.kwargs = {**self.kwargs, **kwargs}\n        return clone\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        self.call_log.append(self.kwargs.copy())\n        return super().forward(prompt=prompt, messages=messages, **kwargs)\n\n\nclass TinyProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\nmetric_calls = []\n\n\ndef metric(example, prediction, trace=None):\n    metric_calls.append(prediction.answer)\n    return len(metric_calls) >= 2\n\n\nlm = RecordingDummyLM({\"What is 1+1?\": {\"answer\": \"2\"}})\ndspy.configure(lm=lm)\ntrainset = [dspy.Example(question=\"What is 1+1?\", answer=\"2\").with_inputs(\"question\")]\n\nBootstrapFewShot(\n    metric=metric,\n    max_rounds=2,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n).compile(TinyProgram(), trainset=trainset)\n\nprint(\"copy_log:\", lm.copy_log)\nprint(\"call_log:\", lm.call_log)\nassert lm.copy_log == [{\"rollout_id\": 1, \"temperature\": 1.0}]\nassert lm.call_log[0] == {}\nassert lm.call_log[1][\"rollout_id\"] == 1\nassert lm.call_log[1][\"temperature\"] == 1.0\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program drives `BootstrapFewShot.compile(...)` through two attempts on the same training example by setting `max_rounds=2` and using a metric that fails the first prediction and succeeds on the second.",
+   "span_ids": [
+    "s1",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "It shows that the first attempt (`round_idx == 0`) uses the currently configured LM unchanged: no `lm.copy(...)` call is made and no replacement `lm` is injected into the inner `dspy.context`.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "It shows that the second attempt (`round_idx == 1`) uses a fresh rollout by calling `lm.copy(rollout_id=1, temperature=1.0)` and running that copied LM inside the inner `dspy.context`.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "It demonstrates that `BaseLM.copy` applies supplied values to the clone's LM settings, so the LM state observed during the second-round call includes `rollout_id=1` and `temperature=1.0`.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "It records and prints/asserts both observation points needed to verify the behavior: the kwargs passed to `copy` and the LM state seen by each LM call, directly contrasting unchanged first-round state with the fresh second-round rollout before retries stop on success.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/bootstrap.py",
+   "start_line": 155,
+   "end_line": 164,
+   "excerpt": "0155:         for example_idx, example in enumerate(tqdm.tqdm(self.trainset)):\n0156:             if len(bootstrapped) >= max_bootstraps:\n0157:                 break\n0158: \n0159:             for round_idx in range(self.max_rounds):\n0160:                 bootstrap_attempts += 1\n0161: \n0162:                 if self._bootstrap_one_example(example, round_idx):\n0163:                     bootstrapped[example_idx] = True\n0164:                     break"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/bootstrap.py",
+   "start_line": 188,
+   "end_line": 200,
+   "excerpt": "0188:             with dspy.context(trace=[], **self.teacher_settings):\n0189:                 lm = dspy.settings.lm\n0190:                 # Use a fresh rollout with temperature=1.0 to bypass caches.\n0191:                 lm = lm.copy(rollout_id=round_idx, temperature=1.0) if round_idx > 0 else lm\n0192:                 new_settings = {\"lm\": lm} if round_idx > 0 else {}\n0193: \n0194:                 with dspy.context(**new_settings):\n0195:                     for name, predictor in teacher.named_predictors():\n0196:                         predictor_cache[name] = predictor.demos\n0197:                         predictor.demos = [x for x in predictor.demos if x != example]\n0198: \n0199:                     prediction = teacher(**example.inputs())\n0200:                     trace = dspy.settings.trace"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/bootstrap.py",
+   "start_line": 205,
+   "end_line": 210,
+   "excerpt": "0205:                 if self.metric:\n0206:                     metric_val = self.metric(example, prediction, trace)\n0207:                     if self.metric_threshold:\n0208:                         success = metric_val >= self.metric_threshold\n0209:                     else:\n0210:                         success = metric_val"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 193,
+   "end_line": 217,
+   "excerpt": "0193:     def copy(self, **kwargs):\n0194:         \"\"\"Returns a copy of the language model with possibly updated parameters.\n0195: \n0196:         Any provided keyword arguments update the corresponding attributes or LM kwargs of\n0197:         the copy. For example, ``lm.copy(rollout_id=1, temperature=1.0)`` returns an LM whose\n0198:         requests use a different rollout ID at non-zero temperature to bypass cache collisions.\n0199:         \"\"\"\n0200: \n0201:         import copy\n0202: \n0203:         new_instance = copy.deepcopy(self)\n0204:         new_instance.history = []\n0205: \n0206:         for key, value in kwargs.items():\n0207:             if hasattr(self, key):\n0208:                 setattr(new_instance, key, value)\n0209:             if (key in self.kwargs) or (not hasattr(self, key)):\n0210:                 if value is None:\n0211:                     new_instance.kwargs.pop(key, None)\n0212:                 else:\n0213:                     new_instance.kwargs[key] = value\n0214:         if hasattr(new_instance, \"_warned_zero_temp_rollout\"):\n0215:             new_instance._warned_zero_temp_rollout = False\n0216: \n0217:         return new_instance"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 122,
+   "end_line": 130,
+   "excerpt": "0122:     @with_callbacks\n0123:     def __call__(\n0124:         self,\n0125:         prompt: str | None = None,\n0126:         messages: list[dict[str, Any]] | None = None,\n0127:         **kwargs\n0128:     ) -> list[dict[str, Any] | str]:\n0129:         response = self.forward(prompt=prompt, messages=messages, **kwargs)\n0130:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "",
+ "source_index": 45,
+ "smalldspy_scope": false
+}

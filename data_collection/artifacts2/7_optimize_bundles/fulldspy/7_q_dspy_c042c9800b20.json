@@ -1,0 +1,102 @@
+{
+ "id": "dspy_c042c9800b20",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I'm using DSPy's local embedding-based retriever offline, and my concern is the load path rather than the search path. If I construct a fresh retriever with different `k` and normalization settings and then load saved state into it, I need to know whether the disk state actually wins and whether search behavior is preserved.\n\nA hand-wavy explanation is not enough here because this affects reproducibility. I want one round-trip harness that saves, loads into a deliberately mismatched fresh instance, and then proves both the loaded configuration and the retrieved results match the original retriever.\n\nGive me a complete, runnable Python program that builds a tiny offline embedding retriever, saves it, loads it into a fresh instance with different constructor settings, and proves the loaded config and search results come from disk, not from the fresh constructor.",
+ "gold_answer": "```python\nimport os\nimport tempfile\nimport numpy as np\nfrom dspy.retrievers.embeddings import Embeddings\n\ndef embedder(texts):\n    rows = []\n    for t in texts:\n        if 'cat' in t:\n            rows.append(np.array([1.0, 0.0, 0.0], dtype=np.float32))\n        elif 'dog' in t:\n            rows.append(np.array([0.0, 1.0, 0.0], dtype=np.float32))\n        else:\n            rows.append(np.array([0.0, 0.0, 1.0], dtype=np.float32))\n    return np.stack(rows)\n\ncorpus = ['The cat sat on the mat.', 'The dog barked at the mailman.', 'Birds fly in the sky.']\norig = Embeddings(corpus=corpus, embedder=embedder, k=2, normalize=False, brute_force_threshold=1000)\nwith tempfile.TemporaryDirectory() as tmpdir:\n    path = os.path.join(tmpdir, 'saved')\n    orig.save(path)\n    fresh = Embeddings(corpus=['dummy'], embedder=embedder, k=1, normalize=True, brute_force_threshold=500)\n    fresh.load(path, embedder)\n    a = orig('cat question')\n    b = fresh('cat question')\n    assert fresh.k == 2\n    assert fresh.normalize is False\n    assert fresh.corpus == corpus\n    assert b.passages == a.passages\n    assert b.indices == a.indices\n    print({'k': fresh.k, 'normalize': fresh.normalize, 'corpus': fresh.corpus})\n    print({'passages': b.passages, 'indices': b.indices})\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The program creates an original `Embeddings` retriever with explicit configuration and persists it with `save(path)`, covering the saved `k`, `normalize`, `corpus`, and `corpus_embeddings` that will be reloaded.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The load target is a separate fresh `Embeddings` instance constructed with conflicting settings, and the program calls `fresh.load(path, embedder)` on that same instance to exercise in-place overwrite behavior.",
+   "span_ids": [
+    "s1",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "After loading, the program proves disk configuration won by asserting that the fresh instance's `k`, `normalize`, and `corpus` match the saved/original values rather than the fresh constructor values.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The program queries both the original and loaded retrievers with the same input and asserts identical `passages` and `indices`, showing retrieval behavior is preserved from the loaded state.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/retrievers/embeddings.py",
+   "start_line": 18,
+   "end_line": 39,
+   "excerpt": "0018:     def __init__(\n0019:         self,\n0020:         corpus: list[str],\n0021:         embedder,\n0022:         k: int = 5,\n0023:         callbacks: list[Any] | None = None,\n0024:         cache: bool = False,\n0025:         brute_force_threshold: int = 20_000,\n0026:         normalize: bool = True,\n0027:     ):\n0028:         assert cache is False, \"Caching is not supported for embeddings-based retrievers\"\n0029: \n0030:         self.embedder = embedder\n0031:         self.k = k\n0032:         self.corpus = corpus\n0033:         self.normalize = normalize\n0034: \n0035:         self.corpus_embeddings = self.embedder(self.corpus)\n0036:         self.corpus_embeddings = self._normalize(self.corpus_embeddings) if self.normalize else self.corpus_embeddings\n0037: \n0038:         self.index = self._build_faiss() if len(corpus) >= brute_force_threshold else None\n0039:         self.search_fn = Unbatchify(self._batch_forward)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/retrievers/embeddings.py",
+   "start_line": 121,
+   "end_line": 145,
+   "excerpt": "0121:         os.makedirs(path, exist_ok=True)\n0122: \n0123:         # Save configuration and corpus\n0124:         config = {\n0125:             \"k\": self.k,\n0126:             \"normalize\": self.normalize,\n0127:             \"corpus\": self.corpus,\n0128:             \"has_faiss_index\": self.index is not None,\n0129:         }\n0130: \n0131:         with open(os.path.join(path, \"config.json\"), \"w\") as f:\n0132:             json.dump(config, f, indent=2)\n0133: \n0134:         # Save embeddings\n0135:         np.save(os.path.join(path, \"corpus_embeddings.npy\"), self.corpus_embeddings)\n0136: \n0137:         # Save FAISS index if it exists\n0138:         if self.index is not None:\n0139:             try:\n0140:                 import faiss\n0141:                 faiss.write_index(self.index, os.path.join(path, \"faiss_index.bin\"))\n0142:             except ImportError:\n0143:                 # If FAISS is not available, we can't save the index\n0144:                 # but we can still save the embeddings for brute force search\n0145:                 pass"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/retrievers/embeddings.py",
+   "start_line": 173,
+   "end_line": 190,
+   "excerpt": "0173:         # Load configuration and corpus\n0174:         with open(config_path) as f:\n0175:             config = json.load(f)\n0176: \n0177:         # Validate required config fields\n0178:         required_fields = [\"k\", \"normalize\", \"corpus\", \"has_faiss_index\"]\n0179:         for field in required_fields:\n0180:             if field not in config:\n0181:                 raise ValueError(f\"Invalid config: missing required field '{field}'\")\n0182: \n0183:         # Restore configuration\n0184:         self.k = config[\"k\"]\n0185:         self.normalize = config[\"normalize\"]\n0186:         self.corpus = config[\"corpus\"]\n0187:         self.embedder = embedder\n0188: \n0189:         # Load embeddings\n0190:         self.corpus_embeddings = np.load(embeddings_path)"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/retrievers/embeddings.py",
+   "start_line": 58,
+   "end_line": 65,
+   "excerpt": "0058:     def _batch_forward(self, queries: list[str]):\n0059:         q_embeds = self.embedder(queries)\n0060:         q_embeds = self._normalize(q_embeds) if self.normalize else q_embeds\n0061: \n0062:         pids = self._faiss_search(q_embeds, self.k * 10) if self.index else None\n0063:         pids = np.tile(np.arange(len(self.corpus)), (len(queries), 1)) if pids is None else pids\n0064: \n0065:         return self._rerank_and_predict(q_embeds, pids)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/retrievers/embeddings.py",
+   "start_line": 93,
+   "end_line": 105,
+   "excerpt": "0093:     def _rerank_and_predict(self, q_embeds: np.ndarray, candidate_indices: np.ndarray):\n0094:         candidate_embeddings = self.corpus_embeddings[candidate_indices]\n0095:         scores = np.einsum(\"qd,qkd->qk\", q_embeds, candidate_embeddings)\n0096: \n0097:         top_k_indices = np.argsort(-scores, axis=1)[:, : self.k]\n0098:         top_indices = candidate_indices[np.arange(len(q_embeds))[:, None], top_k_indices]\n0099:         top_scores = scores[np.arange(len(q_embeds))[:, None], top_k_indices]\n0100: \n0101:         results = []\n0102:         for indices, query_scores in zip(top_indices, top_scores, strict=True):\n0103:             passages = [self.corpus[idx] for idx in indices]\n0104:             results.append((passages, indices.tolist(), query_scores.tolist()))\n0105:         return results"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Pins down that the persisted retriever state overrides mismatched constructor settings on load.",
+ "source_index": 24,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

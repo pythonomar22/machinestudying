@@ -1,0 +1,1365 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_57848e8c2cea`
+- Label: `prompt_compilation_customization_and_inspection`
+- Question: `I built a `dspy.Predict` from a signature class, then later edited the task wording on that class because I wanted to iterate on instructions without rebuilding the whole pipeline. What I cannot tell is whether an already-constructed predictor snapshots the old prompt text or reads the class again on each call.
+
+I do not want a verbal answer because this is going into a regression test for prompt inspection. Show the same predictor being called once before the edit and once after it, and make the proof come from the recorded LM requests rather than from Python object identity.
+
+Give me a complete, runnable Python program that runs offline with `DummyLM`, prints the two system messages, and asserts that the second call uses the updated task wording while the first call keeps the original wording.`
+- Model answer:
+```python
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+class MySig(dspy.Signature):
+    """Original instruction."""
+
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField()
+
+
+lm = DummyLM([{"answer": "first"}, {"answer": "second"}])
+
+with dspy.context(lm=lm):
+    program = dspy.Predict(MySig)
+    program(question="before")
+
+    MySig.instructions = "Updated instruction."
+    program(question="after")
+
+first_system = lm.history[0]["messages"][0]["content"]
+second_system = lm.history[1]["messages"][0]["content"]
+
+print(first_system)
+print("---")
+print(second_system)
+
+assert "Original instruction." in first_system
+assert "Updated instruction." not in first_system
+assert "Updated instruction." in second_system
+assert "Original instruction." not in second_system
+```
+
+## Gold answer
+```python
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+class MySig(dspy.Signature):
+    """Original instruction."""
+
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField()
+
+
+lm = DummyLM([{"answer": "first"}, {"answer": "second"}])
+
+with dspy.context(lm=lm):
+    program = dspy.Predict(MySig)
+    program(question="before")
+
+    MySig.instructions = "Updated instruction."
+    program(question="after")
+
+first_system = lm.history[0]["messages"][0]["content"]
+second_system = lm.history[1]["messages"][0]["content"]
+
+print(first_system)
+print("---")
+print(second_system)
+
+assert "Original instruction." in first_system
+assert "Updated instruction." not in first_system
+assert "Updated instruction." in second_system
+assert "Original instruction." not in second_system
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "Instantiate a single `dspy.Predict(MySig)` once and reuse that same predictor for both invocations; do not rebuild the predictor or substitute a different signature after the edit.",
+    "span_ids": [
+      "s2",
+      "s3",
+      "s4"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "Change the signature class's task wording between the two calls by assigning new text to its `instructions` property.",
+    "span_ids": [
+      "s1"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "Call the predictor once before the instruction edit and once after it, relying on `Predict` to resolve `self.signature` at call time so the later LM request uses the updated class instructions.",
+    "span_ids": [
+      "s1",
+      "s4",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "Use the recorded LM requests as the proof source by extracting the first and second system-message texts from the `DummyLM` history, rather than inspecting predictor/signature objects or comparing Python identities.",
+    "span_ids": [
+      "s4",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c5",
+    "claim_type": "supporting",
+    "weight": 15,
+    "statement": "Print both captured system messages and assert that the first contains the original instruction but not the updated one, while the second contains the updated instruction but not the original one.",
+    "span_ids": [
+      "s1",
+      "s5"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/signatures/signature.py",
+    "start_line": 215,
+    "end_line": 221,
+    "excerpt": "0215:     @property\n0216:     def instructions(cls) -> str:\n0217:         return inspect.cleandoc(getattr(cls, \"__doc__\", \"\"))\n0218: \n0219:     @instructions.setter\n0220:     def instructions(cls, instructions: str) -> None:\n0221:         cls.__doc__ = instructions"
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/predict/predict.py",
+    "start_line": 58,
+    "end_line": 63,
+    "excerpt": "0058:     def __init__(self, signature: str | type[Signature], callbacks: list[BaseCallback] | None = None, **config):\n0059:         super().__init__(callbacks=callbacks)\n0060:         self.stage = random.randbytes(8).hex()\n0061:         self.signature = ensure_signature(signature)\n0062:         self.config = config\n0063:         self.reset()"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/signatures/signature.py",
+    "start_line": 511,
+    "end_line": 518,
+    "excerpt": "0511: def ensure_signature(signature: str | type[Signature], instructions=None) -> None | type[Signature]:\n0512:     if signature is None:\n0513:         return None\n0514:     if isinstance(signature, str):\n0515:         return Signature(signature, instructions)\n0516:     if instructions is not None:\n0517:         raise ValueError(\"Don't specify instructions when initializing with a Signature\")\n0518:     return signature"
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/predict/predict.py",
+    "start_line": 138,
+    "end_line": 142,
+    "excerpt": "0138:     def _forward_preprocess(self, **kwargs):\n0139:         # Extract the three privileged keyword arguments.\n0140:         assert \"new_signature\" not in kwargs, \"new_signature is no longer a valid keyword argument.\"\n0141:         signature = ensure_signature(kwargs.pop(\"signature\", self.signature))\n0142:         demos = kwargs.pop(\"demos\", self.demos)"
+  },
+  {
+    "span_id": "s5",
+    "path": "dspy/predict/predict.py",
+    "start_line": 243,
+    "end_line": 255,
+    "excerpt": "0243:     def forward(self, **kwargs):\n0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)\n0245: \n0246:         adapter = settings.adapter or ChatAdapter()\n0247: \n0248:         if self._should_stream():\n0249:             with settings.context(caller_predict=self):\n0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0251:         else:\n0252:             with settings.context(send_stream=None):\n0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0254: \n0255:         return self._forward_postprocess(completions, signature, **kwargs)"
+  }
+]
+
+## Whole evidence files
+### dspy/signatures/signature.py
+0001: """Signature class for DSPy.
+0002: 
+0003: You typically subclass the Signature class, like this:
+0004:     class MySignature(dspy.Signature):
+0005:         input: str = InputField(desc="...")
+0006:         output: int = OutputField(desc="...")
+0007: 
+0008: You can call Signature("input1, input2 -> output1, output2") to create a new signature type.
+0009: You can also include instructions, Signature("input -> output", "This is a test").
+0010: But it's generally better to use the make_signature function.
+0011: 
+0012: If you are not sure if your input is a string representation, (like "input1, input2 -> output1, output2"),
+0013: or a signature, you can use the ensure_signature function.
+0014: 
+0015: For compatibility with the legacy dsp format, you can use the signature_to_template function.
+0016: """
+0017: 
+0018: import ast
+0019: import importlib
+0020: import inspect
+0021: import re
+0022: import sys
+0023: import types
+0024: import typing
+0025: from copy import deepcopy
+0026: from typing import Any, Iterator
+0027: 
+0028: from pydantic import BaseModel, Field, create_model
+0029: from pydantic.fields import FieldInfo
+0030: 
+0031: from dspy.signatures.field import InputField, OutputField
+0032: from dspy.utils.constants import IS_TYPE_UNDEFINED
+0033: 
+0034: 
+0035: def _default_instructions(cls) -> str:
+0036:     inputs_ = ", ".join([f"`{field}`" for field in cls.input_fields])
+0037:     outputs_ = ", ".join([f"`{field}`" for field in cls.output_fields])
+0038:     return f"Given the fields {inputs_}, produce the fields {outputs_}."
+0039: 
+0040: 
+0041: class SignatureMeta(type(BaseModel)):
+0042:     def __call__(cls, *args, **kwargs):
+0043:         if cls is Signature:
+0044:             # We don't create an actual Signature instance, instead, we create a new Signature class.
+0045:             custom_types = kwargs.pop("custom_types", None)
+0046: 
+0047:             if custom_types is None and args and isinstance(args[0], str):
+0048:                 custom_types = cls._detect_custom_types_from_caller(args[0])
+0049: 
+0050:             return make_signature(*args, custom_types=custom_types, **kwargs)
+0051:         return super().__call__(*args, **kwargs)
+0052: 
+0053:     @staticmethod
+0054:     def _detect_custom_types_from_caller(signature_str):
+0055:         """Detect custom types from the caller's frame based on the signature string.
+0056: 
+0057:         Note: This method relies on Python's frame introspection which has some limitations:
+0058:         1. May not work in all Python implementations (e.g., compiled with optimizations)
+0059:         2. Looks up a limited number of frames in the call stack
+0060:         3. Cannot find types that are imported but not in the caller's namespace
+0061: 
+0062:         For more reliable custom type resolution, explicitly provide types using the
+0063:         `custom_types` parameter when creating a Signature.
+0064:         """
+0065: 
+0066:         # Extract potential type names from the signature string, including dotted names
+0067:         # Match both simple types like 'MyType' and dotted names like 'Module.Type'
+0068:         type_pattern = r":\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+0069:         type_names = re.findall(type_pattern, signature_str)
+0070:         if not type_names:
+0071:             return None
+0072: 
+0073:         # Get type references from caller frames by walking the stack
+0074:         found_types = {}
+0075: 
+0076:         needed_types = set()
+0077:         dotted_types = {}
+0078: 
+0079:         for type_name in type_names:
+0080:             parts = type_name.split(".")
+0081:             base_name = parts[0]
+0082: 
+0083:             if base_name not in typing.__dict__ and base_name not in __builtins__:
+0084:                 if len(parts) > 1:
+0085:                     dotted_types[type_name] = base_name
+0086:                     needed_types.add(base_name)
+0087:                 else:
+0088:                     needed_types.add(type_name)
+0089: 
+0090:         if not needed_types:
+0091:             return None
+0092: 
+0093:         frame = None
+0094:         try:
+0095:             frame = sys._getframe(1)  # Start one level up (skip this function)
+0096: 
+0097:             max_frames = 100
+0098:             frame_count = 0
+0099: 
+0100:             while frame and needed_types and frame_count < max_frames:
+0101:                 frame_count += 1
+0102: 
+0103:                 for type_name in list(needed_types):
+0104:                     if type_name in frame.f_locals:
+0105:                         found_types[type_name] = frame.f_locals[type_name]
+0106:                         needed_types.remove(type_name)
+0107:                     elif frame.f_globals and type_name in frame.f_globals:
+0108:                         found_types[type_name] = frame.f_globals[type_name]
+0109:                         needed_types.remove(type_name)
+0110: 
+0111:                 # If we found all needed types, stop looking
+0112:                 if not needed_types:
+0113:                     break
+0114: 
+0115:                 frame = frame.f_back
+0116: 
+0117:             if needed_types and frame_count >= max_frames:
+0118:                 import logging
+0119: 
+0120:                 logging.getLogger("dspy").warning(
+0121:                     f"Reached maximum frame search depth ({max_frames}) while looking for types: {needed_types}. "
+0122:                     "Consider providing custom_types explicitly to Signature."
+0123:                 )
+0124:         except (AttributeError, ValueError):
+0125:             # Handle environments where frame introspection is not available
+0126:             import logging
+0127: 
+0128:             logging.getLogger("dspy").debug(
+0129:                 "Frame introspection failed while trying to resolve custom types. "
+0130:                 "Consider providing custom_types explicitly to Signature."
+0131:             )
+0132:         finally:
+0133:             if frame:
+0134:                 del frame
+0135: 
+0136:         return found_types or None
+0137: 
+0138:     def __new__(mcs, signature_name, bases, namespace, **kwargs):
+0139:         # At this point, the orders have been swapped already.
+0140:         field_order = [name for name, value in namespace.items() if isinstance(value, FieldInfo)]
+0141:         # Set `str` as the default type for all fields
+0142:         if sys.version_info >= (3, 14):
+0143:             try:
+0144:                 import annotationlib
+0145:                 # Try to get from explicit __annotations__ first (e.g., from __future__ import annotations)
+0146:                 raw_annotations = namespace.get("__annotations__")
+0147: 
+0148:                 if raw_annotations is None:
+0149:                     # In 3.14 with PEP 649, get the annotate function and call it
+0150:                     annotate_func = annotationlib.get_annotate_from_class_namespace(namespace)
+0151:                     if annotate_func:
+0152:                         raw_annotations = annotationlib.call_annotate_function(
+0153:                             annotate_func,
+0154:                             format=annotationlib.Format.FORWARDREF
+0155:                         )
+0156:                     else:
+0157:                         raw_annotations = {}
+0158:             except ImportError:
+0159:                 raw_annotations = namespace.get("__annotations__", {})
+0160:         else:
+0161:             # Python 3.13 and earlier
+0162:             # Set `str` as the default type for all fields
+0163:             raw_annotations = namespace.get("__annotations__", {})
+0164:         for name, field in namespace.items():
+0165:             if not isinstance(field, FieldInfo):
+0166:                 continue  # Don't add types to non-field attributes
+0167:             if not name.startswith("__") and name not in raw_annotations:
+0168:                 raw_annotations[name] = str
+0169:                 field.json_schema_extra[IS_TYPE_UNDEFINED] = True  # Mark that the type was originally undefined in the signature
+0170:         # Create ordered annotations dictionary that preserves field order
+0171:         ordered_annotations = {name: raw_annotations[name] for name in field_order if name in raw_annotations}
+0172:         # Add any remaining annotations that weren't in field_order
+0173:         ordered_annotations.update({k: v for k, v in raw_annotations.items() if k not in ordered_annotations})
+0174:         namespace["__annotations__"] = ordered_annotations
+0175: 
+0176:         # Let Pydantic do its thing
+0177:         cls = super().__new__(mcs, signature_name, bases, namespace, **kwargs)
+0178: 
+0179:         # If we don't have instructions, it might be because we are a derived generic type.
+0180:         # In that case, we should inherit the instructions from the base class.
+0181:         if cls.__doc__ is None:
+0182:             for base in bases:
+0183:                 if isinstance(base, SignatureMeta):
+0184:                     doc = getattr(base, "__doc__", "")
+0185:                     if doc != "":
+0186:                         cls.__doc__ = doc
+0187: 
+0188:         # The more likely case is that the user has just not given us a type.
+0189:         # In that case, we should default to the input/output format.
+0190:         if cls.__doc__ is None:
+0191:             cls.__doc__ = _default_instructions(cls)
+0192: 
+0193:         # Ensure all fields are declared with InputField or OutputField
+0194:         cls._validate_fields()
+0195: 
+0196:         # Ensure all fields have a prefix
+0197:         for name, field in cls.model_fields.items():
+0198:             if "prefix" not in field.json_schema_extra:
+0199:                 field.json_schema_extra["prefix"] = infer_prefix(name) + ":"
+0200:             if "desc" not in field.json_schema_extra:
+0201:                 field.json_schema_extra["desc"] = f"${{{name}}}"
+0202: 
+0203:         return cls
+0204: 
+0205:     def _validate_fields(cls):
+0206:         for name, field in cls.model_fields.items():
+0207:             extra = field.json_schema_extra or {}
+0208:             field_type = extra.get("__dspy_field_type")
+0209:             if field_type not in ["input", "output"]:
+0210:                 raise TypeError(
+0211:                     f"Field `{name}` in `{cls.__name__}` must be declared with InputField or OutputField, but "
+0212:                     f"field `{name}` has `field.json_schema_extra={field.json_schema_extra}`",
+0213:                 )
+0214: 
+0215:     @property
+0216:     def instructions(cls) -> str:
+0217:         return inspect.cleandoc(getattr(cls, "__doc__", ""))
+0218: 
+0219:     @instructions.setter
+0220:     def instructions(cls, instructions: str) -> None:
+0221:         cls.__doc__ = instructions
+0222: 
+0223:     @property
+0224:     def input_fields(cls) -> dict[str, FieldInfo]:
+0225:         return cls._get_fields_with_type("input")
+0226: 
+0227:     @property
+0228:     def output_fields(cls) -> dict[str, FieldInfo]:
+0229:         return cls._get_fields_with_type("output")
+0230: 
+0231:     @property
+0232:     def fields(cls) -> dict[str, FieldInfo]:
+0233:         # Make sure to give input fields before output fields
+0234:         return {**cls.input_fields, **cls.output_fields}
+0235: 
+0236:     @property
+0237:     def signature(cls) -> str:
+0238:         """The string representation of the signature."""
+0239:         input_fields = ", ".join(cls.input_fields.keys())
+0240:         output_fields = ", ".join(cls.output_fields.keys())
+0241:         return f"{input_fields} -> {output_fields}"
+0242: 
+0243:     def _get_fields_with_type(cls, field_type) -> dict[str, FieldInfo]:
+0244:         return {k: v for k, v in cls.model_fields.items() if v.json_schema_extra["__dspy_field_type"] == field_type}
+0245: 
+0246:     def __repr__(cls):
+0247:         """Output a representation of the signature.
+0248: 
+0249:         Uses the form:
+0250:         Signature(question, context -> answer
+0251:             question: str = InputField(desc="..."),
+0252:             context: list[str] = InputField(desc="..."),
+0253:             answer: int = OutputField(desc="..."),
+0254:         ).
+0255:         """
+0256:         field_reprs = []
+0257:         for name, field in cls.fields.items():
+0258:             field_reprs.append(f"{name} = Field({field})")
+0259:         field_repr = "\n    ".join(field_reprs)
+0260:         return f"{cls.__name__}({cls.signature}\n    instructions={cls.instructions!r}\n    {field_repr}\n)"
+0261: 
+0262: 
+0263: class Signature(BaseModel, metaclass=SignatureMeta):
+0264:     """"""
+0265: 
+0266:     # Note: Don't put a docstring here, as it will become the default instructions
+0267:     # for any signature that doesn't define its own instructions.
+0268: 
+0269:     @classmethod
+0270:     def with_instructions(cls, instructions: str) -> type["Signature"]:
+0271:         """Return a new Signature class with identical fields and new instructions.
+0272: 
+0273:         This method does not mutate `cls`. It constructs a fresh Signature
+0274:         class using the current fields and the provided `instructions`.
+0275: 
+0276:         Args:
+0277:             instructions (str): Instruction text to attach to the new signature.
+0278: 
+0279:         Returns:
+0280:             A new Signature class whose fields match `cls.fields`
+0281:             and whose instructions equal `instructions`.
+0282: 
+0283:         Examples:
+0284:             ```python
+0285:             import dspy
+0286: 
+0287:             class MySig(dspy.Signature):
+0288:                 input_text: str = dspy.InputField(desc="Input text")
+0289:                 output_text: str = dspy.OutputField(desc="Output text")
+0290: 
+0291:             NewSig = MySig.with_instructions("Translate to French.")
+0292:             assert NewSig is not MySig
+0293:             assert NewSig.instructions == "Translate to French."
+0294:             ```
+0295:         """
+0296:         return Signature(cls.fields, instructions)
+0297: 
+0298:     @classmethod
+0299:     def with_updated_fields(cls, name: str, type_: type | None = None, **kwargs: dict[str, Any]) -> type["Signature"]:
+0300:         """Create a new Signature class with the updated field information.
+0301: 
+0302:         Returns a new Signature class with the field, name, updated
+0303:         with fields[name].json_schema_extra[key] = value.
+0304: 
+0305:         Args:
+0306:             name: The name of the field to update.
+0307:             type_: The new type of the field.
+0308:             kwargs: The new values for the field.
+0309: 
+0310:         Returns:
+0311:             A new Signature class (not an instance) with the updated field information.
+0312:         """
+0313:         fields_copy = deepcopy(cls.fields)
+0314:         # Update `fields_copy[name].json_schema_extra` with the new kwargs, on conflicts
+0315:         # we use the new value in kwargs.
+0316:         fields_copy[name].json_schema_extra = {
+0317:             **fields_copy[name].json_schema_extra,
+0318:             **kwargs,
+0319:         }
+0320:         if type_ is not None:
+0321:             fields_copy[name].annotation = type_
+0322:         return Signature(fields_copy, cls.instructions)
+0323: 
+0324:     @classmethod
+0325:     def prepend(cls, name, field, type_=None) -> type["Signature"]:
+0326:         """Insert a field at index 0 of the `inputs` or `outputs` section.
+0327: 
+0328:         Args:
+0329:             name (str): Field name to add.
+0330:             field: `InputField` or `OutputField` instance to insert.
+0331:             type_ (type | None): Optional explicit type annotation. If `type_` is `None`, the effective type is
+0332:                 resolved by `insert`.
+0333: 
+0334:         Returns:
+0335:             A new `Signature` class with the field inserted first.
+0336: 
+0337:         Examples:
+0338:             ```python
+0339:             import dspy
+0340: 
+0341:             class MySig(dspy.Signature):
+0342:                 input_text: str = dspy.InputField(desc="Input sentence")
+0343:                 output_text: str = dspy.OutputField(desc="Translated sentence")
+0344: 
+0345:             NewSig = MySig.prepend("context", dspy.InputField(desc="Context for translation"))
+0346:             print(list(NewSig.fields.keys()))
+0347:             ```
+0348:         """
+0349:         return cls.insert(0, name, field, type_)
+0350: 
+0351:     @classmethod
+0352:     def append(cls, name, field, type_=None) -> type["Signature"]:
+0353:         """Insert a field at the end of the `inputs` or `outputs` section.
+0354: 
+0355:         Args:
+0356:             name (str): Field name to add.
+0357:             field: `InputField` or `OutputField` instance to insert.
+0358:             type_ (type | None): Optional explicit type annotation. If `type_` is `None`, the effective type is
+0359:                 resolved by `insert`.
+0360: 
+0361:         Returns:
+0362:             A new Signature class with the field appended.
+0363: 
+0364:         Examples:
+0365:             ```python
+0366:             import dspy
+0367: 
+0368:             class MySig(dspy.Signature):
+0369:                 input_text: str = dspy.InputField(desc="Input sentence")
+0370:                 output_text: str = dspy.OutputField(desc="Translated sentence")
+0371: 
+0372:             NewSig = MySig.append("confidence", dspy.OutputField(desc="Translation confidence"))
+0373:             print(list(NewSig.fields.keys()))
+0374:             ```
+0375:         """
+0376:         return cls.insert(-1, name, field, type_)
+0377: 
+0378:     @classmethod
+0379:     def delete(cls, name) -> type["Signature"]:
+0380:         """Return a new Signature class without the given field.
+0381: 
+0382:         If `name` is not present, the fields are unchanged (no error raised).
+0383: 
+0384:         Args:
+0385:             name (str): Field name to remove.
+0386: 
+0387:         Returns:
+0388:             A new Signature class with the field removed (or unchanged if the field was absent).
+0389: 
+0390:         Examples:
+0391:             ```python
+0392:             import dspy
+0393: 
+0394:             class MySig(dspy.Signature):
+0395:                 input_text: str = dspy.InputField(desc="Input sentence")
+0396:                 temp_field: str = dspy.InputField(desc="Temporary debug field")
+0397:                 output_text: str = dspy.OutputField(desc="Translated sentence")
+0398: 
+0399:             NewSig = MySig.delete("temp_field")
+0400:             print(list(NewSig.fields.keys()))
+0401: 
+0402:             # No error is raised if the field is not present
+0403:             Unchanged = NewSig.delete("nonexistent")
+0404:             print(list(Unchanged.fields.keys()))
+0405:             ```
+0406:         """
+0407:         fields = dict(cls.fields)
+0408: 
+0409:         fields.pop(name, None)
+0410: 
+0411:         return Signature(fields, cls.instructions)
+0412: 
+0413:     @classmethod
+0414:     def insert(cls, index: int, name: str, field, type_: type | None = None) -> type["Signature"]:
+0415:         """Insert a field at a specific position among inputs or outputs.
+0416: 
+0417:         Negative indices are supported (e.g., `-1` appends). If `type_` is omitted, the field's
+0418:         existing `annotation` is used; if that is missing, `str` is used.
+0419: 
+0420:         Args:
+0421:             index (int): Insertion position within the chosen section; negatives append.
+0422:             name (str): Field name to add.
+0423:             field: InputField or OutputField instance to insert.
+0424:             type_ (type | None): Optional explicit type annotation.
+0425: 
+0426:         Returns:
+0427:             A new Signature class with the field inserted.
+0428: 
+0429:         Raises:
+0430:             ValueError: If `index` falls outside the valid range for the chosen section.
+0431: 
+0432:         Examples:
+0433:             ```python
+0434:             import dspy
+0435: 
+0436:             class MySig(dspy.Signature):
+0437:                 input_text: str = dspy.InputField(desc="Input sentence")
+0438:                 output_text: str = dspy.OutputField(desc="Translated sentence")
+0439: 
+0440:             NewSig = MySig.insert(0, "context", dspy.InputField(desc="Context for translation"))
+0441:             print(list(NewSig.fields.keys()))
+0442: 
+0443:             NewSig2 = NewSig.insert(-1, "confidence", dspy.OutputField(desc="Translation confidence"))
+0444:             print(list(NewSig2.fields.keys()))
+0445:             ```
+0446:         """
+0447:         # It's possible to set the type as annotation=type in pydantic.Field(...)
+0448:         # But this may be annoying for users, so we allow them to pass the type
+0449:         if type_ is None:
+0450:             type_ = field.annotation
+0451:         if type_ is None:
+0452:             type_ = str
+0453: 
+0454:         input_fields = list(cls.input_fields.items())
+0455:         output_fields = list(cls.output_fields.items())
+0456: 
+0457:         # Choose the list to insert into based on the field type
+0458:         lst = input_fields if field.json_schema_extra["__dspy_field_type"] == "input" else output_fields
+0459:         # We support negative insert indices
+0460:         if index < 0:
+0461:             index += len(lst) + 1
+0462:         if index < 0 or index > len(lst):
+0463:             raise ValueError(
+0464:                 f"Invalid index to insert: {index}, index must be in the range of [{len(lst) - 1}, {len(lst)}] for "
+0465:                 f"{field.json_schema_extra['__dspy_field_type']} fields, but received: {index}.",
+0466:             )
+0467:         lst.insert(index, (name, (type_, field)))
+0468: 
+0469:         new_fields = dict(input_fields + output_fields)
+0470:         return Signature(new_fields, cls.instructions)
+0471: 
+0472:     @classmethod
+0473:     def equals(cls, other) -> bool:
+0474:         """Compare the JSON schema of two Signature classes."""
+0475:         if not isinstance(other, type) or not issubclass(other, BaseModel):
+0476:             return False
+0477:         if cls.instructions != other.instructions:
+0478:             return False
+0479:         for name in cls.fields.keys() | other.fields.keys():
+0480:             if name not in other.fields or name not in cls.fields:
+0481:                 return False
+0482:             if cls.fields[name].json_schema_extra != other.fields[name].json_schema_extra:
+0483:                 return False
+0484:         return True
+0485: 
+0486:     @classmethod
+0487:     def dump_state(cls):
+0488:         state = {"instructions": cls.instructions, "fields": []}
+0489:         for field in cls.fields:
+0490:             state["fields"].append(
+0491:                 {
+0492:                     "prefix": cls.fields[field].json_schema_extra["prefix"],
+0493:                     "description": cls.fields[field].json_schema_extra["desc"],
+0494:                 }
+0495:             )
+0496: 
+0497:         return state
+0498: 
+0499:     @classmethod
+0500:     def load_state(cls, state):
+0501:         signature_copy = Signature(deepcopy(cls.fields), cls.instructions)
+0502: 
+0503:         signature_copy.instructions = state["instructions"]
+0504:         for field, saved_field in zip(signature_copy.fields.values(), state["fields"], strict=False):
+0505:             field.json_schema_extra["prefix"] = saved_field["prefix"]
+0506:             field.json_schema_extra["desc"] = saved_field["description"]
+0507: 
+0508:         return signature_copy
+0509: 
+0510: 
+0511: def ensure_signature(signature: str | type[Signature], instructions=None) -> None | type[Signature]:
+0512:     if signature is None:
+0513:         return None
+0514:     if isinstance(signature, str):
+0515:         return Signature(signature, instructions)
+0516:     if instructions is not None:
+0517:         raise ValueError("Don't specify instructions when initializing with a Signature")
+0518:     return signature
+0519: 
+0520: 
+0521: def make_signature(
+0522:     signature: str | dict[str, tuple[type, FieldInfo]],
+0523:     instructions: str | None = None,
+0524:     signature_name: str = "StringSignature",
+0525:     custom_types: dict[str, type] | None = None,
+0526: ) -> type[Signature]:
+0527:     """Create a new Signature subclass with the specified fields and instructions.
+0528: 
+0529:     Args:
+0530:         signature: Either a string in the format "input1, input2 -> output1, output2"
+0531:             or a dictionary mapping field names to tuples of (type, FieldInfo).
+0532:         instructions: Optional string containing instructions/prompt for the signature.
+0533:             If not provided, defaults to a basic description of inputs and outputs.
+0534:         signature_name: Optional string to name the generated Signature subclass.
+0535:             Defaults to "StringSignature".
+0536:         custom_types: Optional dictionary mapping type names to their actual type objects.
+0537:             Useful for resolving custom types that aren't built-ins or in the typing module.
+0538: 
+0539:     Returns:
+0540:         A new signature class with the specified fields and instructions.
+0541: 
+0542:     Examples:
+0543: 
+0544:     ```
+0545:     # Using string format
+0546:     sig1 = make_signature("question, context -> answer")
+0547: 
+0548:     # Using dictionary format
+0549:     sig2 = make_signature({
+0550:         "question": (str, InputField()),
+0551:         "answer": (str, OutputField())
+0552:     })
+0553: 
+0554:     # Using custom types
+0555:     class MyType:
+0556:         pass
+0557: 
+0558:     sig3 = make_signature("input: MyType -> output", custom_types={"MyType": MyType})
+0559:     ```
+0560:     """
+0561:     # Prepare the names dictionary for type resolution
+0562:     names = None
+0563:     if custom_types:
+0564:         names = dict(typing.__dict__)
+0565:         names.update(custom_types)
+0566: 
+0567:     fields = _parse_signature(signature, names) if isinstance(signature, str) else signature
+0568: 
+0569:     # Validate the fields, this is important because we sometimes forget the
+0570:     # slightly unintuitive syntax with tuples of (type, Field)
+0571:     fixed_fields = {}
+0572:     for name, type_field in fields.items():
+0573:         if not isinstance(name, str):
+0574:             raise ValueError(f"Field names must be strings, but received: {name}.")
+0575:         if isinstance(type_field, FieldInfo):
+0576:             type_ = type_field.annotation
+0577:             field = type_field
+0578:         else:
+0579:             if not isinstance(type_field, tuple):
+0580:                 raise ValueError(f"Field values must be tuples, but received: {type_field}.")
+0581:             type_, field = type_field
+0582:         # It might be better to be explicit about the type, but it currently would break
+0583:         # program of thought and teleprompters, so we just silently default to string.
+0584:         if type_ is None:
+0585:             type_ = str
+0586:         if not isinstance(
+0587:             type_, (type, typing._GenericAlias, types.GenericAlias, typing._SpecialForm, types.UnionType)
+0588:         ):
+0589:             raise ValueError(f"Field types must be types, but received: {type_} of type {type(type_)}.")
+0590:         if not isinstance(field, FieldInfo):
+0591:             raise ValueError(f"Field values must be Field instances, but received: {field}.")
+0592:         fixed_fields[name] = (type_, field)
+0593: 
+0594:     # Default prompt when no instructions are provided
+0595:     if instructions is None:
+0596:         sig = Signature(signature, "")  # Simple way to parse input/output fields
+0597:         instructions = _default_instructions(sig)
+0598: 
+0599:     return create_model(
+0600:         signature_name,
+0601:         __base__=Signature,
+0602:         __doc__=instructions,
+0603:         **fixed_fields,
+0604:     )
+0605: 
+0606: 
+0607: def _parse_signature(signature: str, names=None) -> dict[str, tuple[type, Any]]:
+0608:     if signature.count("->") != 1:
+0609:         raise ValueError(f"Invalid signature format: '{signature}', must contain exactly one '->'.")
+0610: 
+0611:     inputs_str, outputs_str = signature.split("->")
+0612: 
+0613:     input_fields = list(_parse_field_string(inputs_str, names))
+0614:     output_fields = list(_parse_field_string(outputs_str, names))
+0615:     duplicate_field_names = sorted({field_name for field_name, *_ in input_fields}.intersection(
+0616:         field_name for field_name, *_ in output_fields
+0617:     ))
+0618:     if duplicate_field_names:
+0619:         raise ValueError(
+0620:             "Input and output fields must have distinct names, but found duplicates: "
+0621:             f"'{', '.join(duplicate_field_names)}'."
+0622:         )
+0623: 
+0624:     fields = {}
+0625:     for field_name, field_type, is_type_undefined in input_fields:
+0626:         fields[field_name] = (field_type, InputField(IS_TYPE_UNDEFINED= is_type_undefined))
+0627:     for field_name, field_type, _ in output_fields:
+0628:         fields[field_name] = (field_type, OutputField())
+0629: 
+0630:     return fields
+0631: 
+0632: 
+0633: def _parse_field_string(field_string: str, names=None) -> Iterator[tuple[str, type, bool]]:
+0634:     """Extract the field name and type from field string in the string-based Signature.
+0635: 
+0636:     It takes a string like "x: int, y: str" and returns a dictionary mapping field names to their types.
+0637:     For example, "x: int, y: str" -> [("x", int), ("y", str)]. This function utilizes the Python AST to parse the
+0638:     fields and types.
+0639:     """
+0640: 
+0641:     args = ast.parse(f"def f({field_string}): pass").body[0].args.args
+0642:     field_names: list[str] = [arg.arg for arg in args]
+0643:     types_list: list[type] = [str if arg.annotation is None else _parse_type_node(arg.annotation, names) for arg in args]
+0644:     is_type_undefined: list[bool] = [True if arg.annotation is None else False for arg in args]
+0645:     return zip(field_names, types_list, is_type_undefined, strict=False)
+0646: 
+0647: 
+0648: def _parse_type_node(node, names=None) -> Any:
+0649:     """Recursively parse an AST node representing a type annotation.
+0650: 
+0651:     This function converts Python's Abstract Syntax Tree (AST) nodes into actual Python types.
+0652:     It's used to parse type annotations in signature strings like "x: list[int] -> y: str".
+0653: 
+0654:     Examples:
+0655:         - For "x: int", the AST node represents 'int' and returns the int type
+0656:         - For "x: list[str]", it processes a subscript node to return typing.list[str]
+0657:         - For "x: Optional[int]", it handles the Union type to return Optional[int]
+0658:         - For "x: MyModule.CustomType", it processes attribute access to return the actual type
+0659: 
+0660:     Args:
+0661:         node: An AST node from Python's ast module, representing a type annotation.
+0662:             Common node types include:
+0663:             - ast.Name: Simple types like 'int', 'str'
+0664:             - ast.Attribute: Nested types like 'typing.List'
+0665:             - ast.Subscript: Generic types like 'list[int]'
+0666:         names: Optional dictionary mapping type names to their actual type objects.
+0667:             Defaults to Python's typing module contents plus NoneType.
+0668: 
+0669:     Returns:
+0670:         The actual Python type represented by the AST node.
+0671: 
+0672:     Raises:
+0673:         ValueError: If the AST node represents an unknown or invalid type annotation.
+0674:     """
+0675: 
+0676:     if names is None:
+0677:         names = dict(typing.__dict__)
+0678:         names["NoneType"] = type(None)
+0679: 
+0680:     def resolve_name(type_name: str):
+0681:         # Check if it's a built-in known type or in the provided names
+0682:         if type_name in names:
+0683:             return names[type_name]
+0684:         # Common built-in types
+0685:         builtin_types = [int, str, float, bool, list, tuple, dict, set, frozenset, complex, bytes, bytearray]
+0686: 
+0687:         # Check if it matches any known built-in type by name
+0688:         for t in builtin_types:
+0689:             if t.__name__ == type_name:
+0690:                 return t
+0691: 
+0692:         # Attempt to import a module with this name dynamically
+0693:         # This allows handling of module-based annotations like `dspy.Image`.
+0694:         try:
+0695:             mod = importlib.import_module(type_name)
+0696:             names[type_name] = mod
+0697:             return mod
+0698:         except ImportError:
+0699:             pass
+0700: 
+0701:         # If we don't know the type or module, raise an error
+0702:         raise ValueError(f"Unknown name: {type_name}")
+0703: 
+0704:     if isinstance(node, ast.Module):
+0705:         if len(node.body) != 1:
+0706:             raise ValueError(f"Code is not syntactically valid: {ast.dump(node)}")
+0707:         return _parse_type_node(node.body[0], names)
+0708: 
+0709:     if isinstance(node, ast.Expr):
+0710:         return _parse_type_node(node.value, names)
+0711: 
+0712:     if isinstance(node, ast.Name):
+0713:         return resolve_name(node.id)
+0714: 
+0715:     if isinstance(node, ast.Attribute):
+0716:         base = _parse_type_node(node.value, names)
+0717:         attr_name = node.attr
+0718: 
+0719:         if hasattr(base, attr_name):
+0720:             return getattr(base, attr_name)
+0721: 
+0722:         if isinstance(node.value, ast.Name):
+0723:             full_name = f"{node.value.id}.{attr_name}"
+0724:             if full_name in names:
+0725:                 return names[full_name]
+0726: 
+0727:         raise ValueError(f"Unknown attribute: {attr_name} on {base}")
+0728: 
+0729:     if isinstance(node, ast.Subscript):
+0730:         base_type = _parse_type_node(node.value, names)
+0731:         slice_node = node.slice
+0732:         if isinstance(slice_node, ast.Index):  # For older Python versions
+0733:             slice_node = slice_node.value
+0734: 
+0735:         if isinstance(slice_node, ast.Tuple):
+0736:             arg_types = tuple(_parse_type_node(elt, names) for elt in slice_node.elts)
+0737:         else:
+0738:             arg_types = (_parse_type_node(slice_node, names),)
+0739: 
+0740:         # Special handling for Union, Optional
+0741:         if base_type is typing.Union:
+0742:             return typing.Union[arg_types]
+0743:         if base_type is typing.Optional:
+0744:             if len(arg_types) != 1:
+0745:                 raise ValueError("Optional must have exactly one type argument")
+0746:             return typing.Optional[arg_types[0]]
+0747: 
+0748:         return base_type[arg_types]
+0749: 
+0750:     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+0751:         # Handle PEP 604: int | None, str | float, etc.
+0752:         left = _parse_type_node(node.left, names)
+0753:         right = _parse_type_node(node.right, names)
+0754: 
+0755:         # Optional[X] is Union[X, NoneType]
+0756:         if right is type(None):
+0757:             return typing.Optional[left]
+0758:         if left is type(None):
+0759:             return typing.Optional[right]
+0760:         return typing.Union[left, right]
+0761: 
+0762:     if isinstance(node, ast.Tuple):
+0763:         return tuple(_parse_type_node(elt, names) for elt in node.elts)
+0764: 
+0765:     if isinstance(node, ast.Constant):
+0766:         return node.value
+0767: 
+0768:     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Field":
+0769:         keys = [kw.arg for kw in node.keywords]
+0770:         values = []
+0771:         for kw in node.keywords:
+0772:             if isinstance(kw.value, ast.Constant):
+0773:                 values.append(kw.value.value)
+0774:             else:
+0775:                 values.append(_parse_type_node(kw.value, names))
+0776:         return Field(**dict(zip(keys, values, strict=False)))
+0777: 
+0778:     raise ValueError(
+0779:         f"Failed to parse string-base Signature due to unhandled AST node type in annotation: {ast.dump(node)}. "
+0780:         "Please consider using class-based DSPy Signatures instead."
+0781:     )
+0782: 
+0783: 
+0784: def infer_prefix(attribute_name: str) -> str:
+0785:     """Infer a prefix from an attribute name by converting it to a human-readable format.
+0786: 
+0787:     Examples:
+0788:         "camelCaseText" -> "Camel Case Text"
+0789:         "snake_case_text" -> "Snake Case Text"
+0790:         "text2number" -> "Text 2 Number"
+0791:         "HTMLParser" -> "HTML Parser"
+0792:     """
+0793:     # Step 1: Convert camelCase to snake_case
+0794:     # Example: "camelCase" -> "camel_Case"
+0795:     s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", attribute_name)
+0796: 
+0797:     # Handle consecutive capitals
+0798:     # Example: "camel_Case" -> "camel_case"
+0799:     intermediate_name = re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1)
+0800: 
+0801:     # Step 2: Handle numbers by adding underscores around them
+0802:     # Example: "text2number" -> "text_2_number"
+0803:     with_underscores_around_numbers = re.sub(
+0804:         r"([a-zA-Z])(\d)",  # Match letter followed by number
+0805:         r"\1_\2",  # Add underscore between them
+0806:         intermediate_name,
+0807:     )
+0808:     # Example: "2text" -> "2_text"
+0809:     with_underscores_around_numbers = re.sub(
+0810:         r"(\d)([a-zA-Z])",  # Match number followed by letter
+0811:         r"\1_\2",  # Add underscore between them
+0812:         with_underscores_around_numbers,
+0813:     )
+0814: 
+0815:     # Step 3: Convert to Title Case while preserving acronyms
+0816:     words = with_underscores_around_numbers.split("_")
+0817:     title_cased_words = []
+0818:     for word in words:
+0819:         if word.isupper():
+0820:             # Preserve acronyms like 'HTML', 'API' as-is
+0821:             title_cased_words.append(word)
+0822:         else:
+0823:             # Capitalize first letter: 'text' -> 'Text'
+0824:             title_cased_words.append(word.capitalize())
+0825: 
+0826:     # Join words with spaces
+0827:     # Example: ["Text", "2", "Number"] -> "Text 2 Number"
+0828:     return " ".join(title_cased_words)
+
+### dspy/predict/predict.py
+0001: import logging
+0002: import random
+0003: from typing import Any, Literal, get_args, get_origin
+0004: 
+0005: from pydantic import BaseModel
+0006: from pydantic_core import PydanticUndefined
+0007: from typeguard import TypeCheckError, check_type
+0008: 
+0009: from dspy.adapters.chat_adapter import ChatAdapter
+0010: from dspy.clients.base_lm import BaseLM
+0011: from dspy.clients.lm import LM
+0012: from dspy.dsp.utils.settings import settings
+0013: from dspy.predict.parameter import Parameter
+0014: from dspy.primitives.module import Module
+0015: from dspy.primitives.prediction import Prediction
+0016: from dspy.signatures.signature import Signature, ensure_signature
+0017: from dspy.utils.callback import BaseCallback
+0018: from dspy.utils.constants import IS_TYPE_UNDEFINED
+0019: 
+0020: logger = logging.getLogger(__name__)
+0021: 
+0022: UNSAFE_LM_STATE_KEYS = {"api_base", "base_url", "model_list"}
+0023: 
+0024: 
+0025: def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
+0026:     if allow_unsafe_lm_state:
+0027:         return lm_state
+0028: 
+0029:     unsafe_keys = sorted(UNSAFE_LM_STATE_KEYS.intersection(lm_state))
+0030: 
+0031:     if not unsafe_keys:
+0032:         return lm_state
+0033: 
+0034:     sanitized_lm_state = {k: v for k, v in lm_state.items() if k not in UNSAFE_LM_STATE_KEYS}
+0035:     logger.warning(
+0036:         "Ignoring unsafe LM config key(s) during state load: %s. "
+0037:         "Pass allow_unsafe_lm_state=True to preserve these keys for trusted files.",
+0038:         unsafe_keys,
+0039:     )
+0040:     return sanitized_lm_state
+0041: 
+0042: 
+0043: class Predict(Module, Parameter):
+0044:     """Basic DSPy module that maps inputs to outputs using a language model.
+0045: 
+0046:     Args:
+0047:         signature: The input/output signature describing the task.
+0048:         callbacks: Optional list of callbacks for instrumentation.
+0049:         **config: Default keyword arguments forwarded to the underlying
+0050:             language model. These values can be overridden for a single
+0051:             invocation by passing a ``config`` dictionary when calling the
+0052:             module. For example::
+0053: 
+0054:                 predict = dspy.Predict("q -> a", rollout_id=1, temperature=1.0)
+0055:                 predict(q="What is 1 + 52?", config={"rollout_id": 2, "temperature": 1.0})
+0056:     """
+0057: 
+0058:     def __init__(self, signature: str | type[Signature], callbacks: list[BaseCallback] | None = None, **config):
+0059:         super().__init__(callbacks=callbacks)
+0060:         self.stage = random.randbytes(8).hex()
+0061:         self.signature = ensure_signature(signature)
+0062:         self.config = config
+0063:         self.reset()
+0064: 
+0065:     def reset(self):
+0066:         self.lm = None
+0067:         self.traces = []
+0068:         self.train = []
+0069:         self.demos = []
+0070: 
+0071:     def dump_state(self, json_mode=True):
+0072:         state_keys = ["traces", "train"]
+0073:         state = {k: getattr(self, k) for k in state_keys}
+0074: 
+0075:         state["demos"] = []
+0076:         for demo in self.demos:
+0077:             demo = demo.copy()
+0078: 
+0079:             for field in demo:
+0080:                 # FIXME: Saving BaseModels as strings in examples doesn't matter because you never re-access as an object
+0081:                 demo[field] = serialize_object(demo[field])
+0082: 
+0083:             if isinstance(demo, dict) or not json_mode:
+0084:                 state["demos"].append(demo)
+0085:             else:
+0086:                 state["demos"].append(demo.toDict())
+0087: 
+0088:         state["signature"] = self.signature.dump_state()
+0089:         state["lm"] = self.lm.dump_state() if self.lm else None
+0090:         return state
+0091: 
+0092:     def load_state(self, state: dict, *, allow_unsafe_lm_state: bool = False) -> "Predict":
+0093:         """Load the saved state of a `Predict` object.
+0094: 
+0095:         Args:
+0096:             state: The saved state of a `Predict` object.
+0097:             allow_unsafe_lm_state: If True, preserves `api_base`, `base_url`, and `model_list` from
+0098:                 serialized LM state. Enable only when loading trusted files.
+0099: 
+0100:         Returns:
+0101:             Self to allow method chaining.
+0102:         """
+0103:         excluded_keys = ["signature", "extended_signature", "lm"]
+0104:         for name, value in state.items():
+0105:             # `excluded_keys` are fields that go through special handling.
+0106:             if name not in excluded_keys:
+0107:                 setattr(self, name, value)
+0108: 
+0109:         self.signature = self.signature.load_state(state["signature"])
+0110:         sanitized_lm_state = _sanitize_lm_state(state["lm"], allow_unsafe_lm_state) if state["lm"] else None
+0111:         self.lm = LM(**sanitized_lm_state) if sanitized_lm_state else None
+0112: 
+0113:         if "extended_signature" in state:  # legacy, up to and including 2.5, for CoT.
+0114:             raise NotImplementedError("Loading extended_signature is no longer supported in DSPy 2.6+")
+0115: 
+0116:         return self
+0117: 
+0118:     def _get_positional_args_error_message(self):
+0119:         input_fields = list(self.signature.input_fields.keys())
+0120:         return (
+0121:             "Positional arguments are not allowed when calling `dspy.Predict`, must use keyword arguments "
+0122:             f"that match your signature input fields: '{', '.join(input_fields)}'. For example: "
+0123:             f"`predict({input_fields[0]}=input_value, ...)`."
+0124:         )
+0125: 
+0126:     def __call__(self, *args, **kwargs):
+0127:         if args:
+0128:             raise ValueError(self._get_positional_args_error_message())
+0129: 
+0130:         return super().__call__(**kwargs)
+0131: 
+0132:     async def acall(self, *args, **kwargs):
+0133:         if args:
+0134:             raise ValueError(self._get_positional_args_error_message())
+0135: 
+0136:         return await super().acall(**kwargs)
+0137: 
+0138:     def _forward_preprocess(self, **kwargs):
+0139:         # Extract the three privileged keyword arguments.
+0140:         assert "new_signature" not in kwargs, "new_signature is no longer a valid keyword argument."
+0141:         signature = ensure_signature(kwargs.pop("signature", self.signature))
+0142:         demos = kwargs.pop("demos", self.demos)
+0143:         config = {**self.config, **kwargs.pop("config", {})}
+0144: 
+0145:         # Get the right LM to use.
+0146:         lm = kwargs.pop("lm", self.lm) or settings.lm
+0147: 
+0148:         if lm is None:
+0149:             raise ValueError(
+0150:                 "No LM is loaded. Please configure the LM using `dspy.configure(lm=dspy.LM(...))`. e.g, "
+0151:                 "`dspy.configure(lm=dspy.LM('openai/gpt-4o-mini'))`"
+0152:             )
+0153: 
+0154:         if isinstance(lm, str):
+0155:             # Many users mistakenly use `dspy.configure(lm="openai/gpt-4o-mini")` instead of
+0156:             # `dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))`, so we are providing a specific error message.
+0157:             raise ValueError(
+0158:                 f"LM must be an instance of `dspy.BaseLM`, not a string. Instead of using a string like "
+0159:                 f"'dspy.configure(lm=\"{lm}\")', please configure the LM like 'dspy.configure(lm=dspy.LM(\"{lm}\"))'"
+0160:             )
+0161:         elif not isinstance(lm, BaseLM):
+0162:             raise ValueError(f"LM must be an instance of `dspy.BaseLM`, not {type(lm)}. Received `lm={lm}`.")
+0163: 
+0164:         # If temperature is unset or <=0.15, and n > 1, set temperature to 0.7 to keep randomness.
+0165:         temperature = config.get("temperature") or lm.kwargs.get("temperature")
+0166:         num_generations = config.get("n") or lm.kwargs.get("n") or lm.kwargs.get("num_generations") or 1
+0167: 
+0168:         if (temperature is None or temperature <= 0.15) and num_generations > 1:
+0169:             config["temperature"] = 0.7
+0170: 
+0171:         if "prediction" in kwargs:
+0172:             if (
+0173:                 isinstance(kwargs["prediction"], dict)
+0174:                 and kwargs["prediction"].get("type") == "content"
+0175:                 and "content" in kwargs["prediction"]
+0176:             ):
+0177:                 # If the `prediction` is the standard predicted outputs format
+0178:                 # (https://platform.openai.com/docs/guides/predicted-outputs), we remove it from input kwargs and add it
+0179:                 # to the lm kwargs.
+0180:                 config["prediction"] = kwargs.pop("prediction")
+0181: 
+0182:         # Populate default values for missing input fields.
+0183:         for k, v in signature.input_fields.items():
+0184:             if k not in kwargs and v.default is not PydanticUndefined:
+0185:                 kwargs[k] = v.default
+0186: 
+0187:         # Check and warn for extra fields not in signature
+0188:         extra_fields = [k for k in kwargs if k not in signature.input_fields]
+0189:         if extra_fields:
+0190:             logger.warning(
+0191:                 "Input contains fields not in signature. These fields will be ignored: %s. "
+0192:                 "Expected fields: %s.",
+0193:                 extra_fields,
+0194:                 list(signature.input_fields.keys()),
+0195:             )
+0196: 
+0197:         # Validate input field types match signature
+0198:         if settings.warn_on_type_mismatch:
+0199:             for field_name, field_info in signature.input_fields.items():
+0200:                 if field_name in kwargs:
+0201:                     value = kwargs[field_name]
+0202:                     expected_type: type = field_info.annotation
+0203: 
+0204:                     if value is None or field_info.json_schema_extra.get(IS_TYPE_UNDEFINED, False):
+0205:                         continue
+0206: 
+0207:                     if not _is_value_compatible_with_type(value, expected_type):
+0208:                         logger.warning(
+0209:                             "Type mismatch for field '%s': expected %s based on given Signature, "
+0210:                             "but the provided value is incompatible: %s.",
+0211:                             field_name,
+0212:                             _get_type_name(expected_type),
+0213:                             value,
+0214:                         )
+0215: 
+0216:         if not all(k in kwargs for k in signature.input_fields):
+0217:             present = [k for k in signature.input_fields if k in kwargs]
+0218:             missing = [k for k in signature.input_fields if k not in kwargs]
+0219:             logger.warning(
+0220:                 "Not all input fields were provided to module. Present: %s. Missing: %s.",
+0221:                 present,
+0222:                 missing,
+0223:             )
+0224:         return lm, config, signature, demos, kwargs
+0225: 
+0226:     def _forward_postprocess(self, completions, signature, **kwargs):
+0227:         pred = Prediction.from_completions(completions, signature=signature)
+0228:         if kwargs.pop("_trace", True) and settings.trace is not None and settings.max_trace_size > 0:
+0229:             trace = settings.trace
+0230:             if len(trace) >= settings.max_trace_size:
+0231:                 trace.pop(0)
+0232:             trace.append((self, {**kwargs}, pred))
+0233:         return pred
+0234: 
+0235:     def _should_stream(self):
+0236:         stream_listeners = settings.stream_listeners or []
+0237:         should_stream = settings.send_stream is not None
+0238:         if should_stream and len(stream_listeners) > 0:
+0239:             should_stream = any(stream_listener.predict == self for stream_listener in stream_listeners)
+0240: 
+0241:         return should_stream
+0242: 
+0243:     def forward(self, **kwargs):
+0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+0245: 
+0246:         adapter = settings.adapter or ChatAdapter()
+0247: 
+0248:         if self._should_stream():
+0249:             with settings.context(caller_predict=self):
+0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0251:         else:
+0252:             with settings.context(send_stream=None):
+0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0254: 
+0255:         return self._forward_postprocess(completions, signature, **kwargs)
+0256: 
+0257:     async def aforward(self, **kwargs):
+0258:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+0259: 
+0260:         adapter = settings.adapter or ChatAdapter()
+0261:         if self._should_stream():
+0262:             with settings.context(caller_predict=self):
+0263:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0264:         else:
+0265:             with settings.context(send_stream=None):
+0266:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0267: 
+0268:         return self._forward_postprocess(completions, signature, **kwargs)
+0269: 
+0270:     def update_config(self, **kwargs):
+0271:         self.config = {**self.config, **kwargs}
+0272: 
+0273:     def get_config(self):
+0274:         return self.config
+0275: 
+0276:     def __repr__(self):
+0277:         return f"{self.__class__.__name__}({self.signature})"
+0278: 
+0279: def _get_type_name(type_annotation) -> str:
+0280:     """Helper method to get the name for a type annotation."""
+0281: 
+0282:     origin = get_origin(type_annotation)
+0283:     args = get_args(type_annotation)
+0284: 
+0285:     if origin is None:
+0286:         # Primitives like str, int, etc.
+0287:         if hasattr(type_annotation, "__name__"):
+0288:             return type_annotation.__name__
+0289:         return str(type_annotation)
+0290: 
+0291:     # Handle Literal types
+0292:     if origin is Literal:
+0293:         literal_values = ", ".join(repr(arg) for arg in args)
+0294:         return f"Literal[{literal_values}]"
+0295: 
+0296:     # Types like list[str], dict[str, int], generics, etc.
+0297:     if args:
+0298:         # Handle Ellipsis in tuples (e.g., tuple[int, ...])
+0299:         args_str = ", ".join("..." if arg is ... else _get_type_name(arg) for arg in args)
+0300:         origin_name = getattr(origin, "__name__", str(origin))
+0301:         return f"{origin_name}[{args_str}]"
+0302: 
+0303:     return getattr(origin, "__name__", str(origin))
+0304: 
+0305: def _is_value_compatible_with_type(value: Any, expected: type) -> bool:
+0306:     """Return True if the value matches the expected type hint."""
+0307:     try:
+0308:         # Special handle list[str] because we allow setting input type to str, however, invoking with a list thereof.
+0309:         if expected is str and isinstance(value, list):
+0310:             if all(isinstance(item, str) for item in value):
+0311:                 return True
+0312: 
+0313:         check_type(value, expected)
+0314:         return True
+0315:     except TypeCheckError:
+0316:         return False
+0317: 
+0318: def serialize_object(obj):
+0319:     """
+0320:     Recursively serialize a given object into a JSON-compatible format.
+0321:     Supports Pydantic models, lists, dicts, and primitive types.
+0322:     """
+0323:     if isinstance(obj, BaseModel):
+0324:         # Use model_dump with mode="json" to ensure all fields (including HttpUrl, datetime, etc.)
+0325:         # are converted to JSON-serializable types (strings)
+0326:         return obj.model_dump(mode="json")
+0327:     elif isinstance(obj, list):
+0328:         return [serialize_object(item) for item in obj]
+0329:     elif isinstance(obj, tuple):
+0330:         return tuple(serialize_object(item) for item in obj)
+0331:     elif isinstance(obj, dict):
+0332:         return {key: serialize_object(value) for key, value in obj.items()}
+0333:     else:
+0334:         return obj
+0335: 
+0336: 
+0337: # # TODO: FIXME: Hmm, I guess expected behavior is that contexts can
+0338: # affect execution. Well, we need to determine whether context dominates, __init__ demoninates, or forward dominates.
+0339: # Generally, unless overwritten, we'd see n=None, temperature=None.
+0340: # That will eventually mean we have to learn them.
+
+Return JSON that matches the schema exactly.

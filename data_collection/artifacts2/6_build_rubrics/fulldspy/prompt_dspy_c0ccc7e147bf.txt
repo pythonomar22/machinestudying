@@ -1,0 +1,587 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_c0ccc7e147bf`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `When a predictor output is badly formatted during reflective data collection, I need to know whether DSPy turns that failure into explicit feedback or just drops the example. I can imagine either policy being useful depending on configuration, so I want both sides demonstrated in one place.
+
+Give me a complete, runnable Python program that stays offline, feeds one failed-format trace into the reflection-data path twice under two configurations, and prints/asserts the drop-vs-feedback behavior.`
+- Gold answer:
+```python
+import types
+
+import dspy
+from dspy.teleprompt.bootstrap_trace import FailedPrediction
+from dspy.teleprompt.gepa.gepa_utils import DspyAdapter
+
+
+class TinyProgram(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.predictor = dspy.Predict("question -> answer")
+
+    def forward(self, question):
+        return self.predictor(question=question)
+
+
+student = TinyProgram()
+predictor = student.predictor
+candidate = {"predictor": predictor.signature.instructions}
+failed = FailedPrediction(completion_text="RAW BAD OUTPUT", format_reward=0.0)
+row = {
+    "example": dspy.Example(question="Q", answer="A").with_inputs("question"),
+    "prediction": failed,
+    "trace": [(predictor, {"question": "Q"}, failed)],
+    "score": 0.0,
+}
+eval_batch = types.SimpleNamespace(trajectories=[row])
+unused_feedback = {"predictor": lambda **kwargs: dspy.Prediction(score=0.0, feedback="unused")}
+
+adapter_drop = DspyAdapter(
+    student_module=student,
+    metric_fn=lambda *args, **kwargs: 0.0,
+    feedback_map=unused_feedback,
+    add_format_failure_as_feedback=False,
+)
+try:
+    adapter_drop.make_reflective_dataset(candidate, eval_batch, ["predictor"])
+except Exception as e:
+    print("without_feedback_toggle:", str(e))
+    assert "No valid predictions found" in str(e)
+else:
+    raise AssertionError("Expected the failed-format example to be dropped.")
+
+adapter_keep = DspyAdapter(
+    student_module=student,
+    metric_fn=lambda *args, **kwargs: 0.0,
+    feedback_map=unused_feedback,
+    add_format_failure_as_feedback=True,
+)
+dataset = adapter_keep.make_reflective_dataset(candidate, eval_batch, ["predictor"])
+kept = dataset["predictor"][0]
+print("generated_outputs:", kept["Generated Outputs"])
+print("feedback:", kept["Feedback"])
+assert "RAW BAD OUTPUT" in kept["Generated Outputs"]
+assert kept["Feedback"].startswith("Your output failed to parse.")
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/teleprompt/gepa/gepa_utils.py",
+    "symbol": "DspyAdapter.make_reflective_dataset"
+  },
+  {
+    "file": "dspy/teleprompt/bootstrap_trace.py",
+    "symbol": "FailedPrediction"
+  }
+]
+
+## Full evidence files
+### dspy/teleprompt/gepa/gepa_utils.py
+0001: import logging
+0002: import random
+0003: from typing import Any, Callable, Protocol, TypedDict
+0004: 
+0005: from gepa import EvaluationBatch, GEPAAdapter
+0006: from gepa.core.adapter import ProposalFn
+0007: from gepa.strategies.instruction_proposal import InstructionProposalSignature
+0008: 
+0009: import dspy
+0010: from dspy.adapters.chat_adapter import ChatAdapter
+0011: from dspy.adapters.types import History
+0012: from dspy.adapters.types.base_type import Type
+0013: from dspy.evaluate import Evaluate
+0014: from dspy.primitives import Example, Prediction
+0015: from dspy.teleprompt.bootstrap_trace import FailedPrediction, TraceData
+0016: 
+0017: logger = logging.getLogger(__name__)
+0018: 
+0019: 
+0020: class LoggerAdapter:
+0021:     def __init__(self, logger: logging.Logger):
+0022:         self.logger = logger
+0023: 
+0024:     def log(self, x: str):
+0025:         self.logger.info(x)
+0026: 
+0027: 
+0028: DSPyTrace = list[tuple[Any, dict[str, Any], Prediction]]
+0029: 
+0030: ReflectiveExample = TypedDict(
+0031:     "ReflectiveExample",
+0032:     {
+0033:         "Inputs": dict[str, Any],
+0034:         "Generated Outputs": dict[str, Any] | str,
+0035:         "Feedback": str,
+0036:     },
+0037: )
+0038: 
+0039: ReflectiveExample.__doc__ = """
+0040: Structure of individual examples in the reflective dataset.
+0041: 
+0042: Each example contains the predictor inputs, generated outputs, and feedback from evaluation.
+0043: """
+0044: 
+0045: 
+0046: class ScoreWithFeedback(Prediction):
+0047:     score: float
+0048:     feedback: str
+0049: 
+0050: 
+0051: class PredictorFeedbackFn(Protocol):
+0052:     def __call__(
+0053:         self,
+0054:         predictor_output: dict[str, Any],
+0055:         predictor_inputs: dict[str, Any],
+0056:         module_inputs: Example,
+0057:         module_outputs: Prediction,
+0058:         captured_trace: DSPyTrace,
+0059:     ) -> ScoreWithFeedback:
+0060:         """
+0061:         This function is used to provide feedback to a specific predictor.
+0062:         The function is called with the following arguments:
+0063:         - predictor_output: The output of the predictor.
+0064:         - predictor_inputs: The inputs to the predictor.
+0065:         - module_inputs: The inputs to the whole program --- `Example`.
+0066:         - module_outputs: The outputs of the whole program --- `Prediction`.
+0067:         - captured_trace: The trace of the module's execution.
+0068:         # Shape of trace is: [predictor_invocation_idx -> Tuple[Predictor, PredictorInputs, Prediction]]
+0069:         # Each trace is a tuple of (Predictor, PredictorInputs, Prediction)
+0070: 
+0071:         The function should return a `ScoreWithFeedback` object.
+0072:         The feedback is a string that is used to guide the evolution of the predictor.
+0073:         """
+0074:         ...
+0075: 
+0076: 
+0077: class DspyAdapter(GEPAAdapter[Example, TraceData, Prediction]):
+0078:     def __init__(
+0079:         self,
+0080:         student_module,
+0081:         metric_fn: Callable,
+0082:         feedback_map: dict[str, Callable],
+0083:         failure_score=0.0,
+0084:         num_threads: int | None = None,
+0085:         add_format_failure_as_feedback: bool = False,
+0086:         rng: random.Random | None = None,
+0087:         reflection_lm=None,
+0088:         custom_instruction_proposer: "ProposalFn | None" = None,
+0089:         warn_on_score_mismatch: bool = True,
+0090:         reflection_minibatch_size: int | None = None,
+0091:     ):
+0092:         self.student = student_module
+0093:         self.metric_fn = metric_fn
+0094:         self.feedback_map = feedback_map
+0095:         self.failure_score = failure_score
+0096:         self.num_threads = num_threads
+0097:         self.add_format_failure_as_feedback = add_format_failure_as_feedback
+0098:         self.rng = rng or random.Random(0)
+0099:         self.reflection_lm = reflection_lm
+0100:         self.custom_instruction_proposer = custom_instruction_proposer
+0101:         self.warn_on_score_mismatch = warn_on_score_mismatch
+0102:         self.reflection_minibatch_size = reflection_minibatch_size
+0103: 
+0104:     def propose_new_texts(
+0105:         self,
+0106:         candidate: dict[str, str],
+0107:         reflective_dataset: dict[str, list[dict[str, Any]]],
+0108:         components_to_update: list[str],
+0109:     ) -> dict[str, str]:
+0110:         reflection_lm = self.reflection_lm or dspy.settings.lm
+0111:         # If custom proposer provided, override everything with custom proposer
+0112:         if self.custom_instruction_proposer:
+0113:             with dspy.context(lm=reflection_lm):
+0114:                 return self.custom_instruction_proposer(
+0115:                     candidate=candidate,
+0116:                     reflective_dataset=reflective_dataset,
+0117:                     components_to_update=components_to_update,
+0118:                 )
+0119: 
+0120:         results: dict[str, str] = {}
+0121: 
+0122:         with dspy.context(lm=reflection_lm):
+0123:             for name in components_to_update:
+0124:                 base_instruction = candidate[name]
+0125:                 dataset_with_feedback = reflective_dataset[name]
+0126:                 results[name] = InstructionProposalSignature.run(
+0127:                     lm=(lambda x: self.stripped_lm_call(x)[0]),
+0128:                     input_dict={
+0129:                         "current_instruction_doc": base_instruction,
+0130:                         "dataset_with_feedback": dataset_with_feedback,
+0131:                     },
+0132:                 )["new_instruction"]
+0133: 
+0134:         return results
+0135: 
+0136:     def build_program(self, candidate: dict[str, str]):
+0137:         new_prog = self.student.deepcopy()
+0138: 
+0139:         for name, pred in new_prog.named_predictors():
+0140:             if name in candidate:
+0141:                 pred.signature = pred.signature.with_instructions(candidate[name])
+0142: 
+0143:         return new_prog
+0144: 
+0145:     def evaluate(self, batch, candidate, capture_traces=False):
+0146:         program = self.build_program(candidate)
+0147:         callback_metadata = (
+0148:             {"metric_key": "eval_full"}
+0149:             if self.reflection_minibatch_size is None or len(batch) > self.reflection_minibatch_size
+0150:             else {"disable_logging": True}
+0151:         )
+0152: 
+0153:         if capture_traces:
+0154:             # bootstrap_trace_data-like flow with trace capture
+0155:             from dspy.teleprompt import bootstrap_trace as bootstrap_trace_module
+0156: 
+0157:             trajs = bootstrap_trace_module.bootstrap_trace_data(
+0158:                 program=program,
+0159:                 dataset=batch,
+0160:                 metric=self.metric_fn,
+0161:                 num_threads=self.num_threads,
+0162:                 raise_on_error=False,
+0163:                 capture_failed_parses=True,
+0164:                 failure_score=self.failure_score,
+0165:                 format_failure_score=self.failure_score,
+0166:                 callback_metadata=callback_metadata,
+0167:             )
+0168:             scores = []
+0169:             outputs = []
+0170:             for t in trajs:
+0171:                 outputs.append(t["prediction"])
+0172:                 if hasattr(t["prediction"], "__class__") and t.get("score") is None:
+0173:                     scores.append(self.failure_score)
+0174:                 else:
+0175:                     score = t["score"]
+0176:                     if hasattr(score, "score"):
+0177:                         score = score["score"]
+0178:                     scores.append(score)
+0179: 
+0180:             return EvaluationBatch(outputs=outputs, scores=scores, trajectories=trajs)
+0181:         else:
+0182:             evaluator = Evaluate(
+0183:                 devset=batch,
+0184:                 metric=self.metric_fn,
+0185:                 num_threads=self.num_threads,
+0186:                 return_all_scores=True,
+0187:                 failure_score=self.failure_score,
+0188:                 provide_traceback=True,
+0189:                 max_errors=len(batch) * 100,
+0190:                 callback_metadata=callback_metadata,
+0191:             )
+0192:             res = evaluator(program)
+0193:             outputs = [r[1] for r in res.results]
+0194:             scores = [r[2] for r in res.results]
+0195:             scores = [s["score"] if hasattr(s, "score") else s for s in scores]
+0196:             return EvaluationBatch(outputs=outputs, scores=scores, trajectories=None)
+0197: 
+0198:     def make_reflective_dataset(
+0199:         self, candidate, eval_batch, components_to_update
+0200:     ) -> dict[str, list[ReflectiveExample]]:
+0201:         program = self.build_program(candidate)
+0202: 
+0203:         ret_d: dict[str, list[ReflectiveExample]] = {}
+0204: 
+0205:         for pred_name in components_to_update:
+0206:             # Find the predictor object
+0207:             module = None
+0208:             for name, m in program.named_predictors():
+0209:                 if name == pred_name:
+0210:                     module = m
+0211:                     break
+0212:             assert module is not None, f"Predictor not found: {pred_name}"
+0213: 
+0214:             # Create reflective examples from traces
+0215:             items: list[ReflectiveExample] = []
+0216:             for data in eval_batch.trajectories or []:
+0217:                 trace = data["trace"]
+0218:                 example = data["example"]
+0219:                 prediction = data["prediction"]
+0220:                 module_score = data["score"]
+0221:                 if hasattr(module_score, "score"):
+0222:                     module_score = module_score["score"]
+0223: 
+0224:                 trace_instances = [t for t in trace if t[0].signature.equals(module.signature)]
+0225:                 if not self.add_format_failure_as_feedback:
+0226:                     trace_instances = [t for t in trace_instances if not isinstance(t[2], FailedPrediction)]
+0227:                 if len(trace_instances) == 0:
+0228:                     continue
+0229: 
+0230:                 selected = None
+0231:                 for t in trace_instances:
+0232:                     if isinstance(t[2], FailedPrediction):
+0233:                         selected = t
+0234:                         break
+0235: 
+0236:                 if selected is None:
+0237:                     if isinstance(prediction, FailedPrediction):
+0238:                         continue
+0239:                     selected = self.rng.choice(trace_instances)
+0240: 
+0241:                 inputs = selected[1]
+0242:                 outputs = selected[2]
+0243: 
+0244:                 new_inputs = {}
+0245:                 new_outputs = {}
+0246: 
+0247:                 contains_history = False
+0248:                 history_key_name = None
+0249:                 for input_key, input_val in inputs.items():
+0250:                     if isinstance(input_val, History):
+0251:                         contains_history = True
+0252:                         assert history_key_name is None
+0253:                         history_key_name = input_key
+0254: 
+0255:                 if contains_history:
+0256:                     s = "```json\n"
+0257:                     for i, message in enumerate(inputs[history_key_name].messages):
+0258:                         s += f"  {i}: {message}\n"
+0259:                     s += "```"
+0260:                     new_inputs["Context"] = s
+0261: 
+0262:                 for input_key, input_val in inputs.items():
+0263:                     if contains_history and input_key == history_key_name:
+0264:                         continue
+0265: 
+0266:                     if isinstance(input_val, Type) and self.custom_instruction_proposer is not None:
+0267:                         # Keep original object - will be properly formatted when sent to reflection LM
+0268:                         new_inputs[input_key] = input_val
+0269:                     else:
+0270:                         new_inputs[input_key] = str(input_val)
+0271: 
+0272:                 if isinstance(outputs, FailedPrediction):
+0273:                     s = "Couldn't parse the output as per the expected output format. The model's raw response was:\n"
+0274:                     s += "```\n"
+0275:                     s += outputs.completion_text + "\n"
+0276:                     s += "```\n\n"
+0277:                     new_outputs = s
+0278:                 else:
+0279:                     for output_key, output_val in outputs.items():
+0280:                         new_outputs[output_key] = str(output_val)
+0281: 
+0282:                 d = {"Inputs": new_inputs, "Generated Outputs": new_outputs}
+0283:                 if isinstance(outputs, FailedPrediction):
+0284:                     adapter = ChatAdapter()
+0285:                     structure_instruction = ""
+0286:                     for dd in adapter.format(module.signature, [], {}):
+0287:                         structure_instruction += dd["role"] + ": " + dd["content"] + "\n"
+0288:                     d["Feedback"] = "Your output failed to parse. Follow this structure:\n" + structure_instruction
+0289:                     # d['score'] = self.failure_score
+0290:                 else:
+0291:                     feedback_fn = self.feedback_map[pred_name]
+0292:                     fb = feedback_fn(
+0293:                         predictor_output=outputs,
+0294:                         predictor_inputs=inputs,
+0295:                         module_inputs=example,
+0296:                         module_outputs=prediction,
+0297:                         captured_trace=trace,
+0298:                     )
+0299:                     d["Feedback"] = fb["feedback"]
+0300:                     if fb["score"] != module_score:
+0301:                         if self.warn_on_score_mismatch:
+0302:                             logger.warning(
+0303:                                 "The score returned by the metric with pred_name is different from the overall metric score. This can indicate 2 things: Either the metric is non-deterministic (e.g., LLM-as-judge, Semantic score, etc.) or the metric returned a score specific to pred_name that differs from the module level score. Currently, GEPA does not support predictor level scoring (support coming soon), and only requires a feedback text to be provided, which can be specific to the predictor or program level. GEPA will ignore the differing score returned, and instead use module level score. You can safely ignore this warning if using a semantic metric, however, if this mismatch is caused due to predictor scoring, please return module-level scores. To disable this warning, set warn_on_score_mismatch=False."
+0304:                             )
+0305:                             self.warn_on_score_mismatch = False
+0306:                         fb["score"] = module_score
+0307: 
+0308:                 items.append(d)
+0309: 
+0310:             if len(items) == 0:
+0311:                 logger.warning(f"  No valid reflective examples found for {pred_name}")
+0312:                 continue
+0313: 
+0314:             ret_d[pred_name] = items
+0315: 
+0316:         if len(ret_d) == 0:
+0317:             raise Exception("No valid predictions found for any module.")
+0318: 
+0319:         return ret_d
+0320: 
+0321:     # Always return strings from the LM outputs
+0322:     # Even when it returns a dict with e.g., "text" and "reasoning" fields
+0323:     def stripped_lm_call(self, x: str) -> list[str]:
+0324:         raw_outputs = self.reflection_lm(x)
+0325:         outputs = []
+0326:         for raw_output in raw_outputs:
+0327:             if type(raw_output) == str:
+0328:                 outputs.append(raw_output)
+0329:             elif type(raw_output) == dict:
+0330:                 if "text" not in raw_output:
+0331:                     raise KeyError("Missing 'text' field in the output from the base LM!")
+0332:                 outputs.append(raw_output["text"])
+0333:             else:
+0334:                 raise TypeError("Unexpected output type from the base LM! Expected str or dict")
+0335: 
+0336:         return outputs
+0337: 
+
+### dspy/teleprompt/bootstrap_trace.py
+0001: import logging
+0002: from dataclasses import dataclass
+0003: from types import MethodType
+0004: from typing import Any, Callable, TypedDict
+0005: 
+0006: import dspy
+0007: from dspy.evaluate.evaluate import Evaluate
+0008: from dspy.primitives.example import Example
+0009: from dspy.primitives.module import Module
+0010: from dspy.primitives.prediction import Prediction
+0011: from dspy.utils.exceptions import AdapterParseError
+0012: 
+0013: logger = logging.getLogger(__name__)
+0014: 
+0015: 
+0016: @dataclass
+0017: class FailedPrediction:
+0018:     completion_text: str
+0019:     format_reward: float | None = None
+0020: 
+0021: 
+0022: class TraceData(TypedDict):
+0023:     example_ind: int
+0024:     example: Example
+0025:     prediction: Prediction
+0026:     trace: list[tuple[Any, dict[str, Any], Prediction]]
+0027:     score: float | None
+0028: 
+0029: 
+0030: def bootstrap_trace_data(
+0031:     program: Module,
+0032:     dataset: list[Example],
+0033:     metric: Callable | None = None,
+0034:     num_threads: int | None = None,
+0035:     raise_on_error=True,
+0036:     capture_failed_parses=False,
+0037:     failure_score: float = 0,
+0038:     format_failure_score: float = -1,
+0039:     log_format_failures: bool = False,
+0040:     callback_metadata: dict[str, Any] | None = None,
+0041: ) -> list[TraceData]:
+0042:     # Return a list of dicts with the following keys: example_ind, example, prediction, trace, and score
+0043:     # (if metric != None)
+0044:     evaluator = Evaluate(
+0045:         devset=dataset,
+0046:         num_threads=num_threads,
+0047:         display_progress=True,
+0048:         provide_traceback=False,  # TODO(check with team)
+0049:         max_errors=len(dataset) * 10,  # TODO(check with team)
+0050:         failure_score=failure_score,
+0051:     )
+0052: 
+0053:     def wrapped_metric(example, prediction, trace=None):
+0054:         prediction, _ = prediction
+0055:         if isinstance(prediction, FailedPrediction):
+0056:             return prediction.format_reward or format_failure_score
+0057:         return metric(example, prediction, trace) if metric else True
+0058: 
+0059:     # Use `object.__getattribute__` to bypass the custom hook `Module.__getattribute__` so that we avoid
+0060:     # the warning that `forward` is not accessed through `__call__`.
+0061:     original_forward = object.__getattribute__(program, "forward")
+0062: 
+0063:     def patched_forward(program_to_use: Module, **kwargs):
+0064:         with dspy.context(trace=[]):
+0065:             try:
+0066:                 return original_forward(**kwargs), dspy.settings.trace.copy()
+0067:             except AdapterParseError as e:
+0068:                 completion_str = e.lm_response
+0069:                 parsed_result = e.parsed_result
+0070:                 failed_signature = e.signature
+0071:                 failed_inputs = kwargs
+0072: 
+0073:                 present = list(parsed_result.keys()) if parsed_result else None
+0074:                 expected = list(failed_signature.output_fields.keys())
+0075: 
+0076:                 found_pred = None
+0077:                 for pred in program_to_use.predictors():
+0078:                     if pred.signature == failed_signature:
+0079:                         found_pred = pred
+0080:                         break
+0081:                 if found_pred is None:
+0082:                     raise ValueError(f"Failed to find the predictor for the failed signature: {failed_signature}")
+0083: 
+0084:                 trace = dspy.settings.trace.copy()
+0085:                 # Trace is Tuple[signature, inputs, prediction outputs]
+0086:                 if present:
+0087:                     failed_pred = FailedPrediction(
+0088:                         completion_text=completion_str,
+0089:                         format_reward=format_failure_score
+0090:                         + (failure_score - format_failure_score) * (present / expected),
+0091:                     )
+0092:                 else:
+0093:                     failed_pred = FailedPrediction(completion_text=completion_str, format_reward=format_failure_score)
+0094: 
+0095:                 trace.append(
+0096:                     (
+0097:                         found_pred,
+0098:                         failed_inputs,
+0099:                         failed_pred,
+0100:                     )
+0101:                 )
+0102: 
+0103:                 if log_format_failures:
+0104:                     logging.warning(
+0105:                         "Failed to parse output for example. This is likely due to the LLM response not following "
+0106:                         "the adapter's formatting."
+0107:                     )
+0108: 
+0109:                 return failed_pred, trace
+0110: 
+0111:     program.forward = MethodType(patched_forward, program)
+0112: 
+0113:     try:
+0114:         results = evaluator(
+0115:             program,
+0116:             metric=wrapped_metric,
+0117:             callback_metadata=callback_metadata,
+0118:         ).results
+0119:     finally:
+0120:         program.forward = original_forward
+0121: 
+0122:     data = []
+0123:     for example_ind, (example, prediction, score) in enumerate(results):
+0124:         try:
+0125:             prediction, trace = prediction
+0126:         except ValueError as ve:
+0127:             # TODO(GRPO Team): Often during GRPO bootstrapping, the LLM response does not follow dspy formatting. This
+0128:             # leads to a value error. To reproduce this issue, try Qwen/Qwen2.5-Coder-0.5B-Instruct with MATH dataset.
+0129:             # Proposal(Lakshya): We should capture the incorrectly-formatted LLM response, and store it in the trace,
+0130:             # and pass it to in the GRPO group with a high-negative user-configurable score.
+0131:             logger.warning(
+0132:                 "Failed to unpack prediction and trace. This is likely due to the LLM response not following "
+0133:                 "dspy formatting."
+0134:             )
+0135:             if raise_on_error:
+0136:                 raise ve
+0137:             else:
+0138:                 continue
+0139:         data_dict = {"example": example, "prediction": prediction, "trace": trace, "example_ind": example_ind}
+0140:         if metric:
+0141:             data_dict["score"] = score
+0142:         data.append(data_dict)
+0143: 
+0144:     return data
+
+Return JSON that matches the schema exactly.

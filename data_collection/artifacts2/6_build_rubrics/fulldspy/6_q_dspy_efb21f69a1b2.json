@@ -1,0 +1,87 @@
+{
+ "id": "dspy_efb21f69a1b2",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I'm debugging history growth in a nested DSPy program and I want to know whether one LM call is copied into each module's history or whether ancestor modules share the same history entry object. I also need to confirm what `disable_history` actually stops.\n\nThe concrete scenario is a parent `dspy.Module` that calls a `dspy.ChainOfThought` submodule, followed by a direct call to the submodule itself. Then I want to toggle history off and prove that no new entries are recorded anywhere.\n\nGive me a complete, runnable Python program that uses `DummyLM`, inspects parent and child histories, and proves the lengths plus object identity so the sharing and the disable toggle are both clear.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\nclass P(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.cot = dspy.ChainOfThought('question -> answer')\n    def forward(self, question: str):\n        return self.cot(question=question)\n\nlm = DummyLM([\n    {'reasoning': 'r1', 'answer': 'Paris'},\n    {'reasoning': 'r2', 'answer': 'Rome'},\n    {'reasoning': 'r3', 'answer': 'Berlin'},\n], adapter=dspy.JSONAdapter())\nprog = P()\n\ndspy.configure(lm=lm, adapter=dspy.JSONAdapter(), disable_history=False)\nprog(question='France?')\nprog.cot(question='Italy?')\nassert len(prog.history) == 1\nassert len(prog.cot.history) == 2\nassert len(prog.cot.predict.history) == 2\nassert id(prog.history[0]) == id(prog.cot.history[0])\nprint('before:', len(prog.history), len(prog.cot.history), len(prog.cot.predict.history))\n\ndspy.configure(lm=lm, adapter=dspy.JSONAdapter(), disable_history=True)\nprog(question='Germany?')\nassert len(prog.history) == 1\nassert len(prog.cot.history) == 2\nassert len(prog.cot.predict.history) == 2\nprint('after:', len(prog.history), len(prog.cot.history), len(prog.cot.predict.history))\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "After one call through the parent module and then one direct call to the `ChainOfThought` submodule, the program shows `parent.history` has length 1 while both the submodule history and its underlying predictor history have length 2.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The history item created by the parent-triggered LM call is the same shared object in ancestor and child module histories, which can be proven with object identity rather than just equal contents.",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "With `disable_history=True`, a subsequent LM call does not append any new history entry anywhere, so the parent, submodule, and predictor history lengths all remain unchanged.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "A correct runnable example configures DSPy with a `DummyLM` and `JSONAdapter`, defines a parent `dspy.Module` whose `forward` delegates to a `ChainOfThought` child, and invokes both the parent and the child directly to exercise the history behavior.",
+   "span_ids": [
+    "s1"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "tests/primitives/test_base_module.py",
+   "start_line": 391,
+   "end_line": 417,
+   "excerpt": "0391: def test_module_history():\n0392:     class MyProgram(dspy.Module):\n0393:         def __init__(self, **kwargs):\n0394:             super().__init__(**kwargs)\n0395:             self.cot = dspy.ChainOfThought(\"question -> answer\")\n0396: \n0397:         def forward(self, question: str, **kwargs) -> Prediction:\n0398:             return self.cot(question=question)\n0399: \n0400:     with patch(\"litellm.completion\") as mock_completion:\n0401:         mock_completion.return_value = ModelResponse(\n0402:             choices=[\n0403:                 Choices(message=Message(content=\"{'reasoning': 'Paris is the capital of France', 'answer': 'Paris'}\"))\n0404:             ],\n0405:             model=\"openai/gpt-4o-mini\",\n0406:         )\n0407:         dspy.configure(lm=dspy.LM(\"openai/gpt-4o-mini\", cache=False), adapter=dspy.JSONAdapter())\n0408:         program = MyProgram()\n0409:         program(question=\"What is the capital of France?\")\n0410: \n0411:         # Second call only call the submodule.\n0412:         program.cot(question=\"What is the capital of France?\")\n0413: \n0414:         # The LM history entity exists in all the ancestor callers.\n0415:         assert len(program.history) == 1\n0416:         assert len(program.cot.history) == 2\n0417:         assert len(program.cot.predict.history) == 2"
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/primitives/test_base_module.py",
+   "start_line": 419,
+   "end_line": 420,
+   "excerpt": "0419:         # The same history entity is shared across all the ancestor callers to reduce memory usage.\n0420:         assert id(program.history[0]) == id(program.cot.history[0])"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/primitives/test_base_module.py",
+   "start_line": 424,
+   "end_line": 430,
+   "excerpt": "0424:         dspy.configure(disable_history=True)\n0425: \n0426:         program(question=\"What is the capital of France?\")\n0427:         # No history is recorded when history is disabled.\n0428:         assert len(program.history) == 1\n0429:         assert len(program.cot.history) == 2\n0430:         assert len(program.cot.predict.history) == 2"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 241,
+   "end_line": 246,
+   "excerpt": "0241:         # Per-module history\n0242:         caller_modules = settings.caller_modules or []\n0243:         for module in caller_modules:\n0244:             if len(module.history) >= settings.max_history_size:\n0245:                 module.history.pop(0)\n0246:             module.history.append(entry)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 98,
+   "end_line": 100,
+   "excerpt": "0098:         if settings.disable_history:\n0099:             return outputs\n0100: "
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Shows both the shared-entry optimization and the history-disable gate.",
+ "source_index": 12,
+ "smalldspy_scope": false
+}

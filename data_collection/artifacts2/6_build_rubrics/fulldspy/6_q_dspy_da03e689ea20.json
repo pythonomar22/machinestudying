@@ -1,0 +1,98 @@
+{
+ "id": "dspy_da03e689ea20",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm using a graded metric for a QA program where exact matches get 1.0, near-misses get 0.5, and bad answers get 0.0. I want to use the same style of metric for evaluation and later compilation, but I'm not sure whether DSPy treats non-boolean scores as real numeric values or just truthy/falsy passes.\n\nI already saw the overall score printed as a percentage, which made me wonder whether it's averaging the raw floats or silently thresholding them. I don't want a prose explanation because this is the sort of thing that's easy to misunderstand from logs alone.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, evaluates a tiny `dspy.Predict` program on three examples with scores 1.0, 0.5, and 0.0, and prints/asserts the final percentage so the aggregation behavior is undeniable.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.utils.dummies import DummyLM\n\n\ndspy.configure(\n    lm=DummyLM(\n        {\n            \"q1\": {\"answer\": \"red\"},\n            \"q2\": {\"answer\": \"bluish\"},\n            \"q3\": {\"answer\": \"yellow\"},\n        }\n    )\n)\n\nprogram = dspy.Predict(\"question -> answer\")\ndevset = [\n    dspy.Example(question=\"q1\", answer=\"red\").with_inputs(\"question\"),\n    dspy.Example(question=\"q2\", answer=\"blue\").with_inputs(\"question\"),\n    dspy.Example(question=\"q3\", answer=\"green\").with_inputs(\"question\"),\n]\n\n\ndef partial_credit(example, prediction):\n    if prediction.answer == example.answer:\n        return 1.0\n    if prediction.answer[0] == example.answer[0]:\n        return 0.5\n    return 0.0\n\n\nresult = Evaluate(devset=devset, metric=partial_credit, display_progress=False)(program)\nper_example_scores = [score for _, _, score in result.results]\nprint(result.score)\nprint(per_example_scores)\nassert per_example_scores == [1.0, 0.5, 0.0]\nassert result.score == 50.0\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The answer uses DSPy's `Evaluate(...)(program)` path and treats the return as an `EvaluationResult` with both a percentage `score` and per-example `results` tuples.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The answer demonstrates that numeric metric outputs are preserved per example by extracting the third element of each `result.results` tuple, which comes directly from `score = metric(example, prediction)` without boolean coercion.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The answer establishes that DSPy aggregates raw numeric scores by summing the per-example `score` values, dividing by the number of examples, multiplying by 100, and returning that percentage; with scores `1.0`, `0.5`, and `0.0`, the final `result.score` must be `50.0`.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The answer proves the behavior in code by explicitly checking the per-example score list `[1.0, 0.5, 0.0]` and the final `result.score == 50.0`, rather than relying on log output alone.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer connects evaluation to compilation by noting that `BootstrapFewShotWithRandomSearch.compile` reuses `result.score` and the per-example `output[2]` subscores from `result.results`, so later candidate scoring consumes the same numeric outputs.",
+   "span_ids": [
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 142,
+   "end_line": 147,
+   "excerpt": "0142:         Returns:\n0143:             The evaluation results are returned as a dspy.EvaluationResult object containing the following attributes:\n0144: \n0145:             - score: A float percentage score (e.g., 67.30) representing overall performance\n0146: \n0147:             - results: a list of (example, prediction, score) tuples for each example in devset"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 170,
+   "end_line": 180,
+   "excerpt": "0170:         def process_item(example):\n0171:             prediction = program(**example.inputs())\n0172:             score = metric(example, prediction)\n0173:             return prediction, score\n0174: \n0175:         results = executor.execute(process_item, devset)\n0176:         assert len(devset) == len(results)\n0177: \n0178:         results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]\n0179:         results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results, strict=False)]\n0180:         ncorrect, ntotal = sum(score for *_, score in results), len(devset)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 180,
+   "end_line": 183,
+   "excerpt": "0180:         ncorrect, ntotal = sum(score for *_, score in results), len(devset)\n0181: \n0182:         logger.info(f\"Average Metric: {ncorrect} / {ntotal} ({round(100 * ncorrect / ntotal, 1)}%)\")\n0183: "
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 223,
+   "end_line": 225,
+   "excerpt": "0223:         return EvaluationResult(\n0224:             score=round(100 * ncorrect / ntotal, 2),\n0225:             results=results,"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/teleprompt/random_search.py",
+   "start_line": 113,
+   "end_line": 146,
+   "excerpt": "0113:             evaluate = Evaluate(\n0114:                 devset=self.valset,\n0115:                 metric=self.metric,\n0116:                 num_threads=self.num_threads,\n0117:                 max_errors=effective_max_errors,\n0118:                 display_table=False,\n0119:                 display_progress=True,\n0120:             )\n0121: \n0122:             result = evaluate(program)\n0123: \n0124:             score, subscores = result.score, [output[2] for output in result.results]\n0125: \n0126:             all_subscores.append(subscores)\n0127: \n0128:             if len(scores) == 0 or score > max(scores):\n0129:                 print(\"New best score:\", score, \"for seed\", seed)\n0130:                 best_program = program\n0131: \n0132:             scores.append(score)\n0133:             print(f\"Scores so far: {scores}\")\n0134:             print(f\"Best score so far: {max(scores)}\")\n0135: \n0136:             score_data.append({\"score\": score, \"subscores\": subscores, \"seed\": seed, \"program\": program})\n0137: \n0138:             if self.stop_at_score is not None and score >= self.stop_at_score:\n0139:                 print(f\"Stopping early because score {score} is >= stop_at_score {self.stop_at_score}\")\n0140:                 break\n0141: \n0142:         # To best program, attach all program candidates in decreasing average score\n0143:         best_program.candidate_programs = score_data\n0144:         best_program.candidate_programs = sorted(\n0145:             best_program.candidate_programs, key=lambda x: x[\"score\"], reverse=True\n0146:         )"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "",
+ "source_index": 0,
+ "smalldspy_scope": false
+}

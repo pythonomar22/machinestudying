@@ -1,0 +1,112 @@
+{
+ "id": "dspy_5c7936cba013",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I'm using few-shot examples, but some of my stored examples are intentionally partial because certain outputs were never labeled. I need to know whether DSPy drops those examples, silently treats missing fields as empty strings, or keeps them with some explicit placeholder text.\n\nThis matters because I am debugging prompt bloat and want to know exactly what gets shown to the model. I only want an offline repro that inspects the rendered messages.\n\nGive me a complete, runnable Python program that builds one partial example and one complete example, prints the formatted demo messages, and asserts that the partial one is kept with an explicit \"not supplied\" style placeholder instead of being discarded.",
+ "gold_answer": "```python\nimport pprint\n\nimport dspy\n\n\nclass QAWithCitation(dspy.Signature):\n    passage: str = dspy.InputField()\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n    citation: str = dspy.OutputField()\n\n\nadapter = dspy.ChatAdapter()\ndemos = [\n    dspy.Example(passage=\"A short passage.\", answer=\"A partial answer\"),\n    dspy.Example(\n        passage=\"Another passage.\",\n        question=\"What is it about?\",\n        answer=\"It is about testing.\",\n        citation=\"line 1\",\n    ),\n]\nmessages = adapter.format(QAWithCitation, demos, {\"passage\": \"Final passage.\", \"question\": \"Final question?\"})\n\npprint.pp(messages)\n\nassert \"some input or output fields are not supplied\" in messages[1][\"content\"]\nassert \"Not supplied for this particular example.\" in messages[2][\"content\"]\nassert \"Another passage.\" in messages[3][\"content\"]\nassert \"line 1\" in messages[4][\"content\"]\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer inspects rendered prompt messages offline by calling `dspy.ChatAdapter().format(...)` directly, so it can verify prompt contents without making any LM call.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The answer builds an intentionally incomplete demo that still contains at least one input field and at least one output field, because DSPy keeps only those incomplete demos instead of discarding them.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer shows that the incomplete demo is kept as a demo message and that its rendered user message includes the explicit notice that \"some input or output fields are not supplied.\"",
+   "span_ids": [
+    "s3",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The answer asserts that the incomplete demo's rendered assistant message uses the explicit placeholder `Not supplied for this particular example.` for missing output fields, rather than an empty string.",
+   "span_ids": [
+    "s4",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The answer also verifies that the complete demo is present in later rendered messages with its real field values, confirming both the partial and complete examples are retained in the formatted prompt.",
+   "span_ids": [
+    "s5",
+    "s6",
+    "s7"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/base.py",
+   "start_line": 281,
+   "end_line": 296,
+   "excerpt": "0281:         messages = []\n0282:         system_message = self.format_system_message(signature)\n0283:         messages.append({\"role\": \"system\", \"content\": system_message})\n0284:         messages.extend(self.format_demos(signature, demos))\n0285:         if history_field_name:\n0286:             # Conversation history and current input\n0287:             content = self.format_user_message_content(signature_without_history, inputs_copy, main_request=True)\n0288:             messages.extend(conversation_history)\n0289:             messages.append({\"role\": \"user\", \"content\": content})\n0290:         else:\n0291:             # Only current input\n0292:             content = self.format_user_message_content(signature, inputs_copy, main_request=True)\n0293:             messages.append({\"role\": \"user\", \"content\": content})\n0294: \n0295:         messages = split_message_content_for_custom_types(messages)\n0296:         return messages"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/base.py",
+   "start_line": 412,
+   "end_line": 424,
+   "excerpt": "0412:         for demo in demos:\n0413:             # Check if all fields are present and not None\n0414:             is_complete = all(k in demo and demo[k] is not None for k in signature.fields)\n0415: \n0416:             # Check if demo has at least one input and one output field\n0417:             has_input = any(k in demo for k in signature.input_fields)\n0418:             has_output = any(k in demo for k in signature.output_fields)\n0419: \n0420:             if is_complete:\n0421:                 complete_demos.append(demo)\n0422:             elif has_input and has_output:\n0423:                 # We only keep incomplete demos that have at least one input and one output field\n0424:                 incomplete_demos.append(demo)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/base.py",
+   "start_line": 428,
+   "end_line": 435,
+   "excerpt": "0428:         incomplete_demo_prefix = \"This is an example of the task, though some input or output fields are not supplied.\"\n0429:         for demo in incomplete_demos:\n0430:             messages.append(\n0431:                 {\n0432:                     \"role\": \"user\",\n0433:                     \"content\": self.format_user_message_content(signature, demo, prefix=incomplete_demo_prefix),\n0434:                 }\n0435:             )"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/base.py",
+   "start_line": 436,
+   "end_line": 443,
+   "excerpt": "0436:             messages.append(\n0437:                 {\n0438:                     \"role\": \"assistant\",\n0439:                     \"content\": self.format_assistant_message_content(\n0440:                         signature, demo, missing_field_message=\"Not supplied for this particular example. \"\n0441:                     ),\n0442:                 }\n0443:             )"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/base.py",
+   "start_line": 445,
+   "end_line": 454,
+   "excerpt": "0445:         for demo in complete_demos:\n0446:             messages.append({\"role\": \"user\", \"content\": self.format_user_message_content(signature, demo)})\n0447:             messages.append(\n0448:                 {\n0449:                     \"role\": \"assistant\",\n0450:                     \"content\": self.format_assistant_message_content(\n0451:                         signature, demo, missing_field_message=\"Not supplied for this conversation history message. \"\n0452:                     ),\n0453:                 }\n0454:             )"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 152,
+   "end_line": 165,
+   "excerpt": "0152:         messages = [prefix]\n0153:         for k, v in signature.input_fields.items():\n0154:             if k in inputs:\n0155:                 value = inputs.get(k)\n0156:                 formatted_field_value = format_field_value(field_info=v, value=value)\n0157:                 messages.append(f\"[[ ## {k} ## ]]\\n{formatted_field_value}\")\n0158: \n0159:         if main_request:\n0160:             output_requirements = self.user_message_output_requirements(signature)\n0161:             if output_requirements is not None:\n0162:                 messages.append(output_requirements)\n0163: \n0164:         messages.append(suffix)\n0165:         return \"\\n\\n\".join(messages).strip()"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 196,
+   "end_line": 209,
+   "excerpt": "0196:     def format_assistant_message_content(\n0197:         self,\n0198:         signature: type[Signature],\n0199:         outputs: dict[str, Any],\n0200:         missing_field_message=None,\n0201:     ) -> str:\n0202:         assistant_message_content = self.format_field_with_value(\n0203:             {\n0204:                 FieldInfoWithName(name=k, info=v): outputs.get(k, missing_field_message)\n0205:                 for k, v in signature.output_fields.items()\n0206:             },\n0207:         )\n0208:         assistant_message_content += \"\\n\\n[[ ## completed ## ]]\\n\"\n0209:         return assistant_message_content"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Useful few-shot formatting branch: incomplete demos are retained, ordered separately, and padded with explicit placeholder text.",
+ "source_index": 3,
+ "smalldspy_scope": true
+}

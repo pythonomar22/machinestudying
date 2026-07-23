@@ -1,0 +1,640 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_fc965feb60bd`
+- Label: `prompt_compilation_customization_and_inspection`
+- Question: `I am considering a two-stage prompt pipeline because I want the main model to answer naturally and a second model to do the structured extraction. What I need to verify is that DSPy really makes two separate requests with two different system prompts, not one hidden reformatted prompt.
+
+Please keep it offline with `DummyLM`. I want the final parsed result, plus the first and second system messages, so I can pin both prompt shapes in a regression test.
+
+Give me a complete, runnable Python program that runs a two-stage predictor offline, prints the main-model system message, the extraction-model system message, and the parsed output, and asserts that the final answer is correct and that the second prompt is explicitly about extracting fields from text.`
+- Model answer:
+```python
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+class FreeformDummyLM(DummyLM):
+    def _format_answer_fields(self, field_names_and_values):
+        return field_names_and_values['text']
+
+
+class SolveSig(dspy.Signature):
+    question: str = dspy.InputField(desc='The math question to solve')
+    solution: str = dspy.OutputField(desc='Step by step solution')
+    answer: int = dspy.OutputField(desc='Final answer')
+
+
+main_lm = FreeformDummyLM([{'text': 'I add 5 and 7 to get 12.'}])
+extract_lm = DummyLM([{'solution': 'I add 5 and 7 to get 12.', 'answer': 12}])
+
+dspy.configure(lm=main_lm, adapter=dspy.TwoStepAdapter(extraction_model=extract_lm))
+predict = dspy.Predict(SolveSig)
+pred = predict(question='What is 5 + 7?')
+
+main_system = main_lm.history[-1]['messages'][0]['content']
+extract_system = extract_lm.history[-1]['messages'][0]['content']
+
+print(main_system)
+print(extract_system)
+print(pred.solution)
+print(pred.answer)
+
+assert pred.answer == 12
+assert 'You are a helpful assistant that can solve tasks based on user input.' in main_system
+assert '`text` (str)' in extract_system
+assert 'extract the fields' in extract_system.lower()
+```
+
+## Gold answer
+```python
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+class FreeformDummyLM(DummyLM):
+    def _format_answer_fields(self, field_names_and_values):
+        return field_names_and_values['text']
+
+
+class SolveSig(dspy.Signature):
+    question: str = dspy.InputField(desc='The math question to solve')
+    solution: str = dspy.OutputField(desc='Step by step solution')
+    answer: int = dspy.OutputField(desc='Final answer')
+
+
+main_lm = FreeformDummyLM([{'text': 'I add 5 and 7 to get 12.'}])
+extract_lm = DummyLM([{'solution': 'I add 5 and 7 to get 12.', 'answer': 12}])
+
+dspy.configure(lm=main_lm, adapter=dspy.TwoStepAdapter(extraction_model=extract_lm))
+predict = dspy.Predict(SolveSig)
+pred = predict(question='What is 5 + 7?')
+
+main_system = main_lm.history[-1]['messages'][0]['content']
+extract_system = extract_lm.history[-1]['messages'][0]['content']
+
+print(main_system)
+print(extract_system)
+print(pred.solution)
+print(pred.answer)
+
+assert pred.answer == 12
+assert 'You are a helpful assistant that can solve tasks based on user input.' in main_system
+assert '`text` (str)' in extract_system
+assert 'extract the fields' in extract_system.lower()
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The program defines a `question -> solution, answer` predictor and configures it with `dspy.TwoStepAdapter(extraction_model=...)` backed by separate offline stand-in LMs for the main and extraction stages, so DSPy performs two distinct LM calls.",
+    "span_ids": [
+      "s2",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 16,
+    "statement": "The main-stage LM is allowed to return a plain natural-language completion string, and the final prediction still recovers structured `solution` and `answer` fields from that text.",
+    "span_ids": [
+      "s2",
+      "s5",
+      "s6"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 24,
+    "statement": "The first call’s system prompt comes from `format_task_description`, followed by a user message with the question; that system prompt uses the helpful-assistant task preamble and enumerates the signature’s input and output fields.",
+    "span_ids": [
+      "s1",
+      "s3",
+      "s6"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "core",
+    "weight": 24,
+    "statement": "The second call uses `ChatAdapter` with an auto-generated extractor signature whose input is `text` and whose outputs match the original signature, and its system prompt explicitly instructs the model to extract the fields from the text verbatim.",
+    "span_ids": [
+      "s2",
+      "s4",
+      "s7"
+    ]
+  },
+  {
+    "claim_id": "c5",
+    "claim_type": "supporting",
+    "weight": 8,
+    "statement": "The answer exposes the concrete system-message strings from both LM calls, not just a paraphrase, so the main and extraction prompt shapes can be pinned in a regression test.",
+    "span_ids": [
+      "s6",
+      "s7"
+    ]
+  },
+  {
+    "claim_id": "c6",
+    "claim_type": "supporting",
+    "weight": 8,
+    "statement": "The regression checks include `pred.answer == 12` and checks that the extraction-stage system prompt contains both the `text` field and extraction-from-text wording.",
+    "span_ids": [
+      "s4",
+      "s6",
+      "s7"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/adapters/two_step_adapter.py",
+    "start_line": 48,
+    "end_line": 75,
+    "excerpt": "0048:     def format(\n0049:         self, signature: type[Signature], demos: list[dict[str, Any]], inputs: dict[str, Any]\n0050:     ) -> list[dict[str, Any]]:\n0051:         \"\"\"\n0052:         Format a prompt for the first stage with the main LM.\n0053:         This no specific structure is required for the main LM, we customize the format method\n0054:         instead of format_field_description or format_field_structure.\n0055: \n0056:         Args:\n0057:             signature: The signature of the original task\n0058:             demos: A list of demo examples\n0059:             inputs: The current input\n0060: \n0061:         Returns:\n0062:             A list of messages to be passed to the main LM.\n0063:         \"\"\"\n0064:         messages = []\n0065: \n0066:         # Create a task description for the main LM\n0067:         task_description = self.format_task_description(signature)\n0068:         messages.append({\"role\": \"system\", \"content\": task_description})\n0069: \n0070:         messages.extend(self.format_demos(signature, demos))\n0071: \n0072:         # Format the current input\n0073:         messages.append({\"role\": \"user\", \"content\": self.format_user_message_content(signature, inputs)})\n0074: \n0075:         return messages"
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/adapters/two_step_adapter.py",
+    "start_line": 77,
+    "end_line": 101,
+    "excerpt": "0077:     def parse(self, signature: Signature, completion: str) -> dict[str, Any]:\n0078:         \"\"\"\n0079:         Use a smaller LM (extraction_model) with chat adapter to extract structured data\n0080:         from the raw completion text of the main LM.\n0081: \n0082:         Args:\n0083:             signature: The signature of the original task\n0084:             completion: The completion from the main LM\n0085: \n0086:         Returns:\n0087:             A dictionary containing the extracted structured data.\n0088:         \"\"\"\n0089:         # The signature is supposed to be \"text -> {original output fields}\"\n0090:         extractor_signature = self._create_extractor_signature(signature)\n0091: \n0092:         try:\n0093:             # Call the smaller LM to extract structured data from the raw completion text with ChatAdapter\n0094:             parsed_result = ChatAdapter()(\n0095:                 lm=self.extraction_model,\n0096:                 lm_kwargs={},\n0097:                 signature=extractor_signature,\n0098:                 demos=[],\n0099:                 inputs={\"text\": completion},\n0100:             )\n0101:             return parsed_result[0]"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/adapters/two_step_adapter.py",
+    "start_line": 163,
+    "end_line": 175,
+    "excerpt": "0163:     def format_task_description(self, signature: Signature) -> str:\n0164:         \"\"\"Create a description of the task based on the signature\"\"\"\n0165:         parts = []\n0166: \n0167:         parts.append(\"You are a helpful assistant that can solve tasks based on user input.\")\n0168:         parts.append(\"As input, you will be provided with:\\n\" + get_field_description_string(signature.input_fields))\n0169:         parts.append(\"Your outputs must contain:\\n\" + get_field_description_string(signature.output_fields))\n0170:         parts.append(\"You should lay out your outputs in detail so that your answer can be understood by another agent\")\n0171: \n0172:         if signature.instructions:\n0173:             parts.append(f\"Specific instructions: {signature.instructions}\")\n0174: \n0175:         return \"\\n\".join(parts)"
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/adapters/two_step_adapter.py",
+    "start_line": 207,
+    "end_line": 229,
+    "excerpt": "0207:     def _create_extractor_signature(\n0208:         self,\n0209:         original_signature: type[Signature],\n0210:     ) -> type[Signature]:\n0211:         \"\"\"Create a new signature containing a new 'text' input field and all output fields.\n0212: \n0213:         Args:\n0214:             original_signature: The original signature to extract output fields from\n0215: \n0216:         Returns:\n0217:             A new Signature type with a text input field and all output fields\n0218:         \"\"\"\n0219:         # Create new fields dict with 'text' input field and all output fields\n0220:         new_fields = {\n0221:             \"text\": (str, InputField()),\n0222:             **{name: (field.annotation, field) for name, field in original_signature.output_fields.items()},\n0223:         }\n0224: \n0225:         outputs_str = \", \".join([f\"`{field}`\" for field in original_signature.output_fields])\n0226:         instructions = f\"The input is a text that should contain all the necessary information to produce the fields {outputs_str}. \\\n0227:             Your job is to extract the fields from the text verbatim. Extract precisely the appropriate value (content) for each field.\"\n0228: \n0229:         return make_signature(new_fields, instructions)"
+  },
+  {
+    "span_id": "s5",
+    "path": "tests/adapters/test_two_step_adapter.py",
+    "start_line": 8,
+    "end_line": 33,
+    "excerpt": "0008: def test_two_step_adapter_call():\n0009:     class TestSignature(dspy.Signature):\n0010:         question: str = dspy.InputField(desc=\"The math question to solve\")\n0011:         solution: str = dspy.OutputField(desc=\"Step by step solution\")\n0012:         answer: float = dspy.OutputField(desc=\"The final numerical answer\")\n0013: \n0014:     program = dspy.Predict(TestSignature)\n0015: \n0016:     mock_main_lm = mock.MagicMock(spec=dspy.LM)\n0017:     mock_main_lm.return_value = [\"text from main LM\"]\n0018:     mock_main_lm.kwargs = {\"temperature\": 1.0}\n0019: \n0020:     mock_extraction_lm = mock.MagicMock(spec=dspy.LM)\n0021:     mock_extraction_lm.return_value = [\n0022:         \"\"\"\n0023: [[ ## solution ## ]] result\n0024: [[ ## answer ## ]] 12\n0025: [[ ## completed ## ]]\n0026: \"\"\"\n0027:     ]\n0028:     mock_extraction_lm.kwargs = {\"temperature\": 1.0}\n0029:     mock_extraction_lm.model = \"openai/gpt-4o\"\n0030: \n0031:     dspy.configure(lm=mock_main_lm, adapter=dspy.TwoStepAdapter(extraction_model=mock_extraction_lm))\n0032: \n0033:     result = program(question=\"What is 5 + 7?\")"
+  },
+  {
+    "span_id": "s6",
+    "path": "tests/adapters/test_two_step_adapter.py",
+    "start_line": 35,
+    "end_line": 53,
+    "excerpt": "0035:     assert result.answer == 12\n0036: \n0037:     # main LM call\n0038:     mock_main_lm.assert_called_once()\n0039:     _, call_kwargs = mock_main_lm.call_args\n0040:     assert len(call_kwargs[\"messages\"]) == 2\n0041: \n0042:     # assert first message\n0043:     assert call_kwargs[\"messages\"][0][\"role\"] == \"system\"\n0044:     content = call_kwargs[\"messages\"][0][\"content\"]\n0045:     assert \"1. `question` (str)\" in content\n0046:     assert \"1. `solution` (str)\" in content\n0047:     assert \"2. `answer` (float)\" in content\n0048: \n0049:     # assert second message\n0050:     assert call_kwargs[\"messages\"][1][\"role\"] == \"user\"\n0051:     content = call_kwargs[\"messages\"][1][\"content\"]\n0052:     assert \"question:\" in content.lower()\n0053:     assert \"What is 5 + 7?\" in content"
+  },
+  {
+    "span_id": "s7",
+    "path": "tests/adapters/test_two_step_adapter.py",
+    "start_line": 55,
+    "end_line": 70,
+    "excerpt": "0055:     # extraction LM call\n0056:     mock_extraction_lm.assert_called_once()\n0057:     _, call_kwargs = mock_extraction_lm.call_args\n0058:     assert len(call_kwargs[\"messages\"]) == 2\n0059: \n0060:     # assert first message\n0061:     assert call_kwargs[\"messages\"][0][\"role\"] == \"system\"\n0062:     content = call_kwargs[\"messages\"][0][\"content\"]\n0063:     assert \"`text` (str)\" in content\n0064:     assert \"`solution` (str)\" in content\n0065:     assert \"`answer` (float)\" in content\n0066: \n0067:     # assert second message\n0068:     assert call_kwargs[\"messages\"][1][\"role\"] == \"user\"\n0069:     content = call_kwargs[\"messages\"][1][\"content\"]\n0070:     assert \"text from main LM\" in content"
+  }
+]
+
+## Whole evidence files
+### dspy/adapters/two_step_adapter.py
+0001: from typing import Any
+0002: 
+0003: import json_repair
+0004: 
+0005: from dspy.adapters.base import Adapter
+0006: from dspy.adapters.chat_adapter import ChatAdapter
+0007: from dspy.adapters.types import ToolCalls
+0008: from dspy.adapters.utils import get_field_description_string
+0009: from dspy.clients.base_lm import BaseLM
+0010: from dspy.signatures.field import InputField
+0011: from dspy.signatures.signature import Signature, make_signature
+0012: 
+0013: """
+0014: NOTE/TODO/FIXME:
+0015: 
+0016: The main issue below is that the second step's signature is entirely created on the fly and is invoked with a chat
+0017: adapter explicitly constructed with no demonstrations. This means that it cannot "learn" or get optimized.
+0018: """
+0019: 
+0020: 
+0021: class TwoStepAdapter(Adapter):
+0022:     """
+0023:     A two-stage adapter that:
+0024:         1. Uses a simpler, more natural prompt for the main LM
+0025:         2. Uses a smaller LM with chat adapter to extract structured data from the response of main LM
+0026:     This adapter uses a common __call__ logic defined in base Adapter class.
+0027:     This class is particularly useful when interacting with reasoning models as the main LM since reasoning models
+0028:     are known to struggle with structured outputs.
+0029: 
+0030:     Examples:
+0031:     ```
+0032:     import dspy
+0033:     lm = dspy.LM(model="openai/o3-mini", max_tokens=16000, temperature = 1.0)
+0034:     adapter = dspy.TwoStepAdapter(dspy.LM("openai/gpt-4o-mini"))
+0035:     dspy.configure(lm=lm, adapter=adapter)
+0036:     program = dspy.ChainOfThought("question->answer")
+0037:     result = program("What is the capital of France?")
+0038:     print(result)
+0039:     ```
+0040:     """
+0041: 
+0042:     def __init__(self, extraction_model: BaseLM, **kwargs):
+0043:         super().__init__(**kwargs)
+0044:         if not isinstance(extraction_model, BaseLM):
+0045:             raise ValueError("extraction_model must be an instance of dspy.BaseLM")
+0046:         self.extraction_model = extraction_model
+0047: 
+0048:     def format(
+0049:         self, signature: type[Signature], demos: list[dict[str, Any]], inputs: dict[str, Any]
+0050:     ) -> list[dict[str, Any]]:
+0051:         """
+0052:         Format a prompt for the first stage with the main LM.
+0053:         This no specific structure is required for the main LM, we customize the format method
+0054:         instead of format_field_description or format_field_structure.
+0055: 
+0056:         Args:
+0057:             signature: The signature of the original task
+0058:             demos: A list of demo examples
+0059:             inputs: The current input
+0060: 
+0061:         Returns:
+0062:             A list of messages to be passed to the main LM.
+0063:         """
+0064:         messages = []
+0065: 
+0066:         # Create a task description for the main LM
+0067:         task_description = self.format_task_description(signature)
+0068:         messages.append({"role": "system", "content": task_description})
+0069: 
+0070:         messages.extend(self.format_demos(signature, demos))
+0071: 
+0072:         # Format the current input
+0073:         messages.append({"role": "user", "content": self.format_user_message_content(signature, inputs)})
+0074: 
+0075:         return messages
+0076: 
+0077:     def parse(self, signature: Signature, completion: str) -> dict[str, Any]:
+0078:         """
+0079:         Use a smaller LM (extraction_model) with chat adapter to extract structured data
+0080:         from the raw completion text of the main LM.
+0081: 
+0082:         Args:
+0083:             signature: The signature of the original task
+0084:             completion: The completion from the main LM
+0085: 
+0086:         Returns:
+0087:             A dictionary containing the extracted structured data.
+0088:         """
+0089:         # The signature is supposed to be "text -> {original output fields}"
+0090:         extractor_signature = self._create_extractor_signature(signature)
+0091: 
+0092:         try:
+0093:             # Call the smaller LM to extract structured data from the raw completion text with ChatAdapter
+0094:             parsed_result = ChatAdapter()(
+0095:                 lm=self.extraction_model,
+0096:                 lm_kwargs={},
+0097:                 signature=extractor_signature,
+0098:                 demos=[],
+0099:                 inputs={"text": completion},
+0100:             )
+0101:             return parsed_result[0]
+0102: 
+0103:         except Exception as e:
+0104:             raise ValueError(f"Failed to parse response from the original completion: {completion}") from e
+0105: 
+0106:     async def acall(
+0107:         self,
+0108:         lm: BaseLM,
+0109:         lm_kwargs: dict[str, Any],
+0110:         signature: type[Signature],
+0111:         demos: list[dict[str, Any]],
+0112:         inputs: dict[str, Any],
+0113:     ) -> list[dict[str, Any]]:
+0114:         inputs = self.format(signature, demos, inputs)
+0115: 
+0116:         outputs = await lm.acall(messages=inputs, **lm_kwargs)
+0117:         # The signature is supposed to be "text -> {original output fields}"
+0118:         extractor_signature = self._create_extractor_signature(signature)
+0119: 
+0120:         values = []
+0121: 
+0122:         tool_call_output_field_name = self._get_tool_call_output_field_name(signature)
+0123:         for output in outputs:
+0124:             output_logprobs = None
+0125:             tool_calls = None
+0126:             text = output
+0127: 
+0128:             if isinstance(output, dict):
+0129:                 text = output["text"]
+0130:                 output_logprobs = output.get("logprobs")
+0131:                 tool_calls = output.get("tool_calls")
+0132: 
+0133:             try:
+0134:                 # Call the smaller LM to extract structured data from the raw completion text with ChatAdapter
+0135:                 value = await ChatAdapter().acall(
+0136:                     lm=self.extraction_model,
+0137:                     lm_kwargs={},
+0138:                     signature=extractor_signature,
+0139:                     demos=[],
+0140:                     inputs={"text": text},
+0141:                 )
+0142:                 value = value[0]
+0143: 
+0144:             except Exception as e:
+0145:                 raise ValueError(f"Failed to parse response from the original completion: {output}") from e
+0146: 
+0147:             if tool_calls and tool_call_output_field_name:
+0148:                 tool_calls = [
+0149:                     {
+0150:                         "name": v["function"]["name"],
+0151:                         "args": json_repair.loads(v["function"]["arguments"]),
+0152:                     }
+0153:                     for v in tool_calls
+0154:                 ]
+0155:                 value[tool_call_output_field_name] = ToolCalls.from_dict_list(tool_calls)
+0156: 
+0157:             if output_logprobs is not None:
+0158:                 value["logprobs"] = output_logprobs
+0159: 
+0160:             values.append(value)
+0161:         return values
+0162: 
+0163:     def format_task_description(self, signature: Signature) -> str:
+0164:         """Create a description of the task based on the signature"""
+0165:         parts = []
+0166: 
+0167:         parts.append("You are a helpful assistant that can solve tasks based on user input.")
+0168:         parts.append("As input, you will be provided with:\n" + get_field_description_string(signature.input_fields))
+0169:         parts.append("Your outputs must contain:\n" + get_field_description_string(signature.output_fields))
+0170:         parts.append("You should lay out your outputs in detail so that your answer can be understood by another agent")
+0171: 
+0172:         if signature.instructions:
+0173:             parts.append(f"Specific instructions: {signature.instructions}")
+0174: 
+0175:         return "\n".join(parts)
+0176: 
+0177:     def format_user_message_content(
+0178:         self,
+0179:         signature: type[Signature],
+0180:         inputs: dict[str, Any],
+0181:         prefix: str = "",
+0182:         suffix: str = "",
+0183:     ) -> str:
+0184:         parts = [prefix]
+0185: 
+0186:         for name in signature.input_fields.keys():
+0187:             if name in inputs:
+0188:                 parts.append(f"{name}: {inputs.get(name, '')}")
+0189: 
+0190:         parts.append(suffix)
+0191:         return "\n\n".join(parts).strip()
+0192: 
+0193:     def format_assistant_message_content(
+0194:         self,
+0195:         signature: type[Signature],
+0196:         outputs: dict[str, Any],
+0197:         missing_field_message: str | None = None,
+0198:     ) -> str:
+0199:         parts = []
+0200: 
+0201:         for name in signature.output_fields.keys():
+0202:             if name in outputs:
+0203:                 parts.append(f"{name}: {outputs.get(name, missing_field_message)}")
+0204: 
+0205:         return "\n\n".join(parts).strip()
+0206: 
+0207:     def _create_extractor_signature(
+0208:         self,
+0209:         original_signature: type[Signature],
+0210:     ) -> type[Signature]:
+0211:         """Create a new signature containing a new 'text' input field and all output fields.
+0212: 
+0213:         Args:
+0214:             original_signature: The original signature to extract output fields from
+0215: 
+0216:         Returns:
+0217:             A new Signature type with a text input field and all output fields
+0218:         """
+0219:         # Create new fields dict with 'text' input field and all output fields
+0220:         new_fields = {
+0221:             "text": (str, InputField()),
+0222:             **{name: (field.annotation, field) for name, field in original_signature.output_fields.items()},
+0223:         }
+0224: 
+0225:         outputs_str = ", ".join([f"`{field}`" for field in original_signature.output_fields])
+0226:         instructions = f"The input is a text that should contain all the necessary information to produce the fields {outputs_str}. \
+0227:             Your job is to extract the fields from the text verbatim. Extract precisely the appropriate value (content) for each field."
+0228: 
+0229:         return make_signature(new_fields, instructions)
+
+### tests/adapters/test_two_step_adapter.py
+0001: from unittest import mock
+0002: 
+0003: import pytest
+0004: 
+0005: import dspy
+0006: 
+0007: 
+0008: def test_two_step_adapter_call():
+0009:     class TestSignature(dspy.Signature):
+0010:         question: str = dspy.InputField(desc="The math question to solve")
+0011:         solution: str = dspy.OutputField(desc="Step by step solution")
+0012:         answer: float = dspy.OutputField(desc="The final numerical answer")
+0013: 
+0014:     program = dspy.Predict(TestSignature)
+0015: 
+0016:     mock_main_lm = mock.MagicMock(spec=dspy.LM)
+0017:     mock_main_lm.return_value = ["text from main LM"]
+0018:     mock_main_lm.kwargs = {"temperature": 1.0}
+0019: 
+0020:     mock_extraction_lm = mock.MagicMock(spec=dspy.LM)
+0021:     mock_extraction_lm.return_value = [
+0022:         """
+0023: [[ ## solution ## ]] result
+0024: [[ ## answer ## ]] 12
+0025: [[ ## completed ## ]]
+0026: """
+0027:     ]
+0028:     mock_extraction_lm.kwargs = {"temperature": 1.0}
+0029:     mock_extraction_lm.model = "openai/gpt-4o"
+0030: 
+0031:     dspy.configure(lm=mock_main_lm, adapter=dspy.TwoStepAdapter(extraction_model=mock_extraction_lm))
+0032: 
+0033:     result = program(question="What is 5 + 7?")
+0034: 
+0035:     assert result.answer == 12
+0036: 
+0037:     # main LM call
+0038:     mock_main_lm.assert_called_once()
+0039:     _, call_kwargs = mock_main_lm.call_args
+0040:     assert len(call_kwargs["messages"]) == 2
+0041: 
+0042:     # assert first message
+0043:     assert call_kwargs["messages"][0]["role"] == "system"
+0044:     content = call_kwargs["messages"][0]["content"]
+0045:     assert "1. `question` (str)" in content
+0046:     assert "1. `solution` (str)" in content
+0047:     assert "2. `answer` (float)" in content
+0048: 
+0049:     # assert second message
+0050:     assert call_kwargs["messages"][1]["role"] == "user"
+0051:     content = call_kwargs["messages"][1]["content"]
+0052:     assert "question:" in content.lower()
+0053:     assert "What is 5 + 7?" in content
+0054: 
+0055:     # extraction LM call
+0056:     mock_extraction_lm.assert_called_once()
+0057:     _, call_kwargs = mock_extraction_lm.call_args
+0058:     assert len(call_kwargs["messages"]) == 2
+0059: 
+0060:     # assert first message
+0061:     assert call_kwargs["messages"][0]["role"] == "system"
+0062:     content = call_kwargs["messages"][0]["content"]
+0063:     assert "`text` (str)" in content
+0064:     assert "`solution` (str)" in content
+0065:     assert "`answer` (float)" in content
+0066: 
+0067:     # assert second message
+0068:     assert call_kwargs["messages"][1]["role"] == "user"
+0069:     content = call_kwargs["messages"][1]["content"]
+0070:     assert "text from main LM" in content
+0071: 
+0072: 
+0073: @pytest.mark.asyncio
+0074: async def test_two_step_adapter_async_call():
+0075:     class TestSignature(dspy.Signature):
+0076:         question: str = dspy.InputField(desc="The math question to solve")
+0077:         solution: str = dspy.OutputField(desc="Step by step solution")
+0078:         answer: float = dspy.OutputField(desc="The final numerical answer")
+0079: 
+0080:     program = dspy.Predict(TestSignature)
+0081: 
+0082:     mock_main_lm = mock.MagicMock(spec=dspy.LM)
+0083:     mock_main_lm.acall.return_value = ["text from main LM"]
+0084:     mock_main_lm.kwargs = {"temperature": 1.0}
+0085: 
+0086:     mock_extraction_lm = mock.MagicMock(spec=dspy.LM)
+0087:     mock_extraction_lm.acall.return_value = [
+0088:         """
+0089: [[ ## solution ## ]] result
+0090: [[ ## answer ## ]] 12
+0091: [[ ## completed ## ]]
+0092: """
+0093:     ]
+0094:     mock_extraction_lm.kwargs = {"temperature": 1.0}
+0095:     mock_extraction_lm.model = "openai/gpt-4o"
+0096: 
+0097:     with dspy.context(lm=mock_main_lm, adapter=dspy.TwoStepAdapter(extraction_model=mock_extraction_lm)):
+0098:         result = await program.acall(question="What is 5 + 7?")
+0099: 
+0100:     assert result.answer == 12
+0101: 
+0102:     # main LM call
+0103:     mock_main_lm.acall.assert_called_once()
+0104:     _, call_kwargs = mock_main_lm.acall.call_args
+0105:     assert len(call_kwargs["messages"]) == 2
+0106: 
+0107:     # assert first message
+0108:     assert call_kwargs["messages"][0]["role"] == "system"
+0109:     content = call_kwargs["messages"][0]["content"]
+0110:     assert "1. `question` (str)" in content
+0111:     assert "1. `solution` (str)" in content
+0112:     assert "2. `answer` (float)" in content
+0113: 
+0114:     # assert second message
+0115:     assert call_kwargs["messages"][1]["role"] == "user"
+0116:     content = call_kwargs["messages"][1]["content"]
+0117:     assert "question:" in content.lower()
+0118:     assert "What is 5 + 7?" in content
+0119: 
+0120:     # extraction LM call
+0121:     mock_extraction_lm.acall.assert_called_once()
+0122:     _, call_kwargs = mock_extraction_lm.acall.call_args
+0123:     assert len(call_kwargs["messages"]) == 2
+0124: 
+0125:     # assert first message
+0126:     assert call_kwargs["messages"][0]["role"] == "system"
+0127:     content = call_kwargs["messages"][0]["content"]
+0128:     assert "`text` (str)" in content
+0129:     assert "`solution` (str)" in content
+0130:     assert "`answer` (float)" in content
+0131: 
+0132:     # assert second message
+0133:     assert call_kwargs["messages"][1]["role"] == "user"
+0134:     content = call_kwargs["messages"][1]["content"]
+0135:     assert "text from main LM" in content
+0136: 
+0137: 
+0138: def test_two_step_adapter_parse():
+0139:     class ComplexSignature(dspy.Signature):
+0140:         input_text: str = dspy.InputField()
+0141:         tags: list[str] = dspy.OutputField(desc="List of relevant tags")
+0142:         confidence: float = dspy.OutputField(desc="Confidence score")
+0143: 
+0144:     first_response = "main LM response"
+0145: 
+0146:     mock_extraction_lm = mock.MagicMock(spec=dspy.LM)
+0147:     mock_extraction_lm.return_value = [
+0148:         """
+0149:         {
+0150:             "tags": ["AI", "deep learning", "neural networks"],
+0151:             "confidence": 0.87
+0152:         }
+0153:     """
+0154:     ]
+0155:     mock_extraction_lm.kwargs = {"temperature": 1.0}
+0156:     mock_extraction_lm.model = "openai/gpt-4o"
+0157:     adapter = dspy.TwoStepAdapter(mock_extraction_lm)
+0158:     dspy.configure(adapter=adapter, lm=mock_extraction_lm)
+0159: 
+0160:     result = adapter.parse(ComplexSignature, first_response)
+0161: 
+0162:     assert result["tags"] == ["AI", "deep learning", "neural networks"]
+0163:     assert result["confidence"] == 0.87
+0164: 
+0165: 
+0166: def test_two_step_adapter_parse_errors():
+0167:     class TestSignature(dspy.Signature):
+0168:         question: str = dspy.InputField()
+0169:         answer: str = dspy.OutputField()
+0170: 
+0171:     first_response = "main LM response"
+0172: 
+0173:     mock_extraction_lm = mock.MagicMock(spec=dspy.LM)
+0174:     mock_extraction_lm.return_value = ["invalid response"]
+0175:     mock_extraction_lm.kwargs = {"temperature": 1.0}
+0176:     mock_extraction_lm.model = "openai/gpt-4o"
+0177: 
+0178:     adapter = dspy.TwoStepAdapter(mock_extraction_lm)
+0179: 
+0180:     with pytest.raises(ValueError, match="Failed to parse response"):
+0181:         adapter.parse(TestSignature, first_response)
+
+Return JSON that matches the schema exactly.

@@ -1,0 +1,725 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_ac8d0f9c4178`
+- Label: `lm_provider_integration_and_configuration`
+- Question: `I want DSPy to launch a local Hugging Face model for me and then point the client at the spawned server. What I can't tell from the outside is how DSPy normalizes the model string before launch and what connection details it writes back onto the LM afterward.
+
+Give me a complete, runnable Python program that mocks the local launcher, starts from a model string with the usual public prefixes, and prints/asserts the exact subprocess command plus the final `api_base` / `api_key` values DSPy places on the LM object.`
+- Model answer:
+```python
+import sys
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+from dspy.clients.lm_local import LocalProvider
+
+
+process = Mock()
+process.pid = 1234
+process.stdout.readline.return_value = ""
+process.poll.return_value = 0
+thread = Mock()
+
+lm = SimpleNamespace(model="openai/huggingface/my-org/my-model", launch_kwargs={}, kwargs={})
+
+with patch.dict(sys.modules, {"sglang": Mock(), "sglang.utils": Mock()}):
+    with patch("dspy.clients.lm_local.get_free_port", return_value=8123), patch(
+        "dspy.clients.lm_local.wait_for_server"
+    ), patch("dspy.clients.lm_local.subprocess.Popen", return_value=process) as popen_mock, patch(
+        "dspy.clients.lm_local.threading.Thread", return_value=thread
+    ):
+        LocalProvider.launch(lm, launch_kwargs={})
+
+command = popen_mock.call_args[0][0]
+model_path = command[command.index("--model-path") + 1]
+
+assert model_path == "my-org/my-model"
+assert lm.kwargs["api_base"] == "http://localhost:8123/v1"
+assert lm.kwargs["api_key"] == "local"
+
+print("command=", command)
+print("lm_kwargs=", lm.kwargs)
+```
+
+## Gold answer
+```python
+import sys
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
+
+from dspy.clients.lm_local import LocalProvider
+
+
+process = Mock()
+process.pid = 1234
+process.stdout.readline.return_value = ""
+process.poll.return_value = 0
+thread = Mock()
+
+lm = SimpleNamespace(model="openai/huggingface/my-org/my-model", launch_kwargs={}, kwargs={})
+
+with patch.dict(sys.modules, {"sglang": Mock(), "sglang.utils": Mock()}):
+    with patch("dspy.clients.lm_local.get_free_port", return_value=8123), patch(
+        "dspy.clients.lm_local.wait_for_server"
+    ), patch("dspy.clients.lm_local.subprocess.Popen", return_value=process) as popen_mock, patch(
+        "dspy.clients.lm_local.threading.Thread", return_value=thread
+    ):
+        LocalProvider.launch(lm, launch_kwargs={})
+
+command = popen_mock.call_args[0][0]
+model_path = command[command.index("--model-path") + 1]
+
+assert model_path == "my-org/my-model"
+assert lm.kwargs["api_base"] == "http://localhost:8123/v1"
+assert lm.kwargs["api_key"] == "local"
+
+print("command=", command)
+print("lm_kwargs=", lm.kwargs)
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The program mocks the local launch boundary so `LocalProvider.launch` can run without a real server: it provides an `sglang` import, substitutes `get_free_port`, `wait_for_server`, `subprocess.Popen`, and `threading.Thread`, and launches against an LM-like object with mutable `kwargs`.",
+    "span_ids": [
+      "s1",
+      "s2"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "Starting from a model string like `openai/huggingface/my-org/my-model`, the program shows that `launch` strips the public prefixes before launch so the effective model path becomes `my-org/my-model`.",
+    "span_ids": [
+      "s3"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 30,
+    "statement": "The program captures the command passed to `subprocess.Popen` and verifies the exact list-form launcher command: `python`, `-m`, `sglang.launch_server`, `--model-path`, the normalized model, `--port`, the mocked port as a string, `--host`, and `0.0.0.0`.",
+    "span_ids": [
+      "s4",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "After launch, the program asserts that DSPy writes `lm.kwargs[\"api_base\"]` as `http://localhost:{port}/v1` and `lm.kwargs[\"api_key\"]` as `local`, using the same port selected for the server.",
+    "span_ids": [
+      "s4",
+      "s6"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/clients/lm_local.py",
+    "start_line": 29,
+    "end_line": 36,
+    "excerpt": "0029:     def launch(lm: \"LM\", launch_kwargs: dict[str, Any] | None = None):\n0030:         try:\n0031:             import sglang  # noqa: F401\n0032:         except ImportError:\n0033:             raise ImportError(\n0034:                 \"For local model launching, please install sglang.\"\n0035:                 \"Navigate to https://docs.sglang.ai/start/install.html for the latest installation instructions!\"\n0036:             )"
+  },
+  {
+    "span_id": "s2",
+    "path": "tests/clients/test_lm_local.py",
+    "start_line": 67,
+    "end_line": 85,
+    "excerpt": "0067: @patch(\"dspy.clients.lm_local.threading.Thread\")\n0068: @patch(\"dspy.clients.lm_local.subprocess.Popen\")\n0069: @patch(\"dspy.clients.lm_local.get_free_port\")\n0070: @patch(\"dspy.clients.lm_local.wait_for_server\")\n0071: def test_command_is_list_not_string(mock_wait, mock_port, mock_popen, mock_thread):\n0072:     mock_port.return_value = 8000\n0073:     mock_process = mock.Mock()\n0074:     mock_process.pid = 12345\n0075:     mock_process.stdout.readline.return_value = \"\"\n0076:     mock_process.poll.return_value = 0\n0077:     mock_popen.return_value = mock_process\n0078: \n0079:     lm = mock.Mock(spec=[])\n0080:     lm.model = \"meta-llama/Llama-2-7b\"\n0081:     lm.launch_kwargs = {}\n0082:     lm.kwargs = {}\n0083: \n0084:     with mock.patch.dict(\"sys.modules\", {\"sglang\": mock.Mock(), \"sglang.utils\": mock.Mock()}):\n0085:         LocalProvider.launch(lm, launch_kwargs={})"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/clients/lm_local.py",
+    "start_line": 46,
+    "end_line": 53,
+    "excerpt": "0046:         model = lm.model\n0047:         if model.startswith(\"openai/\"):\n0048:             model = model[7:]\n0049:         if model.startswith(\"local:\"):\n0050:             model = model[6:]\n0051:         if model.startswith(\"huggingface/\"):\n0052:             model = model[len(\"huggingface/\") :]\n0053: "
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/clients/lm_local.py",
+    "start_line": 56,
+    "end_line": 68,
+    "excerpt": "0056:         port = get_free_port()\n0057:         timeout = launch_kwargs.get(\"timeout\", 1800)\n0058:         command = [\n0059:             \"python\",\n0060:             \"-m\",\n0061:             \"sglang.launch_server\",\n0062:             \"--model-path\",\n0063:             model,\n0064:             \"--port\",\n0065:             str(port),\n0066:             \"--host\",\n0067:             \"0.0.0.0\",\n0068:         ]"
+  },
+  {
+    "span_id": "s5",
+    "path": "tests/clients/test_lm_local.py",
+    "start_line": 87,
+    "end_line": 97,
+    "excerpt": "0087:         assert mock_popen.called\n0088:         call_args = mock_popen.call_args\n0089:         command = call_args[0][0]\n0090: \n0091:         assert isinstance(command, list)\n0092:         assert command[0] == \"python\"\n0093:         assert command[1] == \"-m\"\n0094:         assert command[2] == \"sglang.launch_server\"\n0095:         assert \"--model-path\" in command\n0096:         assert \"--port\" in command\n0097:         assert \"--host\" in command"
+  },
+  {
+    "span_id": "s6",
+    "path": "dspy/clients/lm_local.py",
+    "start_line": 124,
+    "end_line": 128,
+    "excerpt": "0124:         lm.kwargs[\"api_base\"] = f\"http://localhost:{port}/v1\"\n0125:         lm.kwargs[\"api_key\"] = \"local\"\n0126:         lm.get_logs = get_logs\n0127:         lm.process = process\n0128:         lm.thread = thread"
+  }
+]
+
+## Whole evidence files
+### dspy/clients/lm_local.py
+0001: import datetime
+0002: import logging
+0003: import random
+0004: import socket
+0005: import string
+0006: import subprocess
+0007: import threading
+0008: import time
+0009: from typing import TYPE_CHECKING, Any
+0010: 
+0011: import requests
+0012: 
+0013: from dspy.clients.provider import Provider, TrainingJob
+0014: from dspy.clients.utils_finetune import TrainDataFormat, save_data
+0015: 
+0016: if TYPE_CHECKING:
+0017:     from dspy.clients.lm import LM
+0018: 
+0019: logger = logging.getLogger(__name__)
+0020: 
+0021: 
+0022: class LocalProvider(Provider):
+0023:     def __init__(self):
+0024:         super().__init__()
+0025:         self.finetunable = True
+0026:         self.TrainingJob = TrainingJob
+0027: 
+0028:     @staticmethod
+0029:     def launch(lm: "LM", launch_kwargs: dict[str, Any] | None = None):
+0030:         try:
+0031:             import sglang  # noqa: F401
+0032:         except ImportError:
+0033:             raise ImportError(
+0034:                 "For local model launching, please install sglang."
+0035:                 "Navigate to https://docs.sglang.ai/start/install.html for the latest installation instructions!"
+0036:             )
+0037: 
+0038:         if hasattr(lm, "process"):
+0039:             logger.info("Server is already launched.")
+0040:             return
+0041: 
+0042:         launch_kwargs = launch_kwargs or lm.launch_kwargs
+0043: 
+0044:         import os
+0045: 
+0046:         model = lm.model
+0047:         if model.startswith("openai/"):
+0048:             model = model[7:]
+0049:         if model.startswith("local:"):
+0050:             model = model[6:]
+0051:         if model.startswith("huggingface/"):
+0052:             model = model[len("huggingface/") :]
+0053: 
+0054:         logger.info(f"Grabbing a free port to launch an SGLang server for model {model}")
+0055:         logger.info(f"We see that CUDA_VISIBLE_DEVICES is {os.environ.get('CUDA_VISIBLE_DEVICES', 'unset')}")
+0056:         port = get_free_port()
+0057:         timeout = launch_kwargs.get("timeout", 1800)
+0058:         command = [
+0059:             "python",
+0060:             "-m",
+0061:             "sglang.launch_server",
+0062:             "--model-path",
+0063:             model,
+0064:             "--port",
+0065:             str(port),
+0066:             "--host",
+0067:             "0.0.0.0",
+0068:         ]
+0069: 
+0070:         # We will manually stream & capture logs.
+0071:         process = subprocess.Popen(
+0072:             command,
+0073:             text=True,
+0074:             stdout=subprocess.PIPE,  # We'll read from pipe
+0075:             stderr=subprocess.STDOUT,  # Merge stderr into stdout
+0076:         )
+0077: 
+0078:         # A threading.Event to control printing after the server is ready.
+0079:         # This will store *all* lines (both before and after readiness).
+0080:         logger.info(f"SGLang server process started with PID {process.pid}.")
+0081:         stop_printing_event = threading.Event()
+0082:         logs_buffer = []
+0083: 
+0084:         def _tail_process(proc, buffer, stop_event):
+0085:             while True:
+0086:                 line = proc.stdout.readline()
+0087:                 if not line and proc.poll() is not None:
+0088:                     # Process ended and no new line
+0089:                     break
+0090:                 if line:
+0091:                     buffer.append(line)
+0092:                     # Print only if stop_event is not set
+0093:                     if not stop_event.is_set():
+0094:                         print(line, end="")
+0095: 
+0096:         # Start a background thread to read from the process continuously
+0097:         thread = threading.Thread(
+0098:             target=_tail_process,
+0099:             args=(process, logs_buffer, stop_printing_event),
+0100:             daemon=True,
+0101:         )
+0102:         thread.start()
+0103: 
+0104:         # Wait until the server is ready (or times out)
+0105:         base_url = f"http://localhost:{port}"
+0106:         try:
+0107:             wait_for_server(base_url, timeout=timeout)
+0108:         except TimeoutError:
+0109:             # If the server doesn't come up, we might want to kill it:
+0110:             process.kill()
+0111:             raise
+0112: 
+0113:         # Once server is ready, we tell the thread to stop printing further lines.
+0114:         stop_printing_event.set()
+0115: 
+0116:         # A convenience getter so the caller can see all logs so far (and future).
+0117:         def get_logs() -> str:
+0118:             # Join them all into a single string, or you might return a list
+0119:             return "".join(logs_buffer)
+0120: 
+0121:         # Let the user know server is up
+0122:         logger.info(f"Server ready on random port {port}! Logs are available via lm.get_logs() method on returned lm.")
+0123: 
+0124:         lm.kwargs["api_base"] = f"http://localhost:{port}/v1"
+0125:         lm.kwargs["api_key"] = "local"
+0126:         lm.get_logs = get_logs
+0127:         lm.process = process
+0128:         lm.thread = thread
+0129: 
+0130:     @staticmethod
+0131:     def kill(lm: "LM", launch_kwargs: dict[str, Any] | None = None):
+0132:         from sglang.utils import terminate_process
+0133: 
+0134:         if not hasattr(lm, "process"):
+0135:             logger.info("No running server to kill.")
+0136:             return
+0137:         # Ideally, the following happens atomically
+0138:         terminate_process(lm.process)
+0139:         lm.thread.join()
+0140:         del lm.process
+0141:         del lm.thread
+0142:         del lm.get_logs
+0143:         logger.info("Server killed.")
+0144: 
+0145:     @staticmethod
+0146:     def finetune(
+0147:         job: TrainingJob,
+0148:         model: str,
+0149:         train_data: list[dict[str, Any]],
+0150:         train_data_format: TrainDataFormat | None,
+0151:         train_kwargs: dict[str, Any] | None = None,
+0152:     ) -> str:
+0153:         if model.startswith("openai/"):
+0154:             model = model[7:]
+0155:         if model.startswith("local:"):
+0156:             model = model[6:]
+0157: 
+0158:         if train_data_format != TrainDataFormat.CHAT:
+0159:             raise ValueError("Only chat models are supported for local finetuning.")
+0160: 
+0161:         data_path = save_data(train_data)
+0162:         logger.info(f"Train data saved to {data_path}")
+0163:         output_dir = create_output_dir(model, data_path)
+0164: 
+0165:         default_train_kwargs = {
+0166:             "device": None,
+0167:             "use_peft": False,
+0168:             "num_train_epochs": 5,
+0169:             "per_device_train_batch_size": 1,
+0170:             "gradient_accumulation_steps": 8,
+0171:             "learning_rate": 1e-5,
+0172:             "max_seq_length": None,
+0173:             "packing": True,
+0174:             "bf16": True,
+0175:             "output_dir": output_dir,
+0176:         }
+0177:         train_kwargs = {**default_train_kwargs, **(train_kwargs or {})}
+0178:         output_dir = train_kwargs["output_dir"]  # user might have changed the output_dir
+0179: 
+0180:         logger.info(f"Starting local training, will save to {output_dir}")
+0181:         train_sft_locally(
+0182:             model_name=model,
+0183:             train_data=train_data,
+0184:             train_kwargs=train_kwargs,
+0185:         )
+0186: 
+0187:         logger.info("Training complete")
+0188:         return f"openai/local:{output_dir}"
+0189: 
+0190: 
+0191: def create_output_dir(model_name, data_path):
+0192:     model_str = model_name.replace("/", "-")
+0193:     time_str = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+0194:     rnd_str = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
+0195:     model_identifier = f"{rnd_str}_{model_str}_{time_str}"
+0196:     output_dir = data_path.replace(".jsonl", "_" + model_identifier)
+0197:     return output_dir
+0198: 
+0199: 
+0200: def train_sft_locally(model_name, train_data, train_kwargs):
+0201:     try:
+0202:         import torch
+0203:         from transformers import AutoModelForCausalLM, AutoTokenizer
+0204:         from trl import SFTConfig, SFTTrainer, setup_chat_format
+0205:     except ImportError:
+0206:         raise ImportError(
+0207:             "For local finetuning, please install torch, transformers, and trl "
+0208:             "by running `pip install -U torch transformers accelerate trl peft`"
+0209:         )
+0210: 
+0211:     device = train_kwargs.get("device", None)
+0212:     if device is None:
+0213:         device = "cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu"
+0214:     logger.info(f"Using device: {device}")
+0215: 
+0216:     model = AutoModelForCausalLM.from_pretrained(pretrained_model_name_or_path=model_name).to(device)
+0217:     tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path=model_name)
+0218: 
+0219:     # Set up the chat format; generally only for non-chat model variants, hence the try-except.
+0220:     try:
+0221:         model, tokenizer = setup_chat_format(model=model, tokenizer=tokenizer)
+0222:     except Exception:
+0223:         pass
+0224: 
+0225:     if tokenizer.pad_token_id is None:
+0226:         logger.info("Adding pad token to tokenizer")
+0227:         tokenizer.add_special_tokens({"pad_token": "[!#PAD#!]"})
+0228: 
+0229:     logger.info("Creating dataset")
+0230:     if "max_seq_length" not in train_kwargs:
+0231:         train_kwargs["max_seq_length"] = 4096
+0232:         logger.info(
+0233:             f"The 'train_kwargs' parameter didn't include a 'max_seq_length', defaulting to {train_kwargs['max_seq_length']}"
+0234:         )
+0235: 
+0236:     from datasets import Dataset
+0237: 
+0238:     hf_dataset = Dataset.from_list(train_data)
+0239: 
+0240:     def tokenize_function(example):
+0241:         return encode_sft_example(example, tokenizer, train_kwargs["max_seq_length"])  # noqa: F821
+0242: 
+0243:     tokenized_dataset = hf_dataset.map(tokenize_function, batched=False)
+0244:     tokenized_dataset.set_format(type="torch")
+0245:     tokenized_dataset = tokenized_dataset.filter(lambda example: (example["labels"] != -100).any())
+0246: 
+0247:     use_peft = train_kwargs.get("use_peft", False)
+0248:     peft_config = None
+0249: 
+0250:     if use_peft:
+0251:         from peft import LoraConfig
+0252: 
+0253:         rank_dimension = 32
+0254:         lora_alpha = 64
+0255:         lora_dropout = 0.05
+0256: 
+0257:         peft_config = LoraConfig(
+0258:             r=rank_dimension,
+0259:             lora_alpha=lora_alpha,
+0260:             lora_dropout=lora_dropout,
+0261:             bias="none",
+0262:             target_modules="all-linear",
+0263:             task_type="CAUSAL_LM",
+0264:         )
+0265: 
+0266:     sft_config = SFTConfig(
+0267:         output_dir=train_kwargs["output_dir"],
+0268:         num_train_epochs=train_kwargs["num_train_epochs"],
+0269:         per_device_train_batch_size=train_kwargs["per_device_train_batch_size"],
+0270:         gradient_accumulation_steps=train_kwargs["gradient_accumulation_steps"],
+0271:         learning_rate=train_kwargs["learning_rate"],
+0272:         max_grad_norm=2.0,  # note that the current SFTConfig default is 1.0
+0273:         logging_steps=20,
+0274:         warmup_ratio=0.03,
+0275:         lr_scheduler_type="constant",
+0276:         save_steps=10_000,
+0277:         bf16=train_kwargs["bf16"],
+0278:         max_seq_length=train_kwargs["max_seq_length"],
+0279:         packing=train_kwargs["packing"],
+0280:         dataset_kwargs={  # We need to pass dataset_kwargs because we are processing the dataset ourselves
+0281:             "add_special_tokens": False,  # Special tokens handled by template
+0282:             "append_concat_token": False,  # No additional separator needed
+0283:         },
+0284:     )
+0285: 
+0286:     logger.info("Starting training")
+0287:     trainer = SFTTrainer(
+0288:         model=model,
+0289:         args=sft_config,
+0290:         train_dataset=tokenized_dataset,
+0291:         peft_config=peft_config,
+0292:     )
+0293: 
+0294:     # Train!
+0295:     trainer.train()
+0296: 
+0297:     # Save the model!
+0298:     trainer.save_model()
+0299: 
+0300:     merge = True
+0301:     if use_peft and merge:
+0302:         from peft import AutoPeftModelForCausalLM
+0303: 
+0304:         # Load PEFT model on CPU
+0305:         model_ = AutoPeftModelForCausalLM.from_pretrained(
+0306:             pretrained_model_name_or_path=sft_config.output_dir,
+0307:             torch_dtype=torch.float16,
+0308:             low_cpu_mem_usage=True,
+0309:         )
+0310: 
+0311:         merged_model = model_.merge_and_unload()
+0312:         merged_model.save_pretrained(sft_config.output_dir, safe_serialization=True, max_shard_size="5GB")
+0313: 
+0314:     # Clean up!
+0315:     import gc
+0316: 
+0317:     del model
+0318:     del tokenizer
+0319:     del trainer
+0320:     gc.collect()
+0321:     torch.cuda.empty_cache()
+0322: 
+0323:     return sft_config.output_dir
+0324: 
+0325: 
+0326: def get_free_port() -> int:
+0327:     """
+0328:     Return a free TCP port on localhost.
+0329:     """
+0330:     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+0331:         s.bind(("localhost", 0))
+0332:         return s.getsockname()[1]
+0333: 
+0334: 
+0335: def wait_for_server(base_url: str, timeout: int | None = None) -> None:
+0336:     """
+0337:     Wait for the server to be ready by polling the /v1/models endpoint.
+0338: 
+0339:     Args:
+0340:         base_url: The base URL of the server (e.g. http://localhost:1234)
+0341:         timeout: Maximum time to wait in seconds. None means wait forever.
+0342:     """
+0343:     start_time = time.time()
+0344:     while True:
+0345:         try:
+0346:             response = requests.get(
+0347:                 f"{base_url}/v1/models",
+0348:                 headers={"Authorization": "Bearer None"},
+0349:             )
+0350:             if response.status_code == 200:
+0351:                 # A small extra sleep to ensure server is fully up.
+0352:                 time.sleep(5)
+0353:                 break
+0354: 
+0355:             if timeout and (time.time() - start_time) > timeout:
+0356:                 raise TimeoutError("Server did not become ready within timeout period")
+0357:         except requests.exceptions.RequestException:
+0358:             # Server not up yet, wait and retry
+0359:             time.sleep(1)
+0360: 
+0361: 
+0362: def encode_sft_example(example, tokenizer, max_seq_length):
+0363:     """
+0364:     This function encodes a single example into a format that can be used for sft training.
+0365:     Here, we assume each example has a 'messages' field. Each message in it is a dict with 'role' and 'content' fields.
+0366:     We use the `apply_chat_template` function from the tokenizer to tokenize the messages and prepare the input and label tensors.
+0367: 
+0368:     Code obtained from the allenai/open-instruct repository: https://github.com/allenai/open-instruct/blob/4365dea3d1a6111e8b2712af06b22a4512a0df88/open_instruct/finetune.py
+0369:     """
+0370:     import torch
+0371: 
+0372:     messages = example["messages"]
+0373:     if len(messages) == 0:
+0374:         raise ValueError("messages field is empty.")
+0375:     input_ids = tokenizer.apply_chat_template(
+0376:         conversation=messages,
+0377:         tokenize=True,
+0378:         return_tensors="pt",
+0379:         padding=False,
+0380:         truncation=True,
+0381:         max_length=max_seq_length,
+0382:         add_generation_prompt=False,
+0383:     )
+0384:     labels = input_ids.clone()
+0385:     # mask the non-assistant part for avoiding loss
+0386:     for message_idx, message in enumerate(messages):
+0387:         if message["role"] != "assistant":
+0388:             # we calculate the start index of this non-assistant message
+0389:             if message_idx == 0:
+0390:                 message_start_idx = 0
+0391:             else:
+0392:                 message_start_idx = tokenizer.apply_chat_template(
+0393:                     conversation=messages[:message_idx],  # here marks the end of the previous messages
+0394:                     tokenize=True,
+0395:                     return_tensors="pt",
+0396:                     padding=False,
+0397:                     truncation=True,
+0398:                     max_length=max_seq_length,
+0399:                     add_generation_prompt=False,
+0400:                 ).shape[1]
+0401:             # next, we calculate the end index of this non-assistant message
+0402:             if message_idx < len(messages) - 1 and messages[message_idx + 1]["role"] == "assistant":
+0403:                 # for intermediate messages that follow with an assistant message, we need to
+0404:                 # set `add_generation_prompt=True` to avoid the assistant generation prefix being included in the loss
+0405:                 # (e.g., `<|assistant|>`)
+0406:                 message_end_idx = tokenizer.apply_chat_template(
+0407:                     conversation=messages[: message_idx + 1],
+0408:                     tokenize=True,
+0409:                     return_tensors="pt",
+0410:                     padding=False,
+0411:                     truncation=True,
+0412:                     max_length=max_seq_length,
+0413:                     add_generation_prompt=True,
+0414:                 ).shape[1]
+0415:             else:
+0416:                 # for the last message or the message that doesn't follow with an assistant message,
+0417:                 # we don't need to add the assistant generation prefix
+0418:                 message_end_idx = tokenizer.apply_chat_template(
+0419:                     conversation=messages[: message_idx + 1],
+0420:                     tokenize=True,
+0421:                     return_tensors="pt",
+0422:                     padding=False,
+0423:                     truncation=True,
+0424:                     max_length=max_seq_length,
+0425:                     add_generation_prompt=False,
+0426:                 ).shape[1]
+0427:             # set the label to -100 for the non-assistant part
+0428:             labels[:, message_start_idx:message_end_idx] = -100
+0429:             if max_seq_length and message_end_idx >= max_seq_length:
+0430:                 break
+0431:     attention_mask = torch.ones_like(input_ids)
+0432:     return {
+0433:         "input_ids": input_ids.flatten(),
+0434:         "labels": labels.flatten(),
+0435:         "attention_mask": attention_mask.flatten(),
+0436:     }
+
+### tests/clients/test_lm_local.py
+0001: from unittest import mock
+0002: from unittest.mock import patch
+0003: 
+0004: from dspy.clients.lm_local import LocalProvider
+0005: 
+0006: 
+0007: @patch("dspy.clients.lm_local.threading.Thread")
+0008: @patch("dspy.clients.lm_local.subprocess.Popen")
+0009: @patch("dspy.clients.lm_local.get_free_port")
+0010: @patch("dspy.clients.lm_local.wait_for_server")
+0011: def test_command_with_spaces_in_path(mock_wait, mock_port, mock_popen, mock_thread):
+0012:     mock_port.return_value = 8000
+0013:     mock_process = mock.Mock()
+0014:     mock_process.pid = 12345
+0015:     mock_process.stdout.readline.return_value = ""
+0016:     mock_process.poll.return_value = 0
+0017:     mock_popen.return_value = mock_process
+0018: 
+0019:     lm = mock.Mock(spec=[])
+0020:     lm.model = "/path/to/my models/llama"
+0021:     lm.launch_kwargs = {}
+0022:     lm.kwargs = {}
+0023: 
+0024:     with mock.patch.dict("sys.modules", {"sglang": mock.Mock(), "sglang.utils": mock.Mock()}):
+0025:         LocalProvider.launch(lm, launch_kwargs={})
+0026: 
+0027:         assert mock_popen.called
+0028:         call_args = mock_popen.call_args
+0029:         command = call_args[0][0]
+0030: 
+0031:         assert isinstance(command, list)
+0032:         assert "--model-path" in command
+0033:         model_index = command.index("--model-path")
+0034:         assert command[model_index + 1] == "/path/to/my models/llama"
+0035: 
+0036: 
+0037: @patch("dspy.clients.lm_local.threading.Thread")
+0038: @patch("dspy.clients.lm_local.subprocess.Popen")
+0039: @patch("dspy.clients.lm_local.get_free_port")
+0040: @patch("dspy.clients.lm_local.wait_for_server")
+0041: def test_command_construction_prevents_injection(mock_wait, mock_port, mock_popen, mock_thread):
+0042:     mock_port.return_value = 8000
+0043:     mock_process = mock.Mock()
+0044:     mock_process.pid = 12345
+0045:     mock_process.stdout.readline.return_value = ""
+0046:     mock_process.poll.return_value = 0
+0047:     mock_popen.return_value = mock_process
+0048: 
+0049:     lm = mock.Mock(spec=[])
+0050:     lm.model = "model --trust-remote-code"
+0051:     lm.launch_kwargs = {}
+0052:     lm.kwargs = {}
+0053: 
+0054:     with mock.patch.dict("sys.modules", {"sglang": mock.Mock(), "sglang.utils": mock.Mock()}):
+0055:         LocalProvider.launch(lm, launch_kwargs={})
+0056: 
+0057:         assert mock_popen.called
+0058:         call_args = mock_popen.call_args
+0059:         command = call_args[0][0]
+0060: 
+0061:         assert isinstance(command, list)
+0062:         assert "--model-path" in command
+0063:         model_index = command.index("--model-path")
+0064:         assert command[model_index + 1] == "model --trust-remote-code"
+0065: 
+0066: 
+0067: @patch("dspy.clients.lm_local.threading.Thread")
+0068: @patch("dspy.clients.lm_local.subprocess.Popen")
+0069: @patch("dspy.clients.lm_local.get_free_port")
+0070: @patch("dspy.clients.lm_local.wait_for_server")
+0071: def test_command_is_list_not_string(mock_wait, mock_port, mock_popen, mock_thread):
+0072:     mock_port.return_value = 8000
+0073:     mock_process = mock.Mock()
+0074:     mock_process.pid = 12345
+0075:     mock_process.stdout.readline.return_value = ""
+0076:     mock_process.poll.return_value = 0
+0077:     mock_popen.return_value = mock_process
+0078: 
+0079:     lm = mock.Mock(spec=[])
+0080:     lm.model = "meta-llama/Llama-2-7b"
+0081:     lm.launch_kwargs = {}
+0082:     lm.kwargs = {}
+0083: 
+0084:     with mock.patch.dict("sys.modules", {"sglang": mock.Mock(), "sglang.utils": mock.Mock()}):
+0085:         LocalProvider.launch(lm, launch_kwargs={})
+0086: 
+0087:         assert mock_popen.called
+0088:         call_args = mock_popen.call_args
+0089:         command = call_args[0][0]
+0090: 
+0091:         assert isinstance(command, list)
+0092:         assert command[0] == "python"
+0093:         assert command[1] == "-m"
+0094:         assert command[2] == "sglang.launch_server"
+0095:         assert "--model-path" in command
+0096:         assert "--port" in command
+0097:         assert "--host" in command
+
+Return JSON that matches the schema exactly.

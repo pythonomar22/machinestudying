@@ -1,0 +1,97 @@
+{
+ "id": "dspy_d4d8b96b73fc",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm using the random-search few-shot optimizer and I omitted a separate validation set. What I need to know is whether DSPY then evaluates the candidate on the trainset itself, rather than leaving validation empty or inventing some other split.\n\nI want a minimal repro that isolates the evaluation phase and makes the dataset choice visible, because this has a big effect on how much I trust the reported score.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, restricts the run to the baseline candidate so the metric sees only evaluation examples, and prints/asserts whether the optimizer reused the trainset as its valset.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy import Example\nfrom dspy.teleprompt import BootstrapFewShotWithRandomSearch\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\n\ntrainset = [\n    Example(input=\"q1\", output=\"a1\").with_inputs(\"input\"),\n    Example(input=\"q2\", output=\"a2\").with_inputs(\"input\"),\n]\nstudent = SimpleModule(); student.set_lm(DummyLM({\"q1\": {\"output\": \"a1\"}, \"q2\": {\"output\": \"a2\"}}))\nseen_inputs = []\n\n\ndef recording_metric(example, prediction, trace=None):\n    seen_inputs.append(example.input)\n    return 1.0\n\n\noptimizer = BootstrapFewShotWithRandomSearch(\n    metric=recording_metric,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n    num_candidate_programs=1,\n    num_threads=1,\n)\ncompiled = optimizer.compile(student, trainset=trainset, valset=None, restrict={-3})\nprint(\"valset_is_trainset:\", optimizer.valset is trainset)\nprint(\"inputs_seen_by_metric:\", seen_inputs)\nprint(\"candidate_seeds:\", [candidate[\"seed\"] for candidate in compiled.candidate_programs])\nassert optimizer.valset is trainset\nassert seen_inputs == [\"q1\", \"q2\"]\nassert [candidate[\"seed\"] for candidate in compiled.candidate_programs] == [-3]\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 40,
+   "statement": "The answer must demonstrate that omitting a separate validation set, or passing `valset=None`, makes `BootstrapFewShotWithRandomSearch.compile` reuse the same `trainset` object as `optimizer.valset`, ideally with an explicit identity print/assertion.",
+   "span_ids": [
+    "s1",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The answer must make the evaluation dataset visible by using a metric compatible with `(example, prediction, trace=None)` that records which examples were scored, and then assert that the recorded examples are the training examples, because candidate evaluation is run with `Evaluate(devset=self.valset, metric=self.metric)`.",
+   "span_ids": [
+    "s1",
+    "s3",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer must isolate the zero-shot baseline by passing `restrict={-3}` and confirming that the compiled candidate list contains only seed `-3`, since the compile loop starts at seed `-3`, skips seeds outside `restrict`, and seed `-3` uses `student.reset_copy()` instead of few-shot compilation.",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The repro should be a minimal runnable random-search setup with a trivial `dspy.Module`/`Predict` student, `Example(...).with_inputs(\"input\")` data, and a `DummyLM` used as the LM during compile/evaluation.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/random_search.py",
+   "start_line": 57,
+   "end_line": 60,
+   "excerpt": "0057:     def compile(self, student, *, teacher=None, trainset, valset=None, restrict=None, labeled_sample=True):\n0058:         self.trainset = trainset\n0059:         self.valset = valset or trainset  # TODO: FIXME: Note this choice.\n0060: "
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/random_search.py",
+   "start_line": 67,
+   "end_line": 76,
+   "excerpt": "0067:         for seed in range(-3, self.num_candidate_sets):\n0068:             if (restrict is not None) and (seed not in restrict):\n0069:                 continue\n0070: \n0071:             trainset_copy = list(self.trainset)\n0072: \n0073:             if seed == -3:\n0074:                 # zero-shot\n0075:                 program = student.reset_copy()\n0076: "
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/random_search.py",
+   "start_line": 113,
+   "end_line": 123,
+   "excerpt": "0113:             evaluate = Evaluate(\n0114:                 devset=self.valset,\n0115:                 metric=self.metric,\n0116:                 num_threads=self.num_threads,\n0117:                 max_errors=effective_max_errors,\n0118:                 display_table=False,\n0119:                 display_progress=True,\n0120:             )\n0121: \n0122:             result = evaluate(program)\n0123: "
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/teleprompt/random_search.py",
+   "start_line": 136,
+   "end_line": 145,
+   "excerpt": "0136:             score_data.append({\"score\": score, \"subscores\": subscores, \"seed\": seed, \"program\": program})\n0137: \n0138:             if self.stop_at_score is not None and score >= self.stop_at_score:\n0139:                 print(f\"Stopping early because score {score} is >= stop_at_score {self.stop_at_score}\")\n0140:                 break\n0141: \n0142:         # To best program, attach all program candidates in decreasing average score\n0143:         best_program.candidate_programs = score_data\n0144:         best_program.candidate_programs = sorted(\n0145:             best_program.candidate_programs, key=lambda x: x[\"score\"], reverse=True"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/teleprompt/test_random_search.py",
+   "start_line": 8,
+   "end_line": 18,
+   "excerpt": "0008: class SimpleModule(dspy.Module):\n0009:     def __init__(self, signature):\n0010:         super().__init__()\n0011:         self.predictor = Predict(signature)\n0012: \n0013:     def forward(self, **kwargs):\n0014:         return self.predictor(**kwargs)\n0015: \n0016: \n0017: def simple_metric(example, prediction, trace=None):\n0018:     return example.output == prediction.output"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/teleprompt/test_random_search.py",
+   "start_line": 21,
+   "end_line": 39,
+   "excerpt": "0021: def test_basic_workflow():\n0022:     \"\"\"Test to ensure the basic compile flow runs without errors.\"\"\"\n0023:     student = SimpleModule(\"input -> output\")\n0024:     teacher = SimpleModule(\"input -> output\")\n0025: \n0026:     lm = DummyLM(\n0027:         [\n0028:             \"Initial thoughts\",\n0029:             \"Finish[blue]\",  # Expected output for both training and validation\n0030:         ]\n0031:     )\n0032:     dspy.configure(lm=lm)\n0033: \n0034:     optimizer = BootstrapFewShotWithRandomSearch(metric=simple_metric, max_bootstrapped_demos=1, max_labeled_demos=1)\n0035:     trainset = [\n0036:         Example(input=\"What is the color of the sky?\", output=\"blue\").with_inputs(\"input\"),\n0037:         Example(input=\"What does the fox say?\", output=\"Ring-ding-ding-ding-dingeringeding!\").with_inputs(\"input\"),\n0038:     ]\n0039:     optimizer.compile(student, teacher=teacher, trainset=trainset)"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "",
+ "source_index": 38,
+ "smalldspy_scope": false
+}

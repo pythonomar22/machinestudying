@@ -1,0 +1,419 @@
+{
+ "cluster_id": 2,
+ "label": "prompt_compilation_customization_and_inspection",
+ "batch": 2,
+ "seed_numbers": [
+  878,
+  212,
+  6743,
+  8059,
+  1071,
+  1304,
+  8026,
+  1244,
+  7999,
+  1073
+ ],
+ "candidates": [
+  {
+   "question": "I built a `dspy.Predict` from a signature class, then later edited the task wording on that class because I wanted to iterate on instructions without rebuilding the whole pipeline. What I cannot tell is whether an already-constructed predictor snapshots the old prompt text or reads the class again on each call.\n\nI do not want a verbal answer because this is going into a regression test for prompt inspection. Show the same predictor being called once before the edit and once after it, and make the proof come from the recorded LM requests rather than from Python object identity.\n\nGive me a complete, runnable Python program that runs offline with `DummyLM`, prints the two system messages, and asserts that the second call uses the updated task wording while the first call keeps the original wording.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass MySig(dspy.Signature):\n    \"\"\"Original instruction.\"\"\"\n\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nlm = DummyLM([{\"answer\": \"first\"}, {\"answer\": \"second\"}])\n\nwith dspy.context(lm=lm):\n    program = dspy.Predict(MySig)\n    program(question=\"before\")\n\n    # Mutate the signature class after the predictor already exists.\n    MySig.instructions = \"Updated instruction.\"\n    program(question=\"after\")\n\nfirst_system = lm.history[0][\"messages\"][0][\"content\"]\nsecond_system = lm.history[1][\"messages\"][0][\"content\"]\n\nprint(first_system)\nprint(\"---\")\nprint(second_system)\n\nassert \"Original instruction.\" in first_system\nassert \"Updated instruction.\" not in first_system\nassert \"Updated instruction.\" in second_system\nassert \"Original instruction.\" not in second_system\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/signatures/signature.py",
+     "symbol": "SignatureMeta.instructions"
+    },
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict._forward_preprocess"
+    }
+   ],
+   "note": "Tests whether prompt text is read from the live signature class at call time rather than snapshotted at predictor construction.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I replaced one output field with `dspy.Reasoning` because I want downstream code to treat it as a richer object, but I am still testing on an offline stub model. What I cannot tell is whether DSPy changes the prompt contract for that field, or whether only the parsed Python type changes.\n\nI want a tiny proof that separates those two concerns. The important part is to inspect the rendered prompt text and the returned object type from one real call, not just to show the schema object in memory.\n\nGive me a complete, runnable Python program that runs offline with `DummyLM`, prints the rendered system message plus the runtime type of the reasoning field, and asserts that the prompt still advertises reasoning like plain text while the returned field is a real `dspy.Reasoning` object.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass ReasoningSig(dspy.Signature):\n    question: str = dspy.InputField()\n    reasoning: dspy.Reasoning = dspy.OutputField()\n    answer: str = dspy.OutputField()\n\n\nsystem_message = dspy.ChatAdapter().format_system_message(ReasoningSig)\nlm = DummyLM([{\"reasoning\": \"step by step\", \"answer\": \"Paris\"}])\n\nwith dspy.context(lm=lm):\n    result = dspy.Predict(ReasoningSig)(question=\"What is the capital of France?\")\n\nprint(system_message)\nprint(type(result.reasoning).__name__)\nprint(result.reasoning)\n\nassert \"1. `reasoning` (str)\" in system_message\nassert isinstance(result.reasoning, dspy.Reasoning)\nassert str(result.reasoning) == \"step by step\"\nassert result.answer == \"Paris\"\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/utils.py",
+     "symbol": "get_annotation_name"
+    },
+    {
+     "file": "dspy/adapters/types/reasoning.py",
+     "symbol": "Reasoning"
+    },
+    {
+     "file": "tests/adapters/test_chat_adapter.py",
+     "symbol": "test_chat_adapter_native_reasoning"
+    }
+   ],
+   "note": "Separates prompt-facing type rendering from parsed runtime object type for `dspy.Reasoning` on the manual text path.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I saved prompt customizations from one signature and then loaded them onto another signature after a refactor where the field names stayed the same but the field order changed. What I need to know is whether DSPy matches saved prompt metadata by field name or just by position.\n\nThis is not theoretical for me: if it matches positionally, a harmless reordering could silently attach the wrong descriptions to the wrong fields. I want a small repro that makes the mismatch obvious from the loaded state itself.\n\nGive me a complete, runnable Python program that saves prompt state from one signature, loads it into another signature with the same field names in a different order, prints the loaded descriptions, and asserts whether the mapping happened by position or by name.",
+   "answer": "```python\nimport dspy\n\n\nSource = dspy.Signature(\"question, context -> answer\", \"Source instructions\")\nSource = Source.with_updated_fields(\"question\", desc=\"SOURCE QUESTION\")\nSource = Source.with_updated_fields(\"context\", desc=\"SOURCE CONTEXT\")\nSource = Source.with_updated_fields(\"answer\", desc=\"SOURCE ANSWER\")\nsource_state = Source.dump_state()\n\nTarget = dspy.Signature(\"context, question -> answer\", \"Target instructions\")\nTarget = Target.with_updated_fields(\"context\", desc=\"TARGET CONTEXT\")\nTarget = Target.with_updated_fields(\"question\", desc=\"TARGET QUESTION\")\nTarget = Target.with_updated_fields(\"answer\", desc=\"TARGET ANSWER\")\n\nloaded = Target.load_state(source_state)\n\nloaded_context_desc = loaded.input_fields[\"context\"].json_schema_extra[\"desc\"]\nloaded_question_desc = loaded.input_fields[\"question\"].json_schema_extra[\"desc\"]\nloaded_answer_desc = loaded.output_fields[\"answer\"].json_schema_extra[\"desc\"]\n\nprint(loaded.instructions)\nprint(loaded_context_desc)\nprint(loaded_question_desc)\nprint(loaded_answer_desc)\n\nassert loaded.instructions == \"Source instructions\"\nassert loaded_context_desc == \"SOURCE QUESTION\"\nassert loaded_question_desc == \"SOURCE CONTEXT\"\nassert loaded_answer_desc == \"SOURCE ANSWER\"\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/signatures/signature.py",
+     "symbol": "Signature.dump_state"
+    },
+    {
+     "file": "dspy/signatures/signature.py",
+     "symbol": "Signature.load_state"
+    },
+    {
+     "file": "tests/signatures/test_signature.py",
+     "symbol": "test_dump_and_load_state"
+    }
+   ],
+   "note": "Targets a subtle prompt-state portability bug: saved signature prompt metadata is replayed positionally, not by field name.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I am mixing fully labeled few-shot examples with partially labeled ones because some fields were never annotated. I assumed DSPy would keep the examples in the exact order I supplied, but when I inspected the rendered prompt it looked like the partial example might have been moved.\n\nI only care about the real prompt order that reaches the model. Please do not answer in prose; I want a tiny formatting repro that makes the ordering visible from the emitted messages themselves.\n\nGive me a complete, runnable Python program that builds one complete example and one partial example in the opposite order, prints the formatted demo messages, and asserts that the partial example is emitted before the complete one.",
+   "answer": "```python\nimport dspy\n\n\nclass DemoSig(dspy.Signature):\n    question: str = dspy.InputField()\n    context: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nadapter = dspy.ChatAdapter()\ndemos = [\n    {\"question\": \"complete question\", \"context\": \"complete context\", \"answer\": \"complete answer\"},\n    {\"question\": \"partial question\", \"answer\": \"partial answer\"},\n]\nmessages = adapter.format(DemoSig, demos, {\"question\": \"live question\", \"context\": \"live context\"})\n\nfor message in messages[1:5]:\n    print(message[\"role\"], \"=>\")\n    print(message[\"content\"])\n    print(\"---\")\n\nassert messages[1][\"content\"].startswith(\"This is an example of the task\")\nassert \"partial question\" in messages[1][\"content\"]\nassert \"complete question\" in messages[3][\"content\"]\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format_demos"
+    },
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format"
+    }
+   ],
+   "note": "Verifies that DSPy groups incomplete few-shot demos ahead of complete ones instead of preserving user-supplied list order.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I am cleaning up a noisy demo pool, and some stored examples have only inputs while others have only outputs. What I need to know is whether DSPy keeps those around as malformed prompt text, or silently drops them before formatting.\n\nThis matters for prompt-length accounting, so I want a proof from the actual rendered messages rather than a guess based on the Python objects. A single tiny harness is enough if it prints exactly what survived.\n\nGive me a complete, runnable Python program that formats an input-only example, an output-only example, and one valid partial example, prints the resulting messages, and asserts that only the valid partial example survives into the prompt.",
+   "answer": "```python\nimport dspy\n\n\nclass DemoSig(dspy.Signature):\n    question: str = dspy.InputField()\n    context: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nadapter = dspy.ChatAdapter()\ndemos = [\n    {\"question\": \"input only\"},\n    {\"answer\": \"output only\"},\n    {\"question\": \"kept question\", \"answer\": \"kept answer\"},\n]\nmessages = adapter.format(DemoSig, demos, {\"question\": \"live question\", \"context\": \"live context\"})\nall_contents = [message[\"content\"] for message in messages]\n\nfor content in all_contents:\n    print(content)\n    print(\"---\")\n\nassert len(messages) == 4\nassert all(\"input only\" not in content for content in all_contents)\nassert all(\"output only\" not in content for content in all_contents)\nassert any(\"kept question\" in content for content in all_contents)\nassert any(\"kept answer\" in content for content in all_contents)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format_demos"
+    },
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format_assistant_message_content"
+    }
+   ],
+   "note": "Shows that demos without at least one input and one output field are filtered out before prompt construction.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I am using the two-stage prompt path because I want a natural first response and a second pass to extract fields, but I also pass demonstrations to the program. What I cannot tell is whether those demos influence only the first request or whether they are copied into the extraction request too.\n\nI need a real offline proof with two model histories, because prompt length is the issue here. Please make the evidence come from the actual recorded messages for both stages.\n\nGive me a complete, runnable Python program that runs offline with `DummyLM`, prints the first-stage and second-stage messages, and asserts that the demo appears only in the first-stage request and not in the extraction request.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass QA(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nmain_lm = DummyLM([{\"answer\": \"Paris\"}])\nextract_lm = DummyLM([{\"answer\": \"Paris\"}])\nadapter = dspy.TwoStepAdapter(extraction_model=extract_lm)\ndemo = {\"question\": \"Demo question\", \"answer\": \"Demo answer\"}\n\nwith dspy.context(lm=main_lm, adapter=adapter):\n    result = dspy.Predict(QA)(question=\"Live question\", demos=[demo])\n\nmain_messages = main_lm.history[0][\"messages\"]\nextract_messages = extract_lm.history[0][\"messages\"]\n\nprint(main_messages)\nprint(\"---\")\nprint(extract_messages)\n\nassert result.answer == \"Paris\"\nassert len(main_messages) == 4\nassert any(\"Demo question\" in m[\"content\"] for m in main_messages if isinstance(m[\"content\"], str))\nassert len(extract_messages) == 2\nassert all(\"Demo question\" not in m[\"content\"] for m in extract_messages if isinstance(m[\"content\"], str))\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/two_step_adapter.py",
+     "symbol": "TwoStepAdapter.format"
+    },
+    {
+     "file": "dspy/adapters/two_step_adapter.py",
+     "symbol": "TwoStepAdapter.parse"
+    },
+    {
+     "file": "tests/adapters/test_two_step_adapter.py",
+     "symbol": "test_two_step_adapter_call"
+    }
+   ],
+   "note": "Checks whether few-shot demos are reused across the natural-language first pass and the structured extraction second pass.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I switched to the JSON-oriented prompt format because I expected the whole prompt to become JSON, but what I am seeing looks mixed: some messages still use the usual field markers while others are JSON blobs. I need to know whether that is actually the intended prompt shape.\n\nPlease do not hand-wave this. I want a tiny formatting harness with one demo and one live query so I can pin the exact message shapes in a regression test.\n\nGive me a complete, runnable Python program that formats one demo plus one live input, prints the system, demo, and live messages, and asserts that the user-side messages still use field markers while the assistant-side demo message is JSON.",
+   "answer": "```python\nimport dspy\n\n\nclass QA(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nadapter = dspy.JSONAdapter()\nmessages = adapter.format(QA, [{\"question\": \"demo question\", \"answer\": \"demo answer\"}], {\"question\": \"live question\"})\nsystem_message, demo_user, demo_assistant, live_user = messages\n\nprint(system_message[\"content\"])\nprint(\"---\")\nprint(demo_user[\"content\"])\nprint(\"---\")\nprint(demo_assistant[\"content\"])\nprint(\"---\")\nprint(live_user[\"content\"])\n\nassert \"Outputs will be a JSON object\" in system_message[\"content\"]\nassert demo_user[\"content\"].startswith(\"[[ ## question ## ]]\")\nassert demo_assistant[\"content\"].strip().startswith(\"{\")\nassert '\"answer\": \"demo answer\"' in demo_assistant[\"content\"]\nassert live_user[\"content\"].startswith(\"[[ ## question ## ]]\")\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter.format_field_structure"
+    },
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter.format_assistant_message_content"
+    },
+    {
+     "file": "tests/adapters/test_json_adapter.py",
+     "symbol": "test_format_system_message"
+    }
+   ],
+   "note": "Pins down the asymmetric prompt layout of the JSON-oriented adapter: marker-formatted user side, JSON-formatted assistant side.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I pass prior turns through a `dspy.History` input, and I understand that the old turns become separate chat messages. What I still cannot tell is whether the history field disappears entirely from the system prompt, or whether DSPy still documents that field in the task contract even though the live user message no longer contains a history blob.\n\nI want an offline formatting repro, not a prose explanation. The important evidence is the system message next to the final live user message, with one prior turn included.\n\nGive me a complete, runnable Python program that prints the system message, the replayed history messages, and the final live user message, and asserts that the system prompt still mentions the history field while the final live user message does not.",
+   "answer": "```python\nimport dspy\n\n\nclass HistorySig(dspy.Signature):\n    question: str = dspy.InputField()\n    history: dspy.History = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nhistory = dspy.History(messages=[{\"question\": \"Old question\", \"answer\": \"Old answer\"}])\nmessages = dspy.ChatAdapter().format(HistorySig, [], {\"question\": \"New question\", \"history\": history})\n\nsystem_message = messages[0][\"content\"]\npast_user = messages[1][\"content\"]\npast_assistant = messages[2][\"content\"]\nlive_user = messages[3][\"content\"]\n\nprint(system_message)\nprint(\"---\")\nprint(past_user)\nprint(\"---\")\nprint(past_assistant)\nprint(\"---\")\nprint(live_user)\n\nassert \"`history` (History)\" in system_message\nassert \"[[ ## history ## ]]\" in system_message\nassert past_user == \"[[ ## question ## ]]\\nOld question\"\nassert \"[[ ## answer ## ]]\\nOld answer\" in past_assistant\nassert \"[[ ## history ## ]]\" not in live_user\nassert \"New question\" in live_user\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format"
+    },
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.format_conversation_history"
+    },
+    {
+     "file": "tests/adapters/test_chat_adapter.py",
+     "symbol": "test_chat_adapter_formats_conversation_history"
+    }
+   ],
+   "note": "Focuses on the system-prompt side effect of `dspy.History`, not just the well-known separate replay of prior turns.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "My model sometimes emits the same output field twice in one completion because it revises itself mid-answer. I need to know which copy DSPy trusts when the response contains two sections for the same field.\n\nThis has to be a minimal parser repro so I can keep it as a unit test. Please make the duplicated field values visibly different and prove which one wins.\n\nGive me a complete, runnable Python program that parses one completion containing the same output field twice, prints the parsed result, and asserts which occurrence DSPy keeps.",
+   "answer": "```python\nimport dspy\n\n\nsignature = dspy.Signature(\"question -> answer\")\nadapter = dspy.ChatAdapter()\ncompletion = \"\"\"[[ ## answer ## ]]\nfirst answer\n\n[[ ## answer ## ]]\nsecond answer\n\n[[ ## completed ## ]]\"\"\"\nparsed = adapter.parse(signature, completion)\n\nprint(parsed)\n\nassert parsed == {\"answer\": \"first answer\"}\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.parse"
+    },
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "field_header_pattern"
+    }
+   ],
+   "note": "Exercises the parser’s first-occurrence-wins behavior for duplicate output sections.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I have a multi-output task where the raw completion clearly contains one field but omits another. I do not just want to know that parsing fails; I need to know whether DSPy preserves the successfully parsed piece anywhere useful for debugging.\n\nPlease keep this as a tiny parser repro. I want the caught exception and the partial parsed payload printed so I can use the script as a regression test for failure analysis.\n\nGive me a complete, runnable Python program that parses a completion missing one required output field, prints the exception plus any partial parsed result, and asserts that the failure preserves the successfully parsed field.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.exceptions import AdapterParseError\n\n\nclass MultiOut(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n    confidence: int = dspy.OutputField()\n\n\nadapter = dspy.ChatAdapter()\ncompletion = \"\"\"[[ ## answer ## ]]\nParis\n\n[[ ## completed ## ]]\"\"\"\n\ntry:\n    adapter.parse(MultiOut, completion)\n    raise AssertionError(\"Expected AdapterParseError\")\nexcept AdapterParseError as exc:\n    print(type(exc).__name__)\n    print(exc.parsed_result)\n    print(str(exc))\n\n    assert exc.parsed_result == {\"answer\": \"Paris\"}\n    assert \"confidence\" in str(exc)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.parse"
+    },
+    {
+     "file": "dspy/utils/exceptions.py",
+     "symbol": "AdapterParseError"
+    }
+   ],
+   "note": "Confirms that a failed parse still exposes partially recovered output fields for debugging.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I am trying to stabilize cache keys for a signature that uses `Literal` choices containing quotes. What I need is the exact human-readable type guidance that ends up in the prompt, because even small quote-escaping differences will change my diffs.\n\nI do not want a summary of how literals work in Python. I want the real rendered system message from DSPy for one deliberately annoying signature.\n\nGive me a complete, runnable Python program that defines quoted `Literal` values, prints the rendered system message, and asserts the exact literal spellings that appear there.",
+   "answer": "```python\nfrom typing import Literal\n\nimport dspy\n\n\nclass LiteralSig(dspy.Signature):\n    input_text: Literal[\"she's here\", \"okay\", \"test\"] = dspy.InputField()\n    output_text: Literal[\"done\", \"maybe'soon\", \"later\"] = dspy.OutputField()\n\n\nsystem_message = dspy.ChatAdapter().format_system_message(LiteralSig)\n\nprint(system_message)\n\nassert \"Literal[\\\"she's here\\\", 'okay', 'test']\" in system_message\nassert \"Literal['done', \\\"maybe'soon\\\", 'later']\" in system_message\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/utils.py",
+     "symbol": "get_annotation_name"
+    },
+    {
+     "file": "tests/adapters/test_chat_adapter.py",
+     "symbol": "test_chat_adapter_quotes_literals_as_expected"
+    }
+   ],
+   "note": "Targets literal-type pretty-printing and quote escaping in the rendered prompt contract.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "One of my outputs is an `Enum`, and I care about both prompt control and parsing robustness. I need to know whether DSPy tells the model to emit enum member names or enum member values, and whether the parser will accept both forms if the model ignores that guidance.\n\nPlease make this concrete with a tiny offline harness. The output should show the rendered prompt plus two separate parses so I can pin both behaviors in tests.\n\nGive me a complete, runnable Python program that defines an enum whose names differ from its values, prints the rendered system message, parses one completion using the enum value and one using the enum name, and asserts the exact split in behavior.",
+   "answer": "```python\nimport enum\n\nimport dspy\n\n\nclass Mood(enum.Enum):\n    HAPPY = \"good\"\n    SAD = \"bad\"\n\n\nclass EnumSig(dspy.Signature):\n    text: str = dspy.InputField()\n    mood: Mood = dspy.OutputField()\n\n\nadapter = dspy.ChatAdapter()\nsystem_message = adapter.format_system_message(EnumSig)\nparsed_from_value = adapter.parse(EnumSig, \"[[ ## mood ## ]]\\ngood\")\nparsed_from_name = adapter.parse(EnumSig, \"[[ ## mood ## ]]\\nHAPPY\")\n\nprint(system_message)\nprint(parsed_from_value)\nprint(parsed_from_name)\n\nassert \"must be one of: good; bad\" in system_message\nassert \"HAPPY; SAD\" not in system_message\nassert parsed_from_value[\"mood\"] is Mood.HAPPY\nassert parsed_from_name[\"mood\"] is Mood.HAPPY\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/utils.py",
+     "symbol": "translate_field_type"
+    },
+    {
+     "file": "dspy/adapters/utils.py",
+     "symbol": "parse_value"
+    }
+   ],
+   "note": "Combines prompt-side enum value guidance with parser-side acceptance of both enum names and values.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I used ordinary Pydantic-style `description=` arguments on some signature fields because I assumed DSPy would surface them in the prompt, and on one field I also supplied a DSPy-specific description because I wanted to override the generic one. I need to know which text actually survives.\n\nI only trust the rendered prompt, not the field objects. Show the system message itself and make the override behavior explicit with assertions.\n\nGive me a complete, runnable Python program that defines fields using `description=` and one field using both `description=` and a DSPy description override, prints the system message, and asserts exactly which descriptions appear.",
+   "answer": "```python\nimport dspy\n\n\nclass DescSig(dspy.Signature):\n    question: str = dspy.InputField(description=\"Pydantic input description\")\n    answer: str = dspy.OutputField(description=\"Pydantic output description\")\n    verdict: str = dspy.OutputField(description=\"Should be hidden\", desc=\"DSPy override description\")\n\n\nsystem_message = dspy.ChatAdapter().format_system_message(DescSig)\n\nprint(system_message)\n\nassert \"Pydantic input description\" in system_message\nassert \"Pydantic output description\" in system_message\nassert \"DSPy override description\" in system_message\nassert \"Should be hidden\" not in system_message\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/signatures/field.py",
+     "symbol": "move_kwargs"
+    },
+    {
+     "file": "dspy/adapters/utils.py",
+     "symbol": "get_field_description_string"
+    }
+   ],
+   "note": "Covers the subtle interplay between ordinary Pydantic descriptions and DSPy’s own description override.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I am building a signature from a string inside a helper function, and one of the output types is a local Pydantic model defined inside that helper. I want to know whether DSPy really resolves that local type automatically, because if it does not, the rendered prompt will silently fall back to something much weaker.\n\nThis has to be recoverable from code alone, so please do not point me to docs. I want the program itself to prove both the resolved annotation and the schema text that reaches the prompt.\n\nGive me a complete, runnable Python program that defines a local Pydantic model inside a function, creates the string signature there, prints the resolved annotation check and the rendered system message, and asserts that the output field was resolved to the local model and rendered with JSON-schema guidance.",
+   "answer": "```python\nimport pydantic\n\nimport dspy\n\n\ndef build_signature():\n    class LocalResult(pydantic.BaseModel):\n        title: str\n        score: int\n\n    signature = dspy.Signature(\"question: str -> result: LocalResult\")\n    return signature, LocalResult\n\n\nsignature, LocalResult = build_signature()\nsystem_message = dspy.ChatAdapter().format_system_message(signature)\n\nprint(signature.output_fields[\"result\"].annotation is LocalResult)\nprint(system_message)\n\nassert signature.output_fields[\"result\"].annotation is LocalResult\nassert \"must adhere to the JSON schema\" in system_message\nassert '\"title\"' in system_message\nassert '\"score\"' in system_message\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/signatures/signature.py",
+     "symbol": "SignatureMeta._detect_custom_types_from_caller"
+    },
+    {
+     "file": "dspy/signatures/signature.py",
+     "symbol": "_parse_type_node"
+    },
+    {
+     "file": "tests/signatures/test_custom_types.py",
+     "symbol": "test_recommended_patterns"
+    }
+   ],
+   "note": "Forces the answering agent to locate caller-scope custom-type resolution rather than relying on docs or public examples.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I am comparing two prompt contracts: one output is `dspy.Code`, and the other is an ordinary structured object. I want to know whether DSPy treats the code case specially in the prompt, because dumping a full JSON schema there would make the instructions much noisier.\n\nI only want an offline introspection harness. The proof I care about is the two rendered system messages side by side, with assertions about whether raw schema text appears.\n\nGive me a complete, runnable Python program that prints the system message for a code output and for a normal structured output, and asserts that only the structured output includes raw JSON-schema guidance.",
+   "answer": "```python\nimport pydantic\n\nimport dspy\n\n\nclass StructuredOutput(pydantic.BaseModel):\n    code: str\n    language: str\n\n\nclass CodeSig(dspy.Signature):\n    question: str = dspy.InputField()\n    code: dspy.Code = dspy.OutputField()\n\n\nclass StructuredSig(dspy.Signature):\n    question: str = dspy.InputField()\n    payload: StructuredOutput = dspy.OutputField()\n\n\nadapter = dspy.ChatAdapter()\ncode_system = adapter.format_system_message(CodeSig)\nstructured_system = adapter.format_system_message(StructuredSig)\n\nprint(code_system)\nprint(\"---\")\nprint(structured_system)\n\nassert \"markdown code block format\" in code_system\nassert \"JSON schema\" not in code_system\nassert '\"properties\"' not in code_system\nassert \"must adhere to the JSON schema\" in structured_system\nassert '\"properties\"' in structured_system\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/utils.py",
+     "symbol": "translate_field_type"
+    },
+    {
+     "file": "dspy/adapters/types/code.py",
+     "symbol": "Code.description"
+    },
+    {
+     "file": "tests/adapters/test_chat_adapter.py",
+     "symbol": "test_code_output_field_omits_json_schema_in_prompt"
+    }
+   ],
+   "note": "Contrasts the prompt treatment of a built-in rich type with ordinary structured outputs to expose DSPy’s special-case handling for code.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I am auditing `dspy.ReAct`, and I do not just care about the tool-selection prompt. I also need to know what prompt DSPy uses for the final answer-extraction step after the agent decides it is done, because I do not want the tool catalog duplicated there.\n\nPlease keep it offline and deterministic. I want one small run that finishes immediately, then shows me both recorded system messages so the split between the planning step and the extraction step is undeniable.\n\nGive me a complete, runnable Python program that runs offline with `DummyLM`, prints the first and second system messages from a `dspy.ReAct` call, and asserts that the first prompt contains the tool-planning text while the second prompt falls back to the original task without the tool catalog.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\ndef lookup(city: str) -> str:\n    \"\"\"Look up a city.\"\"\"\n    return \"Paris\"\n\n\nlm = DummyLM(\n    [\n        {\"next_thought\": \"I already know the answer.\", \"next_tool_name\": \"finish\", \"next_tool_args\": {}},\n        {\"reasoning\": \"No tool call was needed.\", \"answer\": \"Paris\"},\n    ]\n)\n\nwith dspy.context(lm=lm):\n    agent = dspy.ReAct(\"question -> answer\", tools=[lookup])\n    result = agent(question=\"What is the capital of France?\")\n\nfirst_system = lm.history[0][\"messages\"][0][\"content\"]\nsecond_system = lm.history[1][\"messages\"][0][\"content\"]\n\nprint(first_system)\nprint(\"---\")\nprint(second_system)\n\nassert result.answer == \"Paris\"\nassert \"lookup\" in first_system\nassert \"next_tool_name\" in first_system\nassert \"lookup\" not in second_system\nassert \"next_tool_name\" not in second_system\nassert \"Given the fields `question`, produce the fields `answer`.\" in second_system\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct.__init__"
+    },
+    {
+     "file": "dspy/predict/react.py",
+     "symbol": "ReAct.forward"
+    }
+   ],
+   "note": "Targets the internal second prompt in ReAct, which is easy to miss if you only inspect the tool-planning side.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I am treating DSPy history as a trace store, and I need to know whether each LM interaction gets its own stable metadata rather than just being another list entry. In particular I care about a unique identifier and a parseable timestamp on every history record.\n\nI want a proof from real offline calls, not from reading the object schema. The program should make two calls, print the metadata, and assert the uniqueness and timestamp format so I can keep it as a regression test.\n\nGive me a complete, runnable Python program that runs offline with `DummyLM`, prints the UUIDs and timestamps from two history entries, and asserts that the UUIDs differ and the timestamps are parseable.",
+   "answer": "```python\nfrom datetime import datetime\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nlm = DummyLM([{\"answer\": \"one\"}, {\"answer\": \"two\"}])\n\nwith dspy.context(lm=lm):\n    program = dspy.Predict(\"question -> answer\")\n    program(question=\"first\")\n    program(question=\"second\")\n\nuuids = [entry[\"uuid\"] for entry in lm.history]\ntimestamps = [entry[\"timestamp\"] for entry in lm.history]\n\nprint(uuids)\nprint(timestamps)\n\nassert len(uuids) == 2\nassert len(set(uuids)) == 2\nfor timestamp in timestamps:\n    datetime.fromisoformat(timestamp)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM._process_lm_response"
+    },
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM.update_history"
+    },
+    {
+     "file": "tests/clients/test_inspect_global_history.py",
+     "symbol": "test_inspect_history_basic"
+    }
+   ],
+   "note": "Anchored to history inspection rather than prompt text itself, matching real debugging threads about trace metadata.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I am calling a predictor with multiple generations and then using `inspect_history` for debugging. What I need to know is whether the history printer shows every completion verbatim or only one completion plus some summary text.\n\nPlease keep it offline and machine-checkable. I want one real call that produces three different completions, a captured history dump, and assertions that prove exactly what the printer did with the extra generations.\n\nGive me a complete, runnable Python program that runs offline with `DummyLM`, captures `inspect_history` output to a string buffer, prints that text, and asserts that only the first completion is shown while the later completions are summarized by count.",
+   "answer": "```python\nimport io\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nlm = DummyLM([{\"answer\": \"first\"}, {\"answer\": \"second\"}, {\"answer\": \"third\"}])\n\nwith dspy.context(lm=lm):\n    program = dspy.Predict(\"question -> answer\", n=3)\n    prediction = program(question=\"test\")\n\nbuffer = io.StringIO()\nlm.inspect_history(n=1, file=buffer)\nhistory_text = buffer.getvalue()\n\nprint(history_text)\n\nassert prediction.answer == \"first\"\nassert \"first\" in history_text\nassert \"second\" not in history_text\nassert \"third\" not in history_text\nassert \"and 2 other completions\" in history_text\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/utils/inspect_history.py",
+     "symbol": "pretty_print_history"
+    },
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM.inspect_history"
+    }
+   ],
+   "note": "Tests the inspection surface itself rather than the underlying completion storage.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I am wiring callbacks around prompt parsing, and I need to know exactly where a bad LM completion shows up as an exception. In particular, I want to distinguish a parse failure from an LM-call failure, because those should hit different callback stages.\n\nI do not want a prose answer. I want one tiny offline repro with a deliberately malformed completion, the recorded callback events, and assertions proving which stage sees the exception and which stage does not.\n\nGive me a complete, runnable Python program that runs offline with a `DummyLM`-style stub, prints the callback events, and asserts that the LM-end callback sees no exception while the parse-end and module-end callbacks see an `AdapterParseError`.",
+   "answer": "```python\nimport dspy\nfrom dspy.dsp.utils.utils import dotdict\nfrom dspy.utils.callback import BaseCallback\nfrom dspy.utils.dummies import DummyLM\nfrom dspy.utils.exceptions import AdapterParseError\n\n\nclass BrokenDummyLM(DummyLM):\n    def forward(self, prompt=None, messages=None, **kwargs):\n        message = dotdict(content=\"not parseable\", tool_calls=None)\n        choice = dotdict(message=message, finish_reason=\"stop\")\n        return dotdict(\n            choices=[choice],\n            usage=dotdict(prompt_tokens=0, completion_tokens=0, total_tokens=0),\n            model=\"dummy\",\n        )\n\n\nclass Recorder(BaseCallback):\n    def __init__(self):\n        self.events = []\n\n    def on_lm_end(self, call_id, outputs, exception):\n        self.events.append((\"lm_end\", type(exception).__name__ if exception else None))\n\n    def on_adapter_parse_end(self, call_id, outputs, exception):\n        self.events.append((\"adapter_parse_end\", type(exception).__name__ if exception else None))\n\n    def on_module_end(self, call_id, outputs, exception):\n        self.events.append((\"module_end\", type(exception).__name__ if exception else None))\n\n\ncallback = Recorder()\n\nwith dspy.context(\n    lm=BrokenDummyLM([]),\n    adapter=dspy.ChatAdapter(use_json_adapter_fallback=False),\n    callbacks=[callback],\n):\n    program = dspy.Predict(\"question -> answer\")\n    try:\n        program(question=\"hello\")\n        raise AssertionError(\"Expected AdapterParseError\")\n    except AdapterParseError as exc:\n        print(type(exc).__name__)\n\nprint(callback.events)\n\nassert (\"lm_end\", None) in callback.events\nassert (\"adapter_parse_end\", \"AdapterParseError\") in callback.events\nassert (\"module_end\", \"AdapterParseError\") in callback.events\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/utils/callback.py",
+     "symbol": "with_callbacks"
+    },
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter.__init_subclass__"
+    },
+    {
+     "file": "tests/callback/test_callback.py",
+     "symbol": "test_callback_complex_module"
+    }
+   ],
+   "note": "Correlates callback staging with parse errors instead of LM errors, which is easy to misunderstand from docs alone.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I am trying to understand exactly when DSPy retries the chat-format path through a JSON-format fallback. For a context-window overflow, I do not want a hidden retry to mask the real failure.\n\nPlease keep this fully offline. I want a tiny repro with a model stub that always raises a context-window error, plus an assertion that the JSON fallback path was never called.\n\nGive me a complete, runnable Python program that runs offline with a `DummyLM`-style stub, prints the caught exception type and fallback call count, and asserts that a context-window overflow is re-raised directly without invoking the JSON fallback.",
+   "answer": "```python\nfrom unittest.mock import patch\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\nfrom dspy.utils.exceptions import ContextWindowExceededError\n\n\nclass OverflowDummyLM(DummyLM):\n    def forward(self, prompt=None, messages=None, **kwargs):\n        raise ContextWindowExceededError(model=\"dummy\")\n\n\nadapter = dspy.ChatAdapter(use_json_adapter_fallback=True)\n\nwith dspy.context(lm=OverflowDummyLM([]), adapter=adapter):\n    program = dspy.Predict(\"question -> answer\")\n    with patch(\"dspy.adapters.json_adapter.JSONAdapter.__call__\") as json_fallback:\n        try:\n            program(question=\"too long\")\n            raise AssertionError(\"Expected ContextWindowExceededError\")\n        except ContextWindowExceededError as exc:\n            print(type(exc).__name__)\n            print(json_fallback.call_count)\n\n        assert json_fallback.call_count == 0\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/chat_adapter.py",
+     "symbol": "ChatAdapter.__call__"
+    },
+    {
+     "file": "dspy/utils/exceptions.py",
+     "symbol": "ContextWindowExceededError"
+    },
+    {
+     "file": "tests/adapters/test_chat_adapter.py",
+     "symbol": "test_chat_adapter_fallback_to_json_adapter_on_exception"
+    }
+   ],
+   "note": "Distinguishes context-window propagation from ordinary parse/format fallback into JSON mode.",
+   "topic": "prompt_compilation_customization_and_inspection",
+   "smalldspy_scope": false
+  }
+ ]
+}

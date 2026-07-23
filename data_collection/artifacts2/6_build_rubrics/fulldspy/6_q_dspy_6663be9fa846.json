@@ -1,0 +1,122 @@
+{
+ "id": "dspy_6663be9fa846",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm chaining two optimizers with `dspy.BetterTogether`. When I do have a real validation set, I want the best-scoring intermediate checkpoint back even if it wasn't the last step. But when I intentionally disable validation, I want the latest program in the chain.\n\nI can imagine either policy being reasonable, so I don't want a guess. I want one small repro that demonstrates both modes side by side.\n\nGive me a complete, runnable Python program that stays offline, uses tiny custom teleprompters plus patched evaluation scores, compiles once with validation and once with validation turned off, and prints/asserts which marked program is returned in each case.",
+ "gold_answer": "```python\nfrom unittest.mock import Mock, patch\n\nimport dspy\nfrom dspy.teleprompt import BetterTogether\nfrom dspy.teleprompt.teleprompt import Teleprompter\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\n\nclass MarkedOptimizer(Teleprompter):\n    def __init__(self, marker):\n        self.marker = marker\n\n    def compile(self, student, **kwargs):\n        program = SimpleModule()\n        program.marker = self.marker\n        return program\n\n\ndef metric(example, prediction, trace=None):\n    return 1.0\n\n\ntrainset = [dspy.Example(input=\"train\", output=\"out\").with_inputs(\"input\")]\nvalset = [dspy.Example(input=\"val\", output=\"out\").with_inputs(\"input\")]\nstudent1 = SimpleModule(); student1.set_lm(DummyLM([{\"output\": \"out\"}]))\nstudent2 = SimpleModule(); student2.set_lm(DummyLM([{\"output\": \"out\"}]))\noptimizer = BetterTogether(metric=metric, p=MarkedOptimizer(\"p_optimized\"), w=MarkedOptimizer(\"w_optimized\"))\nwith patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\") as mock_eval:\n    mock_eval.side_effect = [Mock(score=0.5), Mock(score=0.9), Mock(score=0.7)]\n    with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n        with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n            with patch.object(optimizer, \"_models_changed\", return_value=False):\n                best_with_valset = optimizer.compile(student1, trainset=trainset, valset=valset, strategy=\"p -> w\")\noptimizer_no_val = BetterTogether(metric=metric, p=MarkedOptimizer(\"p_optimized\"), w=MarkedOptimizer(\"w_optimized\"))\nwith patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n    with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n        with patch.object(optimizer_no_val, \"_models_changed\", return_value=False):\n            latest_without_valset = optimizer_no_val.compile(student2, trainset=trainset, valset=None, valset_ratio=0, strategy=\"p -> w\")\nprint(\"with_valset_marker:\", best_with_valset.marker)\nprint(\"without_valset_marker:\", latest_without_valset.marker)\nassert best_with_valset.marker == \"p_optimized\"\nassert latest_without_valset.marker == \"w_optimized\"\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The repro includes one `BetterTogether.compile(...)` run with a non-empty `valset` and demonstrates that the returned program is the highest-scoring checkpoint from the chain, so `marker == \"p_optimized\"` even though `w` runs later.",
+   "span_ids": [
+    "s1",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The repro includes a second compile run without validation and demonstrates that the returned program is the latest optimizer output in the chain, so the final marker is `\"w_optimized\"`.",
+   "span_ids": [
+    "s1",
+    "s6",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The example defines a minimal DSPy module plus tiny custom teleprompters whose `compile()` methods return fresh programs tagged with a `.marker`, so each optimizer step can be identified independently of real optimization behavior.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The validation-enabled run patches `eval_candidate_program` to return deterministic scores `0.5`, `0.9`, and `0.7` for baseline, `p`, and `w` under `strategy=\"p -> w\"`, making the selection policy directly observable.",
+   "span_ids": [
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The no-validation run explicitly disables held-out evaluation by leaving `valset` absent and setting `valset_ratio=0` or otherwise ensuring no validation set is created, which causes BetterTogether to skip scoring on that path.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The script keeps the repro offline by attaching a `DummyLM` to the student and patching BetterTogether lifecycle helpers (`launch_lms`, `kill_lms`, and model-change handling) around compilation.",
+   "span_ids": [
+    "s5",
+    "s7"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/bettertogether.py",
+   "start_line": 485,
+   "end_line": 499,
+   "excerpt": "0485:         # Sort candidates by score (best first), with earlier programs winning ties\n0486:         candidate_programs_with_idx = [(i, cp) for i, cp in enumerate(candidate_programs)]\n0487:         candidate_programs_with_idx.sort(\n0488:             key=lambda x: (x[1][\"score\"] if x[1][\"score\"] is not None else float(\"-inf\"), -x[0]),\n0489:             reverse=True\n0490:         )\n0491:         candidate_programs = [cp for _, cp in candidate_programs_with_idx]\n0492: \n0493:         # Select best program based on valset availability\n0494:         if valset is None or len(valset) == 0:\n0495:             # No valset: return the latest program (last in original order)\n0496:             best_program = candidate_programs_with_idx[-1][1]\n0497:         else:\n0498:             # Valset provided: return highest score (first after sorting)\n0499:             best_program = candidate_programs[0]"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/bettertogether.py",
+   "start_line": 331,
+   "end_line": 337,
+   "excerpt": "0331:         if valset:\n0332:             logger.info(f\"{BLUE}Using provided validation set ({len(valset)} examples). Ignoring valset_ratio.{ENDC}\")\n0333:             return trainset, valset\n0334: \n0335:         if valset_ratio == 0:\n0336:             logger.info(f\"{YELLOW}No validation set provided and valset_ratio=0. No validation set created.{ENDC}\")\n0337:             return trainset, None"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/bettertogether.py",
+   "start_line": 616,
+   "end_line": 631,
+   "excerpt": "0616:         if valset is None or len(valset) == 0:\n0617:             logger.info(f\"{YELLOW}No validation set provided. Skipping evaluation.{ENDC}\")\n0618:             return None\n0619: \n0620:         logger.info(f\"{BLUE}Evaluating on {len(valset)} validation examples...{ENDC}\")\n0621:         evaluate = Evaluate(\n0622:             devset=valset,\n0623:             metric=self.metric,\n0624:             num_threads=num_threads,\n0625:             max_errors=effective_max_errors,\n0626:             display_table=False,\n0627:             display_progress=True,\n0628:             provide_traceback=provide_traceback,\n0629:         )\n0630:         eval_result = eval_candidate_program(len(valset), valset, program, evaluate, rng)\n0631:         return eval_result.score"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/teleprompt/test_bettertogether.py",
+   "start_line": 32,
+   "end_line": 59,
+   "excerpt": "0032: class SimpleModule(dspy.Module):\n0033:     def __init__(self, signature):\n0034:         super().__init__()\n0035:         self.predictor = Predict(signature)\n0036: \n0037:     def forward(self, **kwargs):\n0038:         return self.predictor(**kwargs)\n0039: \n0040: \n0041: # ============================================================================\n0042: # Reusable Mock Optimizers\n0043: # ============================================================================\n0044: \n0045: class SimpleOptimizer(Teleprompter):\n0046:     \"\"\"A simple optimizer that returns the student unchanged.\"\"\"\n0047:     def compile(self, student, **kwargs):\n0048:         return student\n0049: \n0050: \n0051: class MarkedOptimizer(Teleprompter):\n0052:     \"\"\"An optimizer that marks the program with a specific identifier.\"\"\"\n0053:     def __init__(self, marker):\n0054:         self.marker = marker\n0055: \n0056:     def compile(self, student, **kwargs):\n0057:         prog = SimpleModule(\"input -> output\")\n0058:         prog.marker = self.marker\n0059:         return prog"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/teleprompt/test_bettertogether.py",
+   "start_line": 84,
+   "end_line": 90,
+   "excerpt": "0084: @pytest.fixture\n0085: def student_with_lm():\n0086:     \"\"\"Create a student module with a DummyLM.\"\"\"\n0087:     student = SimpleModule(\"input -> output\")\n0088:     lm = DummyLM([{\"output\": \"test\"}])\n0089:     student.set_lm(lm)\n0090:     return student"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/teleprompt/test_bettertogether.py",
+   "start_line": 616,
+   "end_line": 619,
+   "excerpt": "0616: @pytest.mark.parametrize(\"test_valset,expected_marker,test_description\", [\n0617:     (valset, \"p_optimized\", \"With valset: returns best score (p), not latest (w)\"),\n0618:     (None, \"w_optimized\", \"Without valset: returns latest program (w)\"),\n0619: ])"
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/teleprompt/test_bettertogether.py",
+   "start_line": 626,
+   "end_line": 647,
+   "excerpt": "0626:     # Set up scores: baseline=0.5, p=0.9 (best), w=0.7\n0627:     # When test_valset is provided, best score wins; when None, latest wins\n0628:     with patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\") as mock_eval:\n0629:         if test_valset is not None:\n0630:             mock_eval.side_effect = [\n0631:                 Mock(score=0.5),  # Baseline\n0632:                 Mock(score=0.9),  # After p (best score)\n0633:                 Mock(score=0.7),  # After w (lower than p)\n0634:             ]\n0635:         with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n0636:             with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n0637:                 with patch.object(optimizer, \"_models_changed\", return_value=False):\n0638:                     result = optimizer.compile(\n0639:                         student_with_lm,\n0640:                         trainset=trainset,\n0641:                         valset=test_valset,\n0642:                         strategy=\"p -> w\"\n0643:                     )\n0644: \n0645:     # Verify the correct program was returned based on valset presence\n0646:     assert hasattr(result, \"marker\"), \"Result should have marker\"\n0647:     assert result.marker == expected_marker, test_description"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "",
+ "source_index": 30,
+ "smalldspy_scope": false
+}

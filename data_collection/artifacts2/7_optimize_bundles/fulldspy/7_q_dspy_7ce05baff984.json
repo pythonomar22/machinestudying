@@ -1,0 +1,102 @@
+{
+ "id": "dspy_7ce05baff984",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I asked the random-search few-shot optimizer for only one candidate set, but the compiled program came back carrying more scored variants than I requested. I suspect DSPy is always evaluating a few built-in baselines before it starts counting random candidates, but I want a repro that proves the exact count.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, asks for one candidate set, and prints/asserts both the stored count and the stored seed identifiers if DSPy records them.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.teleprompt import BootstrapFewShotWithRandomSearch\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\n\ndef metric(example, prediction, trace=None):\n    return example.answer == prediction.answer\n\n\ndspy.configure(\n    lm=DummyLM(\n        {\n            \"q1\": {\"answer\": \"A\"},\n            \"q2\": {\"answer\": \"B\"},\n        }\n    )\n)\n\ntrainset = [\n    dspy.Example(question=\"q1\", answer=\"A\").with_inputs(\"question\"),\n    dspy.Example(question=\"q2\", answer=\"B\").with_inputs(\"question\"),\n]\n\noptimizer = BootstrapFewShotWithRandomSearch(\n    metric=metric,\n    num_candidate_programs=1,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=1,\n    num_threads=1,\n)\nbest = optimizer.compile(SimpleModule(), teacher=SimpleModule(), trainset=trainset, valset=trainset)\nseeds = [candidate[\"seed\"] for candidate in best.candidate_programs]\nprint(len(seeds), seeds)\nassert len(seeds) == 4\nassert set(seeds) == {-3, -2, -1, 0}\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The answer must show that requesting `num_candidate_programs=1` still produces four evaluated/stored candidates, because `BootstrapFewShotWithRandomSearch.compile()` iterates `seed` over `range(-3, self.num_candidate_sets)`, adding three built-in candidates before the single requested random one.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer should identify the seed roles correctly: `-3` is zero-shot, `-2` is labels-only few-shot, `-1` is unshuffled bootstrap few-shot, and nonnegative seeds are shuffled/random bootstrap candidates, so the single requested random candidate is seed `0`.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The repro should inspect `best.candidate_programs` and extract `candidate[\"seed\"]`, because each evaluated program is recorded with its `seed`, `score`, `subscores`, and `program` and then attached to the returned best program.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The program should print or assert that the stored candidate count is exactly `4` and that the recorded seed identifiers are exactly `{-3, -2, -1, 0}` after compilation.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The seed check should not rely on a fixed list order, because `candidate_programs` is sorted by descending score after collection rather than by seed.",
+   "span_ids": [
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/random_search.py",
+   "start_line": 67,
+   "end_line": 69,
+   "excerpt": "0067:         for seed in range(-3, self.num_candidate_sets):\n0068:             if (restrict is not None) and (seed not in restrict):\n0069:                 continue"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/utils.py",
+   "start_line": 353,
+   "end_line": 355,
+   "excerpt": "0353:     # Account for confusing way this is set up, where we add in 3 more candidate sets to the N specified\n0354:     num_candidate_sets -= 3\n0355: "
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/random_search.py",
+   "start_line": 73,
+   "end_line": 111,
+   "excerpt": "0073:             if seed == -3:\n0074:                 # zero-shot\n0075:                 program = student.reset_copy()\n0076: \n0077:             elif seed == -2:\n0078:                 # labels only\n0079:                 teleprompter = LabeledFewShot(k=self.max_labeled_demos)\n0080:                 program = teleprompter.compile(student, trainset=trainset_copy, sample=labeled_sample)\n0081: \n0082:             elif seed == -1:\n0083:                 # unshuffled few-shot\n0084:                 optimizer = BootstrapFewShot(\n0085:                     metric=self.metric,\n0086:                     metric_threshold=self.metric_threshold,\n0087:                     max_bootstrapped_demos=self.max_num_samples,\n0088:                     max_labeled_demos=self.max_labeled_demos,\n0089:                     teacher_settings=self.teacher_settings,\n0090:                     max_rounds=self.max_rounds,\n0091:                     max_errors=effective_max_errors,\n0092:                 )\n0093:                 program = optimizer.compile(student, teacher=teacher, trainset=trainset_copy)\n0094: \n0095:             else:\n0096:                 assert seed >= 0, seed\n0097: \n0098:                 random.Random(seed).shuffle(trainset_copy)\n0099:                 size = random.Random(seed).randint(self.min_num_samples, self.max_num_samples)\n0100: \n0101:                 optimizer = BootstrapFewShot(\n0102:                     metric=self.metric,\n0103:                     metric_threshold=self.metric_threshold,\n0104:                     max_bootstrapped_demos=size,\n0105:                     max_labeled_demos=self.max_labeled_demos,\n0106:                     teacher_settings=self.teacher_settings,\n0107:                     max_rounds=self.max_rounds,\n0108:                     max_errors=effective_max_errors,\n0109:                 )\n0110: \n0111:                 program = optimizer.compile(student, teacher=teacher, trainset=trainset_copy)"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/teleprompt/random_search.py",
+   "start_line": 136,
+   "end_line": 146,
+   "excerpt": "0136:             score_data.append({\"score\": score, \"subscores\": subscores, \"seed\": seed, \"program\": program})\n0137: \n0138:             if self.stop_at_score is not None and score >= self.stop_at_score:\n0139:                 print(f\"Stopping early because score {score} is >= stop_at_score {self.stop_at_score}\")\n0140:                 break\n0141: \n0142:         # To best program, attach all program candidates in decreasing average score\n0143:         best_program.candidate_programs = score_data\n0144:         best_program.candidate_programs = sorted(\n0145:             best_program.candidate_programs, key=lambda x: x[\"score\"], reverse=True\n0146:         )"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "",
+ "source_index": 10,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

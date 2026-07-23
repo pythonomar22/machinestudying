@@ -1,0 +1,100 @@
+{
+ "id": "dspy_e34da7297a74",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I'm sending a real multi-turn conversation to a responses-style backend through `dspy.LM`, not just a single user prompt. The backend keeps acting as if it got one flattened turn instead of separate system, user, and assistant turns, which would explain some weird safety behavior.\n\nBefore I blame the provider, I want to see the exact payload DSPy emits when I pass several messages, including one multimodal user turn. My suspicion is that the roles collapse and the content blocks get concatenated.\n\nGive me a complete, runnable Python program that patches the outbound responses call, sends a multi-turn message list through `dspy.LM`, and prints/asserts the final payload so it's undeniable whether DSPy preserved separate turns or flattened everything into one input item with the last role.",
+ "gold_answer": "```python\nimport json\nfrom unittest import mock\n\nimport dspy\nfrom litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse\nfrom openai.types.responses import ResponseOutputMessage\n\n\ndef make_response(text: str) -> ResponsesAPIResponse:\n    return ResponsesAPIResponse(\n        id=\"resp_1\",\n        created_at=0.0,\n        error=None,\n        incomplete_details=None,\n        instructions=None,\n        model=\"openai/gpt-4o-mini\",\n        object=\"response\",\n        output=[\n            ResponseOutputMessage(\n                **{\n                    \"id\": \"msg_1\",\n                    \"type\": \"message\",\n                    \"role\": \"assistant\",\n                    \"status\": \"completed\",\n                    \"content\": [{\"type\": \"output_text\", \"text\": text, \"annotations\": []}],\n                }\n            )\n        ],\n        metadata={},\n        parallel_tool_calls=False,\n        temperature=1.0,\n        tool_choice=\"auto\",\n        tools=[],\n        top_p=1.0,\n        max_output_tokens=None,\n        previous_response_id=None,\n        reasoning=None,\n        status=\"completed\",\n        text=None,\n        truncation=\"disabled\",\n        usage=ResponseAPIUsage(input_tokens=1, output_tokens=1, total_tokens=2),\n        user=None,\n    )\n\n\nmessages = [\n    {\"role\": \"system\", \"content\": \"system policy\"},\n    {\n        \"role\": \"user\",\n        \"content\": [\n            {\"type\": \"text\", \"text\": \"look at the image\"},\n            {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/cat.png\"}},\n        ],\n    },\n    {\"role\": \"assistant\", \"content\": \"previous answer\"},\n    {\"role\": \"user\", \"content\": \"follow-up question\"},\n]\n\nwith mock.patch(\"litellm.responses\", return_value=make_response(\"ok\")) as mock_responses:\n    lm = dspy.LM(model=\"openai/gpt-4o-mini\", model_type=\"responses\", cache=False)\n    result = lm(messages=messages)\n\npayload = mock_responses.call_args.kwargs[\"input\"]\nprint(\"lm_result:\", result)\nprint(json.dumps(payload, indent=2))\n\nassert len(payload) == 1, payload\nassert payload[0][\"role\"] == \"user\", payload\ncontent = payload[0][\"content\"]\ntexts = [item[\"text\"] for item in content if item[\"type\"] == \"input_text\"]\nimages = [item for item in content if item[\"type\"] == \"input_image\"]\n\nassert texts == [\"system policy\", \"look at the image\", \"previous answer\", \"follow-up question\"], texts\nassert len(images) == 1, images\nassert images[0][\"image_url\"] == \"https://example.com/cat.png\"\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Use `dspy.LM(..., model_type=\"responses\")` and patch or mock `litellm.responses` so the program captures the exact outbound provider request DSPy sends in responses mode.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "Pass `messages=` as a multi-turn list that includes a user turn whose `content` is a list containing both a text item and an `image_url` item, so the multimodal conversion path is exercised.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Inspect the mocked provider call's `input` keyword argument and print or assert against that exact structure, rather than relying only on the returned completion text.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "Assert that the emitted responses payload contains exactly one `input` item and that this item's `role` is the role of the last original message (for the sample conversation, `user`), proving DSPy flattened the turns instead of preserving separate entries.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "Assert that all textual content appears in order as `input_text` blocks inside the flattened `content` list, including both plain-string message bodies and `{\"type\": \"text\"}` multimodal items.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Assert that the image content is preserved as a single `input_image` block whose `image_url` value is the original nested URL string.",
+   "span_ids": [
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 177,
+   "end_line": 189,
+   "excerpt": "0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0184: \n0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,\n0189:                 cache=litellm_cache_args,"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 479,
+   "end_line": 492,
+   "excerpt": "0479: def litellm_responses_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0480:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0481:     request = dict(request)\n0482:     request.pop(\"rollout_id\", None)\n0483:     headers = request.pop(\"headers\", None)\n0484:     request = _convert_chat_request_to_responses_request(request)\n0485: \n0486:     return litellm.responses(\n0487:         cache=cache,\n0488:         num_retries=num_retries,\n0489:         retry_strategy=\"exponential_backoff_retry\",\n0490:         headers=_add_dspy_identifier_to_headers(headers),\n0491:         **request,\n0492:     )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 518,
+   "end_line": 528,
+   "excerpt": "0518:     if \"messages\" in request:\n0519:         content_blocks = []\n0520:         for msg in request.pop(\"messages\"):\n0521:             c = msg.get(\"content\")\n0522:             if isinstance(c, str):\n0523:                 content_blocks.append({\"type\": \"input_text\", \"text\": c})\n0524:             elif isinstance(c, list):\n0525:                 # Convert each content item from Chat API format to Responses API format\n0526:                 for item in c:\n0527:                     content_blocks.append(_convert_content_item_to_responses_format(item))\n0528:         request[\"input\"] = [{\"role\": msg.get(\"role\", \"user\"), \"content\": content_blocks}]"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/lm.py",
+   "start_line": 565,
+   "end_line": 575,
+   "excerpt": "0565:     if item.get(\"type\") == \"image_url\":\n0566:         image_url = item.get(\"image_url\", {}).get(\"url\", \"\")\n0567:         return {\n0568:             \"type\": \"input_image\",\n0569:             \"image_url\": image_url,\n0570:         }\n0571:     elif item.get(\"type\") == \"text\":\n0572:         return {\n0573:             \"type\": \"input_text\",\n0574:             \"text\": item.get(\"text\", \"\"),\n0575:         }"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Responses-mode request reshaping across multi-turn inputs.",
+ "source_index": 40,
+ "smalldspy_scope": false
+}

@@ -1,0 +1,119 @@
+{
+ "id": "dspy_102cdc44e41c",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I am instrumenting prompt compilation with callbacks, and I need to know the exact event order for a `dspy.ChainOfThought` call with multiple generations. The confusing part is whether parsing callbacks fire once per module call or once per returned completion.\n\nI want a runnable proof, not a description. The output should be the event list itself, and the assertions should prove how many times the parse hooks run.\n\nGive me a complete, runnable Python program that records callback events for `dspy.ChainOfThought(..., n=3)`, prints the full event list, and asserts that formatting happens once, the LM call happens once, and parsing happens once per completion.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.callback import BaseCallback\nfrom dspy.utils.dummies import DummyLM\n\n\nclass Recorder(BaseCallback):\n    def __init__(self):\n        self.events = []\n\n    def on_module_start(self, call_id, instance, inputs):\n        self.events.append(\"on_module_start\")\n\n    def on_module_end(self, call_id, outputs, exception):\n        self.events.append(\"on_module_end\")\n\n    def on_lm_start(self, call_id, instance, inputs):\n        self.events.append(\"on_lm_start\")\n\n    def on_lm_end(self, call_id, outputs, exception):\n        self.events.append(\"on_lm_end\")\n\n    def on_adapter_format_start(self, call_id, instance, inputs):\n        self.events.append(\"on_adapter_format_start\")\n\n    def on_adapter_format_end(self, call_id, outputs, exception):\n        self.events.append(\"on_adapter_format_end\")\n\n    def on_adapter_parse_start(self, call_id, instance, inputs):\n        self.events.append(\"on_adapter_parse_start\")\n\n    def on_adapter_parse_end(self, call_id, outputs, exception):\n        self.events.append(\"on_adapter_parse_end\")\n\n\nrec = Recorder()\nlm = DummyLM({\"How are you?\": {\"answer\": \"test output\", \"reasoning\": \"No more responses\"}})\ndspy.configure(lm=lm, callbacks=[rec])\n\ncot = dspy.ChainOfThought(\"question -> answer\", n=3)\npred = cot(question=\"How are you?\")\n\nprint(rec.events)\n\nassert pred[\"answer\"] == \"test output\"\nassert pred[\"reasoning\"] == \"No more responses\"\nassert rec.events == [\n    \"on_module_start\",\n    \"on_module_start\",\n    \"on_adapter_format_start\",\n    \"on_adapter_format_end\",\n    \"on_lm_start\",\n    \"on_lm_end\",\n    \"on_adapter_parse_start\",\n    \"on_adapter_parse_end\",\n    \"on_adapter_parse_start\",\n    \"on_adapter_parse_end\",\n    \"on_adapter_parse_start\",\n    \"on_adapter_parse_end\",\n    \"on_module_end\",\n    \"on_module_end\",\n]\nassert rec.events.count(\"on_adapter_format_start\") == 1\nassert rec.events.count(\"on_adapter_format_end\") == 1\nassert rec.events.count(\"on_lm_start\") == 1\nassert rec.events.count(\"on_lm_end\") == 1\nassert rec.events.count(\"on_adapter_parse_start\") == 3\nassert rec.events.count(\"on_adapter_parse_end\") == 3\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Defines a `BaseCallback` recorder that appends the handler names for `on_module_start/end`, `on_lm_start/end`, `on_adapter_format_start/end`, and `on_adapter_parse_start/end` to an ordered list.",
+   "span_ids": [
+    "s1",
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Configures DSPy with that callback and a `DummyLM` response for `How are you?`, constructs `dspy.ChainOfThought('question -> answer', n=3)`, invokes it once, and checks that the returned answer and reasoning match the dummy completion.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "Asserts the exact 14-event trace: two module starts, one adapter format start/end pair, one LM start/end pair, three adapter parse start/end pairs, then two module ends.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "Explicitly proves that adapter parsing runs once per returned completion when `n=3` by asserting exactly three `on_adapter_parse_start` / `on_adapter_parse_end` pairs.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Explicitly proves that formatting and the LM call happen once for the overall `ChainOfThought` invocation by asserting only one adapter format pair and one LM pair in the trace.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "tests/callback/test_callback.py",
+   "start_line": 20,
+   "end_line": 48,
+   "excerpt": "0020: class MyCallback(BaseCallback):\n0021:     \"\"\"A simple callback that records the calls.\"\"\"\n0022: \n0023:     def __init__(self):\n0024:         self.calls = []\n0025: \n0026:     def on_module_start(self, call_id, instance, inputs):\n0027:         self.calls.append({\"handler\": \"on_module_start\", \"instance\": instance, \"inputs\": inputs})\n0028: \n0029:     def on_module_end(self, call_id, outputs, exception):\n0030:         self.calls.append({\"handler\": \"on_module_end\", \"outputs\": outputs, \"exception\": exception})\n0031: \n0032:     def on_lm_start(self, call_id, instance, inputs):\n0033:         self.calls.append({\"handler\": \"on_lm_start\", \"instance\": instance, \"inputs\": inputs})\n0034: \n0035:     def on_lm_end(self, call_id, outputs, exception):\n0036:         self.calls.append({\"handler\": \"on_lm_end\", \"outputs\": outputs, \"exception\": exception})\n0037: \n0038:     def on_adapter_format_start(self, call_id, instance, inputs):\n0039:         self.calls.append({\"handler\": \"on_adapter_format_start\", \"instance\": instance, \"inputs\": inputs})\n0040: \n0041:     def on_adapter_format_end(self, call_id, outputs, exception):\n0042:         self.calls.append({\"handler\": \"on_adapter_format_end\", \"outputs\": outputs, \"exception\": exception})\n0043: \n0044:     def on_adapter_parse_start(self, call_id, instance, inputs):\n0045:         self.calls.append({\"handler\": \"on_adapter_parse_start\", \"instance\": instance, \"inputs\": inputs})\n0046: \n0047:     def on_adapter_parse_end(self, call_id, outputs, exception):\n0048:         self.calls.append({\"handler\": \"on_adapter_parse_end\", \"outputs\": outputs, \"exception\": exception})"
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/callback/test_callback.py",
+   "start_line": 158,
+   "end_line": 168,
+   "excerpt": "0158: def test_callback_complex_module():\n0159:     callback = MyCallback()\n0160:     dspy.configure(\n0161:         lm=DummyLM({\"How are you?\": {\"answer\": \"test output\", \"reasoning\": \"No more responses\"}}),\n0162:         callbacks=[callback],\n0163:     )\n0164: \n0165:     cot = dspy.ChainOfThought(\"question -> answer\", n=3)\n0166:     result = cot(question=\"How are you?\")\n0167:     assert result[\"answer\"] == \"test output\"\n0168:     assert result[\"reasoning\"] == \"No more responses\""
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/callback/test_callback.py",
+   "start_line": 170,
+   "end_line": 187,
+   "excerpt": "0170:     assert len(callback.calls) == 14\n0171:     assert [call[\"handler\"] for call in callback.calls] == [\n0172:         \"on_module_start\",\n0173:         \"on_module_start\",\n0174:         \"on_adapter_format_start\",\n0175:         \"on_adapter_format_end\",\n0176:         \"on_lm_start\",\n0177:         \"on_lm_end\",\n0178:         # Parsing will run per output (n=3)\n0179:         \"on_adapter_parse_start\",\n0180:         \"on_adapter_parse_end\",\n0181:         \"on_adapter_parse_start\",\n0182:         \"on_adapter_parse_end\",\n0183:         \"on_adapter_parse_start\",\n0184:         \"on_adapter_parse_end\",\n0185:         \"on_module_end\",\n0186:         \"on_module_end\",\n0187:     ]"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/utils/callback.py",
+   "start_line": 351,
+   "end_line": 370,
+   "excerpt": "0351: def _get_on_start_handler(callback: BaseCallback, instance: Any, fn: Callable) -> Callable:\n0352:     \"\"\"Selects the appropriate on_start handler of the callback based on the instance and function name.\"\"\"\n0353:     if isinstance(instance, dspy.BaseLM):\n0354:         return callback.on_lm_start\n0355:     elif isinstance(instance, dspy.Evaluate):\n0356:         return callback.on_evaluate_start\n0357: \n0358:     if isinstance(instance, dspy.Adapter):\n0359:         if fn.__name__ == \"format\":\n0360:             return callback.on_adapter_format_start\n0361:         elif fn.__name__ == \"parse\":\n0362:             return callback.on_adapter_parse_start\n0363:         else:\n0364:             raise ValueError(f\"Unsupported adapter method for using callback: {fn.__name__}.\")\n0365: \n0366:     if isinstance(instance, dspy.Tool):\n0367:         return callback.on_tool_start\n0368: \n0369:     # We treat everything else as a module.\n0370:     return callback.on_module_start"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/utils/callback.py",
+   "start_line": 373,
+   "end_line": 392,
+   "excerpt": "0373: def _get_on_end_handler(callback: BaseCallback, instance: Any, fn: Callable) -> Callable:\n0374:     \"\"\"Selects the appropriate on_end handler of the callback based on the instance and function name.\"\"\"\n0375:     if isinstance(instance, dspy.BaseLM):\n0376:         return callback.on_lm_end\n0377:     elif isinstance(instance, dspy.Evaluate):\n0378:         return callback.on_evaluate_end\n0379: \n0380:     if isinstance(instance, (dspy.Adapter)):\n0381:         if fn.__name__ == \"format\":\n0382:             return callback.on_adapter_format_end\n0383:         elif fn.__name__ == \"parse\":\n0384:             return callback.on_adapter_parse_end\n0385:         else:\n0386:             raise ValueError(f\"Unsupported adapter method for using callback: {fn.__name__}.\")\n0387: \n0388:     if isinstance(instance, dspy.Tool):\n0389:         return callback.on_tool_end\n0390: \n0391:     # We treat everything else as a module.\n0392:     return callback.on_module_end"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "High-quality tracing question: it machine-checks the full callback order and the per-completion parse behavior.",
+ "source_index": 35,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 1,
+  "revised": true,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [
+     "self-grade: claim c2 scored 0.5: Correctly configures `DummyLM` and callback, builds `ChainOfThought(..., n=3)`, and invokes it once, but only asserts the answer; reasoning is printed, not checked."
+    ],
+    "self_score": 90
+   },
+   {
+    "round": 1,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

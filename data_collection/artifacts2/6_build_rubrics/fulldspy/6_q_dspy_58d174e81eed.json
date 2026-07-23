@@ -1,0 +1,124 @@
+{
+ "id": "dspy_58d174e81eed",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I want to turn on usage tracking in a threaded setting and make sure each returned `Prediction` gets its own usage summary instead of clobbering some shared state. The scenario I care about is `dspy.Parallel` calling the same predictor twice at the same time.\n\nBecause I need this fully offline, I don't want a real provider in the loop. I just want a stub LM that manually reports token usage into DSPy's tracker so the only thing left to verify is whether the parallel call boundary keeps the per-result usage isolated.\n\nGive me a complete, runnable Python program that uses `DummyLM`, runs two parallel calls, and proves each `Prediction` carries the expected token totals.",
+ "gold_answer": "```python\nimport time\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\nclass LM(DummyLM):\n    def forward(self, prompt=None, messages=None, **kwargs):\n        if dspy.settings.usage_tracker is not None:\n            dspy.settings.usage_tracker.add_usage(self.model, {'prompt_tokens': 3, 'completion_tokens': 4, 'total_tokens': 7})\n        time.sleep(0.1)\n        return super().forward(prompt=prompt, messages=messages, **kwargs)\n\nlm = LM({'France': {'answer': 'Paris'}, 'Italy': {'answer': 'Rome'}})\ndspy.configure(lm=lm, track_usage=True)\nprog = dspy.Predict('question -> answer')\npar = dspy.Parallel(disable_progress_bar=True)\nres = par([\n    (prog, {'question': 'France'}),\n    (prog, {'question': 'Italy'}),\n])\n\nassert res[0].answer == 'Paris'\nassert res[1].answer == 'Rome'\nassert res[0].get_lm_usage()['dummy']['total_tokens'] == 7\nassert res[1].get_lm_usage()['dummy']['total_tokens'] == 7\nprint(res[0].get_lm_usage())\nprint(res[1].get_lm_usage())\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program enables `track_usage=True` and calls the predictor through normal `Module.__call__`/`Predict(...)` execution, so DSPy opens a `track_usage()` context for the call and attaches the collected usage to the returned `Prediction`.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The offline stub LM manually records a fixed usage payload into DSPy’s active usage tracker on each call, and the expected per-result token total asserted later matches that injected payload.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The concurrency check uses `dspy.Parallel` to submit two jobs that both invoke the same predictor instance, matching the threaded same-predictor scenario being tested.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The proof of isolation inspects `get_lm_usage()` on both returned `Prediction` objects separately and asserts that each one carries its own expected `total_tokens`, rather than relying on shared or aggregate state.",
+   "span_ids": [
+    "s3",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 5,
+   "statement": "The example introduces a short delay so the two parallel jobs overlap and actually exercise the race-prone threaded boundary.",
+   "span_ids": [
+    "s3",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The program uses `DummyLM` as the LM backend, keeping the example fully offline with deterministic canned outputs.",
+   "span_ids": [
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/primitives/module.py",
+   "start_line": 93,
+   "end_line": 107,
+   "excerpt": "0093:     @with_callbacks\n0094:     def __call__(self, *args, **kwargs) -> Prediction:\n0095:         from dspy.dsp.utils.settings import thread_local_overrides\n0096: \n0097:         caller_modules = settings.caller_modules or []\n0098:         caller_modules = list(caller_modules)\n0099:         caller_modules.append(self)\n0100: \n0101:         with settings.context(caller_modules=caller_modules):\n0102:             if settings.track_usage and thread_local_overrides.get().get(\"usage_tracker\") is None:\n0103:                 with track_usage() as usage_tracker:\n0104:                     output = self.forward(*args, **kwargs)\n0105:                 tokens = usage_tracker.get_total_tokens()\n0106:                 self._set_lm_usage(tokens, output)\n0107: "
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/primitives/module.py",
+   "start_line": 319,
+   "end_line": 330,
+   "excerpt": "0319:     def _set_lm_usage(self, tokens: dict[str, Any], output: Any):\n0320:         # Some optimizers (e.g., GEPA bootstrap tracing) temporarily patch\n0321:         # module.forward to return a tuple: (prediction, trace).\n0322:         # When usage tracking is enabled, ensure we attach usage to the\n0323:         # prediction object if present.\n0324:         prediction_in_output = None\n0325:         if isinstance(output, Prediction):\n0326:             prediction_in_output = output\n0327:         elif isinstance(output, tuple) and len(output) > 0 and isinstance(output[0], Prediction):\n0328:             prediction_in_output = output[0]\n0329:         if prediction_in_output:\n0330:             prediction_in_output.set_lm_usage(tokens)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/utils/parallelizer.py",
+   "start_line": 123,
+   "end_line": 130,
+   "excerpt": "0123:             from dspy.dsp.utils.settings import thread_local_overrides\n0124: \n0125:             original = thread_local_overrides.get()\n0126:             new_overrides = {**original, **parent_overrides.copy()}\n0127:             if new_overrides.get(\"usage_tracker\"):\n0128:                 # Usage tracker needs to be deep copied across threads so that each thread tracks its own usage\n0129:                 new_overrides[\"usage_tracker\"] = copy.deepcopy(new_overrides[\"usage_tracker\"])\n0130:             token = thread_local_overrides.set(new_overrides)"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 71,
+   "end_line": 76,
+   "excerpt": "0071: def test_call_method():\n0072:     predict_instance = Predict(\"input -> output\")\n0073:     lm = DummyLM([{\"output\": \"test output\"}])\n0074:     dspy.configure(lm=lm)\n0075:     result = predict_instance(input=\"test input\")\n0076:     assert result.output == \"test output\""
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 742,
+   "end_line": 763,
+   "excerpt": "0742: def test_lm_usage_with_parallel():\n0743:     program = Predict(\"question -> answer\")\n0744: \n0745:     def program_wrapper(question):\n0746:         # Sleep to make it possible to cause a race condition\n0747:         time.sleep(0.5)\n0748:         return program(question=question)\n0749: \n0750:     dspy.configure(lm=dspy.LM(\"openai/gpt-4o-mini\", cache=False), track_usage=True)\n0751:     with patch(\n0752:         \"dspy.clients.lm.litellm_completion\",\n0753:         return_value=ModelResponse(\n0754:             choices=[{\"message\": {\"content\": \"[[ ## answer ## ]]\\nParis\"}}],\n0755:             usage={\"total_tokens\": 10},\n0756:         ),\n0757:     ):\n0758:         parallelizer = dspy.Parallel()\n0759:         input_pairs = [\n0760:             (program_wrapper, {\"question\": \"What is the capital of France?\"}),\n0761:             (program_wrapper, {\"question\": \"What is the capital of France?\"}),\n0762:         ]\n0763:         results = parallelizer(input_pairs)"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 745,
+   "end_line": 748,
+   "excerpt": "0745:     def program_wrapper(question):\n0746:         # Sleep to make it possible to cause a race condition\n0747:         time.sleep(0.5)\n0748:         return program(question=question)"
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 763,
+   "end_line": 767,
+   "excerpt": "0763:         results = parallelizer(input_pairs)\n0764:         assert results[0].answer == \"Paris\"\n0765:         assert results[1].answer == \"Paris\"\n0766:         assert results[0].get_lm_usage()[\"openai/gpt-4o-mini\"][\"total_tokens\"] == 10\n0767:         assert results[1].get_lm_usage()[\"openai/gpt-4o-mini\"][\"total_tokens\"] == 10"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "The offline LM stub manually feeds the thread-local usage tracker so parallel isolation is the only moving part.",
+ "source_index": 13,
+ "smalldspy_scope": false
+}

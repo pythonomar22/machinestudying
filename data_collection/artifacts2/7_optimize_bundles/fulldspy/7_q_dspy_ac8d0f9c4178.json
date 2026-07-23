@@ -1,0 +1,107 @@
+{
+ "id": "dspy_ac8d0f9c4178",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I want DSPy to launch a local Hugging Face model for me and then point the client at the spawned server. What I can't tell from the outside is how DSPy normalizes the model string before launch and what connection details it writes back onto the LM afterward.\n\nGive me a complete, runnable Python program that mocks the local launcher, starts from a model string with the usual public prefixes, and prints/asserts the exact subprocess command plus the final `api_base` / `api_key` values DSPy places on the LM object.",
+ "gold_answer": "```python\nimport sys\nfrom types import SimpleNamespace\nfrom unittest.mock import Mock, patch\n\nfrom dspy.clients.lm_local import LocalProvider\n\n\nprocess = Mock()\nprocess.pid = 1234\nprocess.stdout.readline.return_value = \"\"\nprocess.poll.return_value = 0\nthread = Mock()\n\nlm = SimpleNamespace(model=\"openai/huggingface/my-org/my-model\", launch_kwargs={}, kwargs={})\n\nwith patch.dict(sys.modules, {\"sglang\": Mock(), \"sglang.utils\": Mock()}):\n    with patch(\"dspy.clients.lm_local.get_free_port\", return_value=8123), patch(\n        \"dspy.clients.lm_local.wait_for_server\"\n    ), patch(\"dspy.clients.lm_local.subprocess.Popen\", return_value=process) as popen_mock, patch(\n        \"dspy.clients.lm_local.threading.Thread\", return_value=thread\n    ):\n        LocalProvider.launch(lm, launch_kwargs={})\n\ncommand = popen_mock.call_args[0][0]\nmodel_path = command[command.index(\"--model-path\") + 1]\n\nassert model_path == \"my-org/my-model\"\nassert lm.kwargs[\"api_base\"] == \"http://localhost:8123/v1\"\nassert lm.kwargs[\"api_key\"] == \"local\"\n\nprint(\"command=\", command)\nprint(\"lm_kwargs=\", lm.kwargs)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The program mocks the local launch boundary so `LocalProvider.launch` can run without a real server: it provides an `sglang` import, substitutes `get_free_port`, `wait_for_server`, `subprocess.Popen`, and `threading.Thread`, and launches against an LM-like object with mutable `kwargs`.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Starting from a model string like `openai/huggingface/my-org/my-model`, the program shows that `launch` strips the public prefixes before launch so the effective model path becomes `my-org/my-model`.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The program captures the command passed to `subprocess.Popen` and verifies the exact list-form launcher command: `python`, `-m`, `sglang.launch_server`, `--model-path`, the normalized model, `--port`, the mocked port as a string, `--host`, and `0.0.0.0`.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "After launch, the program asserts that DSPy writes `lm.kwargs[\"api_base\"]` as `http://localhost:{port}/v1` and `lm.kwargs[\"api_key\"]` as `local`, using the same port selected for the server.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm_local.py",
+   "start_line": 29,
+   "end_line": 36,
+   "excerpt": "0029:     def launch(lm: \"LM\", launch_kwargs: dict[str, Any] | None = None):\n0030:         try:\n0031:             import sglang  # noqa: F401\n0032:         except ImportError:\n0033:             raise ImportError(\n0034:                 \"For local model launching, please install sglang.\"\n0035:                 \"Navigate to https://docs.sglang.ai/start/install.html for the latest installation instructions!\"\n0036:             )"
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/clients/test_lm_local.py",
+   "start_line": 67,
+   "end_line": 85,
+   "excerpt": "0067: @patch(\"dspy.clients.lm_local.threading.Thread\")\n0068: @patch(\"dspy.clients.lm_local.subprocess.Popen\")\n0069: @patch(\"dspy.clients.lm_local.get_free_port\")\n0070: @patch(\"dspy.clients.lm_local.wait_for_server\")\n0071: def test_command_is_list_not_string(mock_wait, mock_port, mock_popen, mock_thread):\n0072:     mock_port.return_value = 8000\n0073:     mock_process = mock.Mock()\n0074:     mock_process.pid = 12345\n0075:     mock_process.stdout.readline.return_value = \"\"\n0076:     mock_process.poll.return_value = 0\n0077:     mock_popen.return_value = mock_process\n0078: \n0079:     lm = mock.Mock(spec=[])\n0080:     lm.model = \"meta-llama/Llama-2-7b\"\n0081:     lm.launch_kwargs = {}\n0082:     lm.kwargs = {}\n0083: \n0084:     with mock.patch.dict(\"sys.modules\", {\"sglang\": mock.Mock(), \"sglang.utils\": mock.Mock()}):\n0085:         LocalProvider.launch(lm, launch_kwargs={})"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm_local.py",
+   "start_line": 46,
+   "end_line": 53,
+   "excerpt": "0046:         model = lm.model\n0047:         if model.startswith(\"openai/\"):\n0048:             model = model[7:]\n0049:         if model.startswith(\"local:\"):\n0050:             model = model[6:]\n0051:         if model.startswith(\"huggingface/\"):\n0052:             model = model[len(\"huggingface/\") :]\n0053: "
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/lm_local.py",
+   "start_line": 56,
+   "end_line": 68,
+   "excerpt": "0056:         port = get_free_port()\n0057:         timeout = launch_kwargs.get(\"timeout\", 1800)\n0058:         command = [\n0059:             \"python\",\n0060:             \"-m\",\n0061:             \"sglang.launch_server\",\n0062:             \"--model-path\",\n0063:             model,\n0064:             \"--port\",\n0065:             str(port),\n0066:             \"--host\",\n0067:             \"0.0.0.0\",\n0068:         ]"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/clients/test_lm_local.py",
+   "start_line": 87,
+   "end_line": 97,
+   "excerpt": "0087:         assert mock_popen.called\n0088:         call_args = mock_popen.call_args\n0089:         command = call_args[0][0]\n0090: \n0091:         assert isinstance(command, list)\n0092:         assert command[0] == \"python\"\n0093:         assert command[1] == \"-m\"\n0094:         assert command[2] == \"sglang.launch_server\"\n0095:         assert \"--model-path\" in command\n0096:         assert \"--port\" in command\n0097:         assert \"--host\" in command"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/clients/lm_local.py",
+   "start_line": 124,
+   "end_line": 128,
+   "excerpt": "0124:         lm.kwargs[\"api_base\"] = f\"http://localhost:{port}/v1\"\n0125:         lm.kwargs[\"api_key\"] = \"local\"\n0126:         lm.get_logs = get_logs\n0127:         lm.process = process\n0128:         lm.thread = thread"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Local launch strips public prefixes and injects localhost credentials.",
+ "source_index": 17,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

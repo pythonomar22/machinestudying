@@ -1,0 +1,748 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_bb208683c19d`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I'm running the same program in parallel with per-example LM overrides inside the module. The thing I'm nervous about is cross-talk: one thread picking up another thread's LM or leaking its override back to the main thread.
+
+Give me a complete, runnable Python program that uses two different `DummyLM` instances offline, runs two calls through DSPy's parallel executor at the same time, and prints/asserts that each input gets the answer from its own LM while the main thread keeps the original default LM.`
+- Model answer:
+```python
+import time
+
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+global_lm = DummyLM({"Germany": {"answer": "Berlin"}})
+france_lm = DummyLM({"France": {"answer": "Paris"}})
+dspy.configure(lm=global_lm)
+
+
+class CountryProgram(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.predictor = dspy.Predict("question -> answer")
+
+    def forward(self, question):
+        if "France" in question:
+            with dspy.context(lm=france_lm):
+                time.sleep(0.2)
+                return self.predictor(question=question)
+        time.sleep(0.2)
+        return self.predictor(question=question)
+
+
+program = CountryProgram()
+parallel = dspy.Parallel(num_threads=2, disable_progress_bar=True)
+results = parallel(
+    [
+        (program, {"question": "What is the capital of France?"}),
+        (program, {"question": "What is the capital of Germany?"}),
+    ]
+)
+answers = [result.answer for result in results]
+print(answers)
+print(dspy.settings.lm is global_lm)
+assert answers == ["Paris", "Berlin"]
+assert dspy.settings.lm is global_lm
+```
+
+## Gold answer
+```python
+import time
+
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+global_lm = DummyLM({"Germany": {"answer": "Berlin"}})
+france_lm = DummyLM({"France": {"answer": "Paris"}})
+dspy.configure(lm=global_lm)
+
+
+class CountryProgram(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.predictor = dspy.Predict("question -> answer")
+
+    def forward(self, question):
+        if "France" in question:
+            with dspy.context(lm=france_lm):
+                time.sleep(0.2)
+                return self.predictor(question=question)
+        time.sleep(0.2)
+        return self.predictor(question=question)
+
+
+program = CountryProgram()
+parallel = dspy.Parallel(num_threads=2, disable_progress_bar=True)
+results = parallel(
+    [
+        (program, {"question": "What is the capital of France?"}),
+        (program, {"question": "What is the capital of Germany?"}),
+    ]
+)
+answers = [result.answer for result in results]
+print(answers)
+print(dspy.settings.lm is global_lm)
+assert answers == ["Paris", "Berlin"]
+assert dspy.settings.lm is global_lm
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 30,
+    "statement": "The program uses two different `DummyLM` instances offline, configures one as the default DSPy LM, and applies the other only inside `forward` with `dspy.context` for the France case rather than trying to reconfigure DSPy from a worker thread.",
+    "span_ids": [
+      "s1",
+      "s2"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The same module is invoked on exactly two inputs, one France question and one Germany question, through DSPy’s parallel executor with concurrent workers (for example `dspy.Parallel(num_threads=2)`).",
+    "span_ids": [
+      "s4",
+      "s7"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "supporting",
+    "weight": 10,
+    "statement": "The code keeps each call alive briefly while the LM override is active, so the two parallel executions overlap and actually exercise cross-thread isolation.",
+    "span_ids": [
+      "s3",
+      "s4"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "The checks on the parallel run show per-input isolation: the France example uses the override LM and the Germany example uses the default LM, which in the dummy setup should produce the corresponding France and Germany answers from their own backends.",
+    "span_ids": [
+      "s2",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c5",
+    "claim_type": "core",
+    "weight": 15,
+    "statement": "After the parallel call finishes, the program explicitly verifies that the main thread still sees the original default LM, showing the worker-thread override was reset instead of leaking back globally.",
+    "span_ids": [
+      "s5",
+      "s6"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "tests/utils/test_settings.py",
+    "start_line": 20,
+    "end_line": 29,
+    "excerpt": "0020: def test_forbid_configure_call_in_child_thread():\n0021:     dspy.configure(lm=dspy.LM(\"openai/gpt-4o\"), adapter=dspy.JSONAdapter(), callbacks=[lambda x: x])\n0022: \n0023:     def worker():\n0024:         with pytest.raises(RuntimeError, match=\"Cannot call dspy.configure\"):\n0025:             dspy.configure(lm=dspy.LM(\"openai/gpt-4o-mini\"), callbacks=[])\n0026: \n0027:     with ThreadPoolExecutor(max_workers=1) as executor:\n0028:         executor.submit(worker)\n0029: "
+  },
+  {
+    "span_id": "s2",
+    "path": "tests/utils/test_settings.py",
+    "start_line": 57,
+    "end_line": 69,
+    "excerpt": "0057: def test_dspy_context_with_dspy_parallel():\n0058:     dspy.configure(lm=dspy.LM(\"openai/gpt-4o\", cache=False), adapter=dspy.ChatAdapter())\n0059: \n0060:     class MyModule(dspy.Module):\n0061:         def __init__(self):\n0062:             self.predict = dspy.Predict(\"question -> answer\")\n0063: \n0064:         def forward(self, question: str) -> str:\n0065:             lm = dspy.LM(\"openai/gpt-4o-mini\", cache=False) if \"France\" in question else dspy.settings.lm\n0066:             with dspy.context(lm=lm):\n0067:                 time.sleep(1)\n0068:                 assert dspy.settings.lm.model == lm.model\n0069:                 return self.predict(question=question)"
+  },
+  {
+    "span_id": "s3",
+    "path": "tests/utils/test_settings.py",
+    "start_line": 64,
+    "end_line": 68,
+    "excerpt": "0064:         def forward(self, question: str) -> str:\n0065:             lm = dspy.LM(\"openai/gpt-4o-mini\", cache=False) if \"France\" in question else dspy.settings.lm\n0066:             with dspy.context(lm=lm):\n0067:                 time.sleep(1)\n0068:                 assert dspy.settings.lm.model == lm.model"
+  },
+  {
+    "span_id": "s4",
+    "path": "tests/utils/test_settings.py",
+    "start_line": 77,
+    "end_line": 83,
+    "excerpt": "0077:         module = MyModule()\n0078:         parallelizer = dspy.Parallel()\n0079:         input_pairs = [\n0080:             (module, {\"question\": \"What is the capital of France?\"}),\n0081:             (module, {\"question\": \"What is the capital of Germany?\"}),\n0082:         ]\n0083:         parallelizer(input_pairs)"
+  },
+  {
+    "span_id": "s5",
+    "path": "tests/utils/test_settings.py",
+    "start_line": 85,
+    "end_line": 96,
+    "excerpt": "0085:         # Verify mock was called correctly\n0086:         assert mock_completion.call_count == 2\n0087:         for call_args in mock_completion.call_args_list:\n0088:             if \"France\" in call_args.kwargs[\"messages\"][-1][\"content\"]:\n0089:                 # France question uses gpt-4o-mini\n0090:                 assert call_args.kwargs[\"model\"] == \"openai/gpt-4o-mini\"\n0091:             else:\n0092:                 # Germany question uses gpt-4o\n0093:                 assert call_args.kwargs[\"model\"] == \"openai/gpt-4o\"\n0094: \n0095:         # The main thread is not affected by the context\n0096:         assert dspy.settings.lm.model == \"openai/gpt-4o\""
+  },
+  {
+    "span_id": "s6",
+    "path": "dspy/utils/parallelizer.py",
+    "start_line": 122,
+    "end_line": 135,
+    "excerpt": "0122:             # Apply parent's thread-local overrides\n0123:             from dspy.dsp.utils.settings import thread_local_overrides\n0124: \n0125:             original = thread_local_overrides.get()\n0126:             new_overrides = {**original, **parent_overrides.copy()}\n0127:             if new_overrides.get(\"usage_tracker\"):\n0128:                 # Usage tracker needs to be deep copied across threads so that each thread tracks its own usage\n0129:                 new_overrides[\"usage_tracker\"] = copy.deepcopy(new_overrides[\"usage_tracker\"])\n0130:             token = thread_local_overrides.set(new_overrides)\n0131: \n0132:             try:\n0133:                 return index, function(item)\n0134:             finally:\n0135:                 thread_local_overrides.reset(token)"
+  },
+  {
+    "span_id": "s7",
+    "path": "dspy/utils/parallelizer.py",
+    "start_line": 156,
+    "end_line": 171,
+    "excerpt": "0156:         executor = ThreadPoolExecutor(max_workers=self.num_threads)\n0157:         try:\n0158:             with interrupt_manager():\n0159:                 from dspy.dsp.utils.settings import thread_local_overrides\n0160: \n0161:                 parent_overrides = thread_local_overrides.get().copy()\n0162: \n0163:                 futures_map = {}\n0164:                 futures_set = set()\n0165:                 submission_counter = 0\n0166: \n0167:                 for idx, item in enumerate(data):\n0168:                     f = executor.submit(worker, parent_overrides, submission_counter, idx, item)\n0169:                     futures_map[f] = (submission_counter, idx, item)\n0170:                     futures_set.add(f)\n0171:                     submission_counter += 1"
+  }
+]
+
+## Whole evidence files
+### tests/utils/test_settings.py
+0001: import asyncio
+0002: import sys
+0003: import time
+0004: from concurrent.futures import ThreadPoolExecutor
+0005: from unittest import mock
+0006: 
+0007: import pytest
+0008: from litellm import Choices, Message, ModelResponse
+0009: 
+0010: import dspy
+0011: 
+0012: 
+0013: def test_basic_dspy_settings():
+0014:     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), callbacks=[lambda x: x])
+0015:     assert dspy.settings.lm.model == "openai/gpt-4o"
+0016:     assert isinstance(dspy.settings.adapter, dspy.JSONAdapter)
+0017:     assert len(dspy.settings.callbacks) == 1
+0018: 
+0019: 
+0020: def test_forbid_configure_call_in_child_thread():
+0021:     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), callbacks=[lambda x: x])
+0022: 
+0023:     def worker():
+0024:         with pytest.raises(RuntimeError, match="Cannot call dspy.configure"):
+0025:             dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"), callbacks=[])
+0026: 
+0027:     with ThreadPoolExecutor(max_workers=1) as executor:
+0028:         executor.submit(worker)
+0029: 
+0030: 
+0031: def test_dspy_context():
+0032:     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), callbacks=[lambda x: x])
+0033:     with dspy.context(lm=dspy.LM("openai/gpt-4o-mini"), callbacks=[]):
+0034:         assert dspy.settings.lm.model == "openai/gpt-4o-mini"
+0035:         assert len(dspy.settings.callbacks) == 0
+0036: 
+0037:     assert dspy.settings.lm.model == "openai/gpt-4o"
+0038:     assert len(dspy.settings.callbacks) == 1
+0039: 
+0040: 
+0041: def test_dspy_context_parallel():
+0042:     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), callbacks=[lambda x: x])
+0043: 
+0044:     def worker(i):
+0045:         with dspy.context(lm=dspy.LM("openai/gpt-4o-mini"), trace=[i], callbacks=[]):
+0046:             assert dspy.settings.lm.model == "openai/gpt-4o-mini"
+0047:             assert dspy.settings.trace == [i]
+0048:             assert len(dspy.settings.callbacks) == 0
+0049: 
+0050:     with ThreadPoolExecutor(max_workers=5) as executor:
+0051:         executor.map(worker, range(3))
+0052: 
+0053:     assert dspy.settings.lm.model == "openai/gpt-4o"
+0054:     assert len(dspy.settings.callbacks) == 1
+0055: 
+0056: 
+0057: def test_dspy_context_with_dspy_parallel():
+0058:     dspy.configure(lm=dspy.LM("openai/gpt-4o", cache=False), adapter=dspy.ChatAdapter())
+0059: 
+0060:     class MyModule(dspy.Module):
+0061:         def __init__(self):
+0062:             self.predict = dspy.Predict("question -> answer")
+0063: 
+0064:         def forward(self, question: str) -> str:
+0065:             lm = dspy.LM("openai/gpt-4o-mini", cache=False) if "France" in question else dspy.settings.lm
+0066:             with dspy.context(lm=lm):
+0067:                 time.sleep(1)
+0068:                 assert dspy.settings.lm.model == lm.model
+0069:                 return self.predict(question=question)
+0070: 
+0071:     with mock.patch("litellm.completion") as mock_completion:
+0072:         mock_completion.return_value = ModelResponse(
+0073:             choices=[Choices(message=Message(content="[[ ## answer ## ]]\nParis"))],
+0074:             model="openai/gpt-4o-mini",
+0075:         )
+0076: 
+0077:         module = MyModule()
+0078:         parallelizer = dspy.Parallel()
+0079:         input_pairs = [
+0080:             (module, {"question": "What is the capital of France?"}),
+0081:             (module, {"question": "What is the capital of Germany?"}),
+0082:         ]
+0083:         parallelizer(input_pairs)
+0084: 
+0085:         # Verify mock was called correctly
+0086:         assert mock_completion.call_count == 2
+0087:         for call_args in mock_completion.call_args_list:
+0088:             if "France" in call_args.kwargs["messages"][-1]["content"]:
+0089:                 # France question uses gpt-4o-mini
+0090:                 assert call_args.kwargs["model"] == "openai/gpt-4o-mini"
+0091:             else:
+0092:                 # Germany question uses gpt-4o
+0093:                 assert call_args.kwargs["model"] == "openai/gpt-4o"
+0094: 
+0095:         # The main thread is not affected by the context
+0096:         assert dspy.settings.lm.model == "openai/gpt-4o"
+0097: 
+0098: 
+0099: @pytest.mark.asyncio
+0100: async def test_dspy_context_with_async_task_group():
+0101:     class MyModule(dspy.Module):
+0102:         def __init__(self):
+0103:             self.predict = dspy.Predict("question -> answer")
+0104: 
+0105:         async def aforward(self, question: str) -> str:
+0106:             lm = (
+0107:                 dspy.LM("openai/gpt-4o-mini", cache=False)
+0108:                 if "France" in question
+0109:                 else dspy.LM("openai/gpt-4o", cache=False)
+0110:             )
+0111:             with dspy.context(lm=lm, trace=[]):
+0112:                 await asyncio.sleep(1)
+0113:                 assert dspy.settings.lm.model == lm.model
+0114:                 result = await self.predict.acall(question=question)
+0115:                 assert len(dspy.settings.trace) == 1
+0116:                 return result
+0117: 
+0118:     module = MyModule()
+0119: 
+0120:     with dspy.context(lm=dspy.LM("openai/gpt-4.1", cache=False), adapter=dspy.ChatAdapter()):
+0121:         with mock.patch("litellm.acompletion") as mock_completion:
+0122:             mock_completion.return_value = ModelResponse(
+0123:                 choices=[Choices(message=Message(content="[[ ## answer ## ]]\nParis"))],
+0124:                 model="openai/gpt-4o-mini",
+0125:             )
+0126: 
+0127:             # Define the coroutines to be run
+0128:             coroutines = [
+0129:                 module.acall(question="What is the capital of France?"),
+0130:                 module.acall(question="What is the capital of France?"),
+0131:                 module.acall(question="What is the capital of Germany?"),
+0132:                 module.acall(question="What is the capital of Germany?"),
+0133:             ]
+0134: 
+0135:             # Run them concurrently and gather results
+0136:             results = await asyncio.gather(*coroutines)
+0137: 
+0138:         assert results[0].answer == "Paris"
+0139:         assert results[1].answer == "Paris"
+0140:         assert results[2].answer == "Paris"
+0141:         assert results[3].answer == "Paris"
+0142: 
+0143:         # Verify mock was called correctly
+0144:         assert mock_completion.call_count == 4
+0145:         # France question uses gpt-4o-mini
+0146:         assert mock_completion.call_args_list[0].kwargs["model"] == "openai/gpt-4o-mini"
+0147:         assert mock_completion.call_args_list[1].kwargs["model"] == "openai/gpt-4o-mini"
+0148:         # Germany question uses gpt-4o
+0149:         assert mock_completion.call_args_list[2].kwargs["model"] == "openai/gpt-4o"
+0150:         assert mock_completion.call_args_list[3].kwargs["model"] == "openai/gpt-4o"
+0151: 
+0152:         # The main thread is not affected by the context
+0153:         assert dspy.settings.lm.model == "openai/gpt-4.1"
+0154:         assert dspy.settings.trace == []
+0155: 
+0156: 
+0157: @pytest.mark.asyncio
+0158: async def test_dspy_configure_allowance_async():
+0159:     def bar1():
+0160:         # `dspy.configure` is disallowed in different async tasks from the initial one.
+0161:         # In this case, foo1 (async) calls bar1 (sync), and bar1 uses the async task from foo1.
+0162:         with pytest.raises(RuntimeError) as e:
+0163:             dspy.configure(lm=dspy.LM("openai/gpt-4o"))
+0164:         assert "dspy.configure(...) can only be called from the same async" in str(e.value)
+0165: 
+0166:     async def foo1():
+0167:         bar1()
+0168:         await asyncio.sleep(0.1)
+0169: 
+0170:     async def foo2():
+0171:         # `dspy.configure` is disallowed in different async tasks from the initial one.
+0172:         with pytest.raises(RuntimeError) as e:
+0173:             dspy.configure(lm=dspy.LM("openai/gpt-4o"))
+0174:         assert "dspy.configure(...) can only be called from the same async" in str(e.value)
+0175:         await asyncio.sleep(0.1)
+0176: 
+0177:     async def foo3():
+0178:         # `dspy.context` is allowed in different async tasks from the initial one.
+0179:         with dspy.context(lm=dspy.LM("openai/gpt-4o")):
+0180:             await asyncio.sleep(0.1)
+0181: 
+0182:     async def foo4():
+0183:         # foo4 is directly invoked by the entry task, so it has the same async task as the entry task.
+0184:         dspy.configure(lm=dspy.LM("openai/gpt-4o"))
+0185:         await asyncio.sleep(0.1)
+0186: 
+0187:     # `dspy.configure` is allowed to be called multiple times in the same async task.
+0188:     dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
+0189:     dspy.configure(lm=dspy.LM("openai/gpt-4o"))
+0190:     dspy.configure(adapter=dspy.JSONAdapter())
+0191: 
+0192:     await asyncio.gather(foo1(), foo2(), foo3())
+0193: 
+0194:     foo4()
+0195: 
+0196: 
+0197: def test_dspy_settings_save_load(tmp_path):
+0198:     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), callbacks=[lambda x: x])
+0199: 
+0200:     dspy.settings.save(tmp_path / "settings.pkl")
+0201:     dspy.configure(lm=None, adapter=None, callbacks=None)
+0202: 
+0203:     loaded_settings = dspy.load_settings(tmp_path / "settings.pkl", allow_pickle=True)
+0204:     dspy.configure(**loaded_settings)
+0205:     assert dspy.settings.lm.model == "openai/gpt-4o"
+0206:     assert isinstance(dspy.settings.adapter, dspy.JSONAdapter)
+0207:     assert len(dspy.settings.callbacks) == 1
+0208: 
+0209: 
+0210: def test_dspy_settings_save_exclude_keys(tmp_path):
+0211:     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), track_usage=True)
+0212: 
+0213:     dspy.settings.save(tmp_path / "settings.pkl", exclude_keys=["adapter", "track_usage"])
+0214:     dspy.configure(lm=None, adapter=None, track_usage=False)
+0215: 
+0216:     loaded_settings = dspy.load_settings(tmp_path / "settings.pkl", allow_pickle=True)
+0217:     dspy.configure(**loaded_settings)
+0218:     assert dspy.settings.lm.model == "openai/gpt-4o"
+0219:     assert dspy.settings.adapter is None
+0220:     assert not dspy.settings.track_usage
+0221: 
+0222: 
+0223: 
+0224: def test_settings_save_with_extra_modules(tmp_path):
+0225:     # Create a temporary Python file with our custom module
+0226:     custom_module_path = tmp_path / "custom_module.py"
+0227:     with open(custom_module_path, "w") as f:
+0228:         f.write(
+0229:             """
+0230: def callback(x):
+0231:     return x + 1
+0232: """
+0233:         )
+0234: 
+0235:     # Add the tmp_path to Python path so we can import the module
+0236:     sys.path.insert(0, str(tmp_path))
+0237:     try:
+0238:         import custom_module
+0239: 
+0240:         dspy.configure(callbacks=[custom_module.callback])
+0241: 
+0242:         settings_path = tmp_path / "settings.pkl"
+0243:         sys.path.insert(0, str(tmp_path))
+0244: 
+0245:         dspy.configure(callbacks=[custom_module.callback])
+0246:         dspy.settings.save(settings_path, modules_to_serialize=[custom_module])
+0247: 
+0248:         # Remove the custom module again to simulate it not being available at load time
+0249:         sys.modules.pop("custom_module", None)
+0250:         sys.path.remove(str(tmp_path))
+0251:         del custom_module
+0252: 
+0253:         dspy.configure(callbacks=None)
+0254: 
+0255:         # Loading should now succeed and preserve the adapter instance
+0256:         loaded_settings = dspy.load_settings(settings_path, allow_pickle=True)
+0257:         dspy.settings.configure(**loaded_settings)
+0258: 
+0259:         assert dspy.settings.callbacks[0](3) == 4
+0260: 
+0261:     finally:
+0262:         # Only need to clean up sys.path
+0263:         if str(tmp_path) in sys.path:
+0264:             sys.path.remove(str(tmp_path))
+
+### dspy/utils/parallelizer.py
+0001: import contextlib
+0002: import copy
+0003: import logging
+0004: import signal
+0005: import sys
+0006: import threading
+0007: import time
+0008: import traceback
+0009: from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+0010: 
+0011: import tqdm
+0012: 
+0013: logger = logging.getLogger(__name__)
+0014: 
+0015: 
+0016: class ParallelExecutor:
+0017:     def __init__(
+0018:         self,
+0019:         num_threads=None,
+0020:         max_errors=None,
+0021:         disable_progress_bar=False,
+0022:         provide_traceback=None,
+0023:         compare_results=False,
+0024:         timeout=120,
+0025:         straggler_limit=3,
+0026:     ):
+0027:         """
+0028:         Offers isolation between the tasks (dspy.settings) irrespective of whether num_threads == 1 or > 1.
+0029:         Handles also straggler timeouts.
+0030:         """
+0031:         from dspy.dsp.utils.settings import settings
+0032: 
+0033:         self.num_threads = num_threads or settings.num_threads
+0034:         self.max_errors = settings.max_errors if max_errors is None else max_errors
+0035:         self.disable_progress_bar = disable_progress_bar
+0036:         self.provide_traceback = provide_traceback if provide_traceback is not None else settings.provide_traceback
+0037:         self.compare_results = compare_results
+0038:         self.timeout = timeout
+0039:         self.straggler_limit = straggler_limit
+0040: 
+0041:         self.error_count = 0
+0042:         self.error_lock = threading.Lock()
+0043:         self.cancel_jobs = threading.Event()
+0044:         self.failed_indices = []
+0045:         self.exceptions_map = {}
+0046: 
+0047:     def execute(self, function, data):
+0048:         tqdm.tqdm._instances.clear()
+0049:         wrapped = self._wrap_function(function)
+0050:         if self.num_threads == 1:
+0051:             return self._execute_sequential(wrapped, data)
+0052:         return self._execute_parallel(wrapped, data)
+0053: 
+0054:     def _wrap_function(self, user_function):
+0055:         def safe_func(item):
+0056:             if self.cancel_jobs.is_set():
+0057:                 return None
+0058:             try:
+0059:                 return user_function(item)
+0060:             except Exception as e:
+0061:                 with self.error_lock:
+0062:                     self.error_count += 1
+0063:                     if self.error_count >= self.max_errors:
+0064:                         self.cancel_jobs.set()
+0065:                 if self.provide_traceback:
+0066:                     logger.error(f"Error for {item}: {e}\n{traceback.format_exc()}")
+0067:                 else:
+0068:                     logger.error(f"Error for {item}: {e}. Set `provide_traceback=True` for traceback.")
+0069:                 return e
+0070: 
+0071:         return safe_func
+0072: 
+0073:     def _execute_sequential(self, function, data):
+0074:         """Execute items sequentially on the main thread."""
+0075:         results = [None] * len(data)
+0076: 
+0077:         pbar = tqdm.tqdm(
+0078:             total=len(data),
+0079:             dynamic_ncols=True,
+0080:             disable=self.disable_progress_bar,
+0081:             file=sys.stdout,
+0082:         )
+0083: 
+0084:         try:
+0085:             for idx, item in enumerate(data):
+0086:                 if self.cancel_jobs.is_set():
+0087:                     break
+0088: 
+0089:                 outcome = function(item)
+0090:                 self._process_outcome(results, idx, outcome)
+0091:                 self._report_progress(pbar, results, len(data))
+0092:         except KeyboardInterrupt:
+0093:             self.cancel_jobs.set()
+0094:             logger.warning("SIGINT received. Cancelling.")
+0095:             raise
+0096:         finally:
+0097:             pbar.close()
+0098: 
+0099:         if self.cancel_jobs.is_set():
+0100:             logger.warning("Execution cancelled due to errors or interruption.")
+0101:             raise Exception("Execution cancelled due to errors or interruption.")
+0102: 
+0103:         return results
+0104: 
+0105:     def _execute_parallel(self, function, data):
+0106:         results = [None] * len(data)
+0107:         job_cancelled = "cancelled"
+0108: 
+0109:         # We resubmit at most once per item.
+0110:         start_time_map = {}
+0111:         start_time_lock = threading.Lock()
+0112:         resubmitted = set()
+0113: 
+0114:         # This is the worker function each thread will run.
+0115:         def worker(parent_overrides, submission_id, index, item):
+0116:             if self.cancel_jobs.is_set():
+0117:                 return index, job_cancelled
+0118:             # Record actual start time
+0119:             with start_time_lock:
+0120:                 start_time_map[submission_id] = time.time()
+0121: 
+0122:             # Apply parent's thread-local overrides
+0123:             from dspy.dsp.utils.settings import thread_local_overrides
+0124: 
+0125:             original = thread_local_overrides.get()
+0126:             new_overrides = {**original, **parent_overrides.copy()}
+0127:             if new_overrides.get("usage_tracker"):
+0128:                 # Usage tracker needs to be deep copied across threads so that each thread tracks its own usage
+0129:                 new_overrides["usage_tracker"] = copy.deepcopy(new_overrides["usage_tracker"])
+0130:             token = thread_local_overrides.set(new_overrides)
+0131: 
+0132:             try:
+0133:                 return index, function(item)
+0134:             finally:
+0135:                 thread_local_overrides.reset(token)
+0136: 
+0137:         # Handle Ctrl-C in the main thread
+0138:         @contextlib.contextmanager
+0139:         def interrupt_manager():
+0140:             if threading.current_thread() is threading.main_thread():
+0141:                 orig_handler = signal.getsignal(signal.SIGINT)
+0142: 
+0143:                 def handler(sig, frame):
+0144:                     self.cancel_jobs.set()
+0145:                     logger.warning("SIGINT received. Cancelling.")
+0146:                     orig_handler(sig, frame)
+0147: 
+0148:                 signal.signal(signal.SIGINT, handler)
+0149:                 try:
+0150:                     yield
+0151:                 finally:
+0152:                     signal.signal(signal.SIGINT, orig_handler)
+0153:             else:
+0154:                 yield
+0155: 
+0156:         executor = ThreadPoolExecutor(max_workers=self.num_threads)
+0157:         try:
+0158:             with interrupt_manager():
+0159:                 from dspy.dsp.utils.settings import thread_local_overrides
+0160: 
+0161:                 parent_overrides = thread_local_overrides.get().copy()
+0162: 
+0163:                 futures_map = {}
+0164:                 futures_set = set()
+0165:                 submission_counter = 0
+0166: 
+0167:                 for idx, item in enumerate(data):
+0168:                     f = executor.submit(worker, parent_overrides, submission_counter, idx, item)
+0169:                     futures_map[f] = (submission_counter, idx, item)
+0170:                     futures_set.add(f)
+0171:                     submission_counter += 1
+0172: 
+0173:                 pbar = tqdm.tqdm(
+0174:                     total=len(data),
+0175:                     dynamic_ncols=True,
+0176:                     disable=self.disable_progress_bar,
+0177:                     file=sys.stdout,
+0178:                 )
+0179: 
+0180:                 def all_done():
+0181:                     return all(r is not None for r in results)
+0182: 
+0183:                 while futures_set and not self.cancel_jobs.is_set():
+0184:                     if all_done():
+0185:                         break
+0186:                     done, not_done = wait(futures_set, timeout=1, return_when=FIRST_COMPLETED)
+0187:                     for f in done:
+0188:                         futures_set.remove(f)
+0189:                         try:
+0190:                             index, outcome = f.result()
+0191:                         except Exception:
+0192:                             pass
+0193:                         else:
+0194:                             if outcome != job_cancelled and results[index] is None:
+0195:                                 self._process_outcome(results, index, outcome)
+0196: 
+0197:                             self._report_progress(pbar, results, len(data))
+0198: 
+0199:                     if all_done():
+0200:                         break
+0201: 
+0202:                     # Check stragglers if few remain
+0203:                     if 0 < self.timeout and len(not_done) <= self.straggler_limit:
+0204:                         now = time.time()
+0205:                         for f in list(not_done):
+0206:                             if f not in resubmitted:
+0207:                                 sid, idx, item = futures_map[f]
+0208:                                 with start_time_lock:
+0209:                                     st = start_time_map.get(sid, None)
+0210:                                 if st and (now - st) >= self.timeout:
+0211:                                     resubmitted.add(f)
+0212:                                     nf = executor.submit(
+0213:                                         worker,
+0214:                                         parent_overrides,
+0215:                                         submission_counter,
+0216:                                         idx,
+0217:                                         item,
+0218:                                     )
+0219:                                     futures_map[nf] = (submission_counter, idx, item)
+0220:                                     futures_set.add(nf)
+0221:                                     submission_counter += 1
+0222: 
+0223:                 pbar.close()
+0224: 
+0225:         finally:
+0226:             # Avoid waiting on leftover tasks that no longer matter
+0227:             executor.shutdown(wait=False)
+0228: 
+0229:         if self.cancel_jobs.is_set():
+0230:             logger.warning("Execution cancelled due to errors or interruption.")
+0231:             raise Exception("Execution cancelled due to errors or interruption.")
+0232: 
+0233:         return results
+0234: 
+0235:     def _process_outcome(self, results, idx, outcome):
+0236:         """Store a single outcome and track errors."""
+0237:         if isinstance(outcome, Exception):
+0238:             with self.error_lock:
+0239:                 self.failed_indices.append(idx)
+0240:                 self.exceptions_map[idx] = outcome
+0241:         else:
+0242:             results[idx] = outcome
+0243: 
+0244:     def _report_progress(self, pbar, results, total):
+0245:         """Compute metrics and update the progress bar."""
+0246:         if self.compare_results:
+0247:             vals = [r[-1] for r in results if r is not None]
+0248:             self._update_progress(pbar, sum(vals), len(vals))
+0249:         else:
+0250:             self._update_progress(
+0251:                 pbar,
+0252:                 len([r for r in results if r is not None]),
+0253:                 total,
+0254:             )
+0255: 
+0256:     def _update_progress(self, pbar, nresults, ntotal):
+0257:         if self.compare_results:
+0258:             pct = round(100 * nresults / ntotal, 1) if ntotal else 0
+0259:             pbar.set_description(f"Average Metric: {nresults:.2f} / {ntotal} ({pct}%)")
+0260:         else:
+0261:             pbar.set_description(f"Processed {nresults} / {ntotal} examples")
+0262:         pbar.update()
+
+Return JSON that matches the schema exactly.

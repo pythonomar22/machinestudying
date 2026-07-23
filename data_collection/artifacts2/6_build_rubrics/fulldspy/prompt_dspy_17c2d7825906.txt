@@ -1,0 +1,1129 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_17c2d7825906`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I have several async tools and I need proof that calling them through DSPy from async code actually overlaps instead of queueing them one by one. This matters because a tool-heavy evaluation run becomes unusable if the calls serialize.
+
+Give me a complete, runnable Python program that stays offline, wraps one async tool with `dspy.Tool`, fires several async tool invocations with `asyncio.gather`, and prints/asserts both the returned values and a wall-clock bound proving concurrency.`
+- Gold answer:
+```python
+import asyncio
+
+import dspy
+
+
+async def async_echo(x: int, y: str = "hello") -> str:
+    await asyncio.sleep(0.1)
+    return f"{y} {x}"
+
+
+tool = dspy.Tool(async_echo)
+
+
+async def main():
+    start = asyncio.get_event_loop().time()
+    results = await asyncio.gather(*[tool.acall(x=i, y=f"hello{i}") for i in range(5)])
+    elapsed = asyncio.get_event_loop().time() - start
+    print("results:", results)
+    print("elapsed:", round(elapsed, 3))
+    assert results == [f"hello{i} {i}" for i in range(5)]
+    assert elapsed < 0.3
+
+
+asyncio.run(main())
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/adapters/types/tool.py",
+    "symbol": "Tool.acall"
+  },
+  {
+    "file": "tests/adapters/test_tool.py",
+    "symbol": "test_async_concurrent_calls"
+  }
+]
+
+## Full evidence files
+### dspy/adapters/types/tool.py
+0001: import asyncio
+0002: import inspect
+0003: from typing import TYPE_CHECKING, Any, Callable, get_origin, get_type_hints
+0004: 
+0005: import pydantic
+0006: from jsonschema import ValidationError, validate
+0007: from pydantic import BaseModel, TypeAdapter, create_model
+0008: 
+0009: from dspy.adapters.types.base_type import Type
+0010: from dspy.dsp.utils.settings import settings
+0011: from dspy.utils.callback import with_callbacks
+0012: 
+0013: if TYPE_CHECKING:
+0014:     import mcp
+0015:     from langchain.tools import BaseTool
+0016: 
+0017: _TYPE_MAPPING = {"string": str, "integer": int, "number": float, "boolean": bool, "array": list, "object": dict}
+0018: 
+0019: 
+0020: class Tool(Type):
+0021:     """Tool class.
+0022: 
+0023:     This class is used to simplify the creation of tools for tool calling (function calling) in LLMs. Only supports
+0024:     functions for now.
+0025:     """
+0026: 
+0027:     func: Callable
+0028:     name: str | None = None
+0029:     desc: str | None = None
+0030:     args: dict[str, Any] | None = None
+0031:     arg_types: dict[str, Any] | None = None
+0032:     arg_desc: dict[str, str] | None = None
+0033:     has_kwargs: bool = False
+0034: 
+0035:     def __init__(
+0036:         self,
+0037:         func: Callable,
+0038:         name: str | None = None,
+0039:         desc: str | None = None,
+0040:         args: dict[str, Any] | None = None,
+0041:         arg_types: dict[str, Any] | None = None,
+0042:         arg_desc: dict[str, str] | None = None,
+0043:     ):
+0044:         """Initialize the Tool class.
+0045: 
+0046:         Users can choose to specify the `name`, `desc`, `args`, and `arg_types`, or let the `dspy.Tool`
+0047:         automatically infer the values from the function. For values that are specified by the user, automatic inference
+0048:         will not be performed on them.
+0049: 
+0050:         Args:
+0051:             func (Callable): The actual function that is being wrapped by the tool.
+0052:             name (Optional[str], optional): The name of the tool. Defaults to None.
+0053:             desc (Optional[str], optional): The description of the tool. Defaults to None.
+0054:             args (Optional[dict[str, Any]], optional): The args and their schema of the tool, represented as a
+0055:                 dictionary from arg name to arg's json schema. Defaults to None.
+0056:             arg_types (Optional[dict[str, Any]], optional): The argument types of the tool, represented as a dictionary
+0057:                 from arg name to the type of the argument. Defaults to None.
+0058:             arg_desc (Optional[dict[str, str]], optional): Descriptions for each arg, represented as a
+0059:                 dictionary from arg name to description string. Defaults to None.
+0060: 
+0061:         Examples:
+0062: 
+0063:         ```python
+0064:         def foo(x: int, y: str = "hello"):
+0065:             return str(x) + y
+0066: 
+0067:         tool = Tool(foo)
+0068:         print(tool.args)
+0069:         # Expected output: {'x': {'type': 'integer'}, 'y': {'type': 'string', 'default': 'hello'}}
+0070:         ```
+0071:         """
+0072:         super().__init__(func=func, name=name, desc=desc, args=args, arg_types=arg_types, arg_desc=arg_desc)
+0073:         self._parse_function(func, arg_desc)
+0074: 
+0075:     def _parse_function(self, func: Callable, arg_desc: dict[str, str] | None = None):
+0076:         """Helper method that parses a function to extract the name, description, and args.
+0077: 
+0078:         This is a helper function that automatically infers the name, description, and args of the tool from the
+0079:         provided function. In order to make the inference work, the function must have valid type hints.
+0080:         """
+0081:         annotations_func = func if inspect.isfunction(func) or inspect.ismethod(func) else func.__call__
+0082:         name = getattr(func, "__name__", type(func).__name__)
+0083:         desc = getattr(func, "__doc__", None) or getattr(annotations_func, "__doc__", "")
+0084:         args = {}
+0085:         arg_types = {}
+0086: 
+0087:         # Use inspect.signature to get all arg names
+0088:         sig = inspect.signature(annotations_func)
+0089:         # Get available type hints
+0090:         available_hints = get_type_hints(annotations_func)
+0091:         # Build a dictionary of arg name -> type (defaulting to Any when missing)
+0092:         hints = {param_name: available_hints.get(param_name, Any) for param_name in sig.parameters.keys()}
+0093:         default_values = {param_name: sig.parameters[param_name].default for param_name in sig.parameters.keys()}
+0094: 
+0095:         # Process each argument's type to generate its JSON schema.
+0096:         for k, v in hints.items():
+0097:             arg_types[k] = v
+0098:             if k == "return":
+0099:                 continue
+0100:             # Check if the type (or its origin) is a subclass of Pydantic's BaseModel
+0101:             origin = get_origin(v) or v
+0102:             if isinstance(origin, type) and issubclass(origin, BaseModel):
+0103:                 # Get json schema, and replace $ref with the actual schema
+0104:                 v_json_schema = _resolve_json_schema_reference(v.model_json_schema())
+0105:                 args[k] = v_json_schema
+0106:             else:
+0107:                 args[k] = _resolve_json_schema_reference(TypeAdapter(v).json_schema())
+0108:             if default_values[k] is not inspect.Parameter.empty:
+0109:                 args[k]["default"] = default_values[k]
+0110:             if arg_desc and k in arg_desc:
+0111:                 args[k]["description"] = arg_desc[k]
+0112: 
+0113:         self.name = self.name or name
+0114:         self.desc = self.desc or desc
+0115:         self.args = self.args if self.args is not None else args
+0116:         self.arg_types = self.arg_types if self.arg_types is not None else arg_types
+0117:         self.has_kwargs = any(param.kind == param.VAR_KEYWORD for param in sig.parameters.values())
+0118: 
+0119:     def _validate_and_parse_args(self, **kwargs):
+0120:         # Validate the args value comply to the json schema.
+0121:         for k, v in kwargs.items():
+0122:             if k not in self.args:
+0123:                 if self.has_kwargs:
+0124:                     continue
+0125:                 else:
+0126:                     raise ValueError(f"Arg {k} is not in the tool's args.")
+0127:             try:
+0128:                 instance = v.model_dump() if hasattr(v, "model_dump") else v
+0129:                 type_str = self.args[k].get("type")
+0130:                 if type_str is not None and type_str != "Any":
+0131:                     validate(instance=instance, schema=self.args[k])
+0132:             except ValidationError as e:
+0133:                 raise ValueError(f"Arg {k} is invalid: {e.message}")
+0134: 
+0135:         # Parse the args to the correct type.
+0136:         parsed_kwargs = {}
+0137:         for k, v in kwargs.items():
+0138:             if k in self.arg_types and self.arg_types[k] != Any:
+0139:                 # Create a pydantic model wrapper with a dummy field `value` to parse the arg to the correct type.
+0140:                 # This is specifically useful for handling nested Pydantic models like `list[list[MyPydanticModel]]`
+0141:                 pydantic_wrapper = create_model("Wrapper", value=(self.arg_types[k], ...))
+0142:                 parsed = pydantic_wrapper.model_validate({"value": v})
+0143:                 parsed_kwargs[k] = parsed.value
+0144:             else:
+0145:                 parsed_kwargs[k] = v
+0146:         return parsed_kwargs
+0147: 
+0148:     def format(self):
+0149:         return str(self)
+0150: 
+0151:     def format_as_litellm_function_call(self):
+0152:         return {
+0153:             "type": "function",
+0154:             "function": {
+0155:                 "name": self.name,
+0156:                 "description": self.desc,
+0157:                 "parameters": {
+0158:                     "type": "object",
+0159:                     "properties": self.args,
+0160:                     "required": list(self.args.keys()),
+0161:                 },
+0162:             },
+0163:         }
+0164: 
+0165:     def _run_async_in_sync(self, coroutine):
+0166:         try:
+0167:             loop = asyncio.get_running_loop()
+0168:         except RuntimeError:
+0169:             # Run the coroutine outside of "except" block to avoid propagation
+0170:             loop = None
+0171: 
+0172:         if loop is None:
+0173:             return asyncio.run(coroutine)
+0174:         return loop.run_until_complete(coroutine)
+0175: 
+0176:     @with_callbacks
+0177:     def __call__(self, **kwargs):
+0178:         parsed_kwargs = self._validate_and_parse_args(**kwargs)
+0179:         result = self.func(**parsed_kwargs)
+0180:         if asyncio.iscoroutine(result):
+0181:             if settings.allow_tool_async_sync_conversion:
+0182:                 return self._run_async_in_sync(result)
+0183:             else:
+0184:                 raise ValueError(
+0185:                     "You are calling `__call__` on an async tool, please use `acall` instead or enable "
+0186:                     "async-to-sync conversion with `dspy.configure(allow_tool_async_sync_conversion=True)` "
+0187:                     "or `with dspy.context(allow_tool_async_sync_conversion=True):`."
+0188:                 )
+0189:         return result
+0190: 
+0191:     @with_callbacks
+0192:     async def acall(self, **kwargs):
+0193:         parsed_kwargs = self._validate_and_parse_args(**kwargs)
+0194:         result = self.func(**parsed_kwargs)
+0195:         if asyncio.iscoroutine(result):
+0196:             return await result
+0197:         else:
+0198:             # We should allow calling a sync tool in the async path.
+0199:             return result
+0200: 
+0201:     @classmethod
+0202:     def from_mcp_tool(cls, session: "mcp.ClientSession", tool: "mcp.types.Tool") -> "Tool":
+0203:         """
+0204:         Build a DSPy tool from an MCP tool and a ClientSession.
+0205: 
+0206:         Args:
+0207:             session: The MCP session to use.
+0208:             tool: The MCP tool to convert.
+0209: 
+0210:         Returns:
+0211:             A Tool object.
+0212:         """
+0213:         from dspy.utils.mcp import convert_mcp_tool
+0214: 
+0215:         return convert_mcp_tool(session, tool)
+0216: 
+0217:     @classmethod
+0218:     def from_langchain(cls, tool: "BaseTool") -> "Tool":
+0219:         """
+0220:         Build a DSPy tool from a LangChain tool.
+0221: 
+0222:         Args:
+0223:             tool: The LangChain tool to convert.
+0224: 
+0225:         Returns:
+0226:             A Tool object.
+0227: 
+0228:         Examples:
+0229: 
+0230:         ```python
+0231:         import asyncio
+0232:         import dspy
+0233:         from langchain.tools import tool as lc_tool
+0234: 
+0235:         @lc_tool
+0236:         def add(x: int, y: int):
+0237:             "Add two numbers together."
+0238:             return x + y
+0239: 
+0240:         dspy_tool = dspy.Tool.from_langchain(add)
+0241: 
+0242:         async def run_tool():
+0243:             return await dspy_tool.acall(x=1, y=2)
+0244: 
+0245:         print(asyncio.run(run_tool()))
+0246:         # 3
+0247:         ```
+0248:         """
+0249:         from dspy.utils.langchain_tool import convert_langchain_tool
+0250: 
+0251:         return convert_langchain_tool(tool)
+0252: 
+0253:     def __repr__(self):
+0254:         return f"Tool(name={self.name}, desc={self.desc}, args={self.args})"
+0255: 
+0256:     def __str__(self):
+0257:         desc = f", whose description is <desc>{self.desc}</desc>.".replace("\n", "  ") if self.desc else "."
+0258:         arg_desc = f"It takes arguments {self.args}."
+0259:         return f"{self.name}{desc} {arg_desc}"
+0260: 
+0261: 
+0262: class ToolCalls(Type):
+0263:     class ToolCall(Type):
+0264:         name: str
+0265:         args: dict[str, Any]
+0266: 
+0267:         def format(self):
+0268:             return {
+0269:                 "type": "function",
+0270:                 "function": {
+0271:                     "name": self.name,
+0272:                     "arguments": self.args,
+0273:                 },
+0274:             }
+0275: 
+0276:         def execute(self, functions: dict[str, Any] | list[Tool] | None = None) -> Any:
+0277:             """Execute this individual tool call and return its result.
+0278: 
+0279:             Args:
+0280:                 functions: Functions to search for the tool. Can be:
+0281:                           - Dict mapping tool names to functions: {"tool_name": function}
+0282:                           - List of Tool objects: [Tool(function), ...]
+0283:                           - None: Will search in caller's locals and globals (automatic lookup)
+0284: 
+0285:             Returns:
+0286:                 The result from executing this tool call.
+0287: 
+0288:             Raises:
+0289:                 ValueError: If the tool function cannot be found.
+0290:                 Exception: Any exception raised by the tool function.
+0291:             """
+0292:             func = None
+0293: 
+0294:             if functions is None:
+0295:                 # Automatic lookup in caller's globals and locals
+0296:                 frame = inspect.currentframe().f_back
+0297:                 try:
+0298:                     caller_globals = frame.f_globals
+0299:                     caller_locals = frame.f_locals
+0300:                     func = caller_locals.get(self.name) or caller_globals.get(self.name)
+0301:                 finally:
+0302:                     del frame
+0303: 
+0304:             elif isinstance(functions, dict):
+0305:                 func = functions.get(self.name)
+0306:             elif isinstance(functions, list):
+0307:                 for tool in functions:
+0308:                     if tool.name == self.name:
+0309:                         func = tool.func
+0310:                         break
+0311: 
+0312:             if func is None:
+0313:                 raise ValueError(f"Tool function '{self.name}' not found. Please pass the tool functions to the `execute` method.")
+0314: 
+0315:             try:
+0316:                 args = self.args or {}
+0317:                 return func(**args)
+0318:             except Exception as e:
+0319:                 raise RuntimeError(f"Error executing tool '{self.name}': {e}") from e
+0320: 
+0321:     tool_calls: list[ToolCall]
+0322: 
+0323:     @classmethod
+0324:     def from_dict_list(cls, tool_calls_dicts: list[dict[str, Any]]) -> "ToolCalls":
+0325:         """Convert a list of dictionaries to a ToolCalls instance.
+0326: 
+0327:         Args:
+0328:             dict_list: A list of dictionaries, where each dictionary should have 'name' and 'args' keys.
+0329: 
+0330:         Returns:
+0331:             A ToolCalls instance.
+0332: 
+0333:         Examples:
+0334: 
+0335:             ```python
+0336:             tool_calls_dict = [
+0337:                 {"name": "search", "args": {"query": "hello"}},
+0338:                 {"name": "translate", "args": {"text": "world"}}
+0339:             ]
+0340:             tool_calls = ToolCalls.from_dict_list(tool_calls_dict)
+0341:             ```
+0342:         """
+0343:         tool_calls = [cls.ToolCall(**item) for item in tool_calls_dicts]
+0344:         return cls(tool_calls=tool_calls)
+0345: 
+0346:     @classmethod
+0347:     def description(cls) -> str:
+0348:         return (
+0349:             "Tool calls information, including the name of the tools and the arguments to be passed to it. "
+0350:             "Arguments must be provided in JSON format."
+0351:         )
+0352: 
+0353:     def format(self) -> list[dict[str, Any]]:
+0354:         # The tool_call field is compatible with OpenAI's tool calls schema.
+0355:         return {
+0356:             "tool_calls": [tool_call.format() for tool_call in self.tool_calls],
+0357:         }
+0358: 
+0359:     @pydantic.model_validator(mode="before")
+0360:     @classmethod
+0361:     def validate_input(cls, data: Any):
+0362:         if isinstance(data, cls):
+0363:             return data
+0364: 
+0365:         # Handle case where data is a list of dicts with "name" and "args" keys
+0366:         if isinstance(data, list) and all(
+0367:             isinstance(item, dict) and "name" in item and "args" in item for item in data
+0368:         ):
+0369:             return {"tool_calls": [cls.ToolCall(**item) for item in data]}
+0370:         # Handle case where data is a dict
+0371:         elif isinstance(data, dict):
+0372:             if "tool_calls" in data:
+0373:                 # Handle case where data is a dict with "tool_calls" key
+0374:                 tool_calls_data = data["tool_calls"]
+0375:                 if isinstance(tool_calls_data, list):
+0376:                     return {
+0377:                         "tool_calls": [
+0378:                             cls.ToolCall(**item) if isinstance(item, dict) else item for item in tool_calls_data
+0379:                         ]
+0380:                     }
+0381:             elif "name" in data and "args" in data:
+0382:                 # Handle case where data is a dict with "name" and "args" keys
+0383:                 return {"tool_calls": [cls.ToolCall(**data)]}
+0384: 
+0385:         raise ValueError(f"Received invalid value for `dspy.ToolCalls`: {data}")
+0386: 
+0387: 
+0388: def _resolve_json_schema_reference(schema: dict) -> dict:
+0389:     """Recursively resolve json model schema, expanding all references."""
+0390: 
+0391:     # If there are no definitions to resolve, return the main schema
+0392:     if "$defs" not in schema and "definitions" not in schema:
+0393:         return schema
+0394: 
+0395:     def resolve_refs(obj: Any) -> Any:
+0396:         if not isinstance(obj, (dict, list)):
+0397:             return obj
+0398:         if isinstance(obj, dict):
+0399:             if "$ref" in obj:
+0400:                 ref_path = obj["$ref"].split("/")[-1]
+0401:                 return resolve_refs(schema["$defs"][ref_path])
+0402:             return {k: resolve_refs(v) for k, v in obj.items()}
+0403: 
+0404:         # Must be a list
+0405:         return [resolve_refs(item) for item in obj]
+0406: 
+0407:     # Resolve all references in the main schema
+0408:     resolved_schema = resolve_refs(schema)
+0409:     # Remove the $defs key as it's no longer needed
+0410:     resolved_schema.pop("$defs", None)
+0411:     return resolved_schema
+0412: 
+0413: 
+0414: def convert_input_schema_to_tool_args(
+0415:     schema: dict[str, Any],
+0416: ) -> tuple[dict[str, Any], dict[str, Type], dict[str, str]]:
+0417:     """Convert an input json schema to tool arguments compatible with DSPy Tool.
+0418: 
+0419:     Args:
+0420:         schema: An input json schema describing the tool's input parameters
+0421: 
+0422:     Returns:
+0423:         A tuple of (args, arg_types, arg_desc) for DSPy Tool definition.
+0424:     """
+0425:     args, arg_types, arg_desc = {}, {}, {}
+0426:     properties = schema.get("properties", None)
+0427:     if properties is None:
+0428:         return args, arg_types, arg_desc
+0429: 
+0430:     required = schema.get("required", [])
+0431: 
+0432:     defs = schema.get("$defs", {})
+0433: 
+0434:     for name, prop in properties.items():
+0435:         if len(defs) > 0:
+0436:             prop = _resolve_json_schema_reference({"$defs": defs, **prop})
+0437:         args[name] = prop
+0438:         arg_types[name] = _TYPE_MAPPING.get(prop.get("type"), Any)
+0439:         arg_desc[name] = prop.get("description", "No description provided.")
+0440:         if name in required:
+0441:             arg_desc[name] += " (Required)"
+0442: 
+0443:     return args, arg_types, arg_desc
+
+### tests/adapters/test_tool.py
+0001: import asyncio
+0002: from typing import Any
+0003: 
+0004: import pytest
+0005: from pydantic import BaseModel
+0006: 
+0007: import dspy
+0008: from dspy.adapters.types.tool import Tool, ToolCalls, convert_input_schema_to_tool_args
+0009: 
+0010: 
+0011: # Test fixtures
+0012: def dummy_function(x: int, y: str = "hello") -> str:
+0013:     """A dummy function for testing.
+0014: 
+0015:     Args:
+0016:         x: An integer parameter
+0017:         y: A string parameter
+0018:     """
+0019:     return f"{y} {x}"
+0020: 
+0021: 
+0022: class DummyModel(BaseModel):
+0023:     field1: str = "hello"
+0024:     field2: int
+0025: 
+0026: 
+0027: def dummy_with_pydantic(model: DummyModel) -> str:
+0028:     """A dummy function that accepts a Pydantic model."""
+0029:     return f"{model.field1} {model.field2}"
+0030: 
+0031: 
+0032: class Address(BaseModel):
+0033:     street: str
+0034:     city: str
+0035:     zip_code: str
+0036:     is_primary: bool = False
+0037: 
+0038: 
+0039: class ContactInfo(BaseModel):
+0040:     email: str
+0041:     phone: str | None = None
+0042:     addresses: list[Address]
+0043: 
+0044: 
+0045: class UserProfile(BaseModel):
+0046:     user_id: int
+0047:     name: str
+0048:     age: int | None = None
+0049:     contact: ContactInfo
+0050:     tags: list[str] = []
+0051: 
+0052: 
+0053: class Note(BaseModel):
+0054:     content: str
+0055:     author: str
+0056: 
+0057: 
+0058: def complex_dummy_function(profile: UserProfile, priority: int, notes: list[Note] | None = None) -> dict[str, Any]:
+0059:     """Process user profile with complex nested structure.
+0060: 
+0061:     Args:
+0062:         profile: User profile containing nested contact and address information
+0063:         priority: Priority level of the processing
+0064:         notes: Optional processing notes
+0065:     """
+0066:     primary_address = next(
+0067:         (addr for addr in profile.contact.addresses if addr.is_primary), profile.contact.addresses[0]
+0068:     )
+0069: 
+0070:     return {
+0071:         "user_id": profile.user_id,
+0072:         "name": profile.name,
+0073:         "priority": priority,
+0074:         "primary_address": primary_address.model_dump(),
+0075:         "notes": notes,
+0076:     }
+0077: 
+0078: 
+0079: async def async_dummy_function(x: int, y: str = "hello") -> str:
+0080:     """An async dummy function for testing.
+0081: 
+0082:     Args:
+0083:         x: An integer parameter
+0084:         y: A string parameter
+0085:     """
+0086:     await asyncio.sleep(0.1)  # Simulate some async work
+0087:     return f"{y} {x}"
+0088: 
+0089: 
+0090: async def async_dummy_with_pydantic(model: DummyModel) -> str:
+0091:     """An async dummy function that accepts a Pydantic model."""
+0092:     await asyncio.sleep(0.1)  # Simulate some async work
+0093:     return f"{model.field1} {model.field2}"
+0094: 
+0095: 
+0096: async def async_complex_dummy_function(
+0097:     profile: UserProfile,
+0098:     priority: int,
+0099:     notes: list[Note] | None = None,
+0100: ) -> dict[str, Any]:
+0101:     """Process user profile with complex nested structure asynchronously.
+0102: 
+0103:     Args:
+0104:         profile: User profile containing nested contact and address information
+0105:         priority: Priority level of the processing
+0106:         notes: Optional processing notes
+0107:     """
+0108:     # Simulate some async processing work
+0109:     await asyncio.sleep(0.1)
+0110: 
+0111:     primary_address = next(
+0112:         (addr for addr in profile.contact.addresses if addr.is_primary), profile.contact.addresses[0]
+0113:     )
+0114: 
+0115:     # Simulate more async work after finding primary address
+0116:     await asyncio.sleep(0.1)
+0117: 
+0118:     return {
+0119:         "user_id": profile.user_id,
+0120:         "name": profile.name,
+0121:         "priority": priority,
+0122:         "primary_address": primary_address.model_dump(),
+0123:         "notes": notes,
+0124:     }
+0125: 
+0126: 
+0127: def test_basic_initialization():
+0128:     tool = Tool(name="test_tool", desc="A test tool", args={"param1": {"type": "string"}}, func=lambda x: x)
+0129:     assert tool.name == "test_tool"
+0130:     assert tool.desc == "A test tool"
+0131:     assert tool.args == {"param1": {"type": "string"}}
+0132:     assert callable(tool.func)
+0133: 
+0134: 
+0135: def test_tool_from_function():
+0136:     tool = Tool(dummy_function)
+0137: 
+0138:     assert tool.name == "dummy_function"
+0139:     assert "A dummy function for testing" in tool.desc
+0140:     assert "x" in tool.args
+0141:     assert "y" in tool.args
+0142:     assert tool.args["x"]["type"] == "integer"
+0143:     assert tool.args["y"]["type"] == "string"
+0144:     assert tool.args["y"]["default"] == "hello"
+0145: 
+0146: 
+0147: def test_tool_from_class():
+0148:     class Foo:
+0149:         def __init__(self, user_id: str):
+0150:             self.user_id = user_id
+0151: 
+0152:         def __call__(self, a: int, b: int) -> int:
+0153:             """Add two numbers."""
+0154:             return a + b
+0155: 
+0156:     tool = Tool(Foo("123"))
+0157:     assert tool.name == "Foo"
+0158:     assert tool.desc == "Add two numbers."
+0159:     assert tool.args == {"a": {"type": "integer"}, "b": {"type": "integer"}}
+0160: 
+0161: 
+0162: def test_tool_from_function_with_pydantic():
+0163:     tool = Tool(dummy_with_pydantic)
+0164: 
+0165:     assert tool.name == "dummy_with_pydantic"
+0166:     assert "model" in tool.args
+0167:     assert tool.args["model"]["type"] == "object"
+0168:     assert "field1" in tool.args["model"]["properties"]
+0169:     assert "field2" in tool.args["model"]["properties"]
+0170:     assert tool.args["model"]["properties"]["field1"]["default"] == "hello"
+0171: 
+0172: 
+0173: def test_tool_from_function_with_pydantic_nesting():
+0174:     tool = Tool(complex_dummy_function)
+0175: 
+0176:     assert tool.name == "complex_dummy_function"
+0177: 
+0178:     assert "profile" in tool.args
+0179:     assert "priority" in tool.args
+0180:     assert "notes" in tool.args
+0181:     assert tool.args["profile"]["type"] == "object"
+0182:     assert tool.args["profile"]["properties"]["user_id"]["type"] == "integer"
+0183:     assert tool.args["profile"]["properties"]["name"]["type"] == "string"
+0184:     assert tool.args["profile"]["properties"]["age"]["anyOf"] == [{"type": "integer"}, {"type": "null"}]
+0185:     assert tool.args["profile"]["properties"]["contact"]["type"] == "object"
+0186:     assert tool.args["profile"]["properties"]["contact"]["properties"]["email"]["type"] == "string"
+0187: 
+0188:     # Reference should be resolved for nested pydantic models
+0189:     assert "$defs" not in str(tool.args["notes"])
+0190:     assert tool.args["notes"]["anyOf"][0]["type"] == "array"
+0191:     assert tool.args["notes"]["anyOf"][0]["items"]["type"] == "object"
+0192:     assert tool.args["notes"]["anyOf"][0]["items"]["properties"]["content"]["type"] == "string"
+0193:     assert tool.args["notes"]["anyOf"][0]["items"]["properties"]["author"]["type"] == "string"
+0194: 
+0195: 
+0196: def test_tool_callable():
+0197:     tool = Tool(dummy_function)
+0198:     result = tool(x=42, y="hello")
+0199:     assert result == "hello 42"
+0200: 
+0201: 
+0202: def test_tool_with_pydantic_callable():
+0203:     tool = Tool(dummy_with_pydantic)
+0204:     model = DummyModel(field1="test", field2=123)
+0205:     result = tool(model=model)
+0206:     assert result == "test 123"
+0207: 
+0208: 
+0209: def test_invalid_function_call():
+0210:     tool = Tool(dummy_function)
+0211:     with pytest.raises(ValueError):
+0212:         tool(x="not an integer", y="hello")
+0213: 
+0214: 
+0215: def test_parameter_desc():
+0216:     tool = Tool(dummy_function, arg_desc={"x": "The x parameter"})
+0217:     assert tool.args["x"]["description"] == "The x parameter"
+0218: 
+0219: 
+0220: def test_tool_with_default_args_without_type_hints():
+0221:     def foo(x=100):
+0222:         return x
+0223: 
+0224:     tool = Tool(foo)
+0225:     assert tool.args["x"]["default"] == 100
+0226:     assert not hasattr(tool.args["x"], "type")
+0227: 
+0228: 
+0229: def test_tool_call_parses_args():
+0230:     tool = Tool(dummy_with_pydantic)
+0231: 
+0232:     args = {
+0233:         "model": {
+0234:             "field1": "hello",
+0235:             "field2": 123,
+0236:         }
+0237:     }
+0238: 
+0239:     result = tool(**args)
+0240:     assert result == "hello 123"
+0241: 
+0242: 
+0243: def test_tool_call_parses_nested_list_of_pydantic_model():
+0244:     def dummy_function(x: list[list[DummyModel]]):
+0245:         return x
+0246: 
+0247:     tool = Tool(dummy_function)
+0248:     args = {
+0249:         "x": [
+0250:             [
+0251:                 {
+0252:                     "field1": "hello",
+0253:                     "field2": 123,
+0254:                 }
+0255:             ]
+0256:         ]
+0257:     }
+0258: 
+0259:     result = tool(**args)
+0260:     assert result == [[DummyModel(field1="hello", field2=123)]]
+0261: 
+0262: 
+0263: def test_tool_call_kwarg():
+0264:     def fn(x: int, **kwargs):
+0265:         return kwargs
+0266: 
+0267:     tool = Tool(fn)
+0268: 
+0269:     assert tool(x=1, y=2, z=3) == {"y": 2, "z": 3}
+0270: 
+0271: 
+0272: def test_tool_str():
+0273:     def add(x: int, y: int = 0) -> int:
+0274:         """Add two integers."""
+0275:         return x + y
+0276: 
+0277:     tool = Tool(add)
+0278:     assert (
+0279:         str(tool)
+0280:         == "add, whose description is <desc>Add two integers.</desc>. It takes arguments {'x': {'type': 'integer'}, 'y': {'type': 'integer', 'default': 0}}."
+0281:     )
+0282: 
+0283: 
+0284: @pytest.mark.asyncio
+0285: async def test_async_tool_from_function():
+0286:     tool = Tool(async_dummy_function)
+0287: 
+0288:     assert tool.name == "async_dummy_function"
+0289:     assert "An async dummy function for testing" in tool.desc
+0290:     assert "x" in tool.args
+0291:     assert "y" in tool.args
+0292:     assert tool.args["x"]["type"] == "integer"
+0293:     assert tool.args["y"]["type"] == "string"
+0294:     assert tool.args["y"]["default"] == "hello"
+0295: 
+0296:     # Test async call
+0297:     result = await tool.acall(x=42, y="hello")
+0298:     assert result == "hello 42"
+0299: 
+0300: 
+0301: @pytest.mark.asyncio
+0302: async def test_async_tool_with_pydantic():
+0303:     tool = Tool(async_dummy_with_pydantic)
+0304: 
+0305:     assert tool.name == "async_dummy_with_pydantic"
+0306:     assert "model" in tool.args
+0307:     assert tool.args["model"]["type"] == "object"
+0308:     assert "field1" in tool.args["model"]["properties"]
+0309:     assert "field2" in tool.args["model"]["properties"]
+0310: 
+0311:     # Test async call with pydantic model
+0312:     model = DummyModel(field1="test", field2=123)
+0313:     result = await tool.acall(model=model)
+0314:     assert result == "test 123"
+0315: 
+0316:     # Test async call with dict
+0317:     result = await tool.acall(model={"field1": "test", "field2": 123})
+0318:     assert result == "test 123"
+0319: 
+0320: 
+0321: @pytest.mark.asyncio
+0322: async def test_async_tool_with_complex_pydantic():
+0323:     tool = Tool(async_complex_dummy_function)
+0324: 
+0325:     profile = UserProfile(
+0326:         user_id=1,
+0327:         name="Test User",
+0328:         contact=ContactInfo(
+0329:             email="test@example.com",
+0330:             addresses=[
+0331:                 Address(street="123 Main St", city="Test City", zip_code="12345", is_primary=True),
+0332:                 Address(street="456 Side St", city="Test City", zip_code="12345"),
+0333:             ],
+0334:         ),
+0335:     )
+0336: 
+0337:     result = await tool.acall(profile=profile, priority=1, notes=[Note(content="Test note", author="Test author")])
+0338:     assert result["user_id"] == 1
+0339:     assert result["name"] == "Test User"
+0340:     assert result["priority"] == 1
+0341:     assert result["notes"] == [Note(content="Test note", author="Test author")]
+0342:     assert result["primary_address"]["street"] == "123 Main St"
+0343: 
+0344: 
+0345: @pytest.mark.asyncio
+0346: async def test_async_tool_invalid_call():
+0347:     tool = Tool(async_dummy_function)
+0348:     with pytest.raises(ValueError):
+0349:         await tool.acall(x="not an integer", y="hello")
+0350: 
+0351: 
+0352: @pytest.mark.asyncio
+0353: async def test_async_tool_with_kwargs():
+0354:     async def fn(x: int, **kwargs):
+0355:         return kwargs
+0356: 
+0357:     tool = Tool(fn)
+0358: 
+0359:     result = await tool.acall(x=1, y=2, z=3)
+0360:     assert result == {"y": 2, "z": 3}
+0361: 
+0362: 
+0363: @pytest.mark.asyncio
+0364: async def test_async_concurrent_calls():
+0365:     """Test that multiple async tools can run concurrently."""
+0366:     tool = Tool(async_dummy_function)
+0367: 
+0368:     # Create multiple concurrent calls
+0369:     tasks = [tool.acall(x=i, y=f"hello{i}") for i in range(5)]
+0370: 
+0371:     # Run them concurrently and measure time
+0372:     start_time = asyncio.get_event_loop().time()
+0373:     results = await asyncio.gather(*tasks)
+0374:     end_time = asyncio.get_event_loop().time()
+0375: 
+0376:     # Verify results, `asyncio.gather` returns results in the order of the tasks
+0377:     assert results == [f"hello{i} {i}" for i in range(5)]
+0378: 
+0379:     # Check that it ran concurrently (should take ~0.1s, not ~0.5s)
+0380:     # We use 0.3s as threshold to account for some overhead
+0381:     assert end_time - start_time < 0.3
+0382: 
+0383: 
+0384: @pytest.mark.filterwarnings("ignore::RuntimeWarning")
+0385: def test_async_tool_call_in_sync_mode():
+0386:     tool = Tool(async_dummy_function)
+0387:     with dspy.context(allow_tool_async_sync_conversion=False):
+0388:         with pytest.raises(ValueError, match=r".*acall.*allow_tool_async_sync_conversion.*"):
+0389:             result = tool(x=1, y="hello")
+0390: 
+0391:     with dspy.context(allow_tool_async_sync_conversion=True):
+0392:         result = tool(x=1, y="hello")
+0393:         assert result == "hello 1"
+0394: 
+0395: 
+0396: TOOL_CALL_TEST_CASES = [
+0397:     ([], {"tool_calls": []}),
+0398:     (
+0399:         [{"name": "search", "args": {"query": "hello"}}],
+0400:         {
+0401:             "tool_calls": [{"type": "function", "function": {"name": "search", "arguments": {"query": "hello"}}}],
+0402:         },
+0403:     ),
+0404:     (
+0405:         [
+0406:             {"name": "search", "args": {"query": "hello"}},
+0407:             {"name": "translate", "args": {"text": "world", "lang": "fr"}},
+0408:         ],
+0409:         {
+0410:             "tool_calls": [
+0411:                 {"type": "function", "function": {"name": "search", "arguments": {"query": "hello"}}},
+0412:                 {
+0413:                     "type": "function",
+0414:                     "function": {"name": "translate", "arguments": {"text": "world", "lang": "fr"}},
+0415:                 },
+0416:             ],
+0417:         },
+0418:     ),
+0419:     (
+0420:         [{"name": "get_time", "args": {}}],
+0421:         {
+0422:             "tool_calls": [{"type": "function", "function": {"name": "get_time", "arguments": {}}}],
+0423:         },
+0424:     ),
+0425: ]
+0426: 
+0427: 
+0428: @pytest.mark.parametrize("tool_calls_data,expected", TOOL_CALL_TEST_CASES)
+0429: def test_tool_calls_format_basic(tool_calls_data, expected):
+0430:     """Test ToolCalls.format with various basic scenarios."""
+0431:     tool_calls_list = [ToolCalls.ToolCall(**data) for data in tool_calls_data]
+0432:     tool_calls = ToolCalls(tool_calls=tool_calls_list)
+0433:     result = tool_calls.format()
+0434: 
+0435:     assert result == expected
+0436: 
+0437: 
+0438: def test_tool_calls_format_from_dict_list():
+0439:     """Test format works with ToolCalls created from from_dict_list."""
+0440:     tool_calls_dicts = [
+0441:         {"name": "search", "args": {"query": "hello"}},
+0442:         {"name": "translate", "args": {"text": "world", "lang": "fr"}},
+0443:     ]
+0444: 
+0445:     tool_calls = ToolCalls.from_dict_list(tool_calls_dicts)
+0446:     result = tool_calls.format()
+0447: 
+0448:     assert len(result["tool_calls"]) == 2
+0449:     assert result["tool_calls"][0]["function"]["name"] == "search"
+0450:     assert result["tool_calls"][1]["function"]["name"] == "translate"
+0451: 
+0452: 
+0453: def test_toolcalls_vague_match():
+0454:     """
+0455:     Test that ToolCalls can parse the data with slightly off format:
+0456: 
+0457:     - a single dict with "name" and "args"
+0458:     - a list of dicts with "name" and "args"
+0459:     - invalid input (should raise ValueError)
+0460:     """
+0461:     # Single dict with "name" and "args" should parse as one ToolCall
+0462:     data_single = {"name": "search", "args": {"query": "hello"}}
+0463:     tc = ToolCalls.model_validate(data_single)
+0464:     assert isinstance(tc, ToolCalls)
+0465:     assert len(tc.tool_calls) == 1
+0466:     assert tc.tool_calls[0].name == "search"
+0467:     assert tc.tool_calls[0].args == {"query": "hello"}
+0468: 
+0469:     # List of dicts with "name" and "args" should parse as multiple ToolCalls
+0470:     data_list = [
+0471:         {"name": "search", "args": {"query": "hello"}},
+0472:         {"name": "translate", "args": {"text": "world", "lang": "fr"}},
+0473:     ]
+0474:     tc = ToolCalls.model_validate(data_list)
+0475:     assert isinstance(tc, ToolCalls)
+0476:     assert len(tc.tool_calls) == 2
+0477:     assert tc.tool_calls[0].name == "search"
+0478:     assert tc.tool_calls[1].name == "translate"
+0479: 
+0480:     # Dict with "tool_calls" key containing a list of dicts
+0481:     data_tool_calls = {
+0482:         "tool_calls": [
+0483:             {"name": "search", "args": {"query": "hello"}},
+0484:             {"name": "get_time", "args": {}},
+0485:         ]
+0486:     }
+0487:     tc = ToolCalls.model_validate(data_tool_calls)
+0488:     assert isinstance(tc, ToolCalls)
+0489:     assert len(tc.tool_calls) == 2
+0490:     assert tc.tool_calls[0].name == "search"
+0491:     assert tc.tool_calls[1].name == "get_time"
+0492: 
+0493:     # Invalid input should raise ValueError
+0494:     with pytest.raises(ValueError):
+0495:         ToolCalls.model_validate({"foo": "bar"})
+0496:     with pytest.raises(ValueError):
+0497:         ToolCalls.model_validate([{"foo": "bar"}])
+0498: 
+0499: 
+0500: def test_tool_convert_input_schema_to_tool_args_no_input_params():
+0501:     args, arg_types, arg_desc = convert_input_schema_to_tool_args(schema={"properties": {}})
+0502:     assert args == {}
+0503:     assert arg_types == {}
+0504:     assert arg_desc == {}
+0505: 
+0506: 
+0507: def test_tool_convert_input_schema_to_tool_args_lang_chain():
+0508:     # Example from langchain docs:
+0509:     # https://web.archive.org/web/20250723101359/https://api.python.langchain.com/en/latest/tools/langchain_core.tools.tool.html
+0510:     args, arg_types, arg_desc = convert_input_schema_to_tool_args(
+0511:         schema={
+0512:             "title": "fooSchema",
+0513:             "description": "The foo.",
+0514:             "type": "object",
+0515:             "properties": {
+0516:                 "bar": {
+0517:                     "title": "Bar",
+0518:                     "description": "The bar.",
+0519:                     "type": "string",
+0520:                 },
+0521:                 "baz": {
+0522:                     "title": "Baz",
+0523:                     "type": "integer",
+0524:                 },
+0525:             },
+0526:             "required": [
+0527:                 "baz",
+0528:             ],
+0529:         }
+0530:     )
+0531:     assert args == {
+0532:         "bar": {"title": "Bar", "description": "The bar.", "type": "string"},
+0533:         "baz": {"title": "Baz", "type": "integer"},
+0534:     }
+0535:     assert arg_types == {
+0536:         "bar": str,
+0537:         "baz": int,
+0538:     }
+0539:     assert arg_desc == {
+0540:         "bar": "The bar.",
+0541:         "baz": "No description provided. (Required)",
+0542:     }
+0543: 
+0544: 
+0545: 
+0546: 
+0547: def test_tool_call_execute():
+0548:     def get_weather(city: str) -> str:
+0549:         return f"The weather in {city} is sunny"
+0550: 
+0551:     def add_numbers(a: int, b: int) -> int:
+0552:         return a + b
+0553: 
+0554:     tools = [
+0555:         dspy.Tool(get_weather),
+0556:         dspy.Tool(add_numbers)
+0557:     ]
+0558: 
+0559:     tool_call = dspy.ToolCalls.ToolCall(name="get_weather", args={"city": "Berlin"})
+0560:     result = tool_call.execute(functions=tools)
+0561:     assert result == "The weather in Berlin is sunny"
+0562: 
+0563:     # Test individual tool call with function dict
+0564:     tool_call2 = dspy.ToolCalls.ToolCall(name="add_numbers", args={"a": 7, "b": 13})
+0565:     result2 = tool_call2.execute(functions={"add_numbers": add_numbers})
+0566:     assert result2 == 20
+0567: 
+0568:     # Test individual tool call with no arguments
+0569:     def get_pi():
+0570:         return 3.14159
+0571: 
+0572:     tool_call3 = dspy.ToolCalls.ToolCall(name="get_pi", args={})
+0573:     result3 = tool_call3.execute(functions={"get_pi": get_pi})
+0574:     assert result3 == 3.14159
+0575: 
+0576:     # Test error case
+0577:     tool_call4 = dspy.ToolCalls.ToolCall(name="nonexistent", args={})
+0578:     try:
+0579:         tool_call4.execute(functions=tools)
+0580:         assert False, "Should have raised ValueError"
+0581:     except ValueError as e:
+0582:         assert "not found" in str(e)
+0583: 
+0584: 
+0585: def test_tool_call_execute_with_local_functions():
+0586:     def main():
+0587:         def local_add(a: int, b: int) -> int:
+0588:             return a + b
+0589: 
+0590:         def local_multiply(x: int, y: int) -> int:
+0591:             return x * y
+0592: 
+0593:         # Test individual execution with local function
+0594:         tool_call1 = dspy.ToolCalls.ToolCall(name="local_add", args={"a": 10, "b": 15})
+0595:         result1 = tool_call1.execute()  # Should find local function automatically
+0596:         assert result1 == 25
+0597: 
+0598:         tool_call2 = dspy.ToolCalls.ToolCall(name="local_multiply", args={"x": 4, "y": 7})
+0599:         result2 = tool_call2.execute()  # Should find local function automatically
+0600:         assert result2 == 28
+0601: 
+0602:         # Test locals take precedence over globals
+0603:         try:
+0604:             globals()["local_add"] = lambda a, b: a + b + 1000
+0605:             precedence_call = dspy.ToolCalls.ToolCall(name="local_add", args={"a": 1, "b": 2})
+0606:             result = precedence_call.execute()
+0607:             assert result == 3  # Should use local function (1+2=3), not global (1+2+1000=1003)
+0608:         finally:
+0609:             globals().pop("local_add", None)
+0610: 
+0611:     main()
+
+Return JSON that matches the schema exactly.

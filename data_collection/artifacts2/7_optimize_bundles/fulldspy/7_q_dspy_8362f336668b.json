@@ -1,0 +1,142 @@
+{
+ "id": "dspy_8362f336668b",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "My registered Databricks model name contains dots, and I can't tell whether DSPy creates a fresh serving endpoint or updates an existing one. I also have both chat and completion fine-tuned models, so I need to see which readiness probe DSPy sends after provisioning.\n\nGive me a complete, runnable Python program that patches the Databricks deployment path offline, runs one existing-endpoint case and one create-new case, and prints/asserts the sanitized endpoint name, whether DSPy used PUT or POST, and whether it probed with chat or completion requests.",
+ "gold_answer": "```python\nfrom types import SimpleNamespace\nfrom unittest import mock\n\nfrom dspy.clients.databricks import DatabricksProvider\nfrom dspy.clients.utils_finetune import TrainDataFormat\n\nclass FakeResponse:\n    def __init__(self, json_data, status_code):\n        self._json_data = json_data\n        self.status_code = status_code\n\n    def json(self):\n        return self._json_data\n\nclass ModelVersions:\n    def list(self, model):\n        return iter([SimpleNamespace(version='7')])\n\ndef make_client():\n    return SimpleNamespace(\n        chat=SimpleNamespace(completions=SimpleNamespace(create=mock.Mock(return_value=object()))),\n        completions=SimpleNamespace(create=mock.Mock(return_value=object())),\n    )\n\nworkspace = SimpleNamespace(\n    config=SimpleNamespace(host='https://workspace.example', token='workspace-token'),\n    model_versions=ModelVersions(),\n)\n\nclient_existing = make_client()\nwith mock.patch('dspy.clients.databricks._get_workspace_client', return_value=workspace), \\\n     mock.patch('requests.get', side_effect=[\n         FakeResponse({'optimizable': True, 'throughput_chunk_size': 8}, 200),\n         FakeResponse({}, 200),\n     ]), \\\n     mock.patch('requests.put', return_value=FakeResponse({}, 200)) as put_req, \\\n     mock.patch('requests.post', return_value=FakeResponse({}, 200)) as post_req_existing, \\\n     mock.patch('openai.OpenAI', return_value=client_existing):\n    DatabricksProvider.deploy_finetuned_model('main.schema.model', data_format=TrainDataFormat.CHAT, deploy_timeout=60)\n    existing_name = put_req.call_args.kwargs['json']['served_entities'][0]['name']\n    assert not post_req_existing.called\n    assert client_existing.chat.completions.create.called\n\nclient_new = make_client()\nwith mock.patch('dspy.clients.databricks._get_workspace_client', return_value=workspace), \\\n     mock.patch('requests.get', side_effect=[\n         FakeResponse({'optimizable': True, 'throughput_chunk_size': 8}, 200),\n         FakeResponse({}, 404),\n     ]), \\\n     mock.patch('requests.put', return_value=FakeResponse({}, 200)) as put_req_new, \\\n     mock.patch('requests.post', return_value=FakeResponse({}, 200)) as post_req_new, \\\n     mock.patch('openai.OpenAI', return_value=client_new):\n    DatabricksProvider.deploy_finetuned_model('main.schema.model', data_format=TrainDataFormat.COMPLETION, deploy_timeout=60)\n    new_name = post_req_new.call_args.kwargs['json']['name']\n    assert not put_req_new.called\n    assert client_new.completions.create.called\n\nprint(existing_name, new_name)\nprint('used_put', True, 'used_post', True)\nassert existing_name == 'main_schema_model'\nassert new_name == 'main_schema_model'\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer uses a dotted registered model name and verifies that DSPy sanitizes the serving-endpoint name by replacing every `.` with `_`, so both branches produce `main_schema_model` from `main.schema.model`.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The existing-endpoint scenario is driven by an endpoint lookup that returns status code 200, and the answer verifies that DSPy updates the endpoint with `requests.put` to the `/serving-endpoints/{model_name}/config` path, reading the sanitized name from `json['served_entities'][0]['name']` and confirming no create `POST` was used.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The create-new scenario is driven by an endpoint lookup that returns a non-200 status such as 404, and the answer verifies that DSPy creates the endpoint with `requests.post` to `/serving-endpoints`, reading the sanitized name from the top-level `json['name']` field and confirming no update `PUT` was used.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer proves that readiness probing depends on `data_format`: `TrainDataFormat.CHAT` issues `client.chat.completions.create(...)` with a user message, while `TrainDataFormat.COMPLETION` issues `client.completions.create(...)` with a prompt.",
+   "span_ids": [
+    "s6",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The offline harness supplies a fake workspace client whose `model_versions.list(model)` yields a version and whose `config` provides `host` and `token`, matching the values `deploy_finetuned_model` consumes before any HTTP or OpenAI calls.",
+   "span_ids": [
+    "s1",
+    "s8"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 5,
+   "statement": "The mocked `requests.get` sequence includes a first response for model-optimization info with `optimizable=True` and `throughput_chunk_size`, followed by the endpoint-existence response, because deployment checks optimization eligibility before choosing update versus create.",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/databricks.py",
+   "start_line": 58,
+   "end_line": 63,
+   "excerpt": "0058:         workspace_client = _get_workspace_client()\n0059:         model_version = next(workspace_client.model_versions.list(model)).version\n0060: \n0061:         # Allow users to override the host and token. This is useful on Databricks hosted runtime.\n0062:         databricks_host = databricks_host or workspace_client.config.host\n0063:         databricks_token = databricks_token or workspace_client.config.token"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/databricks.py",
+   "start_line": 67,
+   "end_line": 75,
+   "excerpt": "0067:         optimizable_info = requests.get(\n0068:             url=f\"{databricks_host}/api/2.0/serving-endpoints/get-model-optimization-info/{model}/{model_version}\",\n0069:             headers=headers,\n0070:         ).json()\n0071: \n0072:         if \"optimizable\" not in optimizable_info or not optimizable_info[\"optimizable\"]:\n0073:             raise ValueError(f\"Model is not eligible for provisioned throughput: {optimizable_info}\")\n0074: \n0075:         chunk_size = optimizable_info[\"throughput_chunk_size\"]"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/databricks.py",
+   "start_line": 83,
+   "end_line": 85,
+   "excerpt": "0083:         # Databricks serving endpoint names cannot contain \".\".\n0084:         model_name = model.replace(\".\", \"_\")\n0085: "
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/databricks.py",
+   "start_line": 86,
+   "end_line": 109,
+   "excerpt": "0086:         get_endpoint_response = requests.get(\n0087:             url=f\"{databricks_host}/api/2.0/serving-endpoints/{model_name}\", json={\"name\": model_name}, headers=headers\n0088:         )\n0089: \n0090:         if get_endpoint_response.status_code == 200:\n0091:             logger.info(f\"Serving endpoint {model_name} already exists, updating it instead of creating a new one.\")\n0092:             # The serving endpoint already exists, we will update it instead of creating a new one.\n0093:             data = {\n0094:                 \"served_entities\": [\n0095:                     {\n0096:                         \"name\": model_name,\n0097:                         \"entity_name\": model,\n0098:                         \"entity_version\": model_version,\n0099:                         \"min_provisioned_throughput\": min_provisioned_throughput,\n0100:                         \"max_provisioned_throughput\": max_provisioned_throughput,\n0101:                     }\n0102:                 ]\n0103:             }\n0104: \n0105:             response = requests.put(\n0106:                 url=f\"{databricks_host}/api/2.0/serving-endpoints/{model_name}/config\",\n0107:                 json=data,\n0108:                 headers=headers,\n0109:             )"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/databricks.py",
+   "start_line": 110,
+   "end_line": 128,
+   "excerpt": "0110:         else:\n0111:             logger.info(f\"Creating serving endpoint {model_name} on Databricks model serving!\")\n0112:             # Send the POST request to create the serving endpoint.\n0113:             data = {\n0114:                 \"name\": model_name,\n0115:                 \"config\": {\n0116:                     \"served_entities\": [\n0117:                         {\n0118:                             \"name\": model_name,\n0119:                             \"entity_name\": model,\n0120:                             \"entity_version\": model_version,\n0121:                             \"min_provisioned_throughput\": min_provisioned_throughput,\n0122:                             \"max_provisioned_throughput\": max_provisioned_throughput,\n0123:                         }\n0124:                     ]\n0125:                 },\n0126:             }\n0127: \n0128:             response = requests.post(url=f\"{databricks_host}/api/2.0/serving-endpoints\", json=data, headers=headers)"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/clients/databricks.py",
+   "start_line": 141,
+   "end_line": 146,
+   "excerpt": "0141:         from openai import OpenAI\n0142: \n0143:         client = OpenAI(\n0144:             api_key=databricks_token,\n0145:             base_url=f\"{databricks_host}/serving-endpoints\",\n0146:         )"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/clients/databricks.py",
+   "start_line": 147,
+   "end_line": 157,
+   "excerpt": "0147:         # Wait for the deployment to be ready.\n0148:         num_retries = deploy_timeout // 60\n0149:         for _ in range(num_retries):\n0150:             try:\n0151:                 if data_format == TrainDataFormat.CHAT:\n0152:                     client.chat.completions.create(\n0153:                         messages=[{\"role\": \"user\", \"content\": \"hi\"}], model=model_name, max_tokens=1\n0154:                     )\n0155:                 elif data_format == TrainDataFormat.COMPLETION:\n0156:                     client.completions.create(prompt=\"hi\", model=model_name, max_tokens=1)\n0157:                 logger.info(f\"Databricks model serving endpoint {model_name} is ready!\")"
+  },
+  {
+   "span_id": "s8",
+   "path": "dspy/clients/databricks.py",
+   "start_line": 263,
+   "end_line": 270,
+   "excerpt": "0263: def _get_workspace_client() -> \"WorkspaceClient\":\n0264:     try:\n0265:         from databricks.sdk import WorkspaceClient\n0266:     except ImportError:\n0267:         raise ImportError(\n0268:             \"To use Databricks finetuning, please install the databricks-sdk package via `pip install databricks-sdk`.\"\n0269:         )\n0270:     return WorkspaceClient()"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Databricks deployment sanitizes dots, updates existing endpoints with PUT, creates new ones with POST, and probes chat vs completion based on data format.",
+ "source_index": 37,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

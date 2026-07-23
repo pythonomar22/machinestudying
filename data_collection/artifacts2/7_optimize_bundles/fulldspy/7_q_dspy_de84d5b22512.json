@@ -1,0 +1,157 @@
+{
+ "id": "dspy_de84d5b22512",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I'm migrating a multimodal workflow to a responses-style backend and need to send text plus an image plus a file in one request. I can build the chat-style content list myself, but I don't know how DSPy reshapes it for the responses payload.\n\nGive me a complete, runnable Python program that patches the outbound responses call, sends one message containing text, an image URL, and a file, and prints/asserts the converted payload so the final content types and fields are proven exactly.",
+ "gold_answer": "```python\nimport json\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResponsesResp:\n    cache_hit = False\n\n    def __init__(self):\n        self.output = []\n        self.usage = {\"input_tokens\": 1, \"output_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/gpt-5-mini\"\n\n\ncaptured = []\n\n\ndef fake_responses(*, cache, num_retries, retry_strategy, headers=None, **request):\n    captured.append({\"headers\": headers, **request})\n    return FakeResponsesResp()\n\n\nmessages = [\n    {\n        \"role\": \"user\",\n        \"content\": [\n            {\"type\": \"text\", \"text\": \"Describe these inputs\"},\n            {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/cat.jpg\"}},\n            {\"type\": \"file\", \"file\": {\"file_id\": \"file-123\", \"filename\": \"report.pdf\"}},\n        ],\n    }\n]\n\nwith patch(\"litellm.responses\", side_effect=fake_responses):\n    lm = dspy.LM(\"openai/gpt-5-mini\", model_type=\"responses\", temperature=1.0, max_tokens=16000, cache=False)\n    lm.forward(messages=messages)\n\ncontent = captured[0][\"input\"][0][\"content\"]\nassert [item[\"type\"] for item in content] == [\"input_text\", \"input_image\", \"input_file\"]\nassert content[0][\"text\"] == \"Describe these inputs\"\nassert content[1][\"image_url\"] == \"https://example.com/cat.jpg\"\nassert content[2][\"file_id\"] == \"file-123\"\nassert content[2][\"filename\"] == \"report.pdf\"\n\nprint(json.dumps(captured[0][\"input\"], indent=2))\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The program must patch `litellm.responses`, invoke a `dspy.LM` configured with `model_type=\"responses\"`, and inspect the captured outbound kwargs so the assertions target DSPy's converted `input` payload.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The request it sends must be one `user` message whose `content` is a multimodal chat-format list, and DSPy should be checked at `input[0]` with the same content-item order preserved.",
+   "span_ids": [
+    "s3",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The text item must be proven to convert from `{\"type\": \"text\", \"text\": ...}` to `{\"type\": \"input_text\", \"text\": ...}`.",
+   "span_ids": [
+    "s4",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The image item must be proven to convert from nested chat format `{\"type\": \"image_url\", \"image_url\": {\"url\": ...}}` to `{\"type\": \"input_image\", \"image_url\": ...}` with the URL string lifted to the top level.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The file item must be proven to convert to `{\"type\": \"input_file\", ...}` while preserving `filename` and any supplied file field such as `file_id` and/or `file_data`.",
+   "span_ids": [
+    "s4",
+    "s8"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "If the example uses `openai/gpt-5-mini`, it must configure the LM with reasoning-model-compatible settings such as `temperature=1.0` and `max_tokens>=16000` so the sample runs without constructor validation errors.",
+   "span_ids": [
+    "s9",
+    "s10"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 177,
+   "end_line": 190,
+   "excerpt": "0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0184: \n0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,\n0189:                 cache=litellm_cache_args,\n0190:             )"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 479,
+   "end_line": 492,
+   "excerpt": "0479: def litellm_responses_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0480:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0481:     request = dict(request)\n0482:     request.pop(\"rollout_id\", None)\n0483:     headers = request.pop(\"headers\", None)\n0484:     request = _convert_chat_request_to_responses_request(request)\n0485: \n0486:     return litellm.responses(\n0487:         cache=cache,\n0488:         num_retries=num_retries,\n0489:         retry_strategy=\"exponential_backoff_retry\",\n0490:         headers=_add_dspy_identifier_to_headers(headers),\n0491:         **request,\n0492:     )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 517,
+   "end_line": 529,
+   "excerpt": "0517:     request = dict(request)\n0518:     if \"messages\" in request:\n0519:         content_blocks = []\n0520:         for msg in request.pop(\"messages\"):\n0521:             c = msg.get(\"content\")\n0522:             if isinstance(c, str):\n0523:                 content_blocks.append({\"type\": \"input_text\", \"text\": c})\n0524:             elif isinstance(c, list):\n0525:                 # Convert each content item from Chat API format to Responses API format\n0526:                 for item in c:\n0527:                     content_blocks.append(_convert_content_item_to_responses_format(item))\n0528:         request[\"input\"] = [{\"role\": msg.get(\"role\", \"user\"), \"content\": content_blocks}]\n0529:     # Convert `reasoning_effort` to reasoning format supported by the Responses API"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/lm.py",
+   "start_line": 565,
+   "end_line": 583,
+   "excerpt": "0565:     if item.get(\"type\") == \"image_url\":\n0566:         image_url = item.get(\"image_url\", {}).get(\"url\", \"\")\n0567:         return {\n0568:             \"type\": \"input_image\",\n0569:             \"image_url\": image_url,\n0570:         }\n0571:     elif item.get(\"type\") == \"text\":\n0572:         return {\n0573:             \"type\": \"input_text\",\n0574:             \"text\": item.get(\"text\", \"\"),\n0575:         }\n0576:     elif item.get(\"type\") == \"file\":\n0577:         file = item.get(\"file\", {})\n0578:         return {\n0579:             \"type\": \"input_file\",\n0580:             \"file_data\": file.get(\"file_data\"),\n0581:             \"filename\": file.get(\"filename\"),\n0582:             \"file_id\": file.get(\"file_id\"),\n0583:         }"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 902,
+   "end_line": 937,
+   "excerpt": "0902:     with mock.patch(\"litellm.responses\", autospec=True, return_value=api_response) as dspy_responses:\n0903:         lm = dspy.LM(\n0904:             model=\"openai/gpt-5-mini\",\n0905:             model_type=\"responses\",\n0906:             cache=False,\n0907:             temperature=1.0,\n0908:             max_tokens=16000,\n0909:         )\n0910: \n0911:         # Test with messages containing an image\n0912:         messages = [\n0913:             {\n0914:                 \"role\": \"user\",\n0915:                 \"content\": [\n0916:                     {\"type\": \"text\", \"text\": \"Describe this image\"},\n0917:                     {\n0918:                         \"type\": \"image_url\",\n0919:                         \"image_url\": {\n0920:                             \"url\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"\n0921:                         },\n0922:                     },\n0923:                 ],\n0924:             }\n0925:         ]\n0926: \n0927:         lm_result = lm(messages=messages)\n0928: \n0929:         assert lm_result == [{\"text\": \"This is a test answer with image input.\"}]\n0930: \n0931:         dspy_responses.assert_called_once()\n0932:         call_args = dspy_responses.call_args.kwargs\n0933: \n0934:         # Verify the request was converted correctly\n0935:         assert \"input\" in call_args\n0936:         content = call_args[\"input\"][0][\"content\"]\n0937: "
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 938,
+   "end_line": 944,
+   "excerpt": "0938:         # Check that image was converted to input_image format\n0939:         image_content = [c for c in content if c.get(\"type\") == \"input_image\"]\n0940:         assert len(image_content) == 1\n0941:         assert (\n0942:             image_content[0][\"image_url\"]\n0943:             == \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==\"\n0944:         )"
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 811,
+   "end_line": 827,
+   "excerpt": "0811:     result = _convert_chat_request_to_responses_request(request_with_file)\n0812: \n0813:     assert \"input\" in result\n0814:     assert len(result[\"input\"]) == 1\n0815:     assert result[\"input\"][0][\"role\"] == \"user\"\n0816: \n0817:     content = result[\"input\"][0][\"content\"]\n0818:     assert len(content) == 2\n0819: \n0820:     # First item should be text converted to input_text format\n0821:     assert content[0][\"type\"] == \"input_text\"\n0822:     assert content[0][\"text\"] == \"Analyze this file\"\n0823: \n0824:     # Second item should be converted to input_file format\n0825:     assert content[1][\"type\"] == \"input_file\"\n0826:     assert content[1][\"file_data\"] == \"data:text/plain;base64,SGVsbG8gV29ybGQ=\"\n0827:     assert content[1][\"filename\"] == \"test.txt\""
+  },
+  {
+   "span_id": "s8",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 848,
+   "end_line": 882,
+   "excerpt": "0848:     result = _convert_chat_request_to_responses_request(request_with_file_id)\n0849: \n0850:     content = result[\"input\"][0][\"content\"]\n0851:     assert len(content) == 1\n0852:     assert content[0][\"type\"] == \"input_file\"\n0853:     assert content[0][\"file_id\"] == \"file-abc123\"\n0854:     assert content[0][\"filename\"] == \"document.pdf\"\n0855: \n0856:     # Test with all file fields\n0857:     request_with_all_fields = {\n0858:         \"model\": \"openai/gpt-5-mini\",\n0859:         \"messages\": [\n0860:             {\n0861:                 \"role\": \"user\",\n0862:                 \"content\": [\n0863:                     {\n0864:                         \"type\": \"file\",\n0865:                         \"file\": {\n0866:                             \"file_data\": \"data:application/pdf;base64,JVBERi0xLjQ=\",\n0867:                             \"file_id\": \"file-xyz789\",\n0868:                             \"filename\": \"report.pdf\",\n0869:                         },\n0870:                     }\n0871:                 ],\n0872:             }\n0873:         ],\n0874:     }\n0875: \n0876:     result = _convert_chat_request_to_responses_request(request_with_all_fields)\n0877: \n0878:     content = result[\"input\"][0][\"content\"]\n0879:     assert content[0][\"type\"] == \"input_file\"\n0880:     assert content[0][\"file_data\"] == \"data:application/pdf;base64,JVBERi0xLjQ=\"\n0881:     assert content[0][\"file_id\"] == \"file-xyz789\"\n0882:     assert content[0][\"filename\"] == \"report.pdf\""
+  },
+  {
+   "span_id": "s9",
+   "path": "dspy/clients/lm.py",
+   "start_line": 90,
+   "end_line": 105,
+   "excerpt": "0090:         # Recognize OpenAI reasoning models (o1, o3, o4, gpt-5 family)\n0091:         # Exclude non-reasoning variants like gpt-5-chat this is in azure ai foundry\n0092:         # Allow date suffixes like -2023-01-01 after model name or mini/nano/pro\n0093:         # For gpt-5, use negative lookahead to exclude -chat and allow other suffixes\n0094:         model_pattern = re.match(\n0095:             r\"^(?:o[1345](?:-(?:mini|nano|pro))?(?:-\\d{4}-\\d{2}-\\d{2})?|gpt-5(?!-chat)(?:-.*)?)$\",\n0096:             model_family,\n0097:         )\n0098: \n0099:         if model_pattern:\n0100:             if (temperature and temperature != 1.0) or (max_tokens and max_tokens < 16000):\n0101:                 raise ValueError(\n0102:                     \"OpenAI's reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None to \"\n0103:                     \"`dspy.LM(...)`, e.g., dspy.LM('openai/gpt-5', temperature=1.0, max_tokens=16000)\"\n0104:                 )\n0105:             self.kwargs = dict(temperature=temperature, max_completion_tokens=max_tokens, **kwargs)"
+  },
+  {
+   "span_id": "s10",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 337,
+   "end_line": 357,
+   "excerpt": "0337: @pytest.mark.parametrize(\"model_name\", [\"openai/o1\", \"openai/gpt-5-nano\", \"openai/gpt-5-mini\"])\n0338: def test_reasoning_model_requirements(model_name):\n0339:     # Should raise assertion error if temperature or max_tokens requirements not met\n0340:     with pytest.raises(\n0341:         ValueError,\n0342:         match=\"reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None\",\n0343:     ):\n0344:         dspy.LM(\n0345:             model=model_name,\n0346:             temperature=0.7,  # Should be 1.0\n0347:             max_tokens=1000,  # Should be >= 16_000\n0348:         )\n0349: \n0350:     # Should pass with correct parameters\n0351:     lm = dspy.LM(\n0352:         model=model_name,\n0353:         temperature=1.0,\n0354:         max_tokens=16_000,\n0355:     )\n0356:     assert lm.kwargs[\"max_completion_tokens\"] == 16_000\n0357: "
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Responses API multimodal conversion.",
+ "source_index": 10,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

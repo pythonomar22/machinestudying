@@ -1,0 +1,838 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_6bf9b0a06088`
+- Label: `prompt_compilation_customization_and_inspection`
+- Question: `I want to temporarily swap prompt formats for one call without rebuilding the predictor. I know `dspy.context` can override settings, but I only trust it if the same predictor emits one prompt format outside the context and a different one inside.
+
+I need a real offline proof, including the after-state, because this is going into a caching benchmark. The evidence I care about is the actual system messages recorded by the LMs before, during, and after the local override.
+
+Give me a complete, runnable Python program that reuses one predictor across normal chat formatting, an XML-only context override, and a final post-context call, printing the recorded system messages and asserting that the XML format only appears inside the context.`
+- Gold answer:
+```python
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+chat_lm = DummyLM([{'answer': 'chat-1'}, {'answer': 'chat-2'}], adapter=dspy.ChatAdapter())
+xml_lm = DummyLM([{'answer': 'xml'}], adapter=dspy.XMLAdapter())
+
+dspy.configure(lm=chat_lm)
+predict = dspy.Predict('question -> answer')
+
+predict(question='outside before')
+with dspy.context(lm=xml_lm, adapter=dspy.XMLAdapter()):
+    predict(question='inside xml')
+predict(question='outside after')
+
+chat_system_before = chat_lm.history[0]['messages'][0]['content']
+xml_system = xml_lm.history[0]['messages'][0]['content']
+chat_system_after = chat_lm.history[1]['messages'][0]['content']
+
+print(chat_system_before)
+print(xml_system)
+print(chat_system_after)
+
+assert '[[ ## question ## ]]' in chat_system_before
+assert '<question>' in xml_system
+assert '[[ ## question ## ]]' not in xml_system
+assert '[[ ## question ## ]]' in chat_system_after
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/predict/predict.py",
+    "symbol": "Predict.forward"
+  },
+  {
+    "file": "dspy/adapters/chat_adapter.py",
+    "symbol": "ChatAdapter.format_field_structure"
+  },
+  {
+    "file": "dspy/adapters/xml_adapter.py",
+    "symbol": "XMLAdapter.format_field_structure"
+  }
+]
+
+## Full evidence files
+### dspy/predict/predict.py
+0001: import logging
+0002: import random
+0003: from typing import Any, Literal, get_args, get_origin
+0004: 
+0005: from pydantic import BaseModel
+0006: from pydantic_core import PydanticUndefined
+0007: from typeguard import TypeCheckError, check_type
+0008: 
+0009: from dspy.adapters.chat_adapter import ChatAdapter
+0010: from dspy.clients.base_lm import BaseLM
+0011: from dspy.clients.lm import LM
+0012: from dspy.dsp.utils.settings import settings
+0013: from dspy.predict.parameter import Parameter
+0014: from dspy.primitives.module import Module
+0015: from dspy.primitives.prediction import Prediction
+0016: from dspy.signatures.signature import Signature, ensure_signature
+0017: from dspy.utils.callback import BaseCallback
+0018: from dspy.utils.constants import IS_TYPE_UNDEFINED
+0019: 
+0020: logger = logging.getLogger(__name__)
+0021: 
+0022: UNSAFE_LM_STATE_KEYS = {"api_base", "base_url", "model_list"}
+0023: 
+0024: 
+0025: def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
+0026:     if allow_unsafe_lm_state:
+0027:         return lm_state
+0028: 
+0029:     unsafe_keys = sorted(UNSAFE_LM_STATE_KEYS.intersection(lm_state))
+0030: 
+0031:     if not unsafe_keys:
+0032:         return lm_state
+0033: 
+0034:     sanitized_lm_state = {k: v for k, v in lm_state.items() if k not in UNSAFE_LM_STATE_KEYS}
+0035:     logger.warning(
+0036:         "Ignoring unsafe LM config key(s) during state load: %s. "
+0037:         "Pass allow_unsafe_lm_state=True to preserve these keys for trusted files.",
+0038:         unsafe_keys,
+0039:     )
+0040:     return sanitized_lm_state
+0041: 
+0042: 
+0043: class Predict(Module, Parameter):
+0044:     """Basic DSPy module that maps inputs to outputs using a language model.
+0045: 
+0046:     Args:
+0047:         signature: The input/output signature describing the task.
+0048:         callbacks: Optional list of callbacks for instrumentation.
+0049:         **config: Default keyword arguments forwarded to the underlying
+0050:             language model. These values can be overridden for a single
+0051:             invocation by passing a ``config`` dictionary when calling the
+0052:             module. For example::
+0053: 
+0054:                 predict = dspy.Predict("q -> a", rollout_id=1, temperature=1.0)
+0055:                 predict(q="What is 1 + 52?", config={"rollout_id": 2, "temperature": 1.0})
+0056:     """
+0057: 
+0058:     def __init__(self, signature: str | type[Signature], callbacks: list[BaseCallback] | None = None, **config):
+0059:         super().__init__(callbacks=callbacks)
+0060:         self.stage = random.randbytes(8).hex()
+0061:         self.signature = ensure_signature(signature)
+0062:         self.config = config
+0063:         self.reset()
+0064: 
+0065:     def reset(self):
+0066:         self.lm = None
+0067:         self.traces = []
+0068:         self.train = []
+0069:         self.demos = []
+0070: 
+0071:     def dump_state(self, json_mode=True):
+0072:         state_keys = ["traces", "train"]
+0073:         state = {k: getattr(self, k) for k in state_keys}
+0074: 
+0075:         state["demos"] = []
+0076:         for demo in self.demos:
+0077:             demo = demo.copy()
+0078: 
+0079:             for field in demo:
+0080:                 # FIXME: Saving BaseModels as strings in examples doesn't matter because you never re-access as an object
+0081:                 demo[field] = serialize_object(demo[field])
+0082: 
+0083:             if isinstance(demo, dict) or not json_mode:
+0084:                 state["demos"].append(demo)
+0085:             else:
+0086:                 state["demos"].append(demo.toDict())
+0087: 
+0088:         state["signature"] = self.signature.dump_state()
+0089:         state["lm"] = self.lm.dump_state() if self.lm else None
+0090:         return state
+0091: 
+0092:     def load_state(self, state: dict, *, allow_unsafe_lm_state: bool = False) -> "Predict":
+0093:         """Load the saved state of a `Predict` object.
+0094: 
+0095:         Args:
+0096:             state: The saved state of a `Predict` object.
+0097:             allow_unsafe_lm_state: If True, preserves `api_base`, `base_url`, and `model_list` from
+0098:                 serialized LM state. Enable only when loading trusted files.
+0099: 
+0100:         Returns:
+0101:             Self to allow method chaining.
+0102:         """
+0103:         excluded_keys = ["signature", "extended_signature", "lm"]
+0104:         for name, value in state.items():
+0105:             # `excluded_keys` are fields that go through special handling.
+0106:             if name not in excluded_keys:
+0107:                 setattr(self, name, value)
+0108: 
+0109:         self.signature = self.signature.load_state(state["signature"])
+0110:         sanitized_lm_state = _sanitize_lm_state(state["lm"], allow_unsafe_lm_state) if state["lm"] else None
+0111:         self.lm = LM(**sanitized_lm_state) if sanitized_lm_state else None
+0112: 
+0113:         if "extended_signature" in state:  # legacy, up to and including 2.5, for CoT.
+0114:             raise NotImplementedError("Loading extended_signature is no longer supported in DSPy 2.6+")
+0115: 
+0116:         return self
+0117: 
+0118:     def _get_positional_args_error_message(self):
+0119:         input_fields = list(self.signature.input_fields.keys())
+0120:         return (
+0121:             "Positional arguments are not allowed when calling `dspy.Predict`, must use keyword arguments "
+0122:             f"that match your signature input fields: '{', '.join(input_fields)}'. For example: "
+0123:             f"`predict({input_fields[0]}=input_value, ...)`."
+0124:         )
+0125: 
+0126:     def __call__(self, *args, **kwargs):
+0127:         if args:
+0128:             raise ValueError(self._get_positional_args_error_message())
+0129: 
+0130:         return super().__call__(**kwargs)
+0131: 
+0132:     async def acall(self, *args, **kwargs):
+0133:         if args:
+0134:             raise ValueError(self._get_positional_args_error_message())
+0135: 
+0136:         return await super().acall(**kwargs)
+0137: 
+0138:     def _forward_preprocess(self, **kwargs):
+0139:         # Extract the three privileged keyword arguments.
+0140:         assert "new_signature" not in kwargs, "new_signature is no longer a valid keyword argument."
+0141:         signature = ensure_signature(kwargs.pop("signature", self.signature))
+0142:         demos = kwargs.pop("demos", self.demos)
+0143:         config = {**self.config, **kwargs.pop("config", {})}
+0144: 
+0145:         # Get the right LM to use.
+0146:         lm = kwargs.pop("lm", self.lm) or settings.lm
+0147: 
+0148:         if lm is None:
+0149:             raise ValueError(
+0150:                 "No LM is loaded. Please configure the LM using `dspy.configure(lm=dspy.LM(...))`. e.g, "
+0151:                 "`dspy.configure(lm=dspy.LM('openai/gpt-4o-mini'))`"
+0152:             )
+0153: 
+0154:         if isinstance(lm, str):
+0155:             # Many users mistakenly use `dspy.configure(lm="openai/gpt-4o-mini")` instead of
+0156:             # `dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))`, so we are providing a specific error message.
+0157:             raise ValueError(
+0158:                 f"LM must be an instance of `dspy.BaseLM`, not a string. Instead of using a string like "
+0159:                 f"'dspy.configure(lm=\"{lm}\")', please configure the LM like 'dspy.configure(lm=dspy.LM(\"{lm}\"))'"
+0160:             )
+0161:         elif not isinstance(lm, BaseLM):
+0162:             raise ValueError(f"LM must be an instance of `dspy.BaseLM`, not {type(lm)}. Received `lm={lm}`.")
+0163: 
+0164:         # If temperature is unset or <=0.15, and n > 1, set temperature to 0.7 to keep randomness.
+0165:         temperature = config.get("temperature") or lm.kwargs.get("temperature")
+0166:         num_generations = config.get("n") or lm.kwargs.get("n") or lm.kwargs.get("num_generations") or 1
+0167: 
+0168:         if (temperature is None or temperature <= 0.15) and num_generations > 1:
+0169:             config["temperature"] = 0.7
+0170: 
+0171:         if "prediction" in kwargs:
+0172:             if (
+0173:                 isinstance(kwargs["prediction"], dict)
+0174:                 and kwargs["prediction"].get("type") == "content"
+0175:                 and "content" in kwargs["prediction"]
+0176:             ):
+0177:                 # If the `prediction` is the standard predicted outputs format
+0178:                 # (https://platform.openai.com/docs/guides/predicted-outputs), we remove it from input kwargs and add it
+0179:                 # to the lm kwargs.
+0180:                 config["prediction"] = kwargs.pop("prediction")
+0181: 
+0182:         # Populate default values for missing input fields.
+0183:         for k, v in signature.input_fields.items():
+0184:             if k not in kwargs and v.default is not PydanticUndefined:
+0185:                 kwargs[k] = v.default
+0186: 
+0187:         # Check and warn for extra fields not in signature
+0188:         extra_fields = [k for k in kwargs if k not in signature.input_fields]
+0189:         if extra_fields:
+0190:             logger.warning(
+0191:                 "Input contains fields not in signature. These fields will be ignored: %s. "
+0192:                 "Expected fields: %s.",
+0193:                 extra_fields,
+0194:                 list(signature.input_fields.keys()),
+0195:             )
+0196: 
+0197:         # Validate input field types match signature
+0198:         if settings.warn_on_type_mismatch:
+0199:             for field_name, field_info in signature.input_fields.items():
+0200:                 if field_name in kwargs:
+0201:                     value = kwargs[field_name]
+0202:                     expected_type: type = field_info.annotation
+0203: 
+0204:                     if value is None or field_info.json_schema_extra.get(IS_TYPE_UNDEFINED, False):
+0205:                         continue
+0206: 
+0207:                     if not _is_value_compatible_with_type(value, expected_type):
+0208:                         logger.warning(
+0209:                             "Type mismatch for field '%s': expected %s based on given Signature, "
+0210:                             "but the provided value is incompatible: %s.",
+0211:                             field_name,
+0212:                             _get_type_name(expected_type),
+0213:                             value,
+0214:                         )
+0215: 
+0216:         if not all(k in kwargs for k in signature.input_fields):
+0217:             present = [k for k in signature.input_fields if k in kwargs]
+0218:             missing = [k for k in signature.input_fields if k not in kwargs]
+0219:             logger.warning(
+0220:                 "Not all input fields were provided to module. Present: %s. Missing: %s.",
+0221:                 present,
+0222:                 missing,
+0223:             )
+0224:         return lm, config, signature, demos, kwargs
+0225: 
+0226:     def _forward_postprocess(self, completions, signature, **kwargs):
+0227:         pred = Prediction.from_completions(completions, signature=signature)
+0228:         if kwargs.pop("_trace", True) and settings.trace is not None and settings.max_trace_size > 0:
+0229:             trace = settings.trace
+0230:             if len(trace) >= settings.max_trace_size:
+0231:                 trace.pop(0)
+0232:             trace.append((self, {**kwargs}, pred))
+0233:         return pred
+0234: 
+0235:     def _should_stream(self):
+0236:         stream_listeners = settings.stream_listeners or []
+0237:         should_stream = settings.send_stream is not None
+0238:         if should_stream and len(stream_listeners) > 0:
+0239:             should_stream = any(stream_listener.predict == self for stream_listener in stream_listeners)
+0240: 
+0241:         return should_stream
+0242: 
+0243:     def forward(self, **kwargs):
+0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+0245: 
+0246:         adapter = settings.adapter or ChatAdapter()
+0247: 
+0248:         if self._should_stream():
+0249:             with settings.context(caller_predict=self):
+0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0251:         else:
+0252:             with settings.context(send_stream=None):
+0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0254: 
+0255:         return self._forward_postprocess(completions, signature, **kwargs)
+0256: 
+0257:     async def aforward(self, **kwargs):
+0258:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+0259: 
+0260:         adapter = settings.adapter or ChatAdapter()
+0261:         if self._should_stream():
+0262:             with settings.context(caller_predict=self):
+0263:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0264:         else:
+0265:             with settings.context(send_stream=None):
+0266:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0267: 
+0268:         return self._forward_postprocess(completions, signature, **kwargs)
+0269: 
+0270:     def update_config(self, **kwargs):
+0271:         self.config = {**self.config, **kwargs}
+0272: 
+0273:     def get_config(self):
+0274:         return self.config
+0275: 
+0276:     def __repr__(self):
+0277:         return f"{self.__class__.__name__}({self.signature})"
+0278: 
+0279: def _get_type_name(type_annotation) -> str:
+0280:     """Helper method to get the name for a type annotation."""
+0281: 
+0282:     origin = get_origin(type_annotation)
+0283:     args = get_args(type_annotation)
+0284: 
+0285:     if origin is None:
+0286:         # Primitives like str, int, etc.
+0287:         if hasattr(type_annotation, "__name__"):
+0288:             return type_annotation.__name__
+0289:         return str(type_annotation)
+0290: 
+0291:     # Handle Literal types
+0292:     if origin is Literal:
+0293:         literal_values = ", ".join(repr(arg) for arg in args)
+0294:         return f"Literal[{literal_values}]"
+0295: 
+0296:     # Types like list[str], dict[str, int], generics, etc.
+0297:     if args:
+0298:         # Handle Ellipsis in tuples (e.g., tuple[int, ...])
+0299:         args_str = ", ".join("..." if arg is ... else _get_type_name(arg) for arg in args)
+0300:         origin_name = getattr(origin, "__name__", str(origin))
+0301:         return f"{origin_name}[{args_str}]"
+0302: 
+0303:     return getattr(origin, "__name__", str(origin))
+0304: 
+0305: def _is_value_compatible_with_type(value: Any, expected: type) -> bool:
+0306:     """Return True if the value matches the expected type hint."""
+0307:     try:
+0308:         # Special handle list[str] because we allow setting input type to str, however, invoking with a list thereof.
+0309:         if expected is str and isinstance(value, list):
+0310:             if all(isinstance(item, str) for item in value):
+0311:                 return True
+0312: 
+0313:         check_type(value, expected)
+0314:         return True
+0315:     except TypeCheckError:
+0316:         return False
+0317: 
+0318: def serialize_object(obj):
+0319:     """
+0320:     Recursively serialize a given object into a JSON-compatible format.
+0321:     Supports Pydantic models, lists, dicts, and primitive types.
+0322:     """
+0323:     if isinstance(obj, BaseModel):
+0324:         # Use model_dump with mode="json" to ensure all fields (including HttpUrl, datetime, etc.)
+0325:         # are converted to JSON-serializable types (strings)
+0326:         return obj.model_dump(mode="json")
+0327:     elif isinstance(obj, list):
+0328:         return [serialize_object(item) for item in obj]
+0329:     elif isinstance(obj, tuple):
+0330:         return tuple(serialize_object(item) for item in obj)
+0331:     elif isinstance(obj, dict):
+0332:         return {key: serialize_object(value) for key, value in obj.items()}
+0333:     else:
+0334:         return obj
+0335: 
+0336: 
+0337: # # TODO: FIXME: Hmm, I guess expected behavior is that contexts can
+0338: # affect execution. Well, we need to determine whether context dominates, __init__ demoninates, or forward dominates.
+0339: # Generally, unless overwritten, we'd see n=None, temperature=None.
+0340: # That will eventually mean we have to learn them.
+
+### dspy/adapters/chat_adapter.py
+0001: import re
+0002: import textwrap
+0003: from typing import Any, NamedTuple
+0004: 
+0005: from pydantic.fields import FieldInfo
+0006: 
+0007: from dspy.adapters.base import Adapter
+0008: from dspy.adapters.utils import (
+0009:     format_field_value,
+0010:     get_annotation_name,
+0011:     get_field_description_string,
+0012:     parse_value,
+0013:     translate_field_type,
+0014: )
+0015: from dspy.clients.base_lm import BaseLM
+0016: from dspy.signatures.signature import Signature
+0017: from dspy.utils.callback import BaseCallback
+0018: from dspy.utils.exceptions import AdapterParseError, ContextWindowExceededError
+0019: 
+0020: field_header_pattern = re.compile(r"\[\[ ## (\w+) ## \]\]")
+0021: 
+0022: 
+0023: class FieldInfoWithName(NamedTuple):
+0024:     name: str
+0025:     info: FieldInfo
+0026: 
+0027: 
+0028: class ChatAdapter(Adapter):
+0029:     """Default Adapter for most language models.
+0030: 
+0031:     The ChatAdapter formats DSPy signatures into a format compatible with most language models.
+0032:     It uses delimiter patterns like `[[ ## field_name ## ]]` to clearly separate input and output fields in
+0033:     the message content.
+0034: 
+0035:     Key features:
+0036:         - Structures inputs and outputs using field header markers for clear field delineation.
+0037:         - Provides automatic fallback to JSONAdapter if the chat format fails.
+0038:     """
+0039: 
+0040:     def __init__(
+0041:         self,
+0042:         callbacks: list[BaseCallback] | None = None,
+0043:         use_native_function_calling: bool = False,
+0044:         native_response_types: list[type[type]] | None = None,
+0045:         use_json_adapter_fallback: bool = True,
+0046:     ):
+0047:         """
+0048:         Args:
+0049:             callbacks: List of callback functions to execute during adapter methods.
+0050:             use_native_function_calling: Whether to enable native function calling capabilities.
+0051:             native_response_types: List of output field types handled by native LM features.
+0052:             use_json_adapter_fallback: Whether to automatically fallback to JSONAdapter if the ChatAdapter fails.
+0053:                 If True, when an error occurs (except ContextWindowExceededError), the adapter will retry using
+0054:                 JSONAdapter. Defaults to True.
+0055:         """
+0056:         super().__init__(
+0057:             callbacks=callbacks,
+0058:             use_native_function_calling=use_native_function_calling,
+0059:             native_response_types=native_response_types,
+0060:         )
+0061:         self.use_json_adapter_fallback = use_json_adapter_fallback
+0062: 
+0063:     def __call__(
+0064:         self,
+0065:         lm: BaseLM,
+0066:         lm_kwargs: dict[str, Any],
+0067:         signature: type[Signature],
+0068:         demos: list[dict[str, Any]],
+0069:         inputs: dict[str, Any],
+0070:     ) -> list[dict[str, Any]]:
+0071:         try:
+0072:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)
+0073:         except Exception as e:
+0074:             # fallback to JSONAdapter
+0075:             from dspy.adapters.json_adapter import JSONAdapter
+0076: 
+0077:             if (
+0078:                 isinstance(e, ContextWindowExceededError)
+0079:                 or isinstance(self, JSONAdapter)
+0080:                 or not self.use_json_adapter_fallback
+0081:             ):
+0082:                 # On context window exceeded error, already using JSONAdapter, or use_json_adapter_fallback is False
+0083:                 # we don't want to retry with a different adapter. Raise the original error instead of the fallback error.
+0084:                 raise e
+0085:             return JSONAdapter()(lm, lm_kwargs, signature, demos, inputs)
+0086: 
+0087:     async def acall(
+0088:         self,
+0089:         lm: BaseLM,
+0090:         lm_kwargs: dict[str, Any],
+0091:         signature: type[Signature],
+0092:         demos: list[dict[str, Any]],
+0093:         inputs: dict[str, Any],
+0094:     ) -> list[dict[str, Any]]:
+0095:         try:
+0096:             return await super().acall(lm, lm_kwargs, signature, demos, inputs)
+0097:         except Exception as e:
+0098:             # fallback to JSONAdapter
+0099:             from dspy.adapters.json_adapter import JSONAdapter
+0100: 
+0101:             if (
+0102:                 isinstance(e, ContextWindowExceededError)
+0103:                 or isinstance(self, JSONAdapter)
+0104:                 or not self.use_json_adapter_fallback
+0105:             ):
+0106:                 # On context window exceeded error, already using JSONAdapter, or use_json_adapter_fallback is False
+0107:                 # we don't want to retry with a different adapter. Raise the original error instead of the fallback error.
+0108:                 raise e
+0109:             return await JSONAdapter().acall(lm, lm_kwargs, signature, demos, inputs)
+0110: 
+0111:     def format_field_description(self, signature: type[Signature]) -> str:
+0112:         return (
+0113:             f"Your input fields are:\n{get_field_description_string(signature.input_fields)}\n"
+0114:             f"Your output fields are:\n{get_field_description_string(signature.output_fields)}"
+0115:         )
+0116: 
+0117:     def format_field_structure(self, signature: type[Signature]) -> str:
+0118:         """
+0119:         `ChatAdapter` requires input and output fields to be in their own sections, with section header using markers
+0120:         `[[ ## field_name ## ]]`. An arbitrary field `completed` ([[ ## completed ## ]]) is added to the end of the
+0121:         output fields section to indicate the end of the output fields.
+0122:         """
+0123:         parts = []
+0124:         parts.append("All interactions will be structured in the following way, with the appropriate values filled in.")
+0125: 
+0126:         def format_signature_fields_for_instructions(fields: dict[str, FieldInfo]):
+0127:             return self.format_field_with_value(
+0128:                 fields_with_values={
+0129:                     FieldInfoWithName(name=field_name, info=field_info): translate_field_type(field_name, field_info)
+0130:                     for field_name, field_info in fields.items()
+0131:                 },
+0132:             )
+0133: 
+0134:         parts.append(format_signature_fields_for_instructions(signature.input_fields))
+0135:         parts.append(format_signature_fields_for_instructions(signature.output_fields))
+0136:         parts.append("[[ ## completed ## ]]\n")
+0137:         return "\n\n".join(parts).strip()
+0138: 
+0139:     def format_task_description(self, signature: type[Signature]) -> str:
+0140:         instructions = textwrap.dedent(signature.instructions)
+0141:         objective = ("\n" + " " * 8).join([""] + instructions.splitlines())
+0142:         return f"In adhering to this structure, your objective is: {objective}"
+0143: 
+0144:     def format_user_message_content(
+0145:         self,
+0146:         signature: type[Signature],
+0147:         inputs: dict[str, Any],
+0148:         prefix: str = "",
+0149:         suffix: str = "",
+0150:         main_request: bool = False,
+0151:     ) -> str:
+0152:         messages = [prefix]
+0153:         for k, v in signature.input_fields.items():
+0154:             if k in inputs:
+0155:                 value = inputs.get(k)
+0156:                 formatted_field_value = format_field_value(field_info=v, value=value)
+0157:                 messages.append(f"[[ ## {k} ## ]]\n{formatted_field_value}")
+0158: 
+0159:         if main_request:
+0160:             output_requirements = self.user_message_output_requirements(signature)
+0161:             if output_requirements is not None:
+0162:                 messages.append(output_requirements)
+0163: 
+0164:         messages.append(suffix)
+0165:         return "\n\n".join(messages).strip()
+0166: 
+0167:     def user_message_output_requirements(self, signature: type[Signature]) -> str:
+0168:         """Returns a simplified format reminder for the language model.
+0169: 
+0170:         In chat-based interactions, language models may lose track of the required output format
+0171:         as the conversation context grows longer. This method generates a concise reminder of
+0172:         the expected output structure that can be included in user messages.
+0173: 
+0174:         Args:
+0175:             signature (Type[Signature]): The DSPy signature defining the expected input/output fields.
+0176: 
+0177:         Returns:
+0178:             str: A simplified description of the required output format.
+0179: 
+0180:         Note:
+0181:             This is a more lightweight version of `format_field_structure` specifically designed
+0182:             for inline reminders within chat messages.
+0183:         """
+0184: 
+0185:         def type_info(v):
+0186:             if v.annotation is not str:
+0187:                 return f" (must be formatted as a valid Python {get_annotation_name(v.annotation)})"
+0188:             else:
+0189:                 return ""
+0190: 
+0191:         message = "Respond with the corresponding output fields, starting with the field "
+0192:         message += ", then ".join(f"`[[ ## {f} ## ]]`{type_info(v)}" for f, v in signature.output_fields.items())
+0193:         message += ", and then ending with the marker for `[[ ## completed ## ]]`."
+0194:         return message
+0195: 
+0196:     def format_assistant_message_content(
+0197:         self,
+0198:         signature: type[Signature],
+0199:         outputs: dict[str, Any],
+0200:         missing_field_message=None,
+0201:     ) -> str:
+0202:         assistant_message_content = self.format_field_with_value(
+0203:             {
+0204:                 FieldInfoWithName(name=k, info=v): outputs.get(k, missing_field_message)
+0205:                 for k, v in signature.output_fields.items()
+0206:             },
+0207:         )
+0208:         assistant_message_content += "\n\n[[ ## completed ## ]]\n"
+0209:         return assistant_message_content
+0210: 
+0211:     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
+0212:         sections = [(None, [])]
+0213: 
+0214:         for line in completion.splitlines():
+0215:             match = field_header_pattern.match(line.strip())
+0216:             if match:
+0217:                 # If the header pattern is found, split the rest of the line as content
+0218:                 header = match.group(1)
+0219:                 remaining_content = line[match.end() :].strip()
+0220:                 sections.append((header, [remaining_content] if remaining_content else []))
+0221:             else:
+0222:                 sections[-1][1].append(line)
+0223: 
+0224:         sections = [(k, "\n".join(v).strip()) for k, v in sections]
+0225: 
+0226:         fields = {}
+0227:         for k, v in sections:
+0228:             if (k not in fields) and (k in signature.output_fields):
+0229:                 try:
+0230:                     fields[k] = parse_value(v, signature.output_fields[k].annotation)
+0231:                 except Exception as e:
+0232:                     raise AdapterParseError(
+0233:                         adapter_name="ChatAdapter",
+0234:                         signature=signature,
+0235:                         lm_response=completion,
+0236:                         message=f"Failed to parse field {k} with value {v} from the LM response. Error message: {e}",
+0237:                     )
+0238:         if fields.keys() != signature.output_fields.keys():
+0239:             raise AdapterParseError(
+0240:                 adapter_name="ChatAdapter",
+0241:                 signature=signature,
+0242:                 lm_response=completion,
+0243:                 parsed_result=fields,
+0244:             )
+0245: 
+0246:         return fields
+0247: 
+0248:     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any]) -> str:
+0249:         """
+0250:         Formats the values of the specified fields according to the field's DSPy type (input or output),
+0251:         annotation (e.g. str, int, etc.), and the type of the value itself. Joins the formatted values
+0252:         into a single string, which is is a multiline string if there are multiple fields.
+0253: 
+0254:         Args:
+0255:             fields_with_values: A dictionary mapping information about a field to its corresponding
+0256:                 value.
+0257: 
+0258:         Returns:
+0259:             The joined formatted values of the fields, represented as a string
+0260:         """
+0261:         output = []
+0262:         for field, field_value in fields_with_values.items():
+0263:             formatted_field_value = format_field_value(field_info=field.info, value=field_value)
+0264:             output.append(f"[[ ## {field.name} ## ]]\n{formatted_field_value}")
+0265: 
+0266:         return "\n\n".join(output).strip()
+0267: 
+0268:     def format_finetune_data(
+0269:         self,
+0270:         signature: type[Signature],
+0271:         demos: list[dict[str, Any]],
+0272:         inputs: dict[str, Any],
+0273:         outputs: dict[str, Any],
+0274:     ) -> dict[str, list[Any]]:
+0275:         """
+0276:         Format the call data into finetuning data according to the OpenAI API specifications.
+0277: 
+0278:         For the chat adapter, this means formatting the data as a list of messages, where each message is a dictionary
+0279:         with a "role" and "content" key. The role can be "system", "user", or "assistant". Then, the messages are
+0280:         wrapped in a dictionary with a "messages" key.
+0281:         """
+0282:         system_user_messages = self.format(  # returns a list of dicts with the keys "role" and "content"
+0283:             signature=signature, demos=demos, inputs=inputs
+0284:         )
+0285:         assistant_message_content = self.format_assistant_message_content(  # returns a string, without the role
+0286:             signature=signature, outputs=outputs
+0287:         )
+0288:         assistant_message = {"role": "assistant", "content": assistant_message_content}
+0289:         messages = system_user_messages + [assistant_message]
+0290:         return {"messages": messages}
+
+### dspy/adapters/xml_adapter.py
+0001: import re
+0002: from typing import Any
+0003: 
+0004: from pydantic.fields import FieldInfo
+0005: 
+0006: from dspy.adapters.chat_adapter import ChatAdapter, FieldInfoWithName
+0007: from dspy.adapters.utils import format_field_value, translate_field_type
+0008: from dspy.signatures.signature import Signature
+0009: from dspy.utils.callback import BaseCallback
+0010: 
+0011: 
+0012: class XMLAdapter(ChatAdapter):
+0013:     def __init__(self, callbacks: list[BaseCallback] | None = None):
+0014:         super().__init__(callbacks)
+0015:         self.field_pattern = re.compile(r"<(?P<name>\w+)>((?P<content>.*?))</\1>", re.DOTALL)
+0016: 
+0017:     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any]) -> str:
+0018:         output = []
+0019:         for field, field_value in fields_with_values.items():
+0020:             formatted = format_field_value(field_info=field.info, value=field_value)
+0021:             output.append(f"<{field.name}>\n{formatted}\n</{field.name}>")
+0022:         return "\n\n".join(output).strip()
+0023: 
+0024:     def format_field_structure(self, signature: type[Signature]) -> str:
+0025:         """
+0026:         XMLAdapter requires input and output fields to be wrapped in XML tags like `<field_name>`.
+0027:         """
+0028: 
+0029:         parts = []
+0030:         parts.append("All interactions will be structured in the following way, with the appropriate values filled in.")
+0031: 
+0032:         def format_signature_fields_for_instructions(fields: dict[str, FieldInfo]):
+0033:             return self.format_field_with_value(
+0034:                 fields_with_values={
+0035:                     FieldInfoWithName(name=field_name, info=field_info): translate_field_type(field_name, field_info)
+0036:                     for field_name, field_info in fields.items()
+0037:                 },
+0038:             )
+0039: 
+0040:         parts.append(format_signature_fields_for_instructions(signature.input_fields))
+0041:         parts.append(format_signature_fields_for_instructions(signature.output_fields))
+0042:         return "\n\n".join(parts).strip()
+0043: 
+0044:     def format_user_message_content(
+0045:         self,
+0046:         signature: type[Signature],
+0047:         inputs: dict[str, Any],
+0048:         prefix: str = "",
+0049:         suffix: str = "",
+0050:         main_request: bool = False,
+0051:     ) -> str:
+0052:         messages = [prefix]
+0053: 
+0054:         messages.append(self.format_field_with_value(
+0055:             {
+0056:                 FieldInfoWithName(name=k, info=v): inputs.get(k)
+0057:                 for k, v in signature.input_fields.items() if k in inputs
+0058:             },
+0059:         ))
+0060: 
+0061:         if main_request:
+0062:             output_requirements = self.user_message_output_requirements(signature)
+0063:             if output_requirements is not None:
+0064:                 messages.append(output_requirements)
+0065: 
+0066:         messages.append(suffix)
+0067:         return "\n\n".join(messages).strip()
+0068: 
+0069:     def format_assistant_message_content(
+0070:         self,
+0071:         signature: type[Signature],
+0072:         outputs: dict[str, Any],
+0073:         missing_field_message=None,
+0074:     ) -> str:
+0075:         return self.format_field_with_value(
+0076:             {
+0077:                 FieldInfoWithName(name=k, info=v): outputs.get(k, missing_field_message)
+0078:                 for k, v in signature.output_fields.items()
+0079:             },
+0080:         )
+0081: 
+0082:     def user_message_output_requirements(self, signature: type[Signature]) -> str:
+0083:         message = "Respond with the corresponding output fields wrapped in XML tags "
+0084:         message += ", then ".join(f"`<{f}>`" for f in signature.output_fields)
+0085:         message += "."
+0086:         return message
+0087: 
+0088:     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
+0089:         fields = {}
+0090:         for match in self.field_pattern.finditer(completion):
+0091:             name = match.group("name")
+0092:             content = match.group("content").strip()
+0093:             if name in signature.output_fields and name not in fields:
+0094:                 fields[name] = content
+0095:         # Cast values using base class parse_value helper
+0096:         for k, v in fields.items():
+0097:             fields[k] = self._parse_field_value(signature.output_fields[k], v, completion, signature)
+0098:         if fields.keys() != signature.output_fields.keys():
+0099:             from dspy.utils.exceptions import AdapterParseError
+0100: 
+0101:             raise AdapterParseError(
+0102:                 adapter_name="XMLAdapter",
+0103:                 signature=signature,
+0104:                 lm_response=completion,
+0105:                 parsed_result=fields,
+0106:             )
+0107:         return fields
+0108: 
+0109:     def _parse_field_value(self, field_info, raw, completion, signature):
+0110:         from dspy.adapters.utils import parse_value
+0111: 
+0112:         try:
+0113:             return parse_value(raw, field_info.annotation)
+0114:         except Exception as e:
+0115:             from dspy.utils.exceptions import AdapterParseError
+0116: 
+0117:             raise AdapterParseError(
+0118:                 adapter_name="XMLAdapter",
+0119:                 signature=signature,
+0120:                 lm_response=completion,
+0121:                 message=f"Failed to parse field {field_info} with value {raw}: {e}",
+0122:             )
+
+Return JSON that matches the schema exactly.

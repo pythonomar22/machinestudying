@@ -1,0 +1,86 @@
+{
+ "id": "dspy_9e8d7be55964",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I'm customizing `dspy.ChainOfThought` and I want the reasoning field to be present but described in my own words. The tricky part is that I need to verify both that the custom description appears in the rendered prompt and that reasoning still stays before the main answer.\n\nI do not want a docs pointer. I want a tiny offline program that builds the module, inspects the rendered prompt, and proves the field ordering and description DSPy actually uses.\n\nGive me a complete, runnable Python program that prints the rendered system message for a customized `dspy.ChainOfThought` module and asserts that the reasoning field comes first and uses my custom description.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nrationale_field = dspy.OutputField(desc=\"One terse line of scratch work, no narration\")\n\nlm = DummyLM([{\"reasoning\": \"2 + 2 = 4\", \"answer\": \"4\"}])\ndspy.configure(lm=lm, adapter=dspy.ChatAdapter())\n\ncot = dspy.ChainOfThought(\"question -> answer\", rationale_field=rationale_field, rationale_field_type=str)\nresult = cot(question=\"What is 2 + 2?\")\nsystem_message = dspy.ChatAdapter().format_system_message(cot.predict.signature)\n\nprint(system_message)\nprint(\"OUTPUT ORDER:\", list(cot.predict.signature.output_fields.keys()))\nprint(\"ANSWER:\", result.answer)\nprint(\"REASONING:\", result.reasoning)\n\nassert list(cot.predict.signature.output_fields.keys()) == [\"reasoning\", \"answer\"]\nassert \"One terse line of scratch work, no narration\" in system_message\nassert result.answer == \"4\"\nassert result.reasoning == \"2 + 2 = 4\"\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "Construct `dspy.ChainOfThought` from the string signature `\"question -> answer\"` while supplying a custom `dspy.OutputField(desc=...)` as `rationale_field`, so the module's prepended `reasoning` field uses the caller-provided description.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Render a system message from `cot.predict.signature` and assert that the exact custom reasoning description string appears in that rendered text, verifying DSPy's prompt-facing representation rather than only inspecting the field object.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Assert that `list(cot.predict.signature.output_fields.keys())` is exactly `['reasoning', 'answer']`, proving the reasoning field remains first and the original answer field follows it.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "Run the module with a deterministic stubbed LM response and assert that both returned fields match the stubbed values, including `result.answer` and `result.reasoning`, to show the customized module still executes correctly offline.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/chain_of_thought.py",
+   "start_line": 30,
+   "end_line": 35,
+   "excerpt": "0030:         signature = ensure_signature(signature)\n0031:         desc = \"${reasoning}\"\n0032:         rationale_field_type = rationale_field.annotation if rationale_field else rationale_field_type\n0033:         rationale_field = rationale_field if rationale_field else dspy.OutputField(desc=desc)\n0034:         extended_signature = signature.prepend(name=\"reasoning\", field=rationale_field, type_=rationale_field_type)\n0035:         self.predict = dspy.Predict(extended_signature, **config)"
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/predict/test_chain_of_thought.py",
+   "start_line": 11,
+   "end_line": 19,
+   "excerpt": "0011: def test_initialization_with_string_signature():\n0012:     lm = DummyLM([{\"reasoning\": \"find the number after 1\", \"answer\": \"2\"}])\n0013:     dspy.configure(lm=lm)\n0014:     predict = ChainOfThought(\"question -> answer\")\n0015:     assert list(predict.predict.signature.output_fields.keys()) == [\n0016:         \"reasoning\",\n0017:         \"answer\",\n0018:     ]\n0019:     assert predict(question=\"What is 1+1?\").answer == \"2\""
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/predict/test_chain_of_thought.py",
+   "start_line": 61,
+   "end_line": 85,
+   "excerpt": "0061: def test_chain_of_thought_with_manual_reasoning():\n0062:     \"\"\"Test ChainOfThought with manual reasoning where LM doesn't support native reasoning.\"\"\"\n0063:     lm = dspy.LM(model=\"openai/gpt-4o-mini\")\n0064:     dspy.settings.configure(lm=lm)\n0065: \n0066:     with mock.patch(\"litellm.completion\") as mock_completion:\n0067:         mock_completion.return_value = ModelResponse(\n0068:             choices=[\n0069:                 Choices(\n0070:                     reasoning=\"Step-by-step thinking about the capital of France\",\n0071:                     message=Message(\n0072:                         content=(\n0073:                             \"[[ ## reasoning ## ]]\\nStep-by-step thinking about the capital of France\\n\"\n0074:                             \"[[ ## answer ## ]]\\nParis\\n[[ ## completion ## ]]\"\n0075:                         )\n0076:                     ),\n0077:                 )\n0078:             ],\n0079:             model=\"openai/gpt-4o-mini\",\n0080:         )\n0081: \n0082:         cot = ChainOfThought(\"question -> answer\")\n0083:         result = cot(question=\"What is the capital of France?\")\n0084:         assert result.answer == \"Paris\"\n0085:         assert result.reasoning == \"Step-by-step thinking about the capital of France\""
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Good CoT customization case: it checks both inserted-field ordering and LM-visible description text.",
+ "source_index": 6,
+ "smalldspy_scope": true,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

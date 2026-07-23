@@ -1,0 +1,195 @@
+You are generating benchmark-grade DSPy expert QA inside the official DSPy repository.
+
+## About DSPy
+DSPy is a declarative framework for programming --- rather than prompting --- language models. Users compose typed modules (such as `dspy.Predict`, `dspy.ChainOfThought`, and `dspy.ReAct`) whose input/output behavior is declared by signatures; adapters translate signatures into provider-specific prompts and parse completions back into typed fields; optimizers tune prompts and demonstrations against metrics.
+
+Deliverable contract (hard requirement for every candidate):
+- Every question must END by explicitly asking for a small, self-contained, RUNNABLE Python program (a repro, harness, working example, or module) as its deliverable, phrased the way a real user asks ('Give me a complete, runnable program that ...', 'Write the metric plus a tiny harness that ...', 'Show me the idiomatic DSPy program that ...'), and must ask for printed output or assertions that PROVE the behavior in question.
+- Questions should read like a real support thread: 2-4 short paragraphs --- the setup and goal, what was tried and what was observed (symptoms, error messages as the user saw them), then the deliverable ask.
+- Every gold `answer` must BE that program: exactly one fenced ```python block and NOTHING outside it, with any needed explanation as inline comments, ending with the prints/assertions the question demands.
+- Programs must run offline with no API key --- whenever a language model is needed, use the offline LM stub the library itself ships for its own tests (`dspy.utils.dummies.DummyLM`) --- so that every reference answer can be executed and verified in a sandbox.
+
+## Mission
+- Target primary label: `lm_provider_integration_and_configuration`
+- Label description: `Users are trying to connect DSPy to specific LM backends—local models, Hugging Face/vLLM servers, OpenAI-compatible APIs, Bedrock, Vertex, and custom endpoints—and make those clients work end to end. Their friction centers on DSPy's LM client wrappers: which providers and API modes are supported, and how endpoint, auth, and request-generation options such as max_tokens, headers, timeouts, regions, and other kwargs are passed through.`
+- Produce exactly `20` candidate QA pairs.
+- The final benchmark will evaluate an answering agent that has access to the DSPy.
+- You may use both code and docs right now to understand DSPy deeply, but every final answer must be recoverable from the code roots listed below alone (no docs at answer time).
+
+## Available context
+- DSPy code roots the answering agent will also see:
+- `dspy/` --- the DSPy library source
+- `tests/` --- its test suite
+- Documentation under `docs/` for privileged generation-time orientation only (the answering agent might or might not have these)
+- Sampled community QA sessions below, which represent realistic user-question distribution for the target label
+
+## How to use the sampled community QA
+- The sampled community sessions are the **distribution we want to match**, not just a tone reference. Real DSPy users hit real friction --- that is the question gold mine. Anchor each generated question in what a user in the seeds was actually trying to do or observing.
+- Real community questions are often vague, mis-framed, or mixed with multiple issues. Your job is to **sharpen, not imitate**: keep the user framing ("I'm trying to X and I see Y"), drop the noise, and commit to one crisp locator-hard question.
+- **Do not trust the community answer as ground truth.** The answers in the seed sessions were written by a weaker assistant and are frequently wrong, incomplete, or out of date. Treat them only as hints about what the user was confused about. Your gold `answer` must be re-derived from the actual DSPy source and docs --- read the code, verify the behavior, and cite `code_evidence` by file and symbol. If the community answer contradicts the code, the code wins.
+- Do **not** copy or lightly paraphrase a sampled question; upscale by sharpening the behavioral framing.
+
+## Naming discipline (critical --- the locator is the challenge)
+The answering agent has grep/glob/read over the full DSPy repo and tests. If the question text names the specific class, method, file, or internal helper that **is** the answer, you've given away the page number and turned this into a trivia question. The whole point of the benchmark is that *locating* the right code is half the work.
+
+**OK to name (brand-level, user-facing concepts that a real user would type):**
+- Public branded module and concept names a real user would type: `dspy.Predict`, `dspy.ChainOfThought`, `dspy.ReAct`, `dspy.Module`, `dspy.Signature`, `dspy.Example`, `dspy.Evaluate`, `dspy.LM`, `dspy.configure` / `dspy.context`, `DummyLM`.
+- User-facing concepts at brand granularity: signatures, input/output fields, demos, adapters (as a concept), optimizers / teleprompters (as a concept), metrics, tools, trajectories, conversation history, streaming, async, caching, saving/loading compiled programs.
+- User-visible exception or error names exactly as they appear in a traceback or error message the user would paste.
+- Anything the community user in the seed session typed first, at the same granularity they typed it.
+
+**Not OK to name (these attach the question to a specific implementation and leak the locator):**
+- The method or attribute on a branded class that contains the answer --- name the behavior, not the method.
+- Internal adapter / handler / parser / helper classes.
+- Internal helper functions, file paths, test-file names, private config flags, snake_case function names with dot-paths.
+- **Do not refer to "the X example / tutorial / notebook / walkthrough / demo / README / guide".** These phrasings are awkward and underspecified --- they point at an artifact as if a shared referent exists ("in the repo's multihop RAG example, ..."). A strong question stands on its own: describe the *scenario* or *setup* itself ("in a multi-hop retrieval pipeline where the model refines its query across hops, ..."), not the artifact that demonstrates it.
+- Examples for this codebase:
+- Internal adapter/parser/formatter classes or their methods --- name the formatting or parsing *behavior* instead.
+- Any `Class.method` attachment point (for example a branded class name with a `.method` suffix that is where the answer lives).
+- Internal helpers or dotted snake_case paths, and file paths such as `dspy/some/module.py` or `tests/some/test_file.py`.
+- Private flags or keyword arguments that only appear inside the implementation.
+
+Rule of thumb: if a reader can `grep -R "<token>"` and land within a few files of the answer, the token belongs in the gold `answer` and `code_evidence`, not in the question.
+
+**Bad (names the attachment point):**
+- "What does `Predict._forward_preprocess` do when the demo list is empty?" (names the internal helper --- the locator is given away)
+- "In `dspy/teleprompt/bootstrap.py`, how does the retry loop select candidate demonstrations?" (names the file path)
+
+**Good (forces the agent to locate):**
+- "I compiled a program with an optimizer, saved it, and loaded it in a fresh process --- my demos came back, but a piece of my configuration silently did not. Give me a complete, runnable round-trip program (save, then load in a fresh instance, offline with `DummyLM`, no API key) that reproduces this and prints the loaded program's state at the end, proving exactly what survives the round-trip and what resets." (behavioral symptom; the agent must locate the persistence logic; the deliverable is a program that proves the answer)
+- "Two of my output fields have similar names, and one sometimes comes back empty even though the raw completion clearly contains the text. Write a minimal offline repro --- a small signature plus `DummyLM`-driven calls --- that triggers the failure, then prints the parsed fields so the empty-field behavior is undeniable." (describes observed behavior; forces locating the parsing mechanism; demands a runnable proof)
+
+Walk this line carefully: a good question is **specific enough** that a careful reader of the repo converges on one well-defined answer, and **general enough** in wording that no symbol name gives the answer away. If the question could match a dozen unrelated places in the repo, it's too generic; tighten by adding behavioral constraints, not by naming the class.
+
+## Required quality bar
+- Questions should read like a thoughtful senior user describing **what they observed or what they want to accomplish**, not like an exam asking about a specific symbol.
+- Questions must be difficult enough that they require synthesis across files, abstractions, behavior, tests, edge cases, or design tradeoffs.
+- Prefer questions whose answers require reading implementation and tests together.
+- Gold answers should be concise but precise, and must be supported by `code_evidence` pointing into actual DSPy source (not just paraphrased from the seed's community answer).
+- `code_evidence` must cite only real files under the code roots (`dspy/`, `tests/`), and each cited filename must match the pattern `*.py` (files with other extensions are out of scope and will be rejected).
+- Provide at least two evidence items per candidate.
+- Difficulty must be either `hard` or `very_hard`.
+
+## Hard bans
+- No documentation-only questions.
+- No questions about exact wording from docs, tutorials, README, notebooks, or guides.
+- No "in the X example / tutorial / notebook / walkthrough / demo / README / guide" phrasings. Describe the scenario itself.
+- No trivial "does DSPy have X?" or single-symbol existence questions.
+- No one-grep questions with an obvious single-line answer.
+- No ambiguous or underspecified questions.
+- No questions whose answers depend on privileged docs rather than code/tests.
+- No questions that violate the naming discipline above (no internal class/method/helper names, no file paths, no `Class.method` attachment points).
+- No questions whose gold answer rests on "the seed said so" rather than on verified code behavior.
+
+## Sampling anchors
+The JSON block below contains the sampled community sessions for the target label. Use it to preserve the real-world distribution while raising the quality bar sharply.
+
+[
+  {
+    "number": 416,
+    "question": "How to use endpoint for model published on EC-2 server\n\nHi, I was wondering if we use custom endpoint for LM. I have published my model on an ec2-machine and calling my model vi API through endpoint to do inference tasks. I am not sure how to integrate it with dspy.",
+    "community_answers": [
+      "It depends on what API the server provides. Is this a HuggingFace TGI server? Or VLLM? Or Ollama?",
+      "Also, see this generic interface I found very useful for something like this: https://dspy-docs.vercel.app/docs/deep-dive/language_model_clients/custom-lm-client"
+    ]
+  },
+  {
+    "number": 776,
+    "question": "Support for Fireworks API Models with DSPY\n\nHello DSPY community. I am trying to work out why my use of firework is failing when loaded into DSPY. I've been trying to find an example without success, but I'm hoping someone who has experience with getting hosted models to work can clue me in to how to do this with dspy. My code is this:\n[code]\nThe output is this:\n[code]\nWhat the output shows is\n1) the Fireworks API key is correct.\n2) the model I am using can be found and used by my python code.\n3) something about DSPY loading the model causes it to fail.\nThis seems like a bug. I thought I would report it and ask if there is a way to load models from Fireworks into DSPY? If not, I think it would be a good feature, as my students don't have the resources to deal with local models, or hosted models at cost. Fireworks offers free way for them to experiment with and learn DSPY. Thanks.",
+    "community_answers": []
+  },
+  {
+    "number": 487,
+    "question": "DSPy framework and support for AWS BedRock\n\nhi,\nCan someone please let me know whether **DSPy** framework support models hosted on **AWS Bedrock**? And can I use `dspy.OpenAI() `for Bedrock as well? It would be really great if someone can share me an example of `dspy.OpenAI() `with bedrock endpoint.",
+    "community_answers": [
+      "Hi @deepuak , \r\n\r\nDSPy supports AWS Bedrock! Check out [dspy.Bedrock](https://github.com/stanfordnlp/dspy/blob/main/dsp/modules/bedrock.py) and the underlying [AWSLM](https://github.com/stanfordnlp/dspy/blob/main/dsp/modules/aws_lm.py) class.\r\n\r\nYou can use this directly `dspy.Bedrock(region_name=..., model=..., ...)` instead of `dspy.OpenAI()`. \r\n",
+      "Documentation - [DSPy AWS Provider](https://dspy-docs.vercel.app/api/language_model_clients/aws_providers)",
+      "The above documentation returns 404 NOT_FOUND. Has it been moved to a different place or does dspy not provide with AWS Bedrock anymore?"
+    ]
+  },
+  {
+    "number": 8206,
+    "question": "How to set specific model arguments?\n\nFor instance I want to set top_p or top_k (my endpoint does support), or I want to have `enable_thinking` to `False`, which is for models like Qwen3 which are uniform reasoning/non-reasoning models at the same time.\nhttps://huggingface.co/Qwen/Qwen3-32B#switching-between-thinking-and-non-thinking-mode\n(I'm using vLLM to host the model)",
+    "community_answers": [
+      "Pass the arguments that your provider/server (in this case vLLM) recognizes, in the constructor to dspy.LM",
+      "@ItzAmirreza  is isn't problem with DSPys you configure this when you serve the model with vllm, sglang..etc\nin the tokenizer_kwargs or model_kwrags for your case it's the tokenizer_kwargs ",
+      "> Pass the arguments that your provider/server (in this case vLLM) recognizes, in the constructor to dspy.LM\n\nHow to convey it? Could you provide some examples? Thank you.\n"
+    ]
+  },
+  {
+    "number": 58,
+    "question": "how to use hf client\n\nHi, I hope this is the correct place to ask but I can't figure out how to run dsp with hf-client.\nSo far I have managed to get the hf-server running.\nBut I can't figure out how to use the hf-client.\nI start the server with:\n`python -m dsp.modules.hf_server --port 4242 --model \"google/flan-t5-base\"`\nWith curl everything is fine:\n**Client**:\n`curl -d '{\"prompt\":\"What is the answer to life, the universe, and everything?\"}' \\\n-X POST \" \" \\\n-H 'Content-Type: application/json' `\n`{\"prompt\":\"What is the answer to life, the universe, and everything?\",\"choices\":[{\"text\":\"atoms\"}],\"latency\":22557.142734527588}`\n**Server**:\n[code]\nAfterward I tried to use the hf_client similar to the intro notebook.\n**Client:**\n[code]\n**Server:**\n`INFO: 141.56.132.131:0 - \"POST /%3A HTTP/1.1\" 404 Not Found`",
+    "community_answers": [
+      "Thanks for looking into this! This HF side of DSP is not very mature right now, so let us know if you face any issues. The FLAN models may not be ideal here based on our initial testing ",
+      "Yeah, you may see better results with decoder-only models, like the ones you mentioned, especially if you use closed LLMs as the demonstrator. We’ll share more soon ",
+      "Yup we already have these LoRAs — @paridhimaheshwari2708 maybe we should merge something soon?"
+    ]
+  },
+  {
+    "number": 1150,
+    "question": "Add support for Amazon Bedrock Claude 3 models\n\nWhile DSPy can be used easily with Claude 2 and Claude Instant models, DSPy does not support the Messages API which is required to use the new Claude 3 (Haiku/Sonnet/Opus) models in Amazon Bedrock. Please support the new Messages API.\n1. Use the following code:\n[code]\n2. See it working\n3. Change the model ID to `anthropic.claude-3-haiku-20240307-v1:0`\n4. Run the code again and see it fail with error: `ValidationException: An error occurred (ValidationException) when calling the InvokeModel operation: \"claude-3-haiku-20240307\" is not supported on this API. Please use the Messages API instead.`",
+    "community_answers": [
+      "This doesn't work for me :(\n\n```\nPython 3.9.23 (main, Jul 19 2025, 00:11:52)\nType 'copyright', 'credits' or 'license' for more information\nIPython 8.12.0 -- An enhanced Interactive Python. Type '?' for help.\n\nIn [1]: import dspy\n\nIn [2]: dspy.AWSAnthropic\n---------------------------------------------------------------------------\nAttributeError                            Traceback (most recent call last)\nCell In[2], line 1\n----> 1 dspy.AWSAnthropic\n\nAttributeError: module 'dspy' has no attribute 'AWSAnthropic'\n\nIn [4]: dspy.__version__\nOut[4]: '2.6.27'\n```"
+    ]
+  },
+  {
+    "number": 778,
+    "question": "Support for vLLM chat completion endpoint\n\nCurrently, i noticed the module HFClientVLLM only calls the completion endpoints. As vLLM now support applying chat templates. Would it be possible to add support for chat completion endpoints?\nthe following is a naive approach to add a chat completion support, edited the _generate method for HFClientVLLM\n[code]",
+    "community_answers": [
+      "Thanks @noobHappylife ! Happy to merge a PR for this change."
+    ]
+  },
+  {
+    "number": 799,
+    "question": "Is there a generic way to change model's `max_tokens` dynamically?\n\nI have a use case where I want to use the same LM in different steps with different `max_tokens` and context size. I use `dspy.configure` to set this LM.\nSome of my steps will require much shorter output, so it would be useful to do something like this:\n[code]\nIs it currently possible to simulate this? If yes, how can I specify pass this to lm's `kwargs`?\nObviously one could do this by resetting `dspy.context(lm=...)` but it would be pretty cumbersome, it also seems for me that the point of `dspy.configure` to set LM is that the modules should abstract over what LM is actually used (but setting a key parameter like the context length or number of generated tokens seems reasonable).",
+    "community_answers": [
+      "I believe there is a [context manager](https://github.com/stanfordnlp/dspy/issues/168#issuecomment-1763406841) for this.\r\n\r\n```python\r\nwith dspy.settings.context(max_tokens=32):\r\n    result = module1(first_input)\r\n\r\nwith dspy.settings.context(max_tokens=128):\r\n   result = module2(first_input)\r\n```",
+      "@lambdaofgod  you can set the LM per step through the context manager and dynamically change the respective LM's tokens as needed:\r\n\r\n```\r\nwith dspy.context(lm=dspy.OpenAI(...., max_tokens= x)):\r\n  ....\r\nwith dspy.context(lm=dspy.OpenAI(...., max_tokens= x+1)):\r\n  ....\r\n\r\n```\r\n\r\n\r\n",
+      "@lambdaofgod would `dspy.settings.config['lm'].kwargs['max_tokens'] = ..` cover the abstraction here?\r\n\r\nyou wouldn't have to expose the defined lm and can still wrap modules using `with dspy.context(lm = lm)`\r\n\r\n```\r\nlm = dspy.OpenAI(model=..., max_tokens=32)\r\n\r\ndspy.settings.configure(lm=lm)\r\n\r\nwith dspy.settings.context(lm= lm):\r\n    result = module1(first_input)\r\n\r\ndspy.settings.config['lm'].kwargs['max_tokens'] = 128\r\n\r\nwith dspy.settings.context(lm= lm):\r\n   result = module2(first_input)\r\n```\r\n"
+    ]
+  },
+  {
+    "number": 1119,
+    "question": "Where does this model call the OpenAI API?\n\n\"Where does this model call the OpenAI API? I want to call my own API interface, but I can't find the configuration file. Where should I configure it?",
+    "community_answers": [
+      "This is the code that connects to OpenAI: https://github.com/stanfordnlp/dspy/blob/main/dsp/modules/gpt3.py\r\nSetting `api_base` might be enough when initializing the LM.\r\n```\r\n    def __init__(\r\n        self,\r\n        model: str = \"gpt-3.5-turbo-instruct\",\r\n        api_key: Optional[str] = None,\r\n        api_provider: Literal[\"openai\"] = \"openai\",\r\n        api_base: Optional[str] = None,\r\n        model_type: Literal[\"chat\", \"text\"] = None,\r\n        system_prompt: Optional[str] = None,\r\n        **kwargs,\r\n    ):\r\n```\r\n\r\nRelated issue: https://github.com/stanfordnlp/dspy/issues/1075"
+    ]
+  },
+  {
+    "number": 1360,
+    "question": "Support for AWS Credentials Input in dspy.Bedrock\n\nI would like to request support for **providing AWS credentials directly as input parameters** in the **dspy.Bedrock** function\n**Current Behavior:**\nCurrently, the dspy.Bedrock function supports setting the AWS region and Profile but does not allow for AWS credentials (access key and secret access key) to be provided directly. The only method available is to use an AWS profile through the profile_name option, which assumes credentials are managed via the AWS credentials file.\n**Desired Behavior:**\nTo enhance flexibility and use cases, I propose adding parameters to the dspy.Bedrock function that accept AWS credentials directly. This would allow users to specify:\naws_access_key_id\naws_secret_access_key\nThank you",
+    "community_answers": [
+      "Hi @joanacmesquitaf , feel free to add a PR to [`dspy.Bedrock`](https://github.com/stanfordnlp/dspy/blob/main/dsp/modules/aws_providers.py#L114) as needed.\r\n\r\nAdditionally, this can also be configured by setting environment variables. Relevant example in this [issue](https://github.com/stanfordnlp/dspy/issues/1275)",
+      "Thanks for opening this! We released DSPy 2.5 yesterday. I think the new `dspy.LM` and the underlying `dspy.ChatAdapter` will probably resolve this problem.\r\n\r\nHere's the (very short) migration guide, it should typically take you 2-3 minutes to change the LM definition and you should be good to go: https://github.com/stanfordnlp/dspy/blob/main/examples/migration.ipynb\r\n\r\nPlease let us know if this resolves your issue. I will close for now but please feel free to re-open if the problem persists.",
+      "I’ve successfully compiled programs in version 2.5 using Bedrock. I encourage migrating from 2.4, as it has issues with context length.\r\n\r\nFirst, I created environment variables in the .env file: AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, and AWS_REGION_NAME.\r\n\r\nThen, add \"bedrock/\" before the model ID. For example:\r\n\r\n`m =  dspy.LM(model=\"bedrock/eu.meta.llama3-2-3b-instruct-v1:0\")`"
+    ]
+  }
+]
+
+Return JSON that matches the provided schema and nothing else.
+
+## Previously generated candidates (cross-batch uniqueness)
+This is batch 2 of a larger generation for the same label. The questions below were already generated in earlier batches for this label. Do NOT duplicate, lightly rephrase, or re-anchor on the same mechanism-plus-scenario as any of them; cover different mechanisms, APIs, edge cases, and user scenarios within the label.
+
+[
+  "I'm pointing DSPy at an OpenAI-compatible server that already works through the OpenAI client. The confusing part is that the same base URL behaves differently depending on whether I configure the model as chat-style or text-style, and I want to see the exact request shape DSPy produces before I blame the proxy.\n\nI suspect one path keeps the messages list and the other flattens everything into a single prompt, which would explain why one server route works and the other 404s. Give me a complete, runnable Python program that patches DSPy's outbound calls, creates one `dspy.LM` in chat mode and one in text mode against the same fake base URL, and prints/asserts which call path was used, what payload was sent, and that the text-style prompt ends with the exact response marker DSPy adds.",
+  "I have a text-style backend and expected my usual all-caps env vars like `OPENAI_API_KEY` to be enough. Instead, DSPy seems to find credentials only under provider-specific names, and I want proof of exactly what it reads before I change deployment config.\n\nShow me a complete, runnable Python program that patches the outbound text request, sets conflicting upper-case and lower-case env vars, then proves which values DSPy actually passes for the model string `openai/...` and that explicit `api_key` / `api_base` kwargs still win. Print the captured kwargs and assert the exact values.",
+  "I'm wiring Azure AD auth into an OpenAI-compatible deployment. My concern is that DSPy might serialize or eagerly call the token-provider callback instead of handing the callable through unchanged to the underlying client.\n\nGive me a complete, runnable Python program that patches the outbound chat request, passes a token-provider callable into `dspy.LM`, and proves with prints/assertions that DSPy forwards the same Python function object without invoking it first.",
+  "We run two OpenAI-compatible gateways behind different base URLs. I changed only `api_base`, kept the same prompt, and still got the first cluster's answer back out of cache, which makes me think DSPy might be ignoring endpoint fields when it computes its cache key.\n\nGive me a complete, runnable Python program that enables DSPy's cache, patches the outbound chat call to return a different answer per base URL, then proves with printed output and assertions that the second call reuses the first cached answer even though `api_base` and `api_key` changed.",
+  "I'm using `rollout_id` to separate repeated generations against the same compatible backend. The weird part is that server logs never show that field, but DSPy still seems to treat the requests as different for caching.\n\nGive me a complete, runnable Python program that turns on DSPy's cache, sends the same chat request twice with one `rollout_id` and once with another, and proves with prints/assertions that the provider never receives `rollout_id` while DSPy still creates separate cache entries for different nonzero-temperature rollouts.",
+  "I set temperature to 0 for deterministic evals and still passed `rollout_id` out of habit. I saw one warning the first time, then nothing, and I want a tiny proof of the exact behavior instead of a prose explanation.\n\nGive me a complete, runnable Python program that patches the outbound chat call, uses the same `dspy.LM` twice at temperature 0 with different `rollout_id` values, and prints/asserts that DSPy warns only on the first call.",
+  "I'm switching between `openai/gpt-5-mini` and `openai/gpt-5-chat` on the same code path. One configuration rejects my normal `temperature` / `max_tokens`, while the other accepts them, and I want to see the exact split DSPy makes between the reasoning family and the chat-branded variant.\n\nGive me a complete, runnable Python program that instantiates both models, proves which token field DSPy stores internally for each, and asserts that the reasoning-family configuration raises the expected error when I use an ordinary small `max_tokens` and non-1.0 temperature.",
+  "For a responses-style backend, I pass `reasoning_effort=\"low\"` and need to know whether DSPy forwards that raw field or rewrites it to the newer nested shape before it leaves the process. I don't want docs; I want a capture of the exact request DSPy emits.\n\nGive me a complete, runnable Python program that patches the outbound responses call, sends one prompt through a `dspy.LM` configured for the responses API, and prints/asserts the exact request fields so it's obvious whether `reasoning_effort` survived or became a nested `reasoning` object.",
+  "Some responses-style backends expect a developer message instead of a system message. I saw DSPy has a switch for that, but I need to confirm whether it changes only responses mode or also normal chat mode.\n\nGive me a complete, runnable Python program that patches both outbound paths, sends the same system+user messages through chat mode and responses mode with the developer-role switch enabled, and prints/asserts the first role DSPy sent in each case.",
+  "I'm sending a Pydantic model as the structured-output contract while using a responses-style backend. The provider keeps complaining about the wrong field name, so I need to inspect the exact JSON DSPy sends when I pass that schema.\n\nGive me a complete, runnable Python program that patches the outbound responses call, passes a Pydantic model as the response format, and prints/asserts the captured payload so it's undeniable whether DSPy kept a top-level `response_format` field or converted it into the responses API text-format schema.",
+  "I'm migrating a multimodal workflow to a responses-style backend and need to send text plus an image plus a file in one request. I can build the chat-style content list myself, but I don't know how DSPy reshapes it for the responses payload.\n\nGive me a complete, runnable Python program that patches the outbound responses call, sends one message containing text, an image URL, and a file, and prints/asserts the converted payload so the final content types and fields are proven exactly.",
+  "My tool loop expects DSPy to hand back a consistent structure even when a responses-style model emits only a function call and no text. Before I rewrite the loop, I want a tiny offline proof of the exact output object DSPy returns in that case.\n\nGive me a complete, runnable Python program that feeds a fake responses-style function-call-only result through `dspy.LM` and ends with prints/assertions proving the returned structure exactly.",
+  "On a reasoning-capable non-OpenAI chat backend, I want to pass `reasoning_effort` through and keep the model's reasoning trace in the returned value. I'm not asking whether the provider supports it in theory; I need to see what DSPy does with both the request and the parsed response.\n\nGive me a complete, runnable Python program that patches the outbound chat call, returns one fake answer with reasoning content, and prints/asserts both the captured request kwargs and the parsed DSPy output.",
+  "I saved a DSPy program that had a private endpoint override, then loaded it later and the override silently disappeared. Before I call that a bug, I want a minimal round-trip that proves the default load behavior and the explicit opt-in side by side.\n\nGive me a complete, runnable Python program that saves a program to JSON, injects an endpoint override into the serialized LM state, loads it once normally and once with the unsafe-state opt-in, and prints/asserts the loaded LM kwargs so the difference is undeniable.",
+  "I need to hand a saved DSPy program to another team and want proof that the JSON won't leak my API key while still preserving the rest of the LM settings. Give me a runnable save-to-disk repro, not just a claim.\n\nShow me a complete, runnable Python program that saves a predictor with an LM containing an API key, reads the JSON back, and ends with prints/assertions proving the key is absent while ordinary settings like model name and token limits survive.",
+  "I'm wrapping my own gateway in a custom `dspy.BaseLM`. Typed JSON outputs only seem to work when DSPy believes the backend can accept a schema, and I need to know the minimum capability contract I have to advertise from the LM object.\n\nGive me a complete, runnable Python program that defines tiny offline `dspy.BaseLM` wrappers with different capability flags, runs the same `dspy.Predict` + `dspy.JSONAdapter` call through each one, and prints/asserts whether DSPy sent a structured schema, plain `json_object`, or no response-format hint at all.",
+  "My custom backend can follow JSON instructions but not native tool calling. When I include a tool-calls output field, I need to know whether DSPy still tries schema-guided structured outputs or whether it deliberately falls back to plain JSON mode.\n\nGive me a complete, runnable Python program that uses a custom offline `dspy.BaseLM`, runs a small `dspy.Predict` through `dspy.JSONAdapter` with native function calling disabled, and prints/asserts the exact `response_format` DSPy sent plus the parsed answer/tool-call result.",
+  "I want DSPy to launch a local Hugging Face model for me and then point the client at the spawned server. What I can't tell from the outside is how DSPy normalizes the model string before launch and what connection details it writes back onto the LM afterward.\n\nGive me a complete, runnable Python program that mocks the local launcher, starts from a model string with the usual public prefixes, and prints/asserts the exact subprocess command plus the final `api_base` / `api_key` values DSPy places on the LM object.",
+  "One local model path on our box contains spaces, and another accidental model string literally contains `--trust-remote-code`. I need proof that DSPy treats the whole thing as model-path data and does not split it into extra CLI flags when it launches the server.\n\nGive me a complete, runnable Python program that mocks the local launcher with a model string containing spaces and `--trust-remote-code`, then prints/asserts the subprocess command so it's obvious the path stayed a single list element and did not become separate flags.",
+  "I'm using OpenAI-compatible model names and assumed DSPy would auto-pick a fine-tuning provider from any provider-like string. Instead, some model IDs behave like OpenAI and others immediately tell me to set a provider explicitly.\n\nGive me a complete, runnable Python program that instantiates `dspy.LM` for an `openai/...` model, an `ft:...` model, and an `azure/...` model, then prints/asserts which provider each one gets and that the non-inferred case raises the fine-tuning error until I pass an explicit provider object."
+]

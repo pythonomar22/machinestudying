@@ -1,0 +1,88 @@
+{
+ "id": "dspy_83100411122a",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I'm checking whether a saved program can smuggle endpoint overrides back into a fresh environment. What I care about is the default safety behavior when the serialized LM state contains something like `api_base` that I did not want to trust on load.\n\nThe confusing part is that the LM itself should still reload, just without the unsafe endpoint setting unless I explicitly opt in. I want a repro that edits the saved JSON by hand, loads it once in the safe path and once in the opt-in path, and shows the difference directly.\n\nGive me a complete, runnable Python program that performs that round-trip entirely offline and proves which setting survives by default and which only survives with the unsafe-load flag.",
+ "gold_answer": "```python\nimport json\nimport tempfile\nimport dspy\n\noverride = 'http://override.local/v1'\np = dspy.Predict('q -> a')\np.lm = dspy.LM(model='openai/gpt-4o-mini')\n\nwith tempfile.TemporaryDirectory() as tmpdir:\n    path = f'{tmpdir}/m.json'\n    p.save(path)\n    data = json.load(open(path))\n    data['lm']['api_base'] = override\n    json.dump(data, open(path, 'w'))\n\n    safe = dspy.Predict('q -> a')\n    safe.load(path)\n    assert 'api_base' not in safe.lm.kwargs\n\n    unsafe = dspy.Predict('q -> a')\n    unsafe.load(path, allow_unsafe_lm_state=True)\n    assert unsafe.lm.kwargs['api_base'] == override\n\n    print('safe:', safe.lm.kwargs)\n    print('unsafe:', unsafe.lm.kwargs)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The repro performs a file round-trip: it saves a `dspy.Predict` that already has an attached LM, reopens the saved JSON, and manually injects an endpoint override under the serialized `lm` object (for example `api_base`).",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Loading the edited file through the default path must still reconstruct the LM object, so the safe reload has `lm` present rather than failing or leaving it unset.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "That same default load must ignore the injected endpoint override, so the safe reload's `lm.kwargs` does not contain the override by default.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "A second load of the same edited file with `allow_unsafe_lm_state=True` must preserve the injected override, so the opt-in reload exposes that value in `lm.kwargs`.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The safe/unsafe difference comes from load-time sanitization: unsafe LM-state keys such as `api_base` are filtered before rebuilding `self.lm` unless `allow_unsafe_lm_state=True` is passed.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/predict.py",
+   "start_line": 22,
+   "end_line": 40,
+   "excerpt": "0022: UNSAFE_LM_STATE_KEYS = {\"api_base\", \"base_url\", \"model_list\"}\n0023: \n0024: \n0025: def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:\n0026:     if allow_unsafe_lm_state:\n0027:         return lm_state\n0028: \n0029:     unsafe_keys = sorted(UNSAFE_LM_STATE_KEYS.intersection(lm_state))\n0030: \n0031:     if not unsafe_keys:\n0032:         return lm_state\n0033: \n0034:     sanitized_lm_state = {k: v for k, v in lm_state.items() if k not in UNSAFE_LM_STATE_KEYS}\n0035:     logger.warning(\n0036:         \"Ignoring unsafe LM config key(s) during state load: %s. \"\n0037:         \"Pass allow_unsafe_lm_state=True to preserve these keys for trusted files.\",\n0038:         unsafe_keys,\n0039:     )\n0040:     return sanitized_lm_state"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/predict.py",
+   "start_line": 92,
+   "end_line": 111,
+   "excerpt": "0092:     def load_state(self, state: dict, *, allow_unsafe_lm_state: bool = False) -> \"Predict\":\n0093:         \"\"\"Load the saved state of a `Predict` object.\n0094: \n0095:         Args:\n0096:             state: The saved state of a `Predict` object.\n0097:             allow_unsafe_lm_state: If True, preserves `api_base`, `base_url`, and `model_list` from\n0098:                 serialized LM state. Enable only when loading trusted files.\n0099: \n0100:         Returns:\n0101:             Self to allow method chaining.\n0102:         \"\"\"\n0103:         excluded_keys = [\"signature\", \"extended_signature\", \"lm\"]\n0104:         for name, value in state.items():\n0105:             # `excluded_keys` are fields that go through special handling.\n0106:             if name not in excluded_keys:\n0107:                 setattr(self, name, value)\n0108: \n0109:         self.signature = self.signature.load_state(state[\"signature\"])\n0110:         sanitized_lm_state = _sanitize_lm_state(state[\"lm\"], allow_unsafe_lm_state) if state[\"lm\"] else None\n0111:         self.lm = LM(**sanitized_lm_state) if sanitized_lm_state else None"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 262,
+   "end_line": 284,
+   "excerpt": "0262: @pytest.mark.parametrize(\"endpoint_override_key\", [\"api_base\", \"base_url\"])\n0263: def test_load_ignores_serialized_endpoint_override_by_default(tmp_path, endpoint_override_key):\n0264:     file_path = tmp_path / \"model.json\"\n0265:     override_url = \"http://override.local/v1\"\n0266:     original_predict = dspy.Predict(\"q->a\")\n0267:     original_predict.lm = dspy.LM(model=\"openai/gpt-4o-mini\")\n0268:     original_predict.save(file_path)\n0269: \n0270:     with open(file_path, \"rb\") as f:\n0271:         saved_state = orjson.loads(f.read())\n0272:     saved_state[\"lm\"][endpoint_override_key] = override_url\n0273:     with open(file_path, \"wb\") as f:\n0274:         f.write(orjson.dumps(saved_state))\n0275: \n0276:     with patch(\"dspy.predict.predict.logger.warning\") as warning_mock:\n0277:         loaded_predict = dspy.Predict(\"q->a\")\n0278:         loaded_predict.load(file_path)\n0279: \n0280:     assert loaded_predict.lm is not None\n0281:     assert endpoint_override_key not in loaded_predict.lm.kwargs\n0282:     warning_mock.assert_called_once()\n0283:     assert warning_mock.call_args.args[1] == [endpoint_override_key]\n0284: "
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 286,
+   "end_line": 306,
+   "excerpt": "0286: @pytest.mark.parametrize(\"endpoint_override_key\", [\"api_base\", \"base_url\"])\n0287: def test_load_allows_serialized_endpoint_override_with_opt_in(tmp_path, endpoint_override_key):\n0288:     file_path = tmp_path / \"model.json\"\n0289:     override_url = \"http://override.local/v1\"\n0290:     original_predict = dspy.Predict(\"q->a\")\n0291:     original_predict.lm = dspy.LM(model=\"openai/gpt-4o-mini\")\n0292:     original_predict.save(file_path)\n0293: \n0294:     with open(file_path, \"rb\") as f:\n0295:         saved_state = orjson.loads(f.read())\n0296:     saved_state[\"lm\"][endpoint_override_key] = override_url\n0297:     with open(file_path, \"wb\") as f:\n0298:         f.write(orjson.dumps(saved_state))\n0299: \n0300:     with patch(\"dspy.predict.predict.logger.warning\") as warning_mock:\n0301:         loaded_predict = dspy.Predict(\"q->a\")\n0302:         loaded_predict.load(file_path, allow_unsafe_lm_state=True)\n0303: \n0304:     assert loaded_predict.lm is not None\n0305:     assert loaded_predict.lm.kwargs[endpoint_override_key] == override_url\n0306:     warning_mock.assert_not_called()"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Demonstrates the default LM-state sanitization policy instead of only reading it from code.",
+ "source_index": 7,
+ "smalldspy_scope": true
+}

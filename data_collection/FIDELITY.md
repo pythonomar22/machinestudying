@@ -492,3 +492,52 @@ two-corpus note).
   the 21 in-scope candidates); no human review anywhere (declared gap);
   decontamination-by-dropping vs the 30 test questions has NOT yet been
   run — it is the remaining allowed test-set interaction before use.
+
+## Rev-3: the 100-question scale-up (2026-07-22, `artifacts2/`)
+
+Goal: 100 final questions instead of 32, same pipeline, same paper
+ratios. Everything lives in `artifacts2/` (selected via `DC_ARTIFACTS`);
+`artifacts/` and the rev-2 sets remain untouched and authoritative for
+experiments 006–007.
+
+**What is cloned (identical inputs, copied byte-for-byte):**
+- Stages 1–3 artifacts (scrape, filter, topics/embeddings) — the seed
+  universe and clustering are unchanged.
+- Stage 3a batch 0 per topic: the rev-2 generation outputs. Verified
+  before adoption: the rev-3 batch-0 seed selection and prompt are
+  byte-identical to rev-2's (recomputed, asserted), so the archived
+  candidates ARE what a fresh batch-0 run would sample from; raw
+  last-messages/events/prompts copied with `_b0` names.
+
+**What is new (deviations, in the spirit of the smallest departure):**
+- Generation runs `DC_GEN_BATCHES=3` sessions of 20 per topic (the
+  proven session shape) instead of one session of 60: 60 candidates per
+  topic, 240 total. Batch b anchors on centroid ranks [10b, 10b+10);
+  batch 1 is disjoint from batch 0 everywhere; batch 2 wraps only on the
+  22-member evaluation_metrics topic (8 reused seeds). Batches 1–2 carry
+  an explicit anti-duplication section listing all earlier batches'
+  question texts; a deterministic verbatim-duplicate check runs per
+  batch and at merge. The paper's own seed-sampling method for its 20
+  remains unpublished; rank-partitioning is our extension of the
+  nearest-centroid reconstruction.
+- Critic keeps round(60 × 5/12) = 25 per topic — the paper's 5/12
+  selectivity carried to the larger pool (rev-2: round(20 × 5/12) = 8).
+  One critic session reviews all 60 candidates of its topic together, so
+  cross-batch near-duplicates are dropped by the same judge that
+  enforces diversity ("overly similar to another candidate", A.3
+  verbatim).
+- Stages 4–5 (files 6/7) are unchanged except `DC_WORKERS`.
+
+Target: 4 × 25 = 100 bundles into stage-5 optimization; drops (if any)
+are reported, not backfilled silently.
+
+**Rev-3 results (2026-07-22):** 240/240 candidates (3 batch sessions
+needed one corrective retry each — single-fence violations); 100
+finalists (25 × 4, indices spanning all batches); 100/100 rubric
+bundles first-attempt valid; **100/100 optimized, zero drops**, 9
+revised once, all self-scores exactly 100; derived SmallDSPy set 14
+questions; decontamination screen vs the 30 test questions: max 3-gram
+Jaccard 0.028 (threshold 0.35), nothing dropped. Final sets:
+`artifacts2/7_optimize_bundles/7_fulldspy_validation.jsonl` (100) and
+`7_smalldspy_validation.jsonl` (14). Experiment record:
+`experiments/009-validation-set-100q.md`.

@@ -1,0 +1,111 @@
+{
+ "id": "dspy_92133acc8750",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I want my evaluator to return more than a bare float. In addition to the numeric score, I want per-example feedback text that I can inspect after the run, but I don't know whether DSPy keeps that structured object or flattens it away when computing the aggregate.\n\nWhat I need is a tiny offline proof, not a description. Give me a complete, runnable Python program that uses `DummyLM`, returns a structured score-plus-feedback object from the metric, and then prints/asserts both the aggregate percentage and the preserved per-example feedback inside the evaluation results.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.utils.dummies import DummyLM\n\n\ndspy.configure(\n    lm=DummyLM(\n        {\n            \"capital\": {\"answer\": \"Paris\"},\n            \"port\": {\"answer\": \"Lyon\"},\n        }\n    )\n)\n\nprogram = dspy.Predict(\"question -> answer\")\ndevset = [\n    dspy.Example(question=\"capital\", answer=\"Paris\").with_inputs(\"question\"),\n    dspy.Example(question=\"port\", answer=\"Marseille\").with_inputs(\"question\"),\n]\n\n\ndef scored_metric(example, prediction):\n    correct = prediction.answer == example.answer\n    return dspy.Prediction(\n        score=1.0 if correct else 0.25,\n        feedback=\"exact match\" if correct else f\"expected {example.answer}, got {prediction.answer}\",\n    )\n\n\nresult = Evaluate(devset=devset, metric=scored_metric, display_progress=False)(program)\nsecond_score = result.results[1][2]\nprint(result.score)\nprint(type(second_score).__name__, second_score.score, second_score.feedback)\nassert isinstance(second_score, dspy.Prediction)\nassert second_score.score == 0.25\nassert second_score.feedback == \"expected Marseille, got Lyon\"\nassert result.score == 62.5\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The metric function returns a structured `dspy.Prediction` object with a numeric `score` field and feedback text, rather than a bare float.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program runs `Evaluate(...)(program)` and inspects `result.results[i][2]`, because the returned `EvaluationResult` stores per-example tuples as `(example, prediction, score)` and preserves the metric return value in that third slot.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program asserts that `result.score` is `62.5`, demonstrating that DSPy aggregates the structured metric objects by their numeric `score` values and reports the percentage average.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The extracted per-example metric object is asserted to still be a `dspy.Prediction`, and its `.score` and `.feedback` are checked against the expected failing-example values.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The proof is deterministic and offline by wiring fixed LM outputs with `DummyLM` so one example is correct and the other is incorrect, exercising both success and failure feedback paths.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 5,
+   "statement": "The script prints both the aggregate score and the extracted per-example metric details (`type`, `score`, and `feedback`) in addition to asserting them.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 170,
+   "end_line": 173,
+   "excerpt": "0170:         def process_item(example):\n0171:             prediction = program(**example.inputs())\n0172:             score = metric(example, prediction)\n0173:             return prediction, score"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 175,
+   "end_line": 180,
+   "excerpt": "0175:         results = executor.execute(process_item, devset)\n0176:         assert len(devset) == len(results)\n0177: \n0178:         results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]\n0179:         results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results, strict=False)]\n0180:         ncorrect, ntotal = sum(score for *_, score in results), len(devset)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 223,
+   "end_line": 226,
+   "excerpt": "0223:         return EvaluationResult(\n0224:             score=round(100 * ncorrect / ntotal, 2),\n0225:             results=results,\n0226:         )"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/primitives/prediction.py",
+   "start_line": 53,
+   "end_line": 70,
+   "excerpt": "0053:     def __float__(self):\n0054:         if \"score\" not in self._store:\n0055:             raise ValueError(\"Prediction object does not have a 'score' field to convert to float.\")\n0056:         return float(self._store[\"score\"])\n0057: \n0058:     def __add__(self, other):\n0059:         if isinstance(other, (float, int)):\n0060:             return self.__float__() + other\n0061:         elif isinstance(other, Prediction):\n0062:             return self.__float__() + float(other)\n0063:         raise TypeError(f\"Unsupported type for addition: {type(other)}\")\n0064: \n0065:     def __radd__(self, other):\n0066:         if isinstance(other, (float, int)):\n0067:             return other + self.__float__()\n0068:         elif isinstance(other, Prediction):\n0069:             return float(other) + self.__float__()\n0070:         raise TypeError(f\"Unsupported type for addition: {type(other)}\")"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 143,
+   "end_line": 147,
+   "excerpt": "0143:             The evaluation results are returned as a dspy.EvaluationResult object containing the following attributes:\n0144: \n0145:             - score: A float percentage score (e.g., 67.30) representing overall performance\n0146: \n0147:             - results: a list of (example, prediction, score) tuples for each example in devset"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "",
+ "source_index": 2,
+ "smalldspy_scope": false
+}

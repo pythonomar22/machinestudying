@@ -1,0 +1,101 @@
+{
+ "id": "dspy_a2cde9bdbaf5",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I am using the two-stage prompt path because I want a natural first response and a second pass to extract fields, but I also pass demonstrations to the program. What I cannot tell is whether those demos influence only the first request or whether they are copied into the extraction request too.\n\nI need a real offline proof with two model histories, because prompt length is the issue here. Please make the evidence come from the actual recorded messages for both stages.\n\nGive me a complete, runnable Python program that runs offline with `DummyLM`, prints the first-stage and second-stage messages, and asserts that the demo appears only in the first-stage request and not in the extraction request.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass QA(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nmain_lm = DummyLM([{\"answer\": \"Paris\"}])\nextract_lm = DummyLM([{\"answer\": \"Paris\"}])\nadapter = dspy.TwoStepAdapter(extraction_model=extract_lm)\ndemo = {\"question\": \"Demo question\", \"answer\": \"Demo answer\"}\n\nwith dspy.context(lm=main_lm, adapter=adapter):\n    result = dspy.Predict(QA)(question=\"Live question\", demos=[demo])\n\nmain_messages = main_lm.history[0][\"messages\"]\nextract_messages = extract_lm.history[0][\"messages\"]\n\nprint(main_messages)\nprint(\"---\")\nprint(extract_messages)\n\nassert result.answer == \"Paris\"\nassert len(main_messages) == 4\nassert any(\"Demo question\" in m[\"content\"] for m in main_messages if isinstance(m[\"content\"], str))\nassert len(extract_messages) == 2\nassert all(\"Demo question\" not in m[\"content\"] for m in extract_messages if isinstance(m[\"content\"], str))\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The program feeds at least one demo into the two-step prediction and proves that the demo text lands in the first-stage main-LM `messages`, because `TwoStepAdapter.format()` inserts formatted demos between the system prompt and the live user message.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The program proves the extraction request does not inherit demos by inspecting the extraction-model `messages` and showing that the second stage is built from `ChatAdapter(..., demos=[], inputs={\"text\": completion})`, so only the main completion is forwarded.",
+   "span_ids": [
+    "s2",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The extraction-stage prompt inspection reflects the generated extractor signature: it uses a single `text` input plus the original output fields, rather than reusing the original task input schema.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "The proof separately captures the recorded `messages` for both LM calls, so the conclusion is grounded in the actual first-stage and second-stage payloads instead of only the final prediction output.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/two_step_adapter.py",
+   "start_line": 64,
+   "end_line": 75,
+   "excerpt": "0064:         messages = []\n0065: \n0066:         # Create a task description for the main LM\n0067:         task_description = self.format_task_description(signature)\n0068:         messages.append({\"role\": \"system\", \"content\": task_description})\n0069: \n0070:         messages.extend(self.format_demos(signature, demos))\n0071: \n0072:         # Format the current input\n0073:         messages.append({\"role\": \"user\", \"content\": self.format_user_message_content(signature, inputs)})\n0074: \n0075:         return messages"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/two_step_adapter.py",
+   "start_line": 89,
+   "end_line": 101,
+   "excerpt": "0089:         # The signature is supposed to be \"text -> {original output fields}\"\n0090:         extractor_signature = self._create_extractor_signature(signature)\n0091: \n0092:         try:\n0093:             # Call the smaller LM to extract structured data from the raw completion text with ChatAdapter\n0094:             parsed_result = ChatAdapter()(\n0095:                 lm=self.extraction_model,\n0096:                 lm_kwargs={},\n0097:                 signature=extractor_signature,\n0098:                 demos=[],\n0099:                 inputs={\"text\": completion},\n0100:             )\n0101:             return parsed_result[0]"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/two_step_adapter.py",
+   "start_line": 219,
+   "end_line": 229,
+   "excerpt": "0219:         # Create new fields dict with 'text' input field and all output fields\n0220:         new_fields = {\n0221:             \"text\": (str, InputField()),\n0222:             **{name: (field.annotation, field) for name, field in original_signature.output_fields.items()},\n0223:         }\n0224: \n0225:         outputs_str = \", \".join([f\"`{field}`\" for field in original_signature.output_fields])\n0226:         instructions = f\"The input is a text that should contain all the necessary information to produce the fields {outputs_str}. \\\n0227:             Your job is to extract the fields from the text verbatim. Extract precisely the appropriate value (content) for each field.\"\n0228: \n0229:         return make_signature(new_fields, instructions)"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/adapters/test_two_step_adapter.py",
+   "start_line": 37,
+   "end_line": 53,
+   "excerpt": "0037:     # main LM call\n0038:     mock_main_lm.assert_called_once()\n0039:     _, call_kwargs = mock_main_lm.call_args\n0040:     assert len(call_kwargs[\"messages\"]) == 2\n0041: \n0042:     # assert first message\n0043:     assert call_kwargs[\"messages\"][0][\"role\"] == \"system\"\n0044:     content = call_kwargs[\"messages\"][0][\"content\"]\n0045:     assert \"1. `question` (str)\" in content\n0046:     assert \"1. `solution` (str)\" in content\n0047:     assert \"2. `answer` (float)\" in content\n0048: \n0049:     # assert second message\n0050:     assert call_kwargs[\"messages\"][1][\"role\"] == \"user\"\n0051:     content = call_kwargs[\"messages\"][1][\"content\"]\n0052:     assert \"question:\" in content.lower()\n0053:     assert \"What is 5 + 7?\" in content"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/adapters/test_two_step_adapter.py",
+   "start_line": 55,
+   "end_line": 70,
+   "excerpt": "0055:     # extraction LM call\n0056:     mock_extraction_lm.assert_called_once()\n0057:     _, call_kwargs = mock_extraction_lm.call_args\n0058:     assert len(call_kwargs[\"messages\"]) == 2\n0059: \n0060:     # assert first message\n0061:     assert call_kwargs[\"messages\"][0][\"role\"] == \"system\"\n0062:     content = call_kwargs[\"messages\"][0][\"content\"]\n0063:     assert \"`text` (str)\" in content\n0064:     assert \"`solution` (str)\" in content\n0065:     assert \"`answer` (float)\" in content\n0066: \n0067:     # assert second message\n0068:     assert call_kwargs[\"messages\"][1][\"role\"] == \"user\"\n0069:     content = call_kwargs[\"messages\"][1][\"content\"]\n0070:     assert \"text from main LM\" in content"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Good prompt-length/debugging case: it distinguishes first-stage demo formatting from second-stage extraction formatting.",
+ "source_index": 45,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

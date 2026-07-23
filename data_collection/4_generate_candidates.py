@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import subprocess
 from concurrent.futures import ThreadPoolExecutor
@@ -48,9 +49,12 @@ from pathlib import Path
 
 DC = Path(__file__).resolve().parent
 ROOT = DC.parent
-ARTIFACTS = DC / "artifacts" / "4_generate_candidates"
-TOPICS_FILE = DC / "artifacts" / "3_label_topics" / "3_seed_sessions_topic.json"
-EMBED_DIR = DC / "artifacts" / "3_label_topics"
+# DC_ARTIFACTS selects the artifacts tree (default "artifacts"; the
+# 100-question rev-3 run uses "artifacts2"). All stages honor it.
+ART_DIRNAME = os.environ.get("DC_ARTIFACTS", "artifacts")
+ARTIFACTS = DC / ART_DIRNAME / "4_generate_candidates"
+TOPICS_FILE = DC / ART_DIRNAME / "3_label_topics" / "3_seed_sessions_topic.json"
+EMBED_DIR = DC / ART_DIRNAME / "3_label_topics"
 SMALL_CORPUS = ROOT / "corpora" / "smalldspy"  # 66-file scope, for tagging
 REPO_BY_SCOPE = {
     "fulldspy": ROOT / "corpora" / "dspy",  # full checkout, incl. docs
@@ -60,10 +64,24 @@ PINNED_COMMIT = "9cdb0aac28b2a04b064e40697ccd301872cf6a43"
 
 MODEL, EFFORT = "gpt-5.4", "xhigh"            # paper
 NUM_SEEDS = 10                                 # ours (paper: 20, method unpublished)
-NUM_CANDIDATES = 20                            # ours (paper: 12)
+NUM_CANDIDATES = 20                            # ours (paper: 12) - per codex session
+# DC_GEN_BATCHES > 1 scales the pool with additional 20-candidate sessions
+# per topic. Batch 0 is byte-identical to the single-batch prompt; batch b
+# anchors on the next NUM_SEEDS centroid-ranked seeds (wrapping on small
+# topics) and carries an anti-duplication section listing earlier batches'
+# questions. Total per topic = NUM_CANDIDATES * NUM_BATCHES.
+NUM_BATCHES = int(os.environ.get("DC_GEN_BATCHES", "1"))
+TOTAL_CANDIDATES = NUM_CANDIDATES * NUM_BATCHES
 SEED_QUESTION_CHARS, SEED_ANSWERS, SEED_ANSWER_CHARS = 3_000, 3, 2_000
 CODEX_TIMEOUT = 5_400
 MAX_RETRIES = 1
+
+ANTIDUP_SECTION = """
+
+## Previously generated candidates (cross-batch uniqueness)
+This is batch {batch} of a larger generation for the same label. The questions below were already generated in earlier batches for this label. Do NOT duplicate, lightly rephrase, or re-anchor on the same mechanism-plus-scenario as any of them; cover different mechanisms, APIs, edge cases, and user scenarios within the label.
+
+{prior_questions_json}"""
 
 # ---------------------------------------------------------------------------
 # A.2 generator template, transcribed VERBATIM from the paper appendix.
@@ -316,7 +334,8 @@ def load_topics() -> tuple[list[dict], dict[int, dict]]:
     return topics, sessions
 
 
-def nearest_centroid_members(topic: dict, sessions: dict[int, dict]) -> list[int]:
+def centroid_ranked_members(topic: dict, sessions: dict[int, dict]) -> list[int]:
+    """All topic members, ranked by cosine proximity to the cluster centroid."""
     import numpy as np
 
     index = json.loads((EMBED_DIR / "3_embeddings_index.json").read_text(encoding="utf-8"))
@@ -327,7 +346,16 @@ def nearest_centroid_members(topic: dict, sessions: dict[int, dict]) -> list[int
     centroid = matrix[members].mean(axis=0)
     centroid /= np.linalg.norm(centroid)
     order = sorted(range(len(members)), key=lambda i: -(matrix[members[i]] @ centroid))
-    return [topic["member_numbers"][i] for i in order[:NUM_SEEDS]]
+    return [topic["member_numbers"][i] for i in order]
+
+
+def batch_seed_numbers(ranked: list[int], batch: int) -> list[int]:
+    """Batch b anchors on centroid ranks [b*NUM_SEEDS, (b+1)*NUM_SEEDS),
+    wrapping around when a topic has fewer members than that (batch 0 is
+    always exactly the single-batch selection)."""
+    start = batch * NUM_SEEDS
+    count = min(NUM_SEEDS, len(ranked))
+    return [ranked[(start + i) % len(ranked)] for i in range(count)]
 
 
 def seed_payload(numbers: list[int], sessions: dict[int, dict]) -> list[dict]:
@@ -438,17 +466,25 @@ def run_codex(prompt: str, scope_dir: Path, repo: Path, slug: str, attempt: int)
     return json.loads(last_message.read_text(encoding="utf-8"))
 
 
-def generate_topic(topic: dict, sessions: dict[int, dict], scope: str) -> dict:
+def generate_batch(
+    topic: dict,
+    sessions: dict[int, dict],
+    scope: str,
+    ranked: list[int],
+    batch: int,
+    prior_questions: list[str],
+) -> dict:
     slug = topic["label"]
+    tag = f"{slug}_b{batch}" if NUM_BATCHES > 1 else slug
     repo = REPO_BY_SCOPE[scope]
     scope_dir = ARTIFACTS / scope
     scope_dir.mkdir(parents=True, exist_ok=True)
-    output_path = scope_dir / f"4_topic_{topic['cluster_id']}_{slug}.json"
+    output_path = scope_dir / f"4_batch_{topic['cluster_id']}_{tag}.json"
     if output_path.exists():
-        print(f"{scope}/{slug}: output exists, skipping")
+        print(f"{scope}/{tag}: batch output exists, skipping")
         return json.loads(output_path.read_text(encoding="utf-8"))
 
-    seed_numbers = nearest_centroid_members(topic, sessions)
+    seed_numbers = batch_seed_numbers(ranked, batch)
     payload = seed_payload(seed_numbers, sessions)
     prompt = GENERATOR_TEMPLATE.format(
         **values_for_scope(scope),
@@ -457,15 +493,31 @@ def generate_topic(topic: dict, sessions: dict[int, dict], scope: str) -> dict:
         num_candidates=NUM_CANDIDATES,
         sampled_sources_json=json.dumps(payload, ensure_ascii=False, indent=2),
     )
-    (scope_dir / f"prompt_{slug}.txt").write_text(prompt, encoding="utf-8")
+    if prior_questions:
+        prompt += ANTIDUP_SECTION.format(
+            batch=batch + 1,
+            prior_questions_json=json.dumps(prior_questions, ensure_ascii=False, indent=2),
+        )
+    (scope_dir / f"prompt_{tag}.txt").write_text(prompt, encoding="utf-8")
+
+    seen = {question.strip() for question in prior_questions}
+
+    def batch_violations(candidates: list[dict]) -> list[str]:
+        problems = violations(candidates, repo)
+        for position, candidate in enumerate(candidates):
+            if candidate["question"].strip() in seen:
+                problems.append(
+                    f"candidate {position}: question duplicates an earlier batch verbatim"
+                )
+        return problems
 
     candidates, problems = None, ["not run"]
-    salvage = scope_dir / f"last_message_{slug}_a0.json"
+    salvage = scope_dir / f"last_message_{tag}_a0.json"
     if salvage.exists():  # a completed archived attempt survives a crash/rerun
         candidates = json.loads(salvage.read_text(encoding="utf-8"))["candidates"]
-        problems = violations(candidates, repo)
+        problems = batch_violations(candidates)
         if not problems:
-            print(f"{scope}/{slug}: salvaged valid archived attempt a0")
+            print(f"{scope}/{tag}: salvaged valid archived attempt a0")
     for attempt in range(MAX_RETRIES + 1):
         if not problems:
             break
@@ -474,20 +526,20 @@ def generate_topic(topic: dict, sessions: dict[int, dict], scope: str) -> dict:
             "these problems; fix them and return the complete JSON again:\n- "
             + "\n- ".join(problems)
         )
-        print(f"{scope}/{slug}: codex attempt {attempt + 1} ...", flush=True)
-        result = run_codex(attempt_prompt, scope_dir, repo, slug, attempt)
+        print(f"{scope}/{tag}: codex attempt {attempt + 1} ...", flush=True)
+        result = run_codex(attempt_prompt, scope_dir, repo, tag, attempt)
         candidates = result["candidates"]
-        problems = violations(candidates, repo)
+        problems = batch_violations(candidates)
         if problems:
-            print(f"{scope}/{slug}: violations: {problems[:3]} ...")
+            print(f"{scope}/{tag}: violations: {problems[:3]} ...")
     if problems:
-        raise RuntimeError(f"{scope}/{slug}: unresolved violations after retries: {problems}")
+        raise RuntimeError(f"{scope}/{tag}: unresolved violations after retries: {problems}")
 
     scope_files = smalldspy_files()
     record = {
         "cluster_id": topic["cluster_id"],
         "label": slug,
-        "label_description": topic["description"],
+        "batch": batch,
         "seed_numbers": seed_numbers,
         "candidates": [
             {
@@ -504,9 +556,52 @@ def generate_topic(topic: dict, sessions: dict[int, dict], scope: str) -> dict:
     output_path.write_text(
         json.dumps(record, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
     )
-    in_scope = sum(candidate["smalldspy_scope"] for candidate in record["candidates"])
-    print(f"{scope}/{slug}: {len(candidates)} candidates ({in_scope} in SmallDSPy scope)")
+    print(f"{scope}/{tag}: {len(candidates)} candidates")
     return record
+
+
+def generate_topic(topic: dict, sessions: dict[int, dict], scope: str) -> dict:
+    slug = topic["label"]
+    repo = REPO_BY_SCOPE[scope]
+    scope_dir = ARTIFACTS / scope
+    scope_dir.mkdir(parents=True, exist_ok=True)
+    output_path = scope_dir / f"4_topic_{topic['cluster_id']}_{slug}.json"
+    if output_path.exists():
+        print(f"{scope}/{slug}: output exists, skipping")
+        return json.loads(output_path.read_text(encoding="utf-8"))
+
+    ranked = centroid_ranked_members(topic, sessions)
+    batch_records, prior_questions = [], []
+    for batch in range(NUM_BATCHES):
+        record = generate_batch(topic, sessions, scope, ranked, batch, prior_questions)
+        batch_records.append(record)
+        prior_questions.extend(c["question"] for c in record["candidates"])
+
+    candidates = [c for record in batch_records for c in record["candidates"]]
+    problems = violations(candidates, repo)  # merge-time revalidation, incl. cross-batch dups
+    if problems:
+        raise RuntimeError(f"{scope}/{slug}: merged candidate set invalid: {problems}")
+
+    seed_numbers = []
+    for record in batch_records:
+        seed_numbers.extend(n for n in record["seed_numbers"] if n not in seed_numbers)
+    merged = {
+        "cluster_id": topic["cluster_id"],
+        "label": slug,
+        "label_description": topic["description"],
+        "seed_numbers": seed_numbers,
+        "batches": [
+            {"batch": record["batch"], "seed_numbers": record["seed_numbers"]}
+            for record in batch_records
+        ],
+        "candidates": candidates,
+    }
+    output_path.write_text(
+        json.dumps(merged, ensure_ascii=False, indent=1) + "\n", encoding="utf-8"
+    )
+    in_scope = sum(candidate["smalldspy_scope"] for candidate in candidates)
+    print(f"{scope}/{slug}: {len(candidates)} candidates ({in_scope} in SmallDSPy scope)")
+    return merged
 
 
 def run_scope(scope: str, topics: list[dict], sessions: dict[int, dict]) -> None:
@@ -540,9 +635,11 @@ def run_scope(scope: str, topics: list[dict], sessions: dict[int, dict]) -> None
                    "read-only sandbox",
         "repository": str(repo),
         "commit": PINNED_COMMIT,
-        "num_seeds_per_topic": NUM_SEEDS,
-        "seed_selection": "nearest cluster centroid, original embedding space",
-        "num_candidates_per_topic": NUM_CANDIDATES,
+        "num_seeds_per_batch": NUM_SEEDS,
+        "seed_selection": "nearest cluster centroid, original embedding space; "
+                          "batch b takes the next NUM_SEEDS ranks (wrapping)",
+        "batches_per_topic": NUM_BATCHES,
+        "num_candidates_per_topic": TOTAL_CANDIDATES,
         "topics": [
             {k: record[k] for k in ("cluster_id", "label", "seed_numbers")}
             for record in records

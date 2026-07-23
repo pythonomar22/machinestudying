@@ -45,8 +45,9 @@ from pathlib import Path
 
 DC = Path(__file__).resolve().parent
 ROOT = DC.parent
-ARTIFACTS = DC / "artifacts" / "7_optimize_bundles"
-RUBRICS_DIR = DC / "artifacts" / "6_build_rubrics"
+ART_DIRNAME = os.environ.get("DC_ARTIFACTS", "artifacts")
+ARTIFACTS = DC / ART_DIRNAME / "7_optimize_bundles"
+RUBRICS_DIR = DC / ART_DIRNAME / "6_build_rubrics"
 VENV_PY = ROOT / ".venv-dspy" / "bin" / "python"
 
 
@@ -60,7 +61,7 @@ def load_module(name: str, filename: str):
 gen = load_module("stage3a", "4_generate_candidates.py")
 s6 = load_module("stage4", "6_build_rubrics.py")
 
-WORKERS = 4
+WORKERS = int(os.environ.get("DC_WORKERS", "4"))
 MAX_ROUNDS = 3        # revision rounds before a bundle is dropped
 RUN_TIMEOUT = 180     # seconds per sandbox execution
 CODE_BLOCK = re.compile(r"```python\n(.*?)```", re.DOTALL)
