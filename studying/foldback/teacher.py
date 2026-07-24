@@ -201,7 +201,10 @@ def main() -> None:
     parser.add_argument("--budgets", default=",".join(str(k) for k in DEFAULT_BUDGETS))
     parser.add_argument("--workers", type=int, default=DEFAULT_WORKERS)
     parser.add_argument("--limit", type=int, default=0,
-                        help="smoke: only the first N study questions")
+                        help="smoke: only the first N questions of the slice")
+    parser.add_argument("--split", choices=("study", "dev"), default="study")
+    parser.add_argument("--note-file",
+                        help="prepend this study object to every question (NOTE_PREFIX)")
     args = parser.parse_args()
     if not args.run_id.replace("-", "").replace("_", "").isalnum():
         parser.error("--run-id must contain only letters, digits, '-' and '_'")
@@ -224,7 +227,10 @@ def main() -> None:
     rows = load_practice_questions()
     by_id = {row["id"]: row for row in rows}
     split = split_practice(rows, args.seed)
-    study_ids = split["study_ids"][: args.limit or None]
+    study_ids = split[f"{args.split}_ids"][: args.limit or None]
+    note = Path(args.note_file).read_text(encoding="utf-8") if args.note_file else ""
+    from studybench.dataset import NOTE_PREFIX
+    prefix = NOTE_PREFIX.format(library="DSPy", note=note) if note else ""
 
     run_root = ROOT / "runs" / args.run_id / "dspy"
     run_root.mkdir(parents=True, exist_ok=True)
@@ -242,6 +248,8 @@ def main() -> None:
         "master_seed": args.seed,
         "split": "study slice of the seeded 70/30 stratified split (dev untouched)",
         "budgets_forced_commands": budgets,
+        "split": args.split,
+        "note_sha256": sha256_text(note) if note else None,
         "prompt_sha256": sha256_text(PROMPT),
         "workers": args.workers,
         "limit": args.limit,
@@ -281,7 +289,8 @@ def main() -> None:
     def run_case(case) -> None:
         row, k = case
         try:
-            record = attempt_case(row, k, run_root / budget_dir(k) / row["id"])
+            prefixed = {**row, "question": prefix + row["question"]} if prefix else row
+            record = attempt_case(prefixed, k, run_root / budget_dir(k) / row["id"])
             log.info("%s %s: commands=%d compliant=%s fences=%d sandbox=%s",
                      budget_dir(k), row["id"], record["executed_commands"],
                      record["budget_compliant"], record["fenced_python_blocks"],

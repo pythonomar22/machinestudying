@@ -215,7 +215,17 @@ def cmd_run(args) -> None:
     run_root = ROOT / "runs" / args.run_id / "dspy"
     run_root.mkdir(parents=True, exist_ok=True)
 
-    note = study_phase(run_root) if args.condition == "cheatsheet" else ""
+    if args.condition == "cheatsheet":
+        note = study_phase(run_root)
+    elif args.condition == "studyobject":
+        if not args.note_file:
+            raise SystemExit("--condition studyobject requires --note-file")
+        note = Path(args.note_file).read_text(encoding="utf-8")
+        if not note.strip():
+            raise SystemExit(f"study object note is empty: {args.note_file}")
+        write_text(run_root / "cheatsheet.md", note)  # archived beside the run
+    else:
+        note = ""
     prefix = NOTE_PREFIX.format(library="DSPy", note=note) if note else ""
 
     manifest = {
@@ -396,7 +406,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=("run", "grade"))
     parser.add_argument("--run-id", required=True)
-    parser.add_argument("--condition", choices=("baseline", "cheatsheet"), default="baseline")
+    parser.add_argument("--condition", choices=("baseline", "cheatsheet", "studyobject"),
+                        default="baseline")
+    parser.add_argument("--note-file", help="external study object for --condition studyobject")
     parser.add_argument("--rollouts", type=int, default=1)
     parser.add_argument("--workers", type=int, default=10)
     parser.add_argument("--limit", type=int, default=0)
