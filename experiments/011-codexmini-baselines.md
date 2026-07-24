@@ -1,7 +1,6 @@
 # 011 — codex gpt-5.4-mini baselines on the real Study-DSPy test set
 
-**Status: runs complete; no-study graded; cheatsheet grading blocked on
-API credits (2026-07-23).**
+**Status: complete (2026-07-23). Both runs graded.**
 
 ## Objective
 
@@ -52,12 +51,46 @@ codex's test-set k5 (64.9) lands near its practice-set k5f (70.5,
 experiments/010), supporting the rev-3 practice set's difficulty
 calibration.
 
-Cheatsheet run: **ungraded** — the OpenAI API key hit
-`insufficient_quota` after 640 verdicts today (280 teacher + 360
-no-study). `grades/dspy-codexmini-cheatsheet-20260723/.../grade_failures.json`
-records all 360 as quota failures; grading is fully idempotent — rerun
-`python -m studying.codexbench grade --run-id
-dspy-codexmini-cheatsheet-20260723` once credits are restored.
+Cheatsheet (graded after a credit top-up; the interim quota outage —
+640 verdicts drained the key mid-day — is ledgered in git history):
+
+| budget | mean lenient | mean gen tokens |
+|---|---:|---:|
+| direct | 29.50 | 10.3k |
+| k5 | 67.12 | 12.5k |
+| k20 | 70.58 | 19.4k |
+| k20f | 71.71 | 20.7k |
+
+**Expertise: 18.28.**
+
+## The four-way picture (same 30 questions, same paper judge)
+
+| agent | direct | k5 | k20 | k20f | E |
+|---|---:|---:|---:|---:|---:|
+| Qwen no-study | 4.5 | 8.2 | 9.8 | 24.0 | 9.04 |
+| Qwen + cheatsheet | 10.4 | 14.3 | 19.5 | 29.5 | 15.90 |
+| codex-mini no-study | 25.8 | 64.9 | 67.1 | 71.1 | 16.78 |
+| codex-mini + cheatsheet | 29.5 | 67.1 | 70.6 | 71.7 | 18.28 |
+
+Observations (descriptive; single study sample per condition, 3
+rollouts, no seed control on codex):
+
+1. **The cheatsheet helps codex mini too, but weakly: +1.50 E**
+   (16.78 → 18.28), versus Qwen's +6.85. Gains are spread thin
+   (+3.7/+2.2/+3.5/+0.7 lenient) and the note also trimmed direct/k5
+   tokens slightly. A strong searcher already knows what to look for —
+   the note's map value is mostly redundant with its priors.
+2. **Efficiency, not capability, is the binding constraint on E.**
+   Codex mini beats Qwen's accuracy by 3–7× at every budget yet its
+   E barely clears Qwen's cheatsheet: every codex point costs ≥10.3k
+   tokens (reasoning included), flooring ~71% of the weight axis.
+   An agent that could deliver codex-mini k5 accuracy (~65) at a
+   ≤3k-token direct answer would score E ≈ 65 — nobody in this table
+   is within a factor of 3 of that. That headroom is the fold-back
+   target.
+3. The paper's own cross-model observation replicates in our harness:
+   Table-1-style budget curves for a newer/stronger model sit far above
+   Qwen at every point on this DSPy exam.
 
 ## Caveats (standing)
 
