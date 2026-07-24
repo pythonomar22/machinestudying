@@ -397,7 +397,7 @@ def main() -> None:
     parser.add_argument("command", choices=("run", "grade"))
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--condition", choices=("baseline", "cheatsheet"), default="baseline")
-    parser.add_argument("--rollouts", type=int, default=3)
+    parser.add_argument("--rollouts", type=int, default=1)
     parser.add_argument("--workers", type=int, default=10)
     parser.add_argument("--limit", type=int, default=0)
     args = parser.parse_args()
