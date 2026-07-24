@@ -152,3 +152,45 @@ search volume; returns then diminish steeply (+6.6 for 5→20, +1.1 for
 20→50) and k20→k50 is net noise (15 up, 17 down). The distillation
 signal is concentrated in the k5→k20 flips and the five big gainers,
 not in bulk k50f volume.
+
+## Fold-back v1: object built and examined (2026-07-24)
+
+Object (`runs/dspy-foldbackv1/dspy/cheatsheet.md`, 66KB): built by
+`studying/foldback/teachermine.py` from the 70 practice k5f trajectories
++ direct attempts + practice golds (test set untouched). 70 mining
+sessions (497 anchored facts, 241 prior-diffs, 440 excerpt nominations)
+→ one organization pass → GPT-5.4 corpus fact-check (7 entries dropped)
+→ deterministic render: answer contract, 40 prior-correction cards, 4
+fact sections, 25 verbatim excerpts (pulled by code, not model memory).
+Dev sanity (10 held-out dev questions, closed-book): bare 15.5 → object
+26.5, tokens slightly down.
+
+Exam (`dspy-codexmini-foldback-20260724`, 30 test questions × 4 budgets
+× 1 rollout, paper judge):
+
+| budget | lenient | tokens | vs no-study (3-rollout) |
+|---|---:|---:|---|
+| direct | **39.80** | 13.0k | 25.82 @ 10.8k (**+14.0 accuracy**) |
+| k5 | 65.53 | 17.8k | 64.91 @ 13.5k |
+| k20 | 67.83 | 22.2k | 67.10 @ 20.0k |
+| k20f | 62.93 | 22.9k | 71.06 @ 20.3k (−8.1; single rollout) |
+| **E** | **13.81** | | **16.78 no-study / 18.28 cheatsheet** |
+
+**Split verdict.** The knowledge folded: +14 closed-book accuracy on
+held-out test questions is the largest direct-budget transfer measured
+in this project. But expertise FELL, for a reason the token
+decomposition makes exact: answers stayed the same length (message
+~1,050 tokens at direct, unchanged) while REASONING grew ~+3.3k at
+every budget (direct 8.7k → 12.0k) — the model deliberates over the
+66KB note instead of trusting it, shifting every point right on the
+log axis; that weight loss plus the k20f dip outweighed the accuracy
+gain. The 012 prediction (knowledge substitutes for rumination)
+inverted at this note size for this model.
+
+Iteration-2 levers, in priority order: (1) trust enforcement — answer
+contract rewritten to "do not re-derive or cross-check the notes;
+answer immediately from them" and/or reasoning_effort=low at direct
+(the note exists precisely so thinking is unnecessary); (2) slim the
+object (cards + contract + top excerpts; ablate the 66KB); (3) fix the
+k20f interference (the note's "notes win" clashes with forced-search
+instructions); (4) component ablations to attribute the +14.
