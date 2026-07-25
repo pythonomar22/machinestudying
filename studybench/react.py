@@ -101,7 +101,16 @@ class ForcedTrajectoryError(RuntimeError):
 
 
 class ForcedReAct(dspy.ReAct):
-    """ReAct where a selected ``finish`` consumes the step but cannot stop early."""
+    """ReAct where a selected ``finish`` consumes the step but cannot stop early.
+
+    ``closing_observation`` is appended to the final observation before answer
+    extraction; the study phase uses it because Sonnet otherwise keeps
+    role-playing the forced loop and never writes the cheatsheet.
+    """
+
+    def __init__(self, *args, closing_observation: str | None = None, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.closing_observation = closing_observation
 
     def forward(self, **input_args):
         trajectory = {}
@@ -129,6 +138,11 @@ class ForcedReAct(dspy.ReAct):
             except Exception as error:
                 observation = f"Execution error in {prediction.next_tool_name}: {_fmt_exc(error)}"
             trajectory[f"observation_{index}"] = observation
+        if self.closing_observation and trajectory:
+            last = max(int(key.rsplit("_", 1)[1]) for key in trajectory if key.startswith("observation_"))
+            trajectory[f"observation_{last}"] = (
+                f"{trajectory[f'observation_{last}']}\n\n{self.closing_observation}"
+            )
         try:
             extraction = self._call_with_potential_trajectory_truncation(
                 self.extract, trajectory, **input_args
@@ -186,6 +200,7 @@ def run_episode(
     model: str = MODEL,
     model_revision: str | None = MODEL_REVISION,
     sampling: dict = SAMPLING,
+    closing_observation: str | None = None,
 ) -> dict:
     provider = (
         # The Anthropic API has no sampling-seed parameter; only vLLM gets one.
@@ -223,8 +238,13 @@ def run_episode(
             if budget == "direct":
                 prediction = dspy.Predict("question -> answer")(question=question["question"])
             else:
-                module_type = ForcedReAct if forced else dspy.ReAct
-                module = module_type("question -> answer", tools=list(tools), max_iters=max_iters)
+                if forced:
+                    module = ForcedReAct(
+                        "question -> answer", tools=list(tools), max_iters=max_iters,
+                        closing_observation=closing_observation,
+                    )
+                else:
+                    module = dspy.ReAct("question -> answer", tools=list(tools), max_iters=max_iters)
                 prediction = module(question=question["question"])
                 trajectory = dict(prediction.trajectory)
             episode["answer"] = prediction.answer or ""
@@ -334,6 +354,13 @@ def _valid_episode(path: Path, identity: dict, forced_iterations: int | None) ->
     return True
 
 
+STUDY_EPILOGUE = (
+    "Study complete: you have now finished every required iteration. "
+    "Write the complete cheatsheet as your final answer."
+)
+STUDY_NOTE_FLOOR = 500
+
+
 def _study(args, corpus, tools, url: str, root: Path, config: dict) -> tuple[str, dict]:
     iterations = 2 if args.smoke else 50
     seed = stable_seed(args.seed, "study", args.task)
@@ -353,6 +380,8 @@ def _study(args, corpus, tools, url: str, root: Path, config: dict) -> tuple[str
     }
     if _valid_episode(episode_path, identity, iterations):
         episode = read_json(episode_path)
+        if len(episode["answer"].strip()) < STUDY_NOTE_FLOOR:
+            raise SystemExit(f"stored study note is degenerate; delete the run: {episode_path}")
         if not note_path.exists():
             write_text(note_path, episode["answer"])
         elif note_path.read_text(encoding="utf-8") != episode["answer"]:
@@ -373,11 +402,17 @@ def _study(args, corpus, tools, url: str, root: Path, config: dict) -> tuple[str
             model=config["model"],
             model_revision=config["model_revision"],
             sampling=config["sampling"],
+            closing_observation=STUDY_EPILOGUE,
         )
         episode["study_config_sha256"] = identity["study_config_sha256"]
+        if episode["status"] != "ok" or len(episode["answer"].strip()) < STUDY_NOTE_FLOOR:
+            # Preserved for post-mortem only; never becomes a reusable study.json.
+            write_json(episode_path.with_name("study.failed.json"), episode)
+            raise SystemExit(
+                f"cheatsheet study failed or degenerate "
+                f"(status={episode['status']}, {len(episode['answer'].strip())} note chars)"
+            )
         write_json(episode_path, episode)
-        if episode["status"] != "ok" or not episode["answer"].strip():
-            raise SystemExit(f"cheatsheet study failed: {episode['status']}")
         write_text(note_path, episode["answer"])
     note = note_path.read_text(encoding="utf-8")
     return note, {
