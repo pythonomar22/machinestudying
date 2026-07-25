@@ -1,6 +1,7 @@
 # 013 — Claude Sonnet 4.5 baselines in the paper's DSPy ReAct harness
 
-**Status: runs in flight (2026-07-25).**
+**Status: complete — both runs graded and adversarially audited
+(2026-07-25, workflow wf_ad1427f5-e12).**
 
 ## Objective
 
@@ -70,8 +71,11 @@ observation only — k20f eval episodes byte-identical to before, so the
 already-graded baseline stays valid — plus a 500-char degenerate-note
 floor that fails loudly (`study.failed.json`) instead of spending on a
 garbage-note eval. Re-smoke produced a real 5.3k-char note. Consequence:
-the two arms' manifests differ in `source_commit` (e5b0365 vs d230438);
-the eval code path is identical, documented here for the audit.
+the two arms' manifests differ in `source_commit` (baseline e5b0365,
+cheatsheet 85beacb which contains the d230438 fix); audit-verified via
+`git diff e5b0365..85beacb`, the diff touches only the study path — the
+eval call site never passes `closing_observation` — so eval episodes
+run identical code on both commits.
 
 ## Results
 
@@ -94,8 +98,98 @@ the codex harness's 10k-token floor could never show. Cross-judge
 caveat: 38.19 is a sonnet-judged number; do not place it in the same
 table as GPT-5.4-judged 9.04/15.90/16.78/18.28 without regrading.
 
-Cheatsheet arm: in flight.
+Cheatsheet (`runs/dspy-sonnet45-cheatsheet-20260725`: 50-forced-iteration
+self-study, 13,162-char note, 287,177 study gen tokens; 120 verdicts; two
+k5 episodes errored and were resampled per the standing rerun protocol —
+the live session log showed `AdapterParseError: Adapter JSONAdapter
+failed to parse the LM response` with Sonnet wrapping its JSON in a stray
+`"$PARAMETER_NAME"`-style key; the rerun overwrites the errored episode
+files, so this quote is the only surviving record. Retries condition
+those 2 answers on parseability and only the cheatsheet arm needed them
+(0 baseline) — a disclosed, minor asymmetry. Final population 120/120 ok):
 
-## Interpretation
+| budget | mean lenient | mean gen tokens |
+|---|---:|---:|
+| direct | 31.57 | 2.0k |
+| k5 | 54.30 | 11.0k |
+| k20 | 60.40 | 14.9k |
+| k20f | 63.20 | 24.7k |
 
-TBD after adversarial audit.
+**Expertise (4-point WAUC): 39.35.**
+
+## The within-013 picture (same questions, same sonnet-4-5 judge, 1 rollout)
+
+| condition | direct | k5 | k20 | k20f | E |
+|---|---:|---:|---:|---:|---:|
+| Sonnet 4.5 no-study | 27.8 | 55.8 | 62.6 | 66.5 | 38.19 |
+| Sonnet 4.5 + own cheatsheet | 31.6 | 54.3 | 60.4 | 63.2 | 39.35 |
+
+Paired stats (n=30 questions, `scripts/paired_stats.py`, 10k reps,
+seed 20260715 — reproduces exactly):
+
+- ΔE = +1.16, 95% CI **[−5.34, +7.96]**, P(Δ>0) = 0.63 — **not
+  separable from noise at one rollout.**
+- Direct-budget paired delta: +3.73 lenient (10 wins / 4 losses /
+  16 ties), itself non-significant (sign test p ≈ 0.18, bootstrap CI
+  [−4.5, +12.0]); k5/k20/k20f nominally move −1.5/−2.2/−3.3.
+
+## Adversarial audit (wf_ad1427f5-e12, 2026-07-25)
+
+Five independent auditors + verification pass. Everything reproduces:
+all 240 lenient scores re-derived from rubric weights (0 mismatches),
+WAUC recomputed from scratch to full precision, provenance hashes
+(episode↔grade↔manifest, seeds, note-prefix question hashes) verified
+120/120 per arm, budget semantics exact (direct 0 tools, k20f 20 forced
+iterations everywhere), and the note provably present only in the
+cheatsheet arm's prompts.
+
+Judge-noise findings (the important ones):
+
+- The judge's self-reported `question_score` disagrees with the
+  authoritative claim-weighted sum on 99/240 grades (41%, mean |diff|
+  ~4–7 points, no systematic direction). Sensitivity: rescoring with the
+  raw question_score gives ΔE = **−0.43** (vs +1.16).
+- Exhaustive claim-level review (1,200 verdicts) found ~9 score-vs-
+  rationale contradictions (0.75%), in BOTH directions (7 lenient — net
+  favoring the cheatsheet arm as-graded, incl. 3 in cheatsheet/direct —
+  and 2 harsh w=45 cases in no-study k20f). Symmetric correction moves
+  ΔE to **−0.77** (CI [−6.95, +5.57]) and the direct delta to
+  +1.7…+3.1 depending on variant.
+- Verdict: the budget→leniency climb is monotone and survives every
+  correction variant; **the cheatsheet effect has no stable sign** —
+  +1.16/−0.43/−0.77 across scoring choices — so the printed 39.35 >
+  38.19 ordering is not claimable, only the null is.
+
+## Interpretation (audited)
+
+1. **The budget→leniency curve replicates cleanly in our own harness**
+   (+38.6 lenient from direct to k20f, monotone, robust to all judge
+   corrections) — the 011 codex observation was not a codex-harness
+   artifact. The judge-independent contrast with codex: codex's direct
+   point cost 10.8k gen tokens (3k-anchor weight 0.28) while Sonnet's
+   costs 1.6–2.0k (weight 1.0), which is why Sonnet's E lands near ~38
+   while codex-mini was capped at ~17–18 (E values cross judges,
+   directional only).
+2. **No detectable cheatsheet effect for Sonnet 4.5 at this sample
+   size.** ΔE is +1.16 nominal with CI [−5.34, +7.96] and its sign
+   flips under judge-noise corrections; the CI still admits effects
+   larger than codex-mini's +1.5. What is consistent across models is
+   the *shape*: any nominal gain sits at direct, nothing at tool
+   budgets. If a studying method is to beat this, it must compress
+   answer-relevant knowledge into the direct budget (the fold-back
+   thesis) — navigation hints are what a strong searcher re-derives in
+   its first tool calls.
+3. Sonnet attempts `finish` early under k20f forcing (mean 5.4×/episode
+   no-study, 4.9× cheatsheet); forced continuation coincides with +3.8
+   (no-study) / +2.8 (cheatsheet) lenient over k20, not significance-
+   tested.
+
+Caveats: one rollout; no sampling seed (Anthropic API); sonnet-judged
+numbers are not comparable to any GPT-5.4-judged anchor without a
+regrade; Sonnet-judging-Sonnet self-preference — the audit found no
+hallucinated-credit cases in 12 manually read grades, but the 0.75%
+contradiction rate nets in the cheatsheet arm's favor as-graded. If
+cross-model tables are ever needed, regrade 008 with `--judge sonnet`.
+
+Next: judge hardening (post-grade lint for rationale/score
+contradictions), then the fold-back pipeline on Sonnet direct.
