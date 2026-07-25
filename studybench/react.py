@@ -1,4 +1,5 @@
-"""Study and evaluate Qwen3.5-9B with the paper's DSPy ReAct harness."""
+"""Study and evaluate a model (local Qwen3.5-9B or hosted Claude Sonnet 4.5)
+with the paper's DSPy ReAct harness."""
 
 from __future__ import annotations
 
@@ -40,6 +41,11 @@ SAMPLING = {
     "max_tokens": 32_768,
     "presence_penalty": 1.5,
     "extra_body": {"top_k": 20, "min_p": 0.0, "repetition_penalty": 1.0},
+}
+CLAUDE_MODEL = "anthropic/claude-sonnet-4-5"
+CLAUDE_SAMPLING = {
+    "temperature": 1.0,
+    "max_tokens": 32_768,
 }
 TOOL_CONFIG = {
     "names": ["grep", "glob", "read_file"],
@@ -173,20 +179,27 @@ def run_episode(
     budget: str,
     rollout: int,
     seed: int,
-    base_url: str,
+    base_url: str | None,
     max_iters: int,
     forced: bool,
     debug: bool,
+    model: str = MODEL,
+    model_revision: str | None = MODEL_REVISION,
+    sampling: dict = SAMPLING,
 ) -> dict:
+    provider = (
+        # The Anthropic API has no sampling-seed parameter; only vLLM gets one.
+        {"api_base": base_url, "api_key": os.environ.get("VLLM_API_KEY", "EMPTY"), "seed": seed}
+        if base_url
+        else {"api_key": os.environ["ANTHROPIC_API_KEY"]}
+    )
     lm = dspy.LM(
-        MODEL,
-        api_base=base_url,
-        api_key=os.environ.get("VLLM_API_KEY", "EMPTY"),
+        model,
         model_type="chat",
         cache=False,
         num_retries=0,
-        seed=seed,
-        **SAMPLING,
+        **provider,
+        **sampling,
     )
     episode = {
         "task": corpus.name,
@@ -195,8 +208,8 @@ def run_episode(
         "budget": budget,
         "rollout": rollout,
         "seed": seed,
-        "model": MODEL,
-        "model_revision": MODEL_REVISION,
+        "model": model,
+        "model_revision": model_revision,
         "harness": "dspy.ReAct",
         "question_sha256": sha256_text(question["question"]),
         "started": utc_now(),
@@ -333,8 +346,8 @@ def _study(args, corpus, tools, url: str, root: Path, config: dict) -> tuple[str
         "budget": "study",
         "rollout": 0,
         "seed": seed,
-        "model": MODEL,
-        "model_revision": MODEL_REVISION,
+        "model": config["model"],
+        "model_revision": config["model_revision"],
         "question_sha256": sha256_text(question["question"]),
         "study_config_sha256": sha256_json({**config, "iterations": iterations}),
     }
@@ -357,6 +370,9 @@ def _study(args, corpus, tools, url: str, root: Path, config: dict) -> tuple[str
             max_iters=iterations,
             forced=True,
             debug=args.debug,
+            model=config["model"],
+            model_revision=config["model_revision"],
+            sampling=config["sampling"],
         )
         episode["study_config_sha256"] = identity["study_config_sha256"]
         write_json(episode_path, episode)
@@ -383,6 +399,7 @@ def main() -> None:
     )
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--seed", required=True, type=int)
+    parser.add_argument("--model", choices=("qwen", "sonnet45"), default="qwen")
     parser.add_argument("--budgets", default=",".join(BUDGETS))
     parser.add_argument("--rollouts", type=int, default=3)
     parser.add_argument("--limit", type=int, default=0)
@@ -402,7 +419,14 @@ def main() -> None:
     if not budgets or len(budgets) != len(set(budgets)) or any(item not in BUDGETS for item in budgets):
         parser.error(f"--budgets must be unique values from {','.join(BUDGETS)}")
 
-    urls = _base_urls(args.base_urls)
+    if args.model == "sonnet45":
+        if not os.environ.get("ANTHROPIC_API_KEY"):
+            raise SystemExit("ANTHROPIC_API_KEY is required for --model sonnet45")
+        model, model_revision, sampling = CLAUDE_MODEL, None, CLAUDE_SAMPLING
+        urls = [None]
+    else:
+        model, model_revision, sampling = MODEL, MODEL_REVISION, SAMPLING
+        urls = _base_urls(args.base_urls)
     source_commit, source_dirty = _source_state(args.smoke)
     corpus = CORPORA[args.task]
     verify_corpus(corpus)
@@ -455,11 +479,11 @@ def main() -> None:
             "source_dirty": source_dirty,
             "corpus_commit": corpus.commit,
             "corpus_display": corpus.display,
-            "model": MODEL,
-            "model_revision": MODEL_REVISION,
+            "model": model,
+            "model_revision": model_revision,
             "harness": "dspy.ReAct",
             "runtime": runtime,
-            "sampling": SAMPLING,
+            "sampling": sampling,
             "tools": tool_config,
             "debug": args.debug,
         }
@@ -483,11 +507,11 @@ def main() -> None:
         "corpus_file_count": len(repository.files),
         "corpus_snapshot_sha256": repository.snapshot_sha256,
         "dataset_sha256": corpus.dataset_sha256,
-        "model": MODEL,
-        "model_revision": MODEL_REVISION,
+        "model": model,
+        "model_revision": model_revision,
         "harness": "dspy.ReAct",
         "runtime": runtime,
-        "sampling": SAMPLING,
+        "sampling": sampling,
         "tools": tool_config,
         "budgets": budgets,
         "rollouts": args.rollouts,
@@ -519,8 +543,8 @@ def main() -> None:
                     "budget": budget,
                     "rollout": rollout,
                     "seed": seed,
-                    "model": MODEL,
-                    "model_revision": MODEL_REVISION,
+                    "model": model,
+                    "model_revision": model_revision,
                     "question_sha256": sha256_text(question["question"]),
                 }
                 cases.append((question, budget, rollout, seed, path, identity, max_iters, forced))
@@ -545,6 +569,9 @@ def main() -> None:
             max_iters=max_iters,
             forced=forced,
             debug=args.debug,
+            model=model,
+            model_revision=model_revision,
+            sampling=sampling,
         )
         episode["run_config_sha256"] = config_hash
         write_json(path, episode)

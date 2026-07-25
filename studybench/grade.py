@@ -26,6 +26,7 @@ from .dataset import (
 
 DEFAULT_JUDGE = "gpt-5.4"
 DEFAULT_ENDPOINT = "https://api.openai.com/v1"
+ANTHROPIC_ENDPOINT = "https://api.anthropic.com/v1"
 LOCAL_JUDGE = "Qwen/Qwen3.5-9B"
 LOCAL_JUDGE_REVISION = "c202236235762e1c871ad0ccb60c8ee5ba337b9a"
 BUDGETS = ("direct", "k5", "k20", "k20f")
@@ -43,6 +44,22 @@ JUDGES = {
         "temperature": None,
         "seed": None,
         "max_tokens": None,
+        "thinking_token_budget": None,
+        "thinking": "provider-default",
+        "contract": "paper",
+        "timeout_seconds": 600,
+        "runtime": None,
+    },
+    "sonnet": {
+        "model": "claude-sonnet-4-5",
+        "revision": None,
+        "endpoint": ANTHROPIC_ENDPOINT,
+        "key_env": "ANTHROPIC_API_KEY",
+        "grade_id": "sonnet-4-5",
+        "tier": "paper-contract-anthropic",
+        "temperature": None,
+        "seed": None,
+        "max_tokens": 8192,
         "thinking_token_budget": None,
         "thinking": "provider-default",
         "contract": "paper",
@@ -889,15 +906,23 @@ async def grade_task(args, profile: dict, base_urls: list[str], run_id: str, tas
     api_key = os.environ.get(profile["key_env"])
     if not api_key:
         raise ValueError(f"{profile['key_env']} is required for {args.judge} grading")
-    clients = [
-        AsyncOpenAI(
-            api_key=api_key,
-            base_url=url,
-            timeout=profile["timeout_seconds"],
-            max_retries=0,
-        )
-        for url in base_urls
-    ]
+    anthropic = profile["endpoint"] == ANTHROPIC_ENDPOINT
+    if anthropic:
+        # litellm speaks the Anthropic API and converts response_format json_schema
+        # into a forced tool call, returning OpenAI-shaped responses; imported lazily
+        # because the local-judge venv does not ship litellm.
+        import litellm
+        clients = [None]
+    else:
+        clients = [
+            AsyncOpenAI(
+                api_key=api_key,
+                base_url=url,
+                timeout=profile["timeout_seconds"],
+                max_retries=0,
+            )
+            for url in base_urls
+        ]
     if args.concurrency % len(clients):
         raise ValueError("--concurrency must divide evenly across judge replicas")
     per_server_concurrency = args.concurrency // len(clients)
@@ -950,7 +975,15 @@ async def grade_task(args, profile: dict, base_urls: list[str], run_id: str, tas
             if profile["seed"] is not None:
                 request["seed"] = profile["seed"]
             async with semaphores[slot]:
-                response = await clients[slot].chat.completions.create(**request)
+                if anthropic:
+                    request["model"] = f"anthropic/{profile['model']}"
+                    response = await litellm.acompletion(
+                        api_key=api_key,
+                        timeout=profile["timeout_seconds"],
+                        **request,
+                    )
+                else:
+                    response = await clients[slot].chat.completions.create(**request)
             raw_response = response_record(response)
             try:
                 content = validate_response(raw_response, profile)
@@ -1014,7 +1047,7 @@ async def grade_task(args, profile: dict, base_urls: list[str], run_id: str, tas
             return_exceptions=True,
         )
     finally:
-        await asyncio.gather(*(client.close() for client in clients))
+        await asyncio.gather(*(client.close() for client in clients if client is not None))
     failures = [result for result in results if isinstance(result, BaseException)]
     if failures:
         raise ValueError(
