@@ -194,3 +194,39 @@ answer immediately from them" and/or reasoning_effort=low at direct
 object (cards + contract + top excerpts; ablate the 66KB); (3) fix the
 k20f interference (the note's "notes win" clashes with forced-search
 instructions); (4) component ablations to attribute the +14.
+
+## Qwen + fold-back object on the test set (2026-07-24, Omar-directed)
+
+Run `dspy-qwenfoldback-20260724`: Qwen3.5-9B, paper harness, `foldback`
+condition (the 66KB codex-mined object prepended; no study phase), full
+protocol, seeds paired with the 008 anchors. 360/360 valid after two
+sweep passes (18 transients on pass 1 — elevated AdapterParse/timeout
+rate under the 17k-token note prefix, all cleared). Note delivery
+hash-verified. Grading: paper judge, one era (grade.py extended to
+accept the foldback condition, validated like selfquiz).
+
+| budget | lenient | tokens | no-study | cheatsheet |
+|---|---:|---:|---|---|
+| direct | 9.19 | 3.6k | 4.48 @ 3.0k | 10.40 @ 2.8k |
+| k5 | 13.11 | 5.4k | 8.17 @ 5.7k | 14.30 @ 5.4k |
+| k20 | 14.39 | 6.0k | 9.82 @ 7.7k | 19.46 @ 7.5k |
+| k20f | 20.42 | 31.3k | 23.97 @ 20.5k | 29.50 @ 24.1k |
+| **E** | **11.02** | | 9.04 | 15.90 |
+
+Paired cluster bootstraps (30 questions, 20k resamples):
+foldback − no-study = **+2.08, CI [−1.27, +6.03]** (not separable);
+foldback − cheatsheet = **−4.74, CI [−8.97, −0.04]** (significantly
+worse than Qwen's own 4.6KB self-written cheatsheet).
+
+Reading: the teacher-mined knowledge transfers to Qwen only weakly —
+cheap budgets all rise ~+5 accuracy vs no-study (a real, consistent
+pattern) at healthy token costs (direct 3.6k), but k20f REGRESSES
+(24.0 → 20.4) with generation exploding to 31.3k tokens: the 66KB
+prefix makes Qwen's forced searches longer and worse, echoing the codex
+reasoning-inflation effect in a different channel. Meanwhile the same
+object gave its own author (codex) +14 at direct. The object is
+student-mismatched: a 9B cannot digest 66KB of another model's notes
+as well as a small self-written note it authored. Iteration-2 lever
+for the Qwen arm: radically slim, student-matched rendering (the
+cheatsheet's 4.6KB is the existence proof of the right size), and/or
+have Qwen rewrite the teacher content in its own register.

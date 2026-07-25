@@ -235,7 +235,7 @@ def load_run(run_id: str, task: str) -> tuple[dict, dict[str, dict], dict[tuple,
         or manifest.get("task") != task
         or manifest.get("corpus_commit") != CORPORA[task].commit
         or manifest.get("dataset_sha256") != CORPORA[task].dataset_sha256
-        or manifest.get("condition") not in {"baseline", "cheatsheet", "selfquiz"}
+        or manifest.get("condition") not in {"baseline", "cheatsheet", "selfquiz", "foldback"}
     ):
         raise ValueError(f"invalid run manifest: {root / 'run.json'}")
     corpus = CORPORA[task]
@@ -291,7 +291,7 @@ def load_run(run_id: str, task: str) -> tuple[dict, dict[str, dict], dict[tuple,
 
     run_hash = sha256_json(manifest)
     note_prefix = ""
-    if manifest["condition"] in {"cheatsheet", "selfquiz"}:
+    if manifest["condition"] in {"cheatsheet", "selfquiz", "foldback"}:
         note_path = root / "cheatsheet.md"
         if not note_path.is_file():
             raise ValueError(f"missing cheatsheet: {note_path}")
@@ -305,14 +305,16 @@ def load_run(run_id: str, task: str) -> tuple[dict, dict[str, dict], dict[tuple,
             or manifest.get("note_prefix_sha256") != sha256_text(note_prefix)
         ):
             raise ValueError(f"cheatsheet does not match run manifest: {note_path}")
-        if manifest["condition"] == "selfquiz":
+        if manifest["condition"] in {"selfquiz", "foldback"}:
             study_path = root / "study.json"
             study = read_json(study_path)
             if manifest.get("study") != {
-                "kind": "selfquiz",
+                "kind": manifest["condition"],
                 "study_sha256": sha256_json(study),
             }:
-                raise ValueError(f"invalid selfquiz study artifact: {study_path}")
+                raise ValueError(
+                    f"invalid {manifest['condition']} study artifact: {study_path}"
+                )
         elif manifest["schema_version"] == 2:
             study_path = root / "study.json"
             study = read_json(study_path)
