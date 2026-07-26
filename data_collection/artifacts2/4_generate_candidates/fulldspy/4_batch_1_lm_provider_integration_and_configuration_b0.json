@@ -1,0 +1,447 @@
+{
+ "cluster_id": 1,
+ "label": "lm_provider_integration_and_configuration",
+ "batch": 0,
+ "seed_numbers": [
+  479,
+  1865,
+  8541,
+  1982,
+  852,
+  8787,
+  632,
+  448,
+  1433,
+  1018
+ ],
+ "candidates": [
+  {
+   "question": "I'm pointing DSPy at an OpenAI-compatible server that already works through the OpenAI client. The confusing part is that the same base URL behaves differently depending on whether I configure the model as chat-style or text-style, and I want to see the exact request shape DSPy produces before I blame the proxy.\n\nI suspect one path keeps the messages list and the other flattens everything into a single prompt, which would explain why one server route works and the other 404s. Give me a complete, runnable Python program that patches DSPy's outbound calls, creates one `dspy.LM` in chat mode and one in text mode against the same fake base URL, and prints/asserts which call path was used, what payload was sent, and that the text-style prompt ends with the exact response marker DSPy adds.",
+   "answer": "```python\nimport json\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n    usage = {}\n\n    def __init__(self):\n        super().__init__({\"choices\": []})\n        self.model = \"offline\"\n\n\nchat_calls = []\ntext_calls = []\n\n\ndef fake_chat(*, cache, num_retries, retry_strategy, headers=None, **request):\n    chat_calls.append({\"headers\": headers, **request})\n    return FakeResp()\n\n\ndef fake_text(*, cache, model, api_key, api_base, prompt, num_retries, retry_strategy, headers=None, **request):\n    text_calls.append(\n        {\n            \"model\": model,\n            \"api_key\": api_key,\n            \"api_base\": api_base,\n            \"prompt\": prompt,\n            \"headers\": headers,\n            **request,\n        }\n    )\n    return FakeResp()\n\n\nwith patch(\"litellm.completion\", side_effect=fake_chat), patch(\"litellm.text_completion\", side_effect=fake_text):\n    chat_lm = dspy.LM(\n        \"openai/my-chat-model\",\n        model_type=\"chat\",\n        api_base=\"http://localhost:8000/v1\",\n        api_key=\"test\",\n        cache=False,\n    )\n    text_lm = dspy.LM(\n        \"openai/my-text-model\",\n        model_type=\"text\",\n        api_base=\"http://localhost:8000/v1\",\n        api_key=\"test\",\n        cache=False,\n    )\n\n    chat_lm.forward(prompt=\"ping\")\n    text_lm.forward(prompt=\"ping\")\n\nassert len(chat_calls) == 1\nassert len(text_calls) == 1\nassert chat_calls[0][\"messages\"] == [{\"role\": \"user\", \"content\": \"ping\"}]\nassert text_calls[0][\"prompt\"] == \"ping\\n\\nBEGIN RESPONSE:\"\nassert text_calls[0][\"model\"] == \"text-completion-openai/my-text-model\"\nassert text_calls[0][\"api_base\"] == \"http://localhost:8000/v1\"\n\nprint(\"chat_path=completion\")\nprint(json.dumps({\"messages\": chat_calls[0][\"messages\"], \"api_base\": chat_calls[0][\"api_base\"]}, indent=2))\nprint(\"text_path=text_completion\")\nprint(json.dumps({\"prompt\": text_calls[0][\"prompt\"], \"model\": text_calls[0][\"model\"], \"api_base\": text_calls[0][\"api_base\"]}, indent=2))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.forward"
+    },
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "litellm_completion"
+    },
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "litellm_text_completion"
+    }
+   ],
+   "note": "OpenAI-compatible chat vs text dispatch.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I have a text-style backend and expected my usual all-caps env vars like `OPENAI_API_KEY` to be enough. Instead, DSPy seems to find credentials only under provider-specific names, and I want proof of exactly what it reads before I change deployment config.\n\nShow me a complete, runnable Python program that patches the outbound text request, sets conflicting upper-case and lower-case env vars, then proves which values DSPy actually passes for the model string `openai/...` and that explicit `api_key` / `api_base` kwargs still win. Print the captured kwargs and assert the exact values.",
+   "answer": "```python\nimport json\nimport os\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n    usage = {}\n\n    def __init__(self):\n        super().__init__({\"choices\": []})\n        self.model = \"offline\"\n\n\ncaptured = []\n\n\ndef fake_text(*, cache, model, api_key, api_base, prompt, num_retries, retry_strategy, headers=None, **request):\n    captured.append(\n        {\n            \"model\": model,\n            \"api_key\": api_key,\n            \"api_base\": api_base,\n            \"prompt\": prompt,\n            \"headers\": headers,\n            **request,\n        }\n    )\n    return FakeResp()\n\n\nkeys = [\"OPENAI_API_KEY\", \"openai_API_KEY\", \"OPENAI_API_BASE\", \"openai_API_BASE\"]\nsaved = {key: os.environ.get(key) for key in keys}\n\ntry:\n    os.environ[\"OPENAI_API_KEY\"] = \"UPPER-KEY\"\n    os.environ[\"openai_API_KEY\"] = \"lower-key\"\n    os.environ[\"OPENAI_API_BASE\"] = \"https://upper.example/v1\"\n    os.environ[\"openai_API_BASE\"] = \"https://lower.example/v1\"\n\n    with patch(\"litellm.text_completion\", side_effect=fake_text):\n        dspy.LM(\"openai/demo\", model_type=\"text\", cache=False).forward(prompt=\"hello\")\n        dspy.LM(\n            \"openai/demo\",\n            model_type=\"text\",\n            api_key=\"explicit-key\",\n            api_base=\"https://explicit.example/v1\",\n            cache=False,\n        ).forward(prompt=\"hello\")\nfinally:\n    for key, value in saved.items():\n        if value is None:\n            os.environ.pop(key, None)\n        else:\n            os.environ[key] = value\n\nfirst_call, second_call = captured\nassert first_call[\"api_key\"] == \"lower-key\"\nassert first_call[\"api_base\"] == \"https://lower.example/v1\"\nassert second_call[\"api_key\"] == \"explicit-key\"\nassert second_call[\"api_base\"] == \"https://explicit.example/v1\"\n\nprint(json.dumps({\"env_lookup_call\": first_call, \"explicit_override_call\": second_call}, indent=2))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "litellm_text_completion"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_load_uses_env_api_key_without_honoring_serialized_endpoint_override"
+    }
+   ],
+   "note": "Lowercase provider env lookup in text mode.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm wiring Azure AD auth into an OpenAI-compatible deployment. My concern is that DSPy might serialize or eagerly call the token-provider callback instead of handing the callable through unchanged to the underlying client.\n\nGive me a complete, runnable Python program that patches the outbound chat request, passes a token-provider callable into `dspy.LM`, and proves with prints/assertions that DSPy forwards the same Python function object without invoking it first.",
+   "answer": "```python\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n    usage = {}\n\n    def __init__(self):\n        super().__init__({\"choices\": []})\n        self.model = \"offline\"\n\n\ncaptured = []\ncallback_calls = []\n\n\ndef azure_ad_token_provider(*args, **kwargs):\n    callback_calls.append((args, kwargs))\n    return \"token\"\n\n\ndef fake_chat(*, cache, num_retries, retry_strategy, headers=None, **request):\n    captured.append({\"headers\": headers, **request})\n    return FakeResp()\n\n\nwith patch(\"litellm.completion\", side_effect=fake_chat):\n    lm = dspy.LM(\n        \"openai/demo\",\n        api_base=\"http://localhost:8000/v1\",\n        api_key=\"fake-key\",\n        azure_ad_token_provider=azure_ad_token_provider,\n        cache=False,\n    )\n    lm.forward(prompt=\"hello\")\n\nassert len(captured) == 1\nassert captured[0][\"azure_ad_token_provider\"] is azure_ad_token_provider\nassert callback_calls == []\n\nprint(\"callable_identity_preserved=\", captured[0][\"azure_ad_token_provider\"] is azure_ad_token_provider)\nprint(\"callback_invoked_early=\", bool(callback_calls))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.forward"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_lm_calls_support_callables"
+    }
+   ],
+   "note": "Callable auth kwargs pass through unchanged.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "We run two OpenAI-compatible gateways behind different base URLs. I changed only `api_base`, kept the same prompt, and still got the first cluster's answer back out of cache, which makes me think DSPy might be ignoring endpoint fields when it computes its cache key.\n\nGive me a complete, runnable Python program that enables DSPy's cache, patches the outbound chat call to return a different answer per base URL, then proves with printed output and assertions that the second call reuses the first cached answer even though `api_base` and `api_key` changed.",
+   "answer": "```python\nfrom types import SimpleNamespace\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n\n    def __init__(self, text):\n        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason=\"stop\")\n        super().__init__({\"choices\": [choice]})\n        self.choices = [choice]\n        self.usage = {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/cache-demo\"\n\n\noriginal_cache = dspy.cache\ncall_bases = []\n\n\ndef fake_chat(*, cache, num_retries, retry_strategy, headers=None, api_base=None, api_key=None, **request):\n    call_bases.append(api_base)\n    return FakeResp(f\"response from {api_base}\")\n\n\ntry:\n    dspy.configure_cache(enable_disk_cache=False, enable_memory_cache=True)\n\n    with patch(\"litellm.completion\", side_effect=fake_chat):\n        lm = dspy.LM(\"openai/cache-demo\", cache=True)\n        first = lm(\"same prompt\", api_base=\"http://cluster-a/v1\", api_key=\"key-a\")\n        second = lm(\"same prompt\", api_base=\"http://cluster-b/v1\", api_key=\"key-b\")\n\n    assert first == [\"response from http://cluster-a/v1\"]\n    assert second == [\"response from http://cluster-a/v1\"]\n    assert call_bases == [\"http://cluster-a/v1\"]\n    assert len(dspy.cache.memory_cache) == 1\n\n    print(\"first_result=\", first)\n    print(\"second_result=\", second)\n    print(\"underlying_calls=\", call_bases)\nfinally:\n    dspy.cache = original_cache\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM._get_cached_completion_fn"
+    },
+    {
+     "file": "dspy/clients/cache.py",
+     "symbol": "request_cache"
+    }
+   ],
+   "note": "Cache keys ignore endpoint and API key fields.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm using `rollout_id` to separate repeated generations against the same compatible backend. The weird part is that server logs never show that field, but DSPy still seems to treat the requests as different for caching.\n\nGive me a complete, runnable Python program that turns on DSPy's cache, sends the same chat request twice with one `rollout_id` and once with another, and proves with prints/assertions that the provider never receives `rollout_id` while DSPy still creates separate cache entries for different nonzero-temperature rollouts.",
+   "answer": "```python\nfrom types import SimpleNamespace\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n\n    def __init__(self, text):\n        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason=\"stop\")\n        super().__init__({\"choices\": [choice]})\n        self.choices = [choice]\n        self.usage = {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/rollout-demo\"\n\n\noriginal_cache = dspy.cache\ncalls = []\n\n\ndef fake_chat(*, cache, num_retries, retry_strategy, headers=None, **request):\n    calls.append({\"headers\": headers, **request})\n    return FakeResp(f\"provider call #{len(calls)}\")\n\n\ntry:\n    dspy.configure_cache(enable_disk_cache=False, enable_memory_cache=True)\n\n    with patch(\"litellm.completion\", side_effect=fake_chat):\n        lm = dspy.LM(\"openai/rollout-demo\", temperature=1.0, cache=True)\n        messages = [{\"role\": \"user\", \"content\": \"Query\"}]\n        first = lm(messages=messages, rollout_id=1)\n        second = lm(messages=messages, rollout_id=1)\n        third = lm(messages=messages, rollout_id=2)\n\n    assert first == [\"provider call #1\"]\n    assert second == [\"provider call #1\"]\n    assert third == [\"provider call #2\"]\n    assert len(calls) == 2\n    assert all(\"rollout_id\" not in call for call in calls)\n    assert len(dspy.cache.memory_cache) == 2\n\n    print(\"results=\", {\"rid1_first\": first, \"rid1_second\": second, \"rid2\": third})\n    print(\"provider_received_rollout_id=\", [\"rollout_id\" in call for call in calls])\n    print(\"cache_entries=\", len(dspy.cache.memory_cache))\nfinally:\n    dspy.cache = original_cache\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.forward"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_rollout_id_bypasses_cache"
+    },
+    {
+     "file": "dspy/clients/cache.py",
+     "symbol": "request_cache"
+    }
+   ],
+   "note": "`rollout_id` affects DSPy cache but is stripped before provider calls.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I set temperature to 0 for deterministic evals and still passed `rollout_id` out of habit. I saw one warning the first time, then nothing, and I want a tiny proof of the exact behavior instead of a prose explanation.\n\nGive me a complete, runnable Python program that patches the outbound chat call, uses the same `dspy.LM` twice at temperature 0 with different `rollout_id` values, and prints/asserts that DSPy warns only on the first call.",
+   "answer": "```python\nimport warnings\nfrom types import SimpleNamespace\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n\n    def __init__(self, text):\n        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason=\"stop\")\n        super().__init__({\"choices\": [choice]})\n        self.choices = [choice]\n        self.usage = {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/zero-temp-demo\"\n\n\nwith patch(\"litellm.completion\", return_value=FakeResp(\"ok\")):\n    lm = dspy.LM(\"openai/zero-temp-demo\", temperature=0.0, cache=False)\n\n    with warnings.catch_warnings(record=True) as first_warnings:\n        warnings.simplefilter(\"always\")\n        lm(\"question\", rollout_id=1)\n\n    with warnings.catch_warnings(record=True) as second_warnings:\n        warnings.simplefilter(\"always\")\n        lm(\"question\", rollout_id=2)\n\nassert len(first_warnings) == 1\nassert \"rollout_id has no effect\" in str(first_warnings[0].message)\nassert len(second_warnings) == 0\n\nprint(\"first_warning_count=\", len(first_warnings))\nprint(\"second_warning_count=\", len(second_warnings))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM._warn_zero_temp_rollout"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_zero_temperature_rollout_warns_once"
+    }
+   ],
+   "note": "Zero-temperature rollout warning is one-shot per LM.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm switching between `openai/gpt-5-mini` and `openai/gpt-5-chat` on the same code path. One configuration rejects my normal `temperature` / `max_tokens`, while the other accepts them, and I want to see the exact split DSPy makes between the reasoning family and the chat-branded variant.\n\nGive me a complete, runnable Python program that instantiates both models, proves which token field DSPy stores internally for each, and asserts that the reasoning-family configuration raises the expected error when I use an ordinary small `max_tokens` and non-1.0 temperature.",
+   "answer": "```python\nimport dspy\n\n\nreasoning_lm = dspy.LM(\"openai/gpt-5-mini\", temperature=1.0, max_tokens=16000)\nassert reasoning_lm.kwargs[\"max_completion_tokens\"] == 16000\nassert \"max_tokens\" not in reasoning_lm.kwargs\n\ntry:\n    dspy.LM(\"openai/gpt-5-mini\", temperature=0.7, max_tokens=1000)\nexcept ValueError as exc:\n    reasoning_error = str(exc)\nelse:\n    raise AssertionError(\"Expected a ValueError for the invalid reasoning-model configuration\")\n\nchat_variant = dspy.LM(\"openai/gpt-5-chat\", temperature=0.7, max_tokens=1000)\nassert chat_variant.kwargs[\"max_tokens\"] == 1000\nassert \"max_completion_tokens\" not in chat_variant.kwargs\n\nassert \"reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None\" in reasoning_error\n\nprint(\"reasoning_kwargs=\", reasoning_lm.kwargs)\nprint(\"chat_variant_kwargs=\", chat_variant.kwargs)\nprint(\"reasoning_error=\", reasoning_error)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.__init__"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_reasoning_model_requirements"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_gpt_5_chat_not_reasoning_model"
+    }
+   ],
+   "note": "Reasoning-family validation and token-parameter rewrite.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "For a responses-style backend, I pass `reasoning_effort=\"low\"` and need to know whether DSPy forwards that raw field or rewrites it to the newer nested shape before it leaves the process. I don't want docs; I want a capture of the exact request DSPy emits.\n\nGive me a complete, runnable Python program that patches the outbound responses call, sends one prompt through a `dspy.LM` configured for the responses API, and prints/asserts the exact request fields so it's obvious whether `reasoning_effort` survived or became a nested `reasoning` object.",
+   "answer": "```python\nimport json\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResponsesResp:\n    cache_hit = False\n\n    def __init__(self):\n        self.output = []\n        self.usage = {\"input_tokens\": 1, \"output_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/gpt-5\"\n\n\ncaptured = []\n\n\ndef fake_responses(*, cache, num_retries, retry_strategy, headers=None, **request):\n    captured.append({\"headers\": headers, **request})\n    return FakeResponsesResp()\n\n\nwith patch(\"litellm.responses\", side_effect=fake_responses):\n    lm = dspy.LM(\n        \"openai/gpt-5\",\n        model_type=\"responses\",\n        reasoning_effort=\"low\",\n        temperature=1.0,\n        max_tokens=16000,\n        cache=False,\n    )\n    lm.forward(prompt=\"hello\")\n\ncall = captured[0]\nassert \"reasoning_effort\" not in call\nassert call[\"reasoning\"] == {\"effort\": \"low\", \"summary\": \"auto\"}\n\nprint(json.dumps({\"input\": call[\"input\"], \"reasoning\": call[\"reasoning\"]}, indent=2))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "_convert_chat_request_to_responses_request"
+    },
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "litellm_responses_completion"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_reasoning_effort_responses_api"
+    }
+   ],
+   "note": "Responses API rewrites `reasoning_effort`.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "Some responses-style backends expect a developer message instead of a system message. I saw DSPy has a switch for that, but I need to confirm whether it changes only responses mode or also normal chat mode.\n\nGive me a complete, runnable Python program that patches both outbound paths, sends the same system+user messages through chat mode and responses mode with the developer-role switch enabled, and prints/asserts the first role DSPy sent in each case.",
+   "answer": "```python\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n    usage = {}\n\n    def __init__(self):\n        super().__init__({\"choices\": []})\n        self.model = \"offline\"\n\n\nclass FakeResponsesResp:\n    cache_hit = False\n\n    def __init__(self):\n        self.output = []\n        self.usage = {\"input_tokens\": 1, \"output_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"offline\"\n\n\nchat_calls = []\nresponses_calls = []\n\n\ndef fake_chat_completion(*, request, num_retries, cache):\n    chat_calls.append(request)\n    return FakeResp()\n\n\ndef fake_responses_completion(*, request, num_retries, cache):\n    responses_calls.append(request)\n    return FakeResponsesResp()\n\n\nmessages = [\n    {\"role\": \"system\", \"content\": \"You are strict.\"},\n    {\"role\": \"user\", \"content\": \"hi\"},\n]\n\nwith patch(\"dspy.clients.lm.litellm_completion\", side_effect=fake_chat_completion), patch(\n    \"dspy.clients.lm.litellm_responses_completion\", side_effect=fake_responses_completion\n):\n    dspy.LM(\"openai/demo\", model_type=\"chat\", use_developer_role=True, cache=False).forward(messages=messages)\n    dspy.LM(\"openai/demo\", model_type=\"responses\", use_developer_role=True, cache=False).forward(messages=messages)\n\nassert chat_calls[0][\"messages\"][0][\"role\"] == \"system\"\nassert responses_calls[0][\"messages\"][0][\"role\"] == \"developer\"\n\nprint(\"chat_first_role=\", chat_calls[0][\"messages\"][0][\"role\"])\nprint(\"responses_first_role=\", responses_calls[0][\"messages\"][0][\"role\"])\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.forward"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_lm_replaces_system_with_developer_role"
+    }
+   ],
+   "note": "Developer-role rewrite is responses-only.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm sending a Pydantic model as the structured-output contract while using a responses-style backend. The provider keeps complaining about the wrong field name, so I need to inspect the exact JSON DSPy sends when I pass that schema.\n\nGive me a complete, runnable Python program that patches the outbound responses call, passes a Pydantic model as the response format, and prints/asserts the captured payload so it's undeniable whether DSPy kept a top-level `response_format` field or converted it into the responses API text-format schema.",
+   "answer": "```python\nimport json\nfrom unittest.mock import patch\n\nimport dspy\nimport pydantic\n\n\nclass AnswerModel(pydantic.BaseModel):\n    answer: str\n    score: int\n\n\nclass FakeResponsesResp:\n    cache_hit = False\n\n    def __init__(self):\n        self.output = []\n        self.usage = {\"input_tokens\": 1, \"output_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/gpt-5-mini\"\n\n\ncaptured = []\n\n\ndef fake_responses(*, cache, num_retries, retry_strategy, headers=None, **request):\n    captured.append({\"headers\": headers, **request})\n    return FakeResponsesResp()\n\n\nwith patch(\"litellm.responses\", side_effect=fake_responses):\n    lm = dspy.LM(\"openai/gpt-5-mini\", model_type=\"responses\", temperature=1.0, max_tokens=16000, cache=False)\n    lm.forward(prompt=\"grade this\", response_format=AnswerModel)\n\ncall = captured[0]\nfmt = call[\"text\"][\"format\"]\nassert \"response_format\" not in call\nassert fmt[\"name\"] == \"AnswerModel\"\nassert fmt[\"type\"] == \"json_schema\"\nassert set(fmt[\"schema\"][\"properties\"]) == {\"answer\", \"score\"}\n\nprint(json.dumps(fmt, indent=2))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "_convert_chat_request_to_responses_request"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_responses_api_with_pydantic_model_input"
+    },
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "litellm_responses_completion"
+    }
+   ],
+   "note": "Pydantic `response_format` becomes responses `text.format`.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm migrating a multimodal workflow to a responses-style backend and need to send text plus an image plus a file in one request. I can build the chat-style content list myself, but I don't know how DSPy reshapes it for the responses payload.\n\nGive me a complete, runnable Python program that patches the outbound responses call, sends one message containing text, an image URL, and a file, and prints/asserts the converted payload so the final content types and fields are proven exactly.",
+   "answer": "```python\nimport json\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResponsesResp:\n    cache_hit = False\n\n    def __init__(self):\n        self.output = []\n        self.usage = {\"input_tokens\": 1, \"output_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/gpt-5-mini\"\n\n\ncaptured = []\n\n\ndef fake_responses(*, cache, num_retries, retry_strategy, headers=None, **request):\n    captured.append({\"headers\": headers, **request})\n    return FakeResponsesResp()\n\n\nmessages = [\n    {\n        \"role\": \"user\",\n        \"content\": [\n            {\"type\": \"text\", \"text\": \"Describe these inputs\"},\n            {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/cat.jpg\"}},\n            {\"type\": \"file\", \"file\": {\"file_id\": \"file-123\", \"filename\": \"report.pdf\"}},\n        ],\n    }\n]\n\nwith patch(\"litellm.responses\", side_effect=fake_responses):\n    lm = dspy.LM(\"openai/gpt-5-mini\", model_type=\"responses\", temperature=1.0, max_tokens=16000, cache=False)\n    lm.forward(messages=messages)\n\ncontent = captured[0][\"input\"][0][\"content\"]\nassert [item[\"type\"] for item in content] == [\"input_text\", \"input_image\", \"input_file\"]\nassert content[0][\"text\"] == \"Describe these inputs\"\nassert content[1][\"image_url\"] == \"https://example.com/cat.jpg\"\nassert content[2][\"file_id\"] == \"file-123\"\nassert content[2][\"filename\"] == \"report.pdf\"\n\nprint(json.dumps(captured[0][\"input\"], indent=2))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "_convert_chat_request_to_responses_request"
+    },
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "_convert_content_item_to_responses_format"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_responses_api_converts_images_correctly"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_responses_api_converts_files_correctly"
+    }
+   ],
+   "note": "Responses API multimodal conversion.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "My tool loop expects DSPy to hand back a consistent structure even when a responses-style model emits only a function call and no text. Before I rewrite the loop, I want a tiny offline proof of the exact output object DSPy returns in that case.\n\nGive me a complete, runnable Python program that feeds a fake responses-style function-call-only result through `dspy.LM` and ends with prints/assertions proving the returned structure exactly.",
+   "answer": "```python\nimport json\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResponseToolCall:\n    type = \"function_call\"\n\n    def __init__(self):\n        self.name = \"get_weather\"\n        self.arguments = json.dumps({\"city\": \"Paris\"})\n        self.call_id = \"call_1\"\n        self.status = \"completed\"\n        self.id = \"call_1\"\n\n    def model_dump(self):\n        return {\n            \"type\": \"function_call\",\n            \"name\": self.name,\n            \"arguments\": self.arguments,\n            \"call_id\": self.call_id,\n            \"status\": self.status,\n            \"id\": self.id,\n        }\n\n\nclass FakeResponsesResp:\n    cache_hit = False\n\n    def __init__(self):\n        self.output = [FakeResponseToolCall()]\n        self.usage = {\"input_tokens\": 1, \"output_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/responses-tool-demo\"\n\n\nwith patch(\"litellm.responses\", return_value=FakeResponsesResp()):\n    lm = dspy.LM(\"openai/responses-tool-demo\", model_type=\"responses\", cache=False)\n    result = lm(\"What is the weather?\")\n\nexpected = [\n    {\n        \"tool_calls\": [\n            {\n                \"type\": \"function_call\",\n                \"name\": \"get_weather\",\n                \"arguments\": json.dumps({\"city\": \"Paris\"}),\n                \"call_id\": \"call_1\",\n                \"status\": \"completed\",\n                \"id\": \"call_1\",\n            }\n        ]\n    }\n]\nassert result == expected\nprint(json.dumps(result, indent=2))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM._process_response"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_responses_api_tool_calls"
+    }
+   ],
+   "note": "Responses API function-call output shape.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "On a reasoning-capable non-OpenAI chat backend, I want to pass `reasoning_effort` through and keep the model's reasoning trace in the returned value. I'm not asking whether the provider supports it in theory; I need to see what DSPy does with both the request and the parsed response.\n\nGive me a complete, runnable Python program that patches the outbound chat call, returns one fake answer with reasoning content, and prints/asserts both the captured request kwargs and the parsed DSPy output.",
+   "answer": "```python\nfrom types import SimpleNamespace\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n\n    def __init__(self, text, reasoning_content):\n        message = SimpleNamespace(content=text, tool_calls=None)\n        message.reasoning_content = reasoning_content\n        choice = SimpleNamespace(message=message, finish_reason=\"stop\")\n        super().__init__({\"choices\": [choice]})\n        self.choices = [choice]\n        self.usage = {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"anthropic/claude-3-7-sonnet-20250219\"\n\n\ncaptured = []\n\n\ndef fake_chat(*, cache, num_retries, retry_strategy, headers=None, **request):\n    captured.append({\"headers\": headers, **request})\n    return FakeResp(\"The answer is 4\", \"Step 1: add 2 + 2. Step 2: get 4.\")\n\n\nwith patch(\"litellm.completion\", side_effect=fake_chat):\n    lm = dspy.LM(\n        \"anthropic/claude-3-7-sonnet-20250219\",\n        model_type=\"chat\",\n        reasoning_effort=\"low\",\n        temperature=1.0,\n        max_tokens=16000,\n        cache=False,\n    )\n    result = lm(\"What is 2 + 2?\")\n\nassert captured[0][\"reasoning_effort\"] == \"low\"\nassert result == [{\"text\": \"The answer is 4\", \"reasoning_content\": \"Step 1: add 2 + 2. Step 2: get 4.\"}]\n\nprint(\"request_reasoning_effort=\", captured[0][\"reasoning_effort\"])\nprint(\"parsed_result=\", result)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM._process_completion"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_call_reasoning_model_with_chat_api"
+    },
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.forward"
+    }
+   ],
+   "note": "Chat-mode reasoning content survives parsing.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I saved a DSPy program that had a private endpoint override, then loaded it later and the override silently disappeared. Before I call that a bug, I want a minimal round-trip that proves the default load behavior and the explicit opt-in side by side.\n\nGive me a complete, runnable Python program that saves a program to JSON, injects an endpoint override into the serialized LM state, loads it once normally and once with the unsafe-state opt-in, and prints/asserts the loaded LM kwargs so the difference is undeniable.",
+   "answer": "```python\nimport json\nimport tempfile\nfrom pathlib import Path\n\nimport dspy\n\n\npredict = dspy.Predict(\"q -> a\")\npredict.lm = dspy.LM(\"openai/gpt-4o-mini\")\n\noverride_url = \"http://override.local/v1\"\n\nwith tempfile.TemporaryDirectory() as tmpdir:\n    path = Path(tmpdir) / \"program.json\"\n    predict.save(path)\n\n    saved_state = json.loads(path.read_text())\n    saved_state[\"lm\"][\"api_base\"] = override_url\n    path.write_text(json.dumps(saved_state))\n\n    safe_loaded = dspy.Predict(\"q -> a\")\n    safe_loaded.load(path)\n\n    unsafe_loaded = dspy.Predict(\"q -> a\")\n    unsafe_loaded.load(path, allow_unsafe_lm_state=True)\n\n    assert \"api_base\" not in safe_loaded.lm.kwargs\n    assert unsafe_loaded.lm.kwargs[\"api_base\"] == override_url\n\n    print(json.dumps({\"safe_kwargs\": safe_loaded.lm.kwargs, \"unsafe_kwargs\": unsafe_loaded.lm.kwargs}, indent=2))\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "_sanitize_lm_state"
+    },
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.load_state"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_load_ignores_serialized_endpoint_override_by_default"
+    },
+    {
+     "file": "tests/predict/test_predict.py",
+     "symbol": "test_load_allows_serialized_endpoint_override_with_opt_in"
+    }
+   ],
+   "note": "Serialized endpoint overrides are stripped unless opted in.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I need to hand a saved DSPy program to another team and want proof that the JSON won't leak my API key while still preserving the rest of the LM settings. Give me a runnable save-to-disk repro, not just a claim.\n\nShow me a complete, runnable Python program that saves a predictor with an LM containing an API key, reads the JSON back, and ends with prints/assertions proving the key is absent while ordinary settings like model name and token limits survive.",
+   "answer": "```python\nimport json\nimport tempfile\nfrom pathlib import Path\n\nimport dspy\n\n\npredict = dspy.Predict(\"question -> answer\")\npredict.lm = dspy.LM(\n    \"openai/gpt-4o-mini\",\n    api_key=\"sk-test-secret\",\n    api_base=\"http://private.local/v1\",\n    temperature=1.0,\n    max_tokens=100,\n)\n\nwith tempfile.TemporaryDirectory() as tmpdir:\n    path = Path(tmpdir) / \"program.json\"\n    predict.save(path)\n    saved_state = json.loads(path.read_text())\n\nassert \"api_key\" not in saved_state[\"lm\"]\nassert saved_state[\"lm\"][\"model\"] == \"openai/gpt-4o-mini\"\nassert saved_state[\"lm\"][\"api_base\"] == \"http://private.local/v1\"\nassert saved_state[\"lm\"][\"temperature\"] == 1.0\nassert saved_state[\"lm\"][\"max_tokens\"] == 100\n\nprint(json.dumps(saved_state[\"lm\"], indent=2))\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.dump_state"
+    },
+    {
+     "file": "dspy/predict/predict.py",
+     "symbol": "Predict.dump_state"
+    },
+    {
+     "file": "tests/clients/test_lm.py",
+     "symbol": "test_api_key_not_saved_in_json"
+    }
+   ],
+   "note": "API keys are filtered from serialized LM state.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm wrapping my own gateway in a custom `dspy.BaseLM`. Typed JSON outputs only seem to work when DSPy believes the backend can accept a schema, and I need to know the minimum capability contract I have to advertise from the LM object.\n\nGive me a complete, runnable Python program that defines tiny offline `dspy.BaseLM` wrappers with different capability flags, runs the same `dspy.Predict` + `dspy.JSONAdapter` call through each one, and prints/asserts whether DSPy sent a structured schema, plain `json_object`, or no response-format hint at all.",
+   "answer": "```python\nfrom types import SimpleNamespace\n\nimport dspy\nimport pydantic\n\n\nclass FakeResp(dict):\n    cache_hit = False\n\n    def __init__(self, text):\n        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason=\"stop\")\n        super().__init__({\"choices\": [choice]})\n        self.choices = [choice]\n        self.usage = {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"custom/offline\"\n\n\nclass CaptureLM(dspy.BaseLM):\n    def __init__(self, support_response_format, support_schema):\n        super().__init__(\"custom/offline\", \"chat\", 0.0, 1000, False)\n        self._support_response_format = support_response_format\n        self._support_schema = support_schema\n        self.calls = []\n\n    @property\n    def supported_params(self):\n        return {\"response_format\"} if self._support_response_format else set()\n\n    @property\n    def supports_response_schema(self):\n        return self._support_schema\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        self.calls.append({\"prompt\": prompt, \"messages\": messages, **kwargs})\n        return FakeResp('{\"answer\": \"Paris\"}')\n\n    async def aforward(self, prompt=None, messages=None, **kwargs):\n        return self.forward(prompt=prompt, messages=messages, **kwargs)\n\n\nclass QASignature(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nprogram = dspy.Predict(QASignature)\nadapter = dspy.JSONAdapter()\nstructured_lm = CaptureLM(True, True)\njson_mode_lm = CaptureLM(True, False)\nplain_lm = CaptureLM(False, False)\n\nwith dspy.context(lm=structured_lm, adapter=adapter):\n    assert program(question=\"What is the capital of France?\").answer == \"Paris\"\n\nwith dspy.context(lm=json_mode_lm, adapter=adapter):\n    assert program(question=\"What is the capital of France?\").answer == \"Paris\"\n\nwith dspy.context(lm=plain_lm, adapter=adapter):\n    assert program(question=\"What is the capital of France?\").answer == \"Paris\"\n\nstructured_rf = structured_lm.calls[0][\"response_format\"]\njson_mode_rf = json_mode_lm.calls[0][\"response_format\"]\nplain_has_rf = \"response_format\" in plain_lm.calls[0]\n\nassert issubclass(structured_rf, pydantic.BaseModel)\nassert json_mode_rf == {\"type\": \"json_object\"}\nassert not plain_has_rf\n\nprint(\n    {\n        \"structured_response_format_type\": structured_rf.__name__,\n        \"json_mode_response_format\": json_mode_rf,\n        \"plain_has_response_format\": plain_has_rf,\n    }\n)\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter._json_adapter_call_common"
+    },
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM.supported_params"
+    },
+    {
+     "file": "dspy/clients/base_lm.py",
+     "symbol": "BaseLM.supports_response_schema"
+    },
+    {
+     "file": "tests/adapters/test_json_adapter.py",
+     "symbol": "test_json_adapter_passes_structured_output_when_supported_by_model"
+    },
+    {
+     "file": "tests/adapters/test_json_adapter.py",
+     "symbol": "test_json_adapter_json_mode_no_structured_outputs"
+    }
+   ],
+   "note": "Custom `BaseLM` capability contract for JSONAdapter.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "My custom backend can follow JSON instructions but not native tool calling. When I include a tool-calls output field, I need to know whether DSPy still tries schema-guided structured outputs or whether it deliberately falls back to plain JSON mode.\n\nGive me a complete, runnable Python program that uses a custom offline `dspy.BaseLM`, runs a small `dspy.Predict` through `dspy.JSONAdapter` with native function calling disabled, and prints/asserts the exact `response_format` DSPy sent plus the parsed answer/tool-call result.",
+   "answer": "```python\nfrom types import SimpleNamespace\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n\n    def __init__(self, text):\n        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason=\"stop\")\n        super().__init__({\"choices\": [choice]})\n        self.choices = [choice]\n        self.usage = {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"custom/offline\"\n\n\nclass CaptureLM(dspy.BaseLM):\n    def __init__(self):\n        super().__init__(\"custom/offline\", \"chat\", 0.0, 1000, False)\n        self.calls = []\n\n    @property\n    def supported_params(self):\n        return {\"response_format\"}\n\n    @property\n    def supports_response_schema(self):\n        return True\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        self.calls.append({\"prompt\": prompt, \"messages\": messages, **kwargs})\n        return FakeResp('{\"answer\": \"sunny\", \"tool_calls\": {\"tool_calls\": []}}')\n\n    async def aforward(self, prompt=None, messages=None, **kwargs):\n        return self.forward(prompt=prompt, messages=messages, **kwargs)\n\n\nclass ToolSignature(dspy.Signature):\n    question: str = dspy.InputField()\n    tools: list[dspy.Tool] = dspy.InputField()\n    answer: str = dspy.OutputField()\n    tool_calls: dspy.ToolCalls = dspy.OutputField()\n\n\ndef get_weather(city: str) -> str:\n    return f\"Weather for {city}\"\n\n\nlm = CaptureLM()\nprogram = dspy.Predict(ToolSignature)\nadapter = dspy.JSONAdapter(use_native_function_calling=False)\n\nwith dspy.context(lm=lm, adapter=adapter):\n    pred = program(question=\"What is the weather in Paris?\", tools=[dspy.Tool(get_weather)])\n\nassert pred.answer == \"sunny\"\nassert pred.tool_calls.tool_calls == []\nassert lm.calls[0][\"response_format\"] == {\"type\": \"json_object\"}\n\nprint({\"response_format\": lm.calls[0][\"response_format\"], \"answer\": pred.answer, \"tool_calls\": pred.tool_calls.model_dump()})\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/adapters/json_adapter.py",
+     "symbol": "JSONAdapter._json_adapter_call_common"
+    },
+    {
+     "file": "dspy/adapters/base.py",
+     "symbol": "Adapter._call_preprocess"
+    },
+    {
+     "file": "tests/adapters/test_json_adapter.py",
+     "symbol": "test_json_adapter_toolcalls_no_native_function_calling"
+    }
+   ],
+   "note": "Tool-call outputs force JSON mode when native function calling is disabled.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I want DSPy to launch a local Hugging Face model for me and then point the client at the spawned server. What I can't tell from the outside is how DSPy normalizes the model string before launch and what connection details it writes back onto the LM afterward.\n\nGive me a complete, runnable Python program that mocks the local launcher, starts from a model string with the usual public prefixes, and prints/asserts the exact subprocess command plus the final `api_base` / `api_key` values DSPy places on the LM object.",
+   "answer": "```python\nimport sys\nfrom types import SimpleNamespace\nfrom unittest.mock import Mock, patch\n\nfrom dspy.clients.lm_local import LocalProvider\n\n\nprocess = Mock()\nprocess.pid = 1234\nprocess.stdout.readline.return_value = \"\"\nprocess.poll.return_value = 0\nthread = Mock()\n\nlm = SimpleNamespace(model=\"openai/huggingface/my-org/my-model\", launch_kwargs={}, kwargs={})\n\nwith patch.dict(sys.modules, {\"sglang\": Mock(), \"sglang.utils\": Mock()}):\n    with patch(\"dspy.clients.lm_local.get_free_port\", return_value=8123), patch(\n        \"dspy.clients.lm_local.wait_for_server\"\n    ), patch(\"dspy.clients.lm_local.subprocess.Popen\", return_value=process) as popen_mock, patch(\n        \"dspy.clients.lm_local.threading.Thread\", return_value=thread\n    ):\n        LocalProvider.launch(lm, launch_kwargs={})\n\ncommand = popen_mock.call_args[0][0]\nmodel_path = command[command.index(\"--model-path\") + 1]\n\nassert model_path == \"my-org/my-model\"\nassert lm.kwargs[\"api_base\"] == \"http://localhost:8123/v1\"\nassert lm.kwargs[\"api_key\"] == \"local\"\n\nprint(\"command=\", command)\nprint(\"lm_kwargs=\", lm.kwargs)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm_local.py",
+     "symbol": "LocalProvider.launch"
+    },
+    {
+     "file": "tests/clients/test_lm_local.py",
+     "symbol": "test_command_is_list_not_string"
+    }
+   ],
+   "note": "Local launch strips public prefixes and injects localhost credentials.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "One local model path on our box contains spaces, and another accidental model string literally contains `--trust-remote-code`. I need proof that DSPy treats the whole thing as model-path data and does not split it into extra CLI flags when it launches the server.\n\nGive me a complete, runnable Python program that mocks the local launcher with a model string containing spaces and `--trust-remote-code`, then prints/asserts the subprocess command so it's obvious the path stayed a single list element and did not become separate flags.",
+   "answer": "```python\nimport sys\nfrom types import SimpleNamespace\nfrom unittest.mock import Mock, patch\n\nfrom dspy.clients.lm_local import LocalProvider\n\n\nprocess = Mock()\nprocess.pid = 4321\nprocess.stdout.readline.return_value = \"\"\nprocess.poll.return_value = 0\nthread = Mock()\n\nraw_model = \"/models/My Folder/qwen --trust-remote-code\"\nlm = SimpleNamespace(model=raw_model, launch_kwargs={}, kwargs={})\n\nwith patch.dict(sys.modules, {\"sglang\": Mock(), \"sglang.utils\": Mock()}):\n    with patch(\"dspy.clients.lm_local.get_free_port\", return_value=9000), patch(\n        \"dspy.clients.lm_local.wait_for_server\"\n    ), patch(\"dspy.clients.lm_local.subprocess.Popen\", return_value=process) as popen_mock, patch(\n        \"dspy.clients.lm_local.threading.Thread\", return_value=thread\n    ):\n        LocalProvider.launch(lm, launch_kwargs={})\n\ncommand = popen_mock.call_args[0][0]\nmodel_arg = command[command.index(\"--model-path\") + 1]\n\nassert isinstance(command, list)\nassert model_arg == raw_model\nassert \"--trust-remote-code\" not in command[command.index(\"--model-path\") + 2 :]\n\nprint(\"command=\", command)\nprint(\"model_arg=\", model_arg)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm_local.py",
+     "symbol": "LocalProvider.launch"
+    },
+    {
+     "file": "tests/clients/test_lm_local.py",
+     "symbol": "test_command_with_spaces_in_path"
+    },
+    {
+     "file": "tests/clients/test_lm_local.py",
+     "symbol": "test_command_construction_prevents_injection"
+    }
+   ],
+   "note": "Local launch builds a safe argv list.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm using OpenAI-compatible model names and assumed DSPy would auto-pick a fine-tuning provider from any provider-like string. Instead, some model IDs behave like OpenAI and others immediately tell me to set a provider explicitly.\n\nGive me a complete, runnable Python program that instantiates `dspy.LM` for an `openai/...` model, an `ft:...` model, and an `azure/...` model, then prints/asserts which provider each one gets and that the non-inferred case raises the fine-tuning error until I pass an explicit provider object.",
+   "answer": "```python\nimport dspy\nfrom dspy.clients.openai import OpenAIProvider\nfrom dspy.clients.provider import Provider\n\n\nopenai_lm = dspy.LM(\"openai/gpt-4o-mini\")\nft_lm = dspy.LM(\"ft:job-123\")\nazure_lm = dspy.LM(\"azure/gpt-4o-mini\")\nexplicit_lm = dspy.LM(\"azure/gpt-4o-mini\", provider=OpenAIProvider())\n\nassert openai_lm.provider.__class__.__name__ == \"OpenAIProvider\"\nassert ft_lm.provider.__class__.__name__ == \"OpenAIProvider\"\nassert azure_lm.provider.__class__ is Provider\nassert explicit_lm.provider.__class__.__name__ == \"OpenAIProvider\"\n\ntry:\n    azure_lm.finetune(train_data=[], train_data_format=None)\nexcept ValueError as exc:\n    error = str(exc)\nelse:\n    raise AssertionError(\"Expected fine-tuning on the generic provider to fail\")\n\nassert \"please specify your provider by explicitly setting `provider`\" in error\n\nprint(\n    {\n        \"openai_provider\": openai_lm.provider.__class__.__name__,\n        \"ft_provider\": ft_lm.provider.__class__.__name__,\n        \"azure_provider\": azure_lm.provider.__class__.__name__,\n        \"explicit_provider\": explicit_lm.provider.__class__.__name__,\n        \"error\": error,\n    }\n)\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.infer_provider"
+    },
+    {
+     "file": "dspy/clients/openai.py",
+     "symbol": "OpenAIProvider.is_provider_model"
+    },
+    {
+     "file": "dspy/clients/lm.py",
+     "symbol": "LM.finetune"
+    }
+   ],
+   "note": "Provider inference is narrow; explicit provider may be required.",
+   "topic": "lm_provider_integration_and_configuration",
+   "smalldspy_scope": false
+  }
+ ]
+}

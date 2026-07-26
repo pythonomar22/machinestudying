@@ -1,0 +1,89 @@
+{
+ "id": "dspy_d5e21e8b122f",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I'm comparing two dynamically constructed signatures before swapping predictors in a larger program, and I expected a type-only change to count as a real difference. Instead, my comparison says the signatures match even though one output is `int` and the other is `str`.\n\nThat is subtle enough that I do not want to trust my own reading of the code. I want a tiny proof harness that constructs the two signatures, shows their annotations are genuinely different, and then proves the comparison still says they are equal.\n\nGive me a complete, runnable Python program that demonstrates this behavior and proves the type-only comparison result.",
+ "gold_answer": "```python\nimport dspy\n\nclass IntSig(dspy.Signature):\n    question: str = dspy.InputField(desc='q')\n    answer: int = dspy.OutputField(desc='a')\n\nclass StrSig(dspy.Signature):\n    question: str = dspy.InputField(desc='q')\n    answer: str = dspy.OutputField(desc='a')\n\nassert IntSig.output_fields['answer'].annotation is int\nassert StrSig.output_fields['answer'].annotation is str\nassert IntSig.equals(StrSig) is True\nprint(IntSig.output_fields['answer'].annotation)\nprint(StrSig.output_fields['answer'].annotation)\nprint(IntSig.equals(StrSig))\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program constructs two `dspy.Signature` types whose field names and field metadata match, while only the `answer` output annotation differs between `int` and `str`.",
+   "span_ids": [
+    "s2",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "It inspects the output field metadata and verifies at runtime that the two `answer` fields really carry different annotations (`int` versus `str`).",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "It verifies that calling `.equals` on those two signatures returns `True`, demonstrating that an annotation-only change does not affect `Signature.equals`.",
+   "span_ids": [
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "It keeps the signatures' instructions identical, either explicitly or by relying on the shared default instructions derived from the same field names, so the equality result isolates the type-only change.",
+   "span_ids": [
+    "s1",
+    "s3",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 35,
+   "end_line": 38,
+   "excerpt": "0035: def _default_instructions(cls) -> str:\n0036:     inputs_ = \", \".join([f\"`{field}`\" for field in cls.input_fields])\n0037:     outputs_ = \", \".join([f\"`{field}`\" for field in cls.output_fields])\n0038:     return f\"Given the fields {inputs_}, produce the fields {outputs_}.\""
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 138,
+   "end_line": 177,
+   "excerpt": "0138:     def __new__(mcs, signature_name, bases, namespace, **kwargs):\n0139:         # At this point, the orders have been swapped already.\n0140:         field_order = [name for name, value in namespace.items() if isinstance(value, FieldInfo)]\n0141:         # Set `str` as the default type for all fields\n0142:         if sys.version_info >= (3, 14):\n0143:             try:\n0144:                 import annotationlib\n0145:                 # Try to get from explicit __annotations__ first (e.g., from __future__ import annotations)\n0146:                 raw_annotations = namespace.get(\"__annotations__\")\n0147: \n0148:                 if raw_annotations is None:\n0149:                     # In 3.14 with PEP 649, get the annotate function and call it\n0150:                     annotate_func = annotationlib.get_annotate_from_class_namespace(namespace)\n0151:                     if annotate_func:\n0152:                         raw_annotations = annotationlib.call_annotate_function(\n0153:                             annotate_func,\n0154:                             format=annotationlib.Format.FORWARDREF\n0155:                         )\n0156:                     else:\n0157:                         raw_annotations = {}\n0158:             except ImportError:\n0159:                 raw_annotations = namespace.get(\"__annotations__\", {})\n0160:         else:\n0161:             # Python 3.13 and earlier\n0162:             # Set `str` as the default type for all fields\n0163:             raw_annotations = namespace.get(\"__annotations__\", {})\n0164:         for name, field in namespace.items():\n0165:             if not isinstance(field, FieldInfo):\n0166:                 continue  # Don't add types to non-field attributes\n0167:             if not name.startswith(\"__\") and name not in raw_annotations:\n0168:                 raw_annotations[name] = str\n0169:                 field.json_schema_extra[IS_TYPE_UNDEFINED] = True  # Mark that the type was originally undefined in the signature\n0170:         # Create ordered annotations dictionary that preserves field order\n0171:         ordered_annotations = {name: raw_annotations[name] for name in field_order if name in raw_annotations}\n0172:         # Add any remaining annotations that weren't in field_order\n0173:         ordered_annotations.update({k: v for k, v in raw_annotations.items() if k not in ordered_annotations})\n0174:         namespace[\"__annotations__\"] = ordered_annotations\n0175: \n0176:         # Let Pydantic do its thing\n0177:         cls = super().__new__(mcs, signature_name, bases, namespace, **kwargs)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 179,
+   "end_line": 191,
+   "excerpt": "0179:         # If we don't have instructions, it might be because we are a derived generic type.\n0180:         # In that case, we should inherit the instructions from the base class.\n0181:         if cls.__doc__ is None:\n0182:             for base in bases:\n0183:                 if isinstance(base, SignatureMeta):\n0184:                     doc = getattr(base, \"__doc__\", \"\")\n0185:                     if doc != \"\":\n0186:                         cls.__doc__ = doc\n0187: \n0188:         # The more likely case is that the user has just not given us a type.\n0189:         # In that case, we should default to the input/output format.\n0190:         if cls.__doc__ is None:\n0191:             cls.__doc__ = _default_instructions(cls)"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 223,
+   "end_line": 244,
+   "excerpt": "0223:     @property\n0224:     def input_fields(cls) -> dict[str, FieldInfo]:\n0225:         return cls._get_fields_with_type(\"input\")\n0226: \n0227:     @property\n0228:     def output_fields(cls) -> dict[str, FieldInfo]:\n0229:         return cls._get_fields_with_type(\"output\")\n0230: \n0231:     @property\n0232:     def fields(cls) -> dict[str, FieldInfo]:\n0233:         # Make sure to give input fields before output fields\n0234:         return {**cls.input_fields, **cls.output_fields}\n0235: \n0236:     @property\n0237:     def signature(cls) -> str:\n0238:         \"\"\"The string representation of the signature.\"\"\"\n0239:         input_fields = \", \".join(cls.input_fields.keys())\n0240:         output_fields = \", \".join(cls.output_fields.keys())\n0241:         return f\"{input_fields} -> {output_fields}\"\n0242: \n0243:     def _get_fields_with_type(cls, field_type) -> dict[str, FieldInfo]:\n0244:         return {k: v for k, v in cls.model_fields.items() if v.json_schema_extra[\"__dspy_field_type\"] == field_type}"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 473,
+   "end_line": 484,
+   "excerpt": "0473:     def equals(cls, other) -> bool:\n0474:         \"\"\"Compare the JSON schema of two Signature classes.\"\"\"\n0475:         if not isinstance(other, type) or not issubclass(other, BaseModel):\n0476:             return False\n0477:         if cls.instructions != other.instructions:\n0478:             return False\n0479:         for name in cls.fields.keys() | other.fields.keys():\n0480:             if name not in other.fields or name not in cls.fields:\n0481:                 return False\n0482:             if cls.fields[name].json_schema_extra != other.fields[name].json_schema_extra:\n0483:                 return False\n0484:         return True"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "The equality check only compares instructions and field metadata, not annotations.",
+ "source_index": 30,
+ "smalldspy_scope": false
+}

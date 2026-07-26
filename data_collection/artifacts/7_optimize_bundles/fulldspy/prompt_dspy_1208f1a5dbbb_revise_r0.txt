@@ -1,0 +1,112 @@
+You are optimizing one DSPy expert QA benchmark bundle (question, gold answer, private rubric, evidence spans) inside the official DSPy repository. The bundle failed verification; revise it so it passes.
+
+## Verification the bundle must pass
+1. Deterministic syntax check: every fenced ```python block in the gold answer compiles.
+2. Sandbox run: the reference program (the longest fenced python block) runs to completion offline - no API key, no network; whenever a language model is needed it must use the offline stub the library ships for its own tests (`dspy.utils.dummies.DummyLM`).
+3. Self-grading: the gold answer, graded against the private rubric by an independent grader, must earn score 1 on every claim.
+
+## Rules
+- Revise the answer, the rubric, and (only if unavoidable) the question TOGETHER; fix root causes, and change as little as possible.
+- Preserve the question's intent and difficulty. Do not weaken the question or the rubric merely to make grading easy.
+- The question must keep the naming discipline: it may name brand-level user-facing concepts, but never the internal class/method/helper/file that is the answer - those belong only in the gold answer and evidence.
+- The rubric must still satisfy: 2-8 atomic, minimally overlapping claims; each `core` or `supporting`; weights sum to exactly 100 with core claims carrying most of the weight; every claim cites 1-3 evidence spans; every span is a real `*.py` file under the code roots (`dspy/`, `tests/`) with exact 1-indexed line numbers; spans stay focused (prefer 1-40 lines, never exceed 300); claims judgeable from code and tests alone.
+- The repository is available read-only in your working directory - verify behavior in the source before asserting it. If the gold answer contradicts the code, the code wins.
+
+## Current bundle
+{
+  "id": "dspy_1208f1a5dbbb",
+  "topic": "evaluation_metrics_and_parallelism",
+  "question": "My acceptance logic needs the execution trace, not just gold and prediction. The confusing part is that it seems fine during prompt compilation, then blows up when I try to run a plain evaluation pass over the same program.\n\nI want a small repro that demonstrates both sides of that mismatch in one place. Give me a complete, runnable Python program that uses `DummyLM` offline, shows a trace-requiring metric failing under plain evaluation, then shows the same metric working during few-shot bootstrapping, with prints/assertions proving both outcomes.",
+  "gold_answer": "```python\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.teleprompt import BootstrapFewShot\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\ndef trace_required_metric(example, prediction, trace):\n    return len(trace) == 1 and prediction.answer == example.answer\n\n\ndspy.configure(lm=DummyLM({\"math\": {\"answer\": \"4\"}}))\ntrainset = [dspy.Example(question=\"math\", answer=\"4\").with_inputs(\"question\")]\nstudent = SimpleModule()\nteacher = SimpleModule()\n\ntry:\n    Evaluate(devset=trainset, metric=trace_required_metric, display_progress=False)(student)\nexcept TypeError as e:\n    evaluate_error = str(e)\nelse:\n    raise AssertionError(\"Expected plain Evaluate to fail for a metric that requires trace.\")\n\ncompiled = BootstrapFewShot(\n    metric=trace_required_metric,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n).compile(student, teacher=teacher, trainset=trainset)\n\nprint(evaluate_error)\nprint(compiled._compiled, len(compiled.predictor.demos))\nassert \"trace\" in evaluate_error\nassert compiled._compiled is True\nassert len(compiled.predictor.demos) == 1\n```",
+  "rubric": [
+    {
+      "claim_id": "c1",
+      "claim_type": "core",
+      "weight": 30,
+      "statement": "The plain evaluation branch uses `Evaluate(...)(program)` with a metric that requires `trace`, and shows that this path fails because `Evaluate.__call__` invokes metrics as `metric(example, prediction)` with no trace argument.",
+      "span_ids": [
+        "s1"
+      ]
+    },
+    {
+      "claim_id": "c2",
+      "claim_type": "core",
+      "weight": 35,
+      "statement": "The working branch goes through `BootstrapFewShot.compile(...)` with the same metric, and shows that bootstrapping succeeds because `_bootstrap_one_example` runs under `dspy.context(trace=[])`, captures `dspy.settings.trace`, and calls the metric as `metric(example, prediction, trace)`.",
+      "span_ids": [
+        "s2",
+        "s4"
+      ]
+    },
+    {
+      "claim_id": "c3",
+      "claim_type": "supporting",
+      "weight": 20,
+      "statement": "The success proof checks post-compile state, not just lack of an exception: a successful bootstrap converts recorded trace steps into predictor demos, and `compile()` returns a student with `_compiled = True`.",
+      "span_ids": [
+        "s3",
+        "s4"
+      ]
+    },
+    {
+      "claim_id": "c4",
+      "claim_type": "supporting",
+      "weight": 15,
+      "statement": "The answer makes the root cause explicit: the mismatch is per-example trace availability, which bootstrap handles internally and `Evaluate` does not.",
+      "span_ids": [
+        "s5",
+        "s1",
+        "s2"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "span_id": "s1",
+      "path": "dspy/evaluate/evaluate.py",
+      "start_line": 170,
+      "end_line": 173,
+      "excerpt": "0170:         def process_item(example):\n0171:             prediction = program(**example.inputs())\n0172:             score = metric(example, prediction)\n0173:             return prediction, score"
+    },
+    {
+      "span_id": "s2",
+      "path": "dspy/teleprompt/bootstrap.py",
+      "start_line": 187,
+      "end_line": 210,
+      "excerpt": "0187:         try:\n0188:             with dspy.context(trace=[], **self.teacher_settings):\n0189:                 lm = dspy.settings.lm\n0190:                 # Use a fresh rollout with temperature=1.0 to bypass caches.\n0191:                 lm = lm.copy(rollout_id=round_idx, temperature=1.0) if round_idx > 0 else lm\n0192:                 new_settings = {\"lm\": lm} if round_idx > 0 else {}\n0193: \n0194:                 with dspy.context(**new_settings):\n0195:                     for name, predictor in teacher.named_predictors():\n0196:                         predictor_cache[name] = predictor.demos\n0197:                         predictor.demos = [x for x in predictor.demos if x != example]\n0198: \n0199:                     prediction = teacher(**example.inputs())\n0200:                     trace = dspy.settings.trace\n0201: \n0202:                     for name, predictor in teacher.named_predictors():\n0203:                         predictor.demos = predictor_cache[name]\n0204: \n0205:                 if self.metric:\n0206:                     metric_val = self.metric(example, prediction, trace)\n0207:                     if self.metric_threshold:\n0208:                         success = metric_val >= self.metric_threshold\n0209:                     else:\n0210:                         success = metric_val"
+    },
+    {
+      "span_id": "s3",
+      "path": "dspy/teleprompt/bootstrap.py",
+      "start_line": 223,
+      "end_line": 257,
+      "excerpt": "0223:         if success:\n0224:             for step in trace:\n0225:                 predictor, inputs, outputs = step\n0226:                 demo = dspy.Example(augmented=True, **inputs, **outputs)\n0227: \n0228:                 try:\n0229:                     predictor_name = self.predictor2name[id(predictor)]\n0230:                 except KeyError:\n0231:                     continue  # FIXME: !\n0232: \n0233:                     # # TODO: Look closer into this. It's a bit tricky to reproduce.\n0234:                     # print(f\"Failed to find predictor {predictor} in {self.predictor2name}.\")\n0235:                     # print(\n0236:                     #     \"Are you doing this in a notebook (Jupyter)? This might be caused by redefining values by rerunning cells.\",\n0237:                     # )\n0238:                     # print(\"Try restarting the notebook, or open an issue.\")\n0239:                     # raise KeyError(\n0240:                     #     f\"Failed to find predictor {id(predictor)} {predictor} in {self.predictor2name}.\",\n0241:                     # ) from e\n0242: \n0243:                 name2traces[predictor_name] = name2traces.get(predictor_name, [])\n0244:                 name2traces[predictor_name].append(demo)\n0245: \n0246:             # Update the traces\n0247:             for name, demos in name2traces.items():\n0248:                 # If there are multiple traces for the same predictor in the sample example,\n0249:                 # sample 50/50 from the first N-1 traces or the last trace.\n0250:                 if len(demos) > 1:\n0251:                     from dspy.utils.hasher import Hasher\n0252: \n0253:                     rng = random.Random(Hasher.hash(tuple(demos)))\n0254:                     demos = [rng.choice(demos[:-1]) if rng.random() < 0.5 else demos[-1]]\n0255:                 self.name2traces[name].extend(demos)\n0256: \n0257:         return success"
+    },
+    {
+      "span_id": "s4",
+      "path": "dspy/teleprompt/bootstrap.py",
+      "start_line": 84,
+      "end_line": 94,
+      "excerpt": "0084:     def compile(self, student, *, teacher=None, trainset):\n0085:         self.trainset = trainset\n0086: \n0087:         self._prepare_student_and_teacher(student, teacher)\n0088:         self._prepare_predictor_mappings()\n0089:         self._bootstrap()\n0090: \n0091:         self.student = self._train()\n0092:         self.student._compiled = True\n0093: \n0094:         return self.student"
+    },
+    {
+      "span_id": "s5",
+      "path": "dspy/teleprompt/bootstrap.py",
+      "start_line": 178,
+      "end_line": 180,
+      "excerpt": "0178:         # NOTE: Can't yet use evaluate because we need to trace *per example*\n0179:         # evaluate = Evaluate(program=self.teacher, metric=self.metric, num_threads=12)\n0180:         # score = evaluate(self.metric, display_table=False, display_progress=True)"
+    }
+  ]
+}
+
+## Verification failures
+- sandbox run failed (exit 1); stderr tail:
+2026/07/21 02:04:09 ERROR dspy.utils.parallelizer: Error for Example({'question': 'math', 'answer': '4'}) (input_keys={'question'}): trace_required_metric() missing 1 required positional argument: 'trace'. Set `provide_traceback=True` for traceback.
+2026/07/21 02:04:09 INFO dspy.evaluate.evaluate: Average Metric: 0.0 / 1 (0.0%)
+Traceback (most recent call last):
+  File "/matx/u/omarah/ms2/data_collection/artifacts/7_optimize_bundles/fulldspy/runs/dspy_1208f1a5dbbb_r0/program.py", line 30, in <module>
+    raise AssertionError("Expected plain Evaluate to fail for a metric that requires trace.")
+AssertionError: Expected plain Evaluate to fail for a metric that requires trace.
+
+
+Return JSON that matches the provided schema and nothing else - the complete revised bundle (all fields, including parts you did not change).

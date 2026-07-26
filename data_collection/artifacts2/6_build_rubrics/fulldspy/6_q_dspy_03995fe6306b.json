@@ -1,0 +1,100 @@
+{
+ "id": "dspy_03995fe6306b",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I built a predictor from `dspy.Signature('question -> answer')`, then later inserted a `context` input because I wanted more control over the rendered prompt. The new field definitely exists in the schema, but the task sentence in the system prompt still looks suspiciously like it only knows about the original fields.\n\nI do not want a verbal explanation because I need a regression test for this. I want to see the signature instructions string next to the actual rendered system message so it is obvious whether the structural part updates while the objective text stays stale.\n\nGive me a complete, runnable Python program that creates that signature, inserts the extra field, prints the instructions plus the rendered system message, and asserts that the new field appears in the structure and field list while the default objective sentence still mentions only the old fields.",
+ "gold_answer": "```python\nimport dspy\n\nbase = dspy.Signature('question -> answer')\nmutated = base.prepend('context', dspy.InputField(desc='Extra background'), str)\n\nsystem = dspy.ChatAdapter().format_system_message(mutated)\n\nprint(mutated.instructions)\nprint(system)\n\nassert mutated.instructions == 'Given the fields `question`, produce the fields `answer`.'\nassert '1. `context` (str): Extra background' in system\nassert '[[ ## context ## ]]' in system\nassert '`context`' not in mutated.instructions\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The program starts from `dspy.Signature('question -> answer')` and verifies that, when no custom instructions are supplied, the instruction text is exactly `Given the fields `question`, produce the fields `answer`.`",
+   "span_ids": [
+    "s1",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "It derives a new signature by calling `prepend('context', dspy.InputField(desc='Extra background'), str)`, so `context` is inserted as the first input field in a fresh signature.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "It asserts that adding the new field does not regenerate the objective sentence: `mutated.instructions` remains the original default text and therefore still does not mention `context`.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The code prints both `mutated.instructions` and `dspy.ChatAdapter().format_system_message(mutated)` so the stale instruction text can be compared directly against the mutated signature's rendered prompt.",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 20,
+   "statement": "The rendered system message assertions check that the new schema is reflected structurally by `context`-specific content, including the field-list entry `1. `context` (str): Extra background` and the placeholder `[[ ## context ## ]]`.",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 35,
+   "end_line": 38,
+   "excerpt": "0035: def _default_instructions(cls) -> str:\n0036:     inputs_ = \", \".join([f\"`{field}`\" for field in cls.input_fields])\n0037:     outputs_ = \", \".join([f\"`{field}`\" for field in cls.output_fields])\n0038:     return f\"Given the fields {inputs_}, produce the fields {outputs_}.\""
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 215,
+   "end_line": 244,
+   "excerpt": "0215:     @property\n0216:     def instructions(cls) -> str:\n0217:         return inspect.cleandoc(getattr(cls, \"__doc__\", \"\"))\n0218: \n0219:     @instructions.setter\n0220:     def instructions(cls, instructions: str) -> None:\n0221:         cls.__doc__ = instructions\n0222: \n0223:     @property\n0224:     def input_fields(cls) -> dict[str, FieldInfo]:\n0225:         return cls._get_fields_with_type(\"input\")\n0226: \n0227:     @property\n0228:     def output_fields(cls) -> dict[str, FieldInfo]:\n0229:         return cls._get_fields_with_type(\"output\")\n0230: \n0231:     @property\n0232:     def fields(cls) -> dict[str, FieldInfo]:\n0233:         # Make sure to give input fields before output fields\n0234:         return {**cls.input_fields, **cls.output_fields}\n0235: \n0236:     @property\n0237:     def signature(cls) -> str:\n0238:         \"\"\"The string representation of the signature.\"\"\"\n0239:         input_fields = \", \".join(cls.input_fields.keys())\n0240:         output_fields = \", \".join(cls.output_fields.keys())\n0241:         return f\"{input_fields} -> {output_fields}\"\n0242: \n0243:     def _get_fields_with_type(cls, field_type) -> dict[str, FieldInfo]:\n0244:         return {k: v for k, v in cls.model_fields.items() if v.json_schema_extra[\"__dspy_field_type\"] == field_type}"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 325,
+   "end_line": 350,
+   "excerpt": "0325:     def prepend(cls, name, field, type_=None) -> type[\"Signature\"]:\n0326:         \"\"\"Insert a field at index 0 of the `inputs` or `outputs` section.\n0327: \n0328:         Args:\n0329:             name (str): Field name to add.\n0330:             field: `InputField` or `OutputField` instance to insert.\n0331:             type_ (type | None): Optional explicit type annotation. If `type_` is `None`, the effective type is\n0332:                 resolved by `insert`.\n0333: \n0334:         Returns:\n0335:             A new `Signature` class with the field inserted first.\n0336: \n0337:         Examples:\n0338:             ```python\n0339:             import dspy\n0340: \n0341:             class MySig(dspy.Signature):\n0342:                 input_text: str = dspy.InputField(desc=\"Input sentence\")\n0343:                 output_text: str = dspy.OutputField(desc=\"Translated sentence\")\n0344: \n0345:             NewSig = MySig.prepend(\"context\", dspy.InputField(desc=\"Context for translation\"))\n0346:             print(list(NewSig.fields.keys()))\n0347:             ```\n0348:         \"\"\"\n0349:         return cls.insert(0, name, field, type_)\n0350: "
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 449,
+   "end_line": 470,
+   "excerpt": "0449:         if type_ is None:\n0450:             type_ = field.annotation\n0451:         if type_ is None:\n0452:             type_ = str\n0453: \n0454:         input_fields = list(cls.input_fields.items())\n0455:         output_fields = list(cls.output_fields.items())\n0456: \n0457:         # Choose the list to insert into based on the field type\n0458:         lst = input_fields if field.json_schema_extra[\"__dspy_field_type\"] == \"input\" else output_fields\n0459:         # We support negative insert indices\n0460:         if index < 0:\n0461:             index += len(lst) + 1\n0462:         if index < 0 or index > len(lst):\n0463:             raise ValueError(\n0464:                 f\"Invalid index to insert: {index}, index must be in the range of [{len(lst) - 1}, {len(lst)}] for \"\n0465:                 f\"{field.json_schema_extra['__dspy_field_type']} fields, but received: {index}.\",\n0466:             )\n0467:         lst.insert(index, (name, (type_, field)))\n0468: \n0469:         new_fields = dict(input_fields + output_fields)\n0470:         return Signature(new_fields, cls.instructions)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 594,
+   "end_line": 604,
+   "excerpt": "0594:     # Default prompt when no instructions are provided\n0595:     if instructions is None:\n0596:         sig = Signature(signature, \"\")  # Simple way to parse input/output fields\n0597:         instructions = _default_instructions(sig)\n0598: \n0599:     return create_model(\n0600:         signature_name,\n0601:         __base__=Signature,\n0602:         __doc__=instructions,\n0603:         **fixed_fields,\n0604:     )"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Subtle and benchmark-worthy: field layout updates, but preserved default instructions can stay stale.",
+ "source_index": 20,
+ "smalldspy_scope": false
+}

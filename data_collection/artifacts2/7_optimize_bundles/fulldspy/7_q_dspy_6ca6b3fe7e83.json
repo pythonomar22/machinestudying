@@ -1,0 +1,108 @@
+{
+ "id": "dspy_6ca6b3fe7e83",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "My custom backend can follow JSON instructions but not native tool calling. When I include a tool-calls output field, I need to know whether DSPy still tries schema-guided structured outputs or whether it deliberately falls back to plain JSON mode.\n\nGive me a complete, runnable Python program that uses a custom offline `dspy.BaseLM`, runs a small `dspy.Predict` through `dspy.JSONAdapter` with native function calling disabled, and prints/asserts the exact `response_format` DSPy sent plus the parsed answer/tool-call result.",
+ "gold_answer": "```python\nfrom types import SimpleNamespace\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n\n    def __init__(self, text):\n        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason=\"stop\")\n        super().__init__({\"choices\": [choice]})\n        self.choices = [choice]\n        self.usage = {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"custom/offline\"\n\n\nclass CaptureLM(dspy.BaseLM):\n    def __init__(self):\n        super().__init__(\"custom/offline\", \"chat\", 0.0, 1000, False)\n        self.calls = []\n\n    @property\n    def supported_params(self):\n        return {\"response_format\"}\n\n    @property\n    def supports_response_schema(self):\n        return True\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        self.calls.append({\"prompt\": prompt, \"messages\": messages, **kwargs})\n        return FakeResp('{\"answer\": \"sunny\", \"tool_calls\": {\"tool_calls\": []}}')\n\n    async def aforward(self, prompt=None, messages=None, **kwargs):\n        return self.forward(prompt=prompt, messages=messages, **kwargs)\n\n\nclass ToolSignature(dspy.Signature):\n    question: str = dspy.InputField()\n    tools: list[dspy.Tool] = dspy.InputField()\n    answer: str = dspy.OutputField()\n    tool_calls: dspy.ToolCalls = dspy.OutputField()\n\n\ndef get_weather(city: str) -> str:\n    return f\"Weather for {city}\"\n\n\nlm = CaptureLM()\nprogram = dspy.Predict(ToolSignature)\nadapter = dspy.JSONAdapter(use_native_function_calling=False)\n\nwith dspy.context(lm=lm, adapter=adapter):\n    pred = program(question=\"What is the weather in Paris?\", tools=[dspy.Tool(get_weather)])\n\nassert pred.answer == \"sunny\"\nassert pred.tool_calls.tool_calls == []\nassert lm.calls[0][\"response_format\"] == {\"type\": \"json_object\"}\n\nprint({\"response_format\": lm.calls[0][\"response_format\"], \"answer\": pred.answer, \"tool_calls\": pred.tool_calls.model_dump()})\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 40,
+   "statement": "The answer must show that with a `dspy.ToolCalls` output field and `dspy.JSONAdapter(use_native_function_calling=False)`, DSPy does not attempt structured-output schema generation and instead sends `response_format == {\"type\": \"json_object\"}`.",
+   "span_ids": [
+    "s1",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The example must exercise that exact branch with a signature containing `question`, `tools: list[dspy.Tool]`, `answer`, and `tool_calls: dspy.ToolCalls`, and a `dspy.Predict` call that passes at least one `dspy.Tool` while native function calling is disabled.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The LM stubbed completion should contain both output keys, including `tool_calls` as an object with an empty `tool_calls` list, and the program should verify the parsed prediction yields `answer == \"sunny\"` plus an empty `ToolCalls` result.",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The LM in the example should still report `response_format` support and response-schema support so the observed JSON mode is specifically attributable to the `ToolCalls` plus disabled native function-calling path, not to a different capability fallback.",
+   "span_ids": [
+    "s1",
+    "s3",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 45,
+   "end_line": 56,
+   "excerpt": "0045:     def _json_adapter_call_common(self, lm, lm_kwargs, signature, demos, inputs, call_fn):\n0046:         \"\"\"Common call logic to be used for both sync and async calls.\"\"\"\n0047:         if \"response_format\" not in lm.supported_params:\n0048:             return call_fn(lm, lm_kwargs, signature, demos, inputs)\n0049: \n0050:         has_tool_calls = any(field.annotation == ToolCalls for field in signature.output_fields.values())\n0051: \n0052:         if _has_open_ended_mapping(signature) or (not self.use_native_function_calling and has_tool_calls) or not lm.supports_response_schema:\n0053:             # We found that structured output mode doesn't work well with dspy.ToolCalls as output field.\n0054:             # So we fall back to json mode if native function calling is disabled and ToolCalls is present.\n0055:             lm_kwargs[\"response_format\"] = {\"type\": \"json_object\"}\n0056:             return call_fn(lm, lm_kwargs, signature, demos, inputs)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 148,
+   "end_line": 181,
+   "excerpt": "0148:     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:\n0149:         fields = json_repair.loads(completion)\n0150: \n0151:         if not isinstance(fields, dict):\n0152:             pattern = r\"\\{(?:[^{}]|(?R))*\\}\"\n0153:             match = regex.search(pattern, completion, regex.DOTALL)\n0154:             if match:\n0155:                 completion = match.group(0)\n0156:                 fields = json_repair.loads(completion)\n0157: \n0158:         if not isinstance(fields, dict):\n0159:             raise AdapterParseError(\n0160:                 adapter_name=\"JSONAdapter\",\n0161:                 signature=signature,\n0162:                 lm_response=completion,\n0163:                 message=\"LM response cannot be serialized to a JSON object.\",\n0164:             )\n0165: \n0166:         fields = {k: v for k, v in fields.items() if k in signature.output_fields}\n0167: \n0168:         # Attempt to cast each value to type signature.output_fields[k].annotation.\n0169:         for k, v in fields.items():\n0170:             if k in signature.output_fields:\n0171:                 fields[k] = parse_value(v, signature.output_fields[k].annotation)\n0172: \n0173:         if fields.keys() != signature.output_fields.keys():\n0174:             raise AdapterParseError(\n0175:                 adapter_name=\"JSONAdapter\",\n0176:                 signature=signature,\n0177:                 lm_response=completion,\n0178:                 parsed_result=fields,\n0179:             )\n0180: \n0181:         return fields"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 49,
+   "end_line": 69,
+   "excerpt": "0049: def test_json_adapter_not_using_structured_outputs_when_not_supported_by_model():\n0050:     class TestSignature(dspy.Signature):\n0051:         input1: str = dspy.InputField()\n0052:         output1: str = dspy.OutputField()\n0053:         output2: bool = dspy.OutputField()\n0054: \n0055:     program = dspy.Predict(TestSignature)\n0056: \n0057:     # Configure DSPy to use a model from a fake provider that doesn't support structured outputs\n0058:     dspy.configure(lm=dspy.LM(model=\"fakeprovider/fakemodel\", cache=False), adapter=dspy.JSONAdapter())\n0059:     with mock.patch(\"litellm.completion\") as mock_completion:\n0060:         mock_completion.return_value = ModelResponse(\n0061:             choices=[Choices(message=Message(content=(\"{'output1': 'Test output', 'output2': True}\")))],\n0062:             model=\"openai/gpt-4o\",\n0063:         )\n0064: \n0065:         program(input1=\"Test input\")\n0066: \n0067:     mock_completion.assert_called_once()\n0068:     _, call_kwargs = mock_completion.call_args\n0069:     assert \"response_format\" not in call_kwargs"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 858,
+   "end_line": 880,
+   "excerpt": "0858: def test_json_adapter_toolcalls_no_native_function_calling():\n0859:     class MySignature(dspy.Signature):\n0860:         question: str = dspy.InputField()\n0861:         tools: list[dspy.Tool] = dspy.InputField()\n0862:         answer: str = dspy.OutputField()\n0863:         tool_calls: dspy.ToolCalls = dspy.OutputField()\n0864: \n0865:     def get_weather(city: str) -> str:\n0866:         return f\"The weather in {city} is sunny\"\n0867: \n0868:     tools = [dspy.Tool(get_weather)]\n0869: \n0870:     # Patch _get_structured_outputs_response_format to track calls\n0871:     with mock.patch(\"dspy.adapters.json_adapter._get_structured_outputs_response_format\") as mock_structured:\n0872:         # Patch litellm.completion to return a dummy response\n0873:         with mock.patch(\"litellm.completion\") as mock_completion:\n0874:             mock_completion.return_value = ModelResponse(\n0875:                 choices=[Choices(message=Message(content=\"{'answer': 'sunny', 'tool_calls': {'tool_calls': []}}\"))],\n0876:                 model=\"openai/gpt-4o-mini\",\n0877:             )\n0878:             adapter = dspy.JSONAdapter(use_native_function_calling=False)\n0879:             lm = dspy.LM(model=\"openai/gpt-4o-mini\", cache=False)\n0880:             adapter(lm, {}, MySignature, [], {\"question\": \"What is the weather in Tokyo?\", \"tools\": tools})"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 882,
+   "end_line": 887,
+   "excerpt": "0882:         # _get_structured_outputs_response_format is not called because without using native function calling,\n0883:         # JSONAdapter falls back to json mode for stable quality.\n0884:         mock_structured.assert_not_called()\n0885:         mock_completion.assert_called_once()\n0886:         _, call_kwargs = mock_completion.call_args\n0887:         assert call_kwargs[\"response_format\"] == {\"type\": \"json_object\"}"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/adapters/test_json_adapter.py",
+   "start_line": 655,
+   "end_line": 681,
+   "excerpt": "0655: def test_json_adapter_json_mode_no_structured_outputs():\n0656:     class TestSignature(dspy.Signature):\n0657:         question: str = dspy.InputField()\n0658:         answer: str = dspy.OutputField(desc=\"String output field\")\n0659: \n0660:     dspy.configure(lm=dspy.LM(model=\"openai/gpt-4o\", cache=False), adapter=dspy.JSONAdapter())\n0661:     program = dspy.Predict(TestSignature)\n0662: \n0663:     with (\n0664:         mock.patch(\"litellm.completion\") as mock_completion,\n0665:         mock.patch(\"litellm.get_supported_openai_params\") as mock_get_supported_openai_params,\n0666:         mock.patch(\"litellm.supports_response_schema\") as mock_supports_response_schema,\n0667:     ):\n0668:         # Call a model that allows json but not structured outputs\n0669:         mock_completion.return_value = ModelResponse(\n0670:             choices=[Choices(message=Message(content=\"{'answer': 'Test output'}\"))]\n0671:         )\n0672:         mock_get_supported_openai_params.return_value = [\"response_format\"]\n0673:         mock_supports_response_schema.return_value = False\n0674: \n0675:         result = program(question=\"Dummy question!\")\n0676: \n0677:         assert mock_completion.call_count == 1\n0678:         assert result.answer == \"Test output\"\n0679: \n0680:         _, call_kwargs = mock_completion.call_args_list[0]\n0681:         assert call_kwargs.get(\"response_format\") == {\"type\": \"json_object\"}"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Tool-call outputs force JSON mode when native function calling is disabled.",
+ "source_index": 16,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

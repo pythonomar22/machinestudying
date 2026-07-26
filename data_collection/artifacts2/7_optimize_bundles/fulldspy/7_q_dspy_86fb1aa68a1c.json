@@ -1,0 +1,116 @@
+{
+ "id": "dspy_86fb1aa68a1c",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I forgot type annotations on a class-based signature, and later I noticed two weird things at once: input-type warnings stopped firing, and values that should have come back as numbers started behaving like strings. I want a proof that these two symptoms really come from the same untyped-field path.\n\nThis is subtle enough that I want both the signature metadata and the runtime behavior in one place. The harness should compare an untyped signature against a typed one, capture warnings, and show the returned value types.\n\nGive me a complete, runnable Python program that uses `DummyLM` and proves unannotated fields default to `str`, skip type-mismatch warnings, and parse outputs as strings while the typed version warns and parses as `int`.",
+ "gold_answer": "```python\nimport io\nimport logging\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\nbuf = io.StringIO()\nlogger = logging.getLogger('dspy.predict.predict')\nhandler = logging.StreamHandler(buf)\nlogger.addHandler(handler)\nlogger.setLevel(logging.WARNING)\n\nclass Untyped(dspy.Signature):\n    count = dspy.InputField()\n    answer = dspy.OutputField()\n\nclass Typed(dspy.Signature):\n    count: int = dspy.InputField()\n    answer: int = dspy.OutputField()\n\nwith dspy.context(lm=DummyLM([{'answer': 5}])):\n    a = dspy.Predict(Untyped)(count=123)\nlogs1 = buf.getvalue()\nbuf.truncate(0); buf.seek(0)\nwith dspy.context(lm=DummyLM([{'answer': 5}])):\n    b = dspy.Predict(Typed)(count='not an int')\nlogs2 = buf.getvalue()\nlogger.removeHandler(handler)\n\nassert Untyped.input_fields['count'].annotation is str\nassert Typed.input_fields['count'].annotation is int\nassert a.answer == '5' and isinstance(a.answer, str)\nassert b.answer == 5 and isinstance(b.answer, int)\nassert 'Type mismatch' not in logs1\nassert \"Type mismatch for field 'count': expected int\" in logs2\nprint(logs1.strip() or 'NO_UNTYPED_WARNING')\nprint(logs2.strip())\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Defines paired class-based signatures and checks the metadata difference directly: an omitted field annotation resolves to `str` on `Untyped.input_fields[...]`, while the typed version preserves `int`.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Invokes the untyped signature with a type-incompatible input and verifies there is no `Type mismatch` warning, demonstrating that omitted-type fields follow the undefined-type skip path.",
+   "span_ids": [
+    "s3",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Invokes the typed signature with `count='not an int'` or an equivalent mismatch and verifies the log contains `Type mismatch for field 'count': expected int`.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Uses `DummyLM` to feed a numeric answer through both signatures and asserts the returned value types differ accordingly: the untyped `answer` is a `str`, while the typed `answer: int` is an `int`.",
+   "span_ids": [
+    "s1",
+    "s4",
+    "s7"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 138,
+   "end_line": 174,
+   "excerpt": "0138:     def __new__(mcs, signature_name, bases, namespace, **kwargs):\n0139:         # At this point, the orders have been swapped already.\n0140:         field_order = [name for name, value in namespace.items() if isinstance(value, FieldInfo)]\n0141:         # Set `str` as the default type for all fields\n0142:         if sys.version_info >= (3, 14):\n0143:             try:\n0144:                 import annotationlib\n0145:                 # Try to get from explicit __annotations__ first (e.g., from __future__ import annotations)\n0146:                 raw_annotations = namespace.get(\"__annotations__\")\n0147: \n0148:                 if raw_annotations is None:\n0149:                     # In 3.14 with PEP 649, get the annotate function and call it\n0150:                     annotate_func = annotationlib.get_annotate_from_class_namespace(namespace)\n0151:                     if annotate_func:\n0152:                         raw_annotations = annotationlib.call_annotate_function(\n0153:                             annotate_func,\n0154:                             format=annotationlib.Format.FORWARDREF\n0155:                         )\n0156:                     else:\n0157:                         raw_annotations = {}\n0158:             except ImportError:\n0159:                 raw_annotations = namespace.get(\"__annotations__\", {})\n0160:         else:\n0161:             # Python 3.13 and earlier\n0162:             # Set `str` as the default type for all fields\n0163:             raw_annotations = namespace.get(\"__annotations__\", {})\n0164:         for name, field in namespace.items():\n0165:             if not isinstance(field, FieldInfo):\n0166:                 continue  # Don't add types to non-field attributes\n0167:             if not name.startswith(\"__\") and name not in raw_annotations:\n0168:                 raw_annotations[name] = str\n0169:                 field.json_schema_extra[IS_TYPE_UNDEFINED] = True  # Mark that the type was originally undefined in the signature\n0170:         # Create ordered annotations dictionary that preserves field order\n0171:         ordered_annotations = {name: raw_annotations[name] for name in field_order if name in raw_annotations}\n0172:         # Add any remaining annotations that weren't in field_order\n0173:         ordered_annotations.update({k: v for k, v in raw_annotations.items() if k not in ordered_annotations})\n0174:         namespace[\"__annotations__\"] = ordered_annotations"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 223,
+   "end_line": 244,
+   "excerpt": "0223:     @property\n0224:     def input_fields(cls) -> dict[str, FieldInfo]:\n0225:         return cls._get_fields_with_type(\"input\")\n0226: \n0227:     @property\n0228:     def output_fields(cls) -> dict[str, FieldInfo]:\n0229:         return cls._get_fields_with_type(\"output\")\n0230: \n0231:     @property\n0232:     def fields(cls) -> dict[str, FieldInfo]:\n0233:         # Make sure to give input fields before output fields\n0234:         return {**cls.input_fields, **cls.output_fields}\n0235: \n0236:     @property\n0237:     def signature(cls) -> str:\n0238:         \"\"\"The string representation of the signature.\"\"\"\n0239:         input_fields = \", \".join(cls.input_fields.keys())\n0240:         output_fields = \", \".join(cls.output_fields.keys())\n0241:         return f\"{input_fields} -> {output_fields}\"\n0242: \n0243:     def _get_fields_with_type(cls, field_type) -> dict[str, FieldInfo]:\n0244:         return {k: v for k, v in cls.model_fields.items() if v.json_schema_extra[\"__dspy_field_type\"] == field_type}"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/predict/predict.py",
+   "start_line": 197,
+   "end_line": 214,
+   "excerpt": "0197:         # Validate input field types match signature\n0198:         if settings.warn_on_type_mismatch:\n0199:             for field_name, field_info in signature.input_fields.items():\n0200:                 if field_name in kwargs:\n0201:                     value = kwargs[field_name]\n0202:                     expected_type: type = field_info.annotation\n0203: \n0204:                     if value is None or field_info.json_schema_extra.get(IS_TYPE_UNDEFINED, False):\n0205:                         continue\n0206: \n0207:                     if not _is_value_compatible_with_type(value, expected_type):\n0208:                         logger.warning(\n0209:                             \"Type mismatch for field '%s': expected %s based on given Signature, \"\n0210:                             \"but the provided value is incompatible: %s.\",\n0211:                             field_name,\n0212:                             _get_type_name(expected_type),\n0213:                             value,\n0214:                         )"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/predict/predict.py",
+   "start_line": 226,
+   "end_line": 233,
+   "excerpt": "0226:     def _forward_postprocess(self, completions, signature, **kwargs):\n0227:         pred = Prediction.from_completions(completions, signature=signature)\n0228:         if kwargs.pop(\"_trace\", True) and settings.trace is not None and settings.max_trace_size > 0:\n0229:             trace = settings.trace\n0230:             if len(trace) >= settings.max_trace_size:\n0231:                 trace.pop(0)\n0232:             trace.append((self, {**kwargs}, pred))\n0233:         return pred"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 1056,
+   "end_line": 1074,
+   "excerpt": "1056: def test_type_mismatch_warning(caplog):\n1057:     \"\"\"Test that type mismatches in input fields generate a warning.\"\"\"\n1058:     log_test_helper()\n1059: \n1060:     class TypedSignature(dspy.Signature):\n1061:         count: int = dspy.InputField()\n1062:         name: str = dspy.InputField()\n1063:         result: str = dspy.OutputField()\n1064: \n1065:     predict_instance = Predict(TypedSignature)\n1066:     lm = DummyLM([{\"result\": \"test output\"}])\n1067:     dspy.configure(lm=lm)\n1068: \n1069:     with caplog.at_level(logging.WARNING, logger=\"dspy.predict.predict\"):\n1070:         # Pass a string where int is expected\n1071:         predict_instance(count=\"not an int\", name=\"test\")\n1072: \n1073:     assert \"Type mismatch for field 'count': expected int\" in caplog.text\n1074: "
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 1608,
+   "end_line": 1627,
+   "excerpt": "1608: def test_untyped_class_signature(caplog):\n1609:     \"\"\"Test type validation with basic types using class signature without type.\"\"\"\n1610:     log_test_helper()\n1611: \n1612:     # Use class signature with type annotations\n1613:     class TestSignature(dspy.Signature):\n1614:         count = dspy.InputField()\n1615:         name = dspy.InputField()\n1616:         result = dspy.OutputField()\n1617:     predict_instance = Predict(TestSignature)\n1618: \n1619:     # Test with correct types\n1620:     caplog.clear()\n1621:     lm = DummyLM([{\"result\": \"test output\"}])\n1622:     dspy.configure(lm=lm)\n1623:     with caplog.at_level(logging.WARNING, logger=\"dspy.predict.predict\"):\n1624:         # Test with \"unexpected\" type for count and name\n1625:         predict_instance(count=\"abc\", name=123)\n1626: \n1627:     assert \"Type mismatch\" not in caplog.text"
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 537,
+   "end_line": 568,
+   "excerpt": "0537: def test_datetime_inputs_and_outputs():\n0538:     # Define a model for datetime inputs and outputs\n0539:     class TimedEvent(pydantic.BaseModel):\n0540:         event_name: str\n0541:         event_time: datetime\n0542: \n0543:     class TimedSignature(dspy.Signature):\n0544:         events: list[TimedEvent] = dspy.InputField()\n0545:         summary: str = dspy.OutputField()\n0546:         next_event_time: datetime = dspy.OutputField()\n0547: \n0548:     program = Predict(TimedSignature)\n0549: \n0550:     lm = DummyLM(\n0551:         [\n0552:             {\n0553:                 \"reasoning\": \"Processed datetime inputs\",\n0554:                 \"summary\": \"All events are processed\",\n0555:                 \"next_event_time\": \"2024-11-27T14:00:00\",\n0556:             }\n0557:         ]\n0558:     )\n0559:     dspy.configure(lm=lm)\n0560: \n0561:     output = program(\n0562:         events=[\n0563:             TimedEvent(event_name=\"Event 1\", event_time=datetime(2024, 11, 25, 10, 0, 0)),\n0564:             TimedEvent(event_name=\"Event 2\", event_time=datetime(2024, 11, 25, 15, 30, 0)),\n0565:         ]\n0566:     )\n0567:     assert output.summary == \"All events are processed\"\n0568:     assert output.next_event_time == datetime(2024, 11, 27, 14, 0, 0)"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Untyped fields are marked as originally undefined, which suppresses mismatch warnings and leaves parsing on the default str path.",
+ "source_index": 38,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

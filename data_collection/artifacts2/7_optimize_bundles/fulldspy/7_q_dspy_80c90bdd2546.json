@@ -1,0 +1,98 @@
+{
+ "id": "dspy_80c90bdd2546",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I'm debugging streaming against an OpenAI-compatible backend. The confusing part is that usage accounting only works in some runs, and I need to know whether DSPy changes the streamed request when usage tracking is on, without dropping my custom auth header.\n\nGive me a complete, runnable Python program that exercises DSPy's streaming path offline, with usage tracking enabled and a custom header, and prints/asserts the exact streamed request kwargs so it's proven whether `stream_options` was added and whether the header was preserved.",
+ "gold_answer": "```python\nimport asyncio\nfrom unittest import mock\n\nfrom dspy.clients.lm import _get_stream_completion_fn\n\nasync def empty_chunks():\n    if False:\n        yield None\n\nasync def main():\n    request = {\n        'model': 'openai/test-model',\n        'messages': [{'role': 'user', 'content': 'hello'}],\n    }\n    custom_headers = {'Authorization': 'Bearer streamed-token'}\n    fake_stream = mock.AsyncMock()\n    fake_stream.send = mock.AsyncMock()\n\n    with mock.patch('dspy.settings') as settings_mock:\n        settings_mock.send_stream = fake_stream\n        settings_mock.caller_predict = None\n        settings_mock.track_usage = True\n\n        with mock.patch('litellm.acompletion', return_value=empty_chunks()) as acompletion_mock:\n            with mock.patch('litellm.stream_chunk_builder', return_value={'built': True}):\n                stream_fn = _get_stream_completion_fn(request, {}, sync=False, headers=custom_headers)\n                result = await stream_fn()\n\n    call = acompletion_mock.call_args.kwargs\n    print(result)\n    print(call['headers'])\n    print(call['stream_options'])\n    assert call['headers']['Authorization'] == 'Bearer streamed-token'\n    assert call['stream_options'] == {'include_usage': True}\n    assert result == {'built': True}\n\nasyncio.run(main())\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Uses `_get_stream_completion_fn(request, {}, sync=False, headers=custom_headers)` under a patched `dspy.settings` with a non-`None` `send_stream` and `caller_predict = None`, so DSPy's async streaming helper is exercised offline instead of returning `None`.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Stubs `litellm.acompletion` with an async iterator, awaits the returned stream function, and reads `mock_acompletion.call_args.kwargs` (or equivalent) as the exact kwargs DSPy streamed to LiteLLM.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "Turns `dspy.settings.track_usage` on and asserts that DSPy injects `stream_options == {'include_usage': True}` into the streamed request kwargs.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Asserts that the streamed call's `headers` still contain the supplied `Authorization` bearer token, proving the custom header is preserved.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Stubs `litellm.stream_chunk_builder` to a fixed object and asserts the awaited stream function returns that object, confirming the mocked streaming path completes end-to-end.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 337,
+   "end_line": 355,
+   "excerpt": "0337: def _get_stream_completion_fn(\n0338:     request: dict[str, Any],\n0339:     cache_kwargs: dict[str, Any],\n0340:     sync=True,\n0341:     headers: dict[str, Any] | None = None,\n0342: ):\n0343:     stream = dspy.settings.send_stream\n0344:     caller_predict = dspy.settings.caller_predict\n0345: \n0346:     if stream is None:\n0347:         return None\n0348: \n0349:     # The stream is already opened, and will be closed by the caller.\n0350:     stream = cast(MemoryObjectSendStream, stream)\n0351:     caller_predict_id = id(caller_predict) if caller_predict else None\n0352: \n0353:     if dspy.settings.track_usage:\n0354:         request[\"stream_options\"] = {\"include_usage\": True}\n0355: "
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 356,
+   "end_line": 382,
+   "excerpt": "0356:     async def stream_completion(request: dict[str, Any], cache_kwargs: dict[str, Any]):\n0357:         response = await litellm.acompletion(\n0358:             cache=cache_kwargs,\n0359:             stream=True,\n0360:             headers=headers,\n0361:             **request,\n0362:         )\n0363:         chunks = []\n0364:         async for chunk in response:\n0365:             if caller_predict_id:\n0366:                 # Add the predict id to the chunk so that the stream listener can identify which predict produces it.\n0367:                 chunk.predict_id = caller_predict_id\n0368:             chunks.append(chunk)\n0369:             await stream.send(chunk)\n0370:         return litellm.stream_chunk_builder(chunks)\n0371: \n0372:     def sync_stream_completion():\n0373:         syncified_stream_completion = syncify(stream_completion)\n0374:         return syncified_stream_completion(request, cache_kwargs)\n0375: \n0376:     async def async_stream_completion():\n0377:         return await stream_completion(request, cache_kwargs)\n0378: \n0379:     if sync:\n0380:         return sync_stream_completion\n0381:     else:\n0382:         return async_stream_completion"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 1001,
+   "end_line": 1035,
+   "excerpt": "1001: @pytest.mark.asyncio\n1002: async def test_streaming_passes_headers_correctly():\n1003:     from dspy.clients.lm import _get_stream_completion_fn\n1004: \n1005:     custom_headers = {\"Authorization\": \"Bearer my-custom-token\"}\n1006:     request = {\n1007:         \"model\": \"openai/gpt-4o-mini\",\n1008:         \"messages\": [{\"role\": \"user\", \"content\": \"test\"}],\n1009:     }\n1010: \n1011:     mock_stream = mock.AsyncMock()\n1012:     mock_stream.send = mock.AsyncMock()\n1013: \n1014:     async def empty_async_generator():\n1015:         return\n1016:         yield  # Make it a generator\n1017: \n1018:     with mock.patch(\"dspy.settings\") as mock_settings:\n1019:         mock_settings.send_stream = mock_stream\n1020:         mock_settings.caller_predict = None\n1021:         mock_settings.track_usage = False\n1022: \n1023:         with mock.patch(\"litellm.acompletion\") as mock_acompletion:\n1024:             mock_acompletion.return_value = empty_async_generator()\n1025: \n1026:             stream_fn = _get_stream_completion_fn(request, {}, sync=False, headers=custom_headers)\n1027:             assert stream_fn is not None\n1028: \n1029:             with mock.patch(\"litellm.stream_chunk_builder\", return_value={}):\n1030:                 await stream_fn()\n1031: \n1032:             # Verify headers were passed to litellm.acompletion\n1033:             mock_acompletion.assert_called_once()\n1034:             call_kwargs = mock_acompletion.call_args.kwargs\n1035:             assert call_kwargs[\"headers\"][\"Authorization\"] == \"Bearer my-custom-token\""
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Streaming helper adds `stream_options` while preserving provided headers.",
+ "source_index": 23,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

@@ -1,0 +1,106 @@
+{
+ "id": "dspy_c0ce75938d25",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I have a `dspy.ReAct` tool that returns image-like DSPy values, and I do not want those observations flattened into plain text before the next agent turn. What matters is the actual user message shape on the follow-up LM call, not just the Python object sitting in the trajectory dict.\n\nI need one tight repro that proves the next LM request really contains image content blocks after a tool call, even though the observation passed through the trajectory formatting layer first.\n\nGive me a complete, runnable Python program that uses `DummyLM`, makes one tool return two DSPy images, then proves the second agent turn contains two `image_url` blocks in the outgoing user message.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\ndef make_images():\n    return dspy.Image(url='https://example.com/a.png'), dspy.Image(url='https://example.com/b.png')\n\nadapter = dspy.ChatAdapter()\nlm = DummyLM([\n    {'next_thought': 'tool', 'next_tool_name': 'make_images', 'next_tool_args': {}},\n    {'next_thought': 'finish', 'next_tool_name': 'finish', 'next_tool_args': {}},\n    {'reasoning': 'done', 'answer': 'ok'},\n], adapter=adapter)\ndspy.configure(lm=lm, adapter=adapter)\nout = dspy.ReAct('question -> answer', tools=[make_images])(question='show')\n\ncontent = lm.history[1]['messages'][1]['content']\nimgs = [b for b in content if isinstance(b, dict) and b.get('type') == 'image_url']\nassert out.answer == 'ok'\nassert len(imgs) == 2\nassert imgs[0]['image_url']['url'] == 'https://example.com/a.png'\nassert imgs[1]['image_url']['url'] == 'https://example.com/b.png'\nprint(content)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The repro defines one tool that returns two `dspy.Image` values and supplies that tool to `dspy.ReAct(\"question -> answer\", tools=[...])`.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The program uses `DummyLM` to script three LM interactions in order: a first turn that selects the image tool, a second turn that selects `finish`, and a final extraction response, then runs the agent once.",
+   "span_ids": [
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The proof inspects the follow-up LM request in `lm.history` by reading the second call's user-message content (for example `lm.history[1]['messages'][1]['content']`) rather than checking only the Python `trajectory` object, because `ReAct` routes trajectory data through `format_user_message_content` before each follow-up call.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The follow-up user-message content is filtered or counted by content blocks whose dict `type` is `image_url`, and the program asserts that there are exactly two such blocks.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The proof goes beyond counting blocks by asserting that the `image_url.url` payloads match the two expected image URLs returned by the tool.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/react.py",
+   "start_line": 90,
+   "end_line": 93,
+   "excerpt": "0090:     def _format_trajectory(self, trajectory: dict[str, Any]):\n0091:         adapter = dspy.settings.adapter or dspy.ChatAdapter()\n0092:         trajectory_signature = dspy.Signature(f\"{', '.join(trajectory.keys())} -> x\")\n0093:         return adapter.format_user_message_content(trajectory_signature, trajectory)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/react.py",
+   "start_line": 145,
+   "end_line": 151,
+   "excerpt": "0145:     def _call_with_potential_trajectory_truncation(self, module, trajectory, **input_args):\n0146:         for _ in range(3):\n0147:             try:\n0148:                 return module(\n0149:                     **input_args,\n0150:                     trajectory=self._format_trajectory(trajectory),\n0151:                 )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/types/base_type.py",
+   "start_line": 27,
+   "end_line": 33,
+   "excerpt": "0027:         ```python\n0028:         class Image(Type):\n0029:             url: str\n0030: \n0031:             def format(self) -> list[dict[str, Any]]:\n0032:                 return [{\"type\": \"image_url\", \"image_url\": {\"url\": self.url}}]\n0033:         ```"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/types/base_type.py",
+   "start_line": 179,
+   "end_line": 207,
+   "excerpt": "0179:             # Parse the JSON inside the block\n0180:             custom_type_content = match.group(1).strip()\n0181:             parsed = None\n0182: \n0183:             for parse_fn in [json.loads, _parse_doubly_quoted_json, json_repair.loads]:\n0184:                 try:\n0185:                     parsed = parse_fn(custom_type_content)\n0186:                     break\n0187:                 except json.JSONDecodeError:\n0188:                     continue\n0189: \n0190:             if parsed:\n0191:                 for custom_type_content in parsed:\n0192:                     result.append(custom_type_content)\n0193:             else:\n0194:                 # fallback to raw string if it's not valid JSON\n0195:                 result.append({\"type\": \"text\", \"text\": custom_type_content})\n0196: \n0197:             last_end = end\n0198: \n0199:         if last_end == 0:\n0200:             # No custom type found, return the original message\n0201:             continue\n0202: \n0203:         # Add any remaining text after the last match\n0204:         if last_end < len(content):\n0205:             result.append({\"type\": \"text\", \"text\": content[last_end:]})\n0206: \n0207:         message[\"content\"] = result"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/predict/test_react.py",
+   "start_line": 20,
+   "end_line": 26,
+   "excerpt": "0020:     class SpyChatAdapter(dspy.ChatAdapter):\n0021:         def format_user_message_content(self, signature, inputs, *args, **kwargs):\n0022:             captured_calls.append((signature, dict(inputs)))\n0023:             return super().format_user_message_content(signature, inputs, *args, **kwargs)\n0024: \n0025:     def make_images():\n0026:         return dspy.Image(\"https://example.com/test.png\"), dspy.Image(Image.new(\"RGB\", (100, 100), \"red\"))"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/predict/test_react.py",
+   "start_line": 29,
+   "end_line": 55,
+   "excerpt": "0029:     adapter = SpyChatAdapter()\n0030:     lm = DummyLM(\n0031:         [\n0032:             {\n0033:                 \"next_thought\": \"I should call the image tool.\",\n0034:                 \"next_tool_name\": \"make_images\",\n0035:                 \"next_tool_args\": {},\n0036:             },\n0037:             {\n0038:                 \"next_thought\": \"I now have the image so I can finish.\",\n0039:                 \"next_tool_name\": \"finish\",\n0040:                 \"next_tool_args\": {},\n0041:             },\n0042:             {\"reasoning\": \"image ready\", \"answer\": \"done\"},\n0043:         ],\n0044:         adapter=adapter,\n0045:     )\n0046:     dspy.configure(lm=lm, adapter=adapter)\n0047: \n0048:     react = dspy.ReAct(\"question -> answer\", tools=[make_images])\n0049:     react(question=\"Draw me something red\")\n0050: \n0051:     sigs_with_obs = [sig for sig, inputs in captured_calls if \"observation_0\" in inputs]\n0052:     assert sigs_with_obs, \"Expected ReAct to format a trajectory containing observation_0\"\n0053: \n0054:     observation_content = lm.history[1][\"messages\"][1][\"content\"]\n0055:     assert sum(1 for part in observation_content if isinstance(part, dict) and part.get(\"type\") == \"image_url\") == 2"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Verifies the multimodal observation survives trajectory formatting and reappears as image blocks on the next LM turn.",
+ "source_index": 22,
+ "smalldspy_scope": true
+}

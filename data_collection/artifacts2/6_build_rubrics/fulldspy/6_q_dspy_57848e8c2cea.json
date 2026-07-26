@@ -1,0 +1,100 @@
+{
+ "id": "dspy_57848e8c2cea",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I built a `dspy.Predict` from a signature class, then later edited the task wording on that class because I wanted to iterate on instructions without rebuilding the whole pipeline. What I cannot tell is whether an already-constructed predictor snapshots the old prompt text or reads the class again on each call.\n\nI do not want a verbal answer because this is going into a regression test for prompt inspection. Show the same predictor being called once before the edit and once after it, and make the proof come from the recorded LM requests rather than from Python object identity.\n\nGive me a complete, runnable Python program that runs offline with `DummyLM`, prints the two system messages, and asserts that the second call uses the updated task wording while the first call keeps the original wording.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass MySig(dspy.Signature):\n    \"\"\"Original instruction.\"\"\"\n\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nlm = DummyLM([{\"answer\": \"first\"}, {\"answer\": \"second\"}])\n\nwith dspy.context(lm=lm):\n    program = dspy.Predict(MySig)\n    program(question=\"before\")\n\n    MySig.instructions = \"Updated instruction.\"\n    program(question=\"after\")\n\nfirst_system = lm.history[0][\"messages\"][0][\"content\"]\nsecond_system = lm.history[1][\"messages\"][0][\"content\"]\n\nprint(first_system)\nprint(\"---\")\nprint(second_system)\n\nassert \"Original instruction.\" in first_system\nassert \"Updated instruction.\" not in first_system\nassert \"Updated instruction.\" in second_system\nassert \"Original instruction.\" not in second_system\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Instantiate a single `dspy.Predict(MySig)` once and reuse that same predictor for both invocations; do not rebuild the predictor or substitute a different signature after the edit.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Change the signature class's task wording between the two calls by assigning new text to its `instructions` property.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Call the predictor once before the instruction edit and once after it, relying on `Predict` to resolve `self.signature` at call time so the later LM request uses the updated class instructions.",
+   "span_ids": [
+    "s1",
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Use the recorded LM requests as the proof source by extracting the first and second system-message texts from the `DummyLM` history, rather than inspecting predictor/signature objects or comparing Python identities.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "Print both captured system messages and assert that the first contains the original instruction but not the updated one, while the second contains the updated instruction but not the original one.",
+   "span_ids": [
+    "s1",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 215,
+   "end_line": 221,
+   "excerpt": "0215:     @property\n0216:     def instructions(cls) -> str:\n0217:         return inspect.cleandoc(getattr(cls, \"__doc__\", \"\"))\n0218: \n0219:     @instructions.setter\n0220:     def instructions(cls, instructions: str) -> None:\n0221:         cls.__doc__ = instructions"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/predict.py",
+   "start_line": 58,
+   "end_line": 63,
+   "excerpt": "0058:     def __init__(self, signature: str | type[Signature], callbacks: list[BaseCallback] | None = None, **config):\n0059:         super().__init__(callbacks=callbacks)\n0060:         self.stage = random.randbytes(8).hex()\n0061:         self.signature = ensure_signature(signature)\n0062:         self.config = config\n0063:         self.reset()"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 511,
+   "end_line": 518,
+   "excerpt": "0511: def ensure_signature(signature: str | type[Signature], instructions=None) -> None | type[Signature]:\n0512:     if signature is None:\n0513:         return None\n0514:     if isinstance(signature, str):\n0515:         return Signature(signature, instructions)\n0516:     if instructions is not None:\n0517:         raise ValueError(\"Don't specify instructions when initializing with a Signature\")\n0518:     return signature"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/predict/predict.py",
+   "start_line": 138,
+   "end_line": 142,
+   "excerpt": "0138:     def _forward_preprocess(self, **kwargs):\n0139:         # Extract the three privileged keyword arguments.\n0140:         assert \"new_signature\" not in kwargs, \"new_signature is no longer a valid keyword argument.\"\n0141:         signature = ensure_signature(kwargs.pop(\"signature\", self.signature))\n0142:         demos = kwargs.pop(\"demos\", self.demos)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/predict/predict.py",
+   "start_line": 243,
+   "end_line": 255,
+   "excerpt": "0243:     def forward(self, **kwargs):\n0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)\n0245: \n0246:         adapter = settings.adapter or ChatAdapter()\n0247: \n0248:         if self._should_stream():\n0249:             with settings.context(caller_predict=self):\n0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0251:         else:\n0252:             with settings.context(send_stream=None):\n0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0254: \n0255:         return self._forward_postprocess(completions, signature, **kwargs)"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Subtle live-reference question: existing predictors keep a reference to the signature class rather than a frozen prompt snapshot.",
+ "source_index": 40,
+ "smalldspy_scope": false
+}

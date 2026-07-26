@@ -1,0 +1,111 @@
+{
+ "id": "dspy_17c2d7825906",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I have several async tools and I need proof that calling them through DSPy from async code actually overlaps instead of queueing them one by one. This matters because a tool-heavy evaluation run becomes unusable if the calls serialize.\n\nGive me a complete, runnable Python program that stays offline, wraps one async tool with `dspy.Tool`, fires several async tool invocations with `asyncio.gather`, and prints/asserts both the returned values and a wall-clock bound proving concurrency.",
+ "gold_answer": "```python\nimport asyncio\n\nimport dspy\n\n\nasync def async_echo(x: int, y: str = \"hello\") -> str:\n    await asyncio.sleep(0.1)\n    return f\"{y} {x}\"\n\n\ntool = dspy.Tool(async_echo)\n\n\nasync def main():\n    start = asyncio.get_event_loop().time()\n    results = await asyncio.gather(*[tool.acall(x=i, y=f\"hello{i}\") for i in range(5)])\n    elapsed = asyncio.get_event_loop().time() - start\n    print(\"results:\", results)\n    print(\"elapsed:\", round(elapsed, 3))\n    assert results == [f\"hello{i} {i}\" for i in range(5)]\n    assert elapsed < 0.3\n\n\nasyncio.run(main())\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The example defines an async tool function that awaits about 0.1 seconds before returning a deterministic string built from its inputs.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The async callable is wrapped with `dspy.Tool(...)` and invoked through `await tool.acall(...)`, matching DSPy's async tool path that awaits coroutine results.",
+   "span_ids": [
+    "s1",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program launches several independent `tool.acall(...)` coroutines and awaits them together with `asyncio.gather(...)` from async code, rather than awaiting each call sequentially.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The gathered return values are checked in task order against the expected per-call strings, such as `[f\"hello{i} {i}\" for i in range(5)]` for the distinct `x=i, y=f\"hello{i}\"` invocations.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program measures elapsed time immediately around the gathered await and asserts a bound below `0.3` seconds for five `0.1`-second tool calls, which is the concrete proof that the calls overlapped instead of serializing to about `0.5` seconds.",
+   "span_ids": [
+    "s2",
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/types/tool.py",
+   "start_line": 191,
+   "end_line": 199,
+   "excerpt": "0191:     @with_callbacks\n0192:     async def acall(self, **kwargs):\n0193:         parsed_kwargs = self._validate_and_parse_args(**kwargs)\n0194:         result = self.func(**parsed_kwargs)\n0195:         if asyncio.iscoroutine(result):\n0196:             return await result\n0197:         else:\n0198:             # We should allow calling a sync tool in the async path.\n0199:             return result"
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/adapters/test_tool.py",
+   "start_line": 79,
+   "end_line": 87,
+   "excerpt": "0079: async def async_dummy_function(x: int, y: str = \"hello\") -> str:\n0080:     \"\"\"An async dummy function for testing.\n0081: \n0082:     Args:\n0083:         x: An integer parameter\n0084:         y: A string parameter\n0085:     \"\"\"\n0086:     await asyncio.sleep(0.1)  # Simulate some async work\n0087:     return f\"{y} {x}\""
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/adapters/test_tool.py",
+   "start_line": 364,
+   "end_line": 370,
+   "excerpt": "0364: async def test_async_concurrent_calls():\n0365:     \"\"\"Test that multiple async tools can run concurrently.\"\"\"\n0366:     tool = Tool(async_dummy_function)\n0367: \n0368:     # Create multiple concurrent calls\n0369:     tasks = [tool.acall(x=i, y=f\"hello{i}\") for i in range(5)]\n0370: "
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/adapters/test_tool.py",
+   "start_line": 371,
+   "end_line": 377,
+   "excerpt": "0371:     # Run them concurrently and measure time\n0372:     start_time = asyncio.get_event_loop().time()\n0373:     results = await asyncio.gather(*tasks)\n0374:     end_time = asyncio.get_event_loop().time()\n0375: \n0376:     # Verify results, `asyncio.gather` returns results in the order of the tasks\n0377:     assert results == [f\"hello{i} {i}\" for i in range(5)]"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/adapters/test_tool.py",
+   "start_line": 379,
+   "end_line": 381,
+   "excerpt": "0379:     # Check that it ran concurrently (should take ~0.1s, not ~0.5s)\n0380:     # We use 0.3s as threshold to account for some overhead\n0381:     assert end_time - start_time < 0.3"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "",
+ "source_index": 55,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

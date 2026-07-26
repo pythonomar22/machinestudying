@@ -1,0 +1,108 @@
+{
+ "id": "dspy_52b8bb6e8291",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I'm feeding a deeply nested Pydantic tool into DSPy, then forwarding its generated schema to another system that does not like `$ref`-heavy schemas.\n\nBefore I build more plumbing, I want proof that DSPy already resolves those nested references inside the tool schema, including the optional list-of-models branch, instead of leaving `$defs` around.\n\nGive me a complete, runnable Python program that defines such a nested tool and proves the generated argument schema contains the nested properties directly and does not contain `$defs`.",
+ "gold_answer": "```python\nfrom typing import Any\nfrom pydantic import BaseModel\nimport dspy\n\nclass Address(BaseModel):\n    street: str\n    city: str\n    zip_code: str\n    is_primary: bool = False\n\nclass ContactInfo(BaseModel):\n    email: str\n    phone: str | None = None\n    addresses: list[Address]\n\nclass UserProfile(BaseModel):\n    user_id: int\n    name: str\n    age: int | None = None\n    contact: ContactInfo\n    tags: list[str] = []\n\nclass Note(BaseModel):\n    content: str\n    author: str\n\ndef complex_tool(profile: UserProfile, priority: int, notes: list[Note] | None = None) -> dict[str, Any]:\n    return {'ok': True}\n\ntool = dspy.Tool(complex_tool)\nassert '$defs' not in str(tool.args['notes'])\nassert tool.args['profile']['properties']['contact']['properties']['email']['type'] == 'string'\nassert tool.args['notes']['anyOf'][0]['items']['properties']['content']['type'] == 'string'\nassert tool.args['notes']['anyOf'][0]['items']['properties']['author']['type'] == 'string'\nprint(tool.args['profile']['properties']['contact'])\nprint(tool.args['notes'])\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Defines nested Pydantic models equivalent to `Address`, `ContactInfo`, `UserProfile`, and `Note`, and a tool function whose parameters are `profile: UserProfile`, `priority: int`, and `notes: list[Note] | None = None` so the example exercises deep nesting plus the optional list-of-models case.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "Creates a DSPy tool from that function (for example, `tool = dspy.Tool(...)`) and uses `tool.args` as the generated argument schema; DSPy's parser fills those schemas by calling `_resolve_json_schema_reference` on both Pydantic-model schemas and other annotated argument schemas.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Asserts the generated `profile` argument schema is an inlined object schema, including a nested `contact` object whose `email` property is directly available under `tool.args[\"profile\"][\"properties\"][\"contact\"][\"properties\"]` with type `\"string\"`.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Asserts the generated `notes` schema preserves the nullable `anyOf` shape, with the non-null branch being an array whose `items` schema is a direct object containing `content` and `author` properties of type `\"string\"`.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Asserts `\"$defs\"` is absent from the generated `notes` schema, matching DSPy's resolver behavior of recursively replacing `$ref` entries and then removing `$defs` from the resolved schema.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "tests/adapters/test_tool.py",
+   "start_line": 32,
+   "end_line": 58,
+   "excerpt": "0032: class Address(BaseModel):\n0033:     street: str\n0034:     city: str\n0035:     zip_code: str\n0036:     is_primary: bool = False\n0037: \n0038: \n0039: class ContactInfo(BaseModel):\n0040:     email: str\n0041:     phone: str | None = None\n0042:     addresses: list[Address]\n0043: \n0044: \n0045: class UserProfile(BaseModel):\n0046:     user_id: int\n0047:     name: str\n0048:     age: int | None = None\n0049:     contact: ContactInfo\n0050:     tags: list[str] = []\n0051: \n0052: \n0053: class Note(BaseModel):\n0054:     content: str\n0055:     author: str\n0056: \n0057: \n0058: def complex_dummy_function(profile: UserProfile, priority: int, notes: list[Note] | None = None) -> dict[str, Any]:"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/types/tool.py",
+   "start_line": 95,
+   "end_line": 116,
+   "excerpt": "0095:         # Process each argument's type to generate its JSON schema.\n0096:         for k, v in hints.items():\n0097:             arg_types[k] = v\n0098:             if k == \"return\":\n0099:                 continue\n0100:             # Check if the type (or its origin) is a subclass of Pydantic's BaseModel\n0101:             origin = get_origin(v) or v\n0102:             if isinstance(origin, type) and issubclass(origin, BaseModel):\n0103:                 # Get json schema, and replace $ref with the actual schema\n0104:                 v_json_schema = _resolve_json_schema_reference(v.model_json_schema())\n0105:                 args[k] = v_json_schema\n0106:             else:\n0107:                 args[k] = _resolve_json_schema_reference(TypeAdapter(v).json_schema())\n0108:             if default_values[k] is not inspect.Parameter.empty:\n0109:                 args[k][\"default\"] = default_values[k]\n0110:             if arg_desc and k in arg_desc:\n0111:                 args[k][\"description\"] = arg_desc[k]\n0112: \n0113:         self.name = self.name or name\n0114:         self.desc = self.desc or desc\n0115:         self.args = self.args if self.args is not None else args\n0116:         self.arg_types = self.arg_types if self.arg_types is not None else arg_types"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/adapters/test_tool.py",
+   "start_line": 173,
+   "end_line": 187,
+   "excerpt": "0173: def test_tool_from_function_with_pydantic_nesting():\n0174:     tool = Tool(complex_dummy_function)\n0175: \n0176:     assert tool.name == \"complex_dummy_function\"\n0177: \n0178:     assert \"profile\" in tool.args\n0179:     assert \"priority\" in tool.args\n0180:     assert \"notes\" in tool.args\n0181:     assert tool.args[\"profile\"][\"type\"] == \"object\"\n0182:     assert tool.args[\"profile\"][\"properties\"][\"user_id\"][\"type\"] == \"integer\"\n0183:     assert tool.args[\"profile\"][\"properties\"][\"name\"][\"type\"] == \"string\"\n0184:     assert tool.args[\"profile\"][\"properties\"][\"age\"][\"anyOf\"] == [{\"type\": \"integer\"}, {\"type\": \"null\"}]\n0185:     assert tool.args[\"profile\"][\"properties\"][\"contact\"][\"type\"] == \"object\"\n0186:     assert tool.args[\"profile\"][\"properties\"][\"contact\"][\"properties\"][\"email\"][\"type\"] == \"string\"\n0187: "
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/adapters/test_tool.py",
+   "start_line": 188,
+   "end_line": 193,
+   "excerpt": "0188:     # Reference should be resolved for nested pydantic models\n0189:     assert \"$defs\" not in str(tool.args[\"notes\"])\n0190:     assert tool.args[\"notes\"][\"anyOf\"][0][\"type\"] == \"array\"\n0191:     assert tool.args[\"notes\"][\"anyOf\"][0][\"items\"][\"type\"] == \"object\"\n0192:     assert tool.args[\"notes\"][\"anyOf\"][0][\"items\"][\"properties\"][\"content\"][\"type\"] == \"string\"\n0193:     assert tool.args[\"notes\"][\"anyOf\"][0][\"items\"][\"properties\"][\"author\"][\"type\"] == \"string\""
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/types/tool.py",
+   "start_line": 388,
+   "end_line": 411,
+   "excerpt": "0388: def _resolve_json_schema_reference(schema: dict) -> dict:\n0389:     \"\"\"Recursively resolve json model schema, expanding all references.\"\"\"\n0390: \n0391:     # If there are no definitions to resolve, return the main schema\n0392:     if \"$defs\" not in schema and \"definitions\" not in schema:\n0393:         return schema\n0394: \n0395:     def resolve_refs(obj: Any) -> Any:\n0396:         if not isinstance(obj, (dict, list)):\n0397:             return obj\n0398:         if isinstance(obj, dict):\n0399:             if \"$ref\" in obj:\n0400:                 ref_path = obj[\"$ref\"].split(\"/\")[-1]\n0401:                 return resolve_refs(schema[\"$defs\"][ref_path])\n0402:             return {k: resolve_refs(v) for k, v in obj.items()}\n0403: \n0404:         # Must be a list\n0405:         return [resolve_refs(item) for item in obj]\n0406: \n0407:     # Resolve all references in the main schema\n0408:     resolved_schema = resolve_refs(schema)\n0409:     # Remove the $defs key as it's no longer needed\n0410:     resolved_schema.pop(\"$defs\", None)\n0411:     return resolved_schema"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Targets tool-schema normalization for nested Pydantic types, including optional list branches.",
+ "source_index": 56,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

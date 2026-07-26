@@ -1,0 +1,1632 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_6663be9fa846`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I'm chaining two optimizers with `dspy.BetterTogether`. When I do have a real validation set, I want the best-scoring intermediate checkpoint back even if it wasn't the last step. But when I intentionally disable validation, I want the latest program in the chain.
+
+I can imagine either policy being reasonable, so I don't want a guess. I want one small repro that demonstrates both modes side by side.
+
+Give me a complete, runnable Python program that stays offline, uses tiny custom teleprompters plus patched evaluation scores, compiles once with validation and once with validation turned off, and prints/asserts which marked program is returned in each case.`
+- Model answer:
+```python
+from unittest.mock import Mock, patch
+
+import dspy
+from dspy.teleprompt import BetterTogether
+from dspy.teleprompt.teleprompt import Teleprompter
+from dspy.utils.dummies import DummyLM
+
+
+class SimpleModule(dspy.Module):
+    def __init__(self):
+        self.predictor = dspy.Predict("input -> output")
+
+    def forward(self, **kwargs):
+        return self.predictor(**kwargs)
+
+
+class MarkedOptimizer(Teleprompter):
+    def __init__(self, marker):
+        self.marker = marker
+
+    def compile(self, student, **kwargs):
+        program = SimpleModule()
+        program.marker = self.marker
+        return program
+
+
+def metric(example, prediction, trace=None):
+    return 1.0
+
+
+trainset = [dspy.Example(input="train", output="out").with_inputs("input")]
+valset = [dspy.Example(input="val", output="out").with_inputs("input")]
+student1 = SimpleModule(); student1.set_lm(DummyLM([{"output": "out"}]))
+student2 = SimpleModule(); student2.set_lm(DummyLM([{"output": "out"}]))
+optimizer = BetterTogether(metric=metric, p=MarkedOptimizer("p_optimized"), w=MarkedOptimizer("w_optimized"))
+with patch("dspy.teleprompt.bettertogether.eval_candidate_program") as mock_eval:
+    mock_eval.side_effect = [Mock(score=0.5), Mock(score=0.9), Mock(score=0.7)]
+    with patch("dspy.teleprompt.bettertogether.launch_lms"):
+        with patch("dspy.teleprompt.bettertogether.kill_lms"):
+            with patch.object(optimizer, "_models_changed", return_value=False):
+                best_with_valset = optimizer.compile(student1, trainset=trainset, valset=valset, strategy="p -> w")
+optimizer_no_val = BetterTogether(metric=metric, p=MarkedOptimizer("p_optimized"), w=MarkedOptimizer("w_optimized"))
+with patch("dspy.teleprompt.bettertogether.launch_lms"):
+    with patch("dspy.teleprompt.bettertogether.kill_lms"):
+        with patch.object(optimizer_no_val, "_models_changed", return_value=False):
+            latest_without_valset = optimizer_no_val.compile(student2, trainset=trainset, valset=None, valset_ratio=0, strategy="p -> w")
+print("with_valset_marker:", best_with_valset.marker)
+print("without_valset_marker:", latest_without_valset.marker)
+assert best_with_valset.marker == "p_optimized"
+assert latest_without_valset.marker == "w_optimized"
+```
+
+## Gold answer
+```python
+from unittest.mock import Mock, patch
+
+import dspy
+from dspy.teleprompt import BetterTogether
+from dspy.teleprompt.teleprompt import Teleprompter
+from dspy.utils.dummies import DummyLM
+
+
+class SimpleModule(dspy.Module):
+    def __init__(self):
+        self.predictor = dspy.Predict("input -> output")
+
+    def forward(self, **kwargs):
+        return self.predictor(**kwargs)
+
+
+class MarkedOptimizer(Teleprompter):
+    def __init__(self, marker):
+        self.marker = marker
+
+    def compile(self, student, **kwargs):
+        program = SimpleModule()
+        program.marker = self.marker
+        return program
+
+
+def metric(example, prediction, trace=None):
+    return 1.0
+
+
+trainset = [dspy.Example(input="train", output="out").with_inputs("input")]
+valset = [dspy.Example(input="val", output="out").with_inputs("input")]
+student1 = SimpleModule(); student1.set_lm(DummyLM([{"output": "out"}]))
+student2 = SimpleModule(); student2.set_lm(DummyLM([{"output": "out"}]))
+optimizer = BetterTogether(metric=metric, p=MarkedOptimizer("p_optimized"), w=MarkedOptimizer("w_optimized"))
+with patch("dspy.teleprompt.bettertogether.eval_candidate_program") as mock_eval:
+    mock_eval.side_effect = [Mock(score=0.5), Mock(score=0.9), Mock(score=0.7)]
+    with patch("dspy.teleprompt.bettertogether.launch_lms"):
+        with patch("dspy.teleprompt.bettertogether.kill_lms"):
+            with patch.object(optimizer, "_models_changed", return_value=False):
+                best_with_valset = optimizer.compile(student1, trainset=trainset, valset=valset, strategy="p -> w")
+optimizer_no_val = BetterTogether(metric=metric, p=MarkedOptimizer("p_optimized"), w=MarkedOptimizer("w_optimized"))
+with patch("dspy.teleprompt.bettertogether.launch_lms"):
+    with patch("dspy.teleprompt.bettertogether.kill_lms"):
+        with patch.object(optimizer_no_val, "_models_changed", return_value=False):
+            latest_without_valset = optimizer_no_val.compile(student2, trainset=trainset, valset=None, valset_ratio=0, strategy="p -> w")
+print("with_valset_marker:", best_with_valset.marker)
+print("without_valset_marker:", latest_without_valset.marker)
+assert best_with_valset.marker == "p_optimized"
+assert latest_without_valset.marker == "w_optimized"
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "The repro includes one `BetterTogether.compile(...)` run with a non-empty `valset` and demonstrates that the returned program is the highest-scoring checkpoint from the chain, so `marker == \"p_optimized\"` even though `w` runs later.",
+    "span_ids": [
+      "s1",
+      "s7"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "The repro includes a second compile run without validation and demonstrates that the returned program is the latest optimizer output in the chain, so the final marker is `\"w_optimized\"`.",
+    "span_ids": [
+      "s1",
+      "s6",
+      "s7"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The example defines a minimal DSPy module plus tiny custom teleprompters whose `compile()` methods return fresh programs tagged with a `.marker`, so each optimizer step can be identified independently of real optimization behavior.",
+    "span_ids": [
+      "s4"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "supporting",
+    "weight": 10,
+    "statement": "The validation-enabled run patches `eval_candidate_program` to return deterministic scores `0.5`, `0.9`, and `0.7` for baseline, `p`, and `w` under `strategy=\"p -> w\"`, making the selection policy directly observable.",
+    "span_ids": [
+      "s7"
+    ]
+  },
+  {
+    "claim_id": "c5",
+    "claim_type": "supporting",
+    "weight": 10,
+    "statement": "The no-validation run explicitly disables held-out evaluation by leaving `valset` absent and setting `valset_ratio=0` or otherwise ensuring no validation set is created, which causes BetterTogether to skip scoring on that path.",
+    "span_ids": [
+      "s2",
+      "s3"
+    ]
+  },
+  {
+    "claim_id": "c6",
+    "claim_type": "supporting",
+    "weight": 10,
+    "statement": "The script keeps the repro offline by attaching a `DummyLM` to the student and patching BetterTogether lifecycle helpers (`launch_lms`, `kill_lms`, and model-change handling) around compilation.",
+    "span_ids": [
+      "s5",
+      "s7"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/teleprompt/bettertogether.py",
+    "start_line": 485,
+    "end_line": 499,
+    "excerpt": "0485:         # Sort candidates by score (best first), with earlier programs winning ties\n0486:         candidate_programs_with_idx = [(i, cp) for i, cp in enumerate(candidate_programs)]\n0487:         candidate_programs_with_idx.sort(\n0488:             key=lambda x: (x[1][\"score\"] if x[1][\"score\"] is not None else float(\"-inf\"), -x[0]),\n0489:             reverse=True\n0490:         )\n0491:         candidate_programs = [cp for _, cp in candidate_programs_with_idx]\n0492: \n0493:         # Select best program based on valset availability\n0494:         if valset is None or len(valset) == 0:\n0495:             # No valset: return the latest program (last in original order)\n0496:             best_program = candidate_programs_with_idx[-1][1]\n0497:         else:\n0498:             # Valset provided: return highest score (first after sorting)\n0499:             best_program = candidate_programs[0]"
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/teleprompt/bettertogether.py",
+    "start_line": 331,
+    "end_line": 337,
+    "excerpt": "0331:         if valset:\n0332:             logger.info(f\"{BLUE}Using provided validation set ({len(valset)} examples). Ignoring valset_ratio.{ENDC}\")\n0333:             return trainset, valset\n0334: \n0335:         if valset_ratio == 0:\n0336:             logger.info(f\"{YELLOW}No validation set provided and valset_ratio=0. No validation set created.{ENDC}\")\n0337:             return trainset, None"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/teleprompt/bettertogether.py",
+    "start_line": 616,
+    "end_line": 631,
+    "excerpt": "0616:         if valset is None or len(valset) == 0:\n0617:             logger.info(f\"{YELLOW}No validation set provided. Skipping evaluation.{ENDC}\")\n0618:             return None\n0619: \n0620:         logger.info(f\"{BLUE}Evaluating on {len(valset)} validation examples...{ENDC}\")\n0621:         evaluate = Evaluate(\n0622:             devset=valset,\n0623:             metric=self.metric,\n0624:             num_threads=num_threads,\n0625:             max_errors=effective_max_errors,\n0626:             display_table=False,\n0627:             display_progress=True,\n0628:             provide_traceback=provide_traceback,\n0629:         )\n0630:         eval_result = eval_candidate_program(len(valset), valset, program, evaluate, rng)\n0631:         return eval_result.score"
+  },
+  {
+    "span_id": "s4",
+    "path": "tests/teleprompt/test_bettertogether.py",
+    "start_line": 32,
+    "end_line": 59,
+    "excerpt": "0032: class SimpleModule(dspy.Module):\n0033:     def __init__(self, signature):\n0034:         super().__init__()\n0035:         self.predictor = Predict(signature)\n0036: \n0037:     def forward(self, **kwargs):\n0038:         return self.predictor(**kwargs)\n0039: \n0040: \n0041: # ============================================================================\n0042: # Reusable Mock Optimizers\n0043: # ============================================================================\n0044: \n0045: class SimpleOptimizer(Teleprompter):\n0046:     \"\"\"A simple optimizer that returns the student unchanged.\"\"\"\n0047:     def compile(self, student, **kwargs):\n0048:         return student\n0049: \n0050: \n0051: class MarkedOptimizer(Teleprompter):\n0052:     \"\"\"An optimizer that marks the program with a specific identifier.\"\"\"\n0053:     def __init__(self, marker):\n0054:         self.marker = marker\n0055: \n0056:     def compile(self, student, **kwargs):\n0057:         prog = SimpleModule(\"input -> output\")\n0058:         prog.marker = self.marker\n0059:         return prog"
+  },
+  {
+    "span_id": "s5",
+    "path": "tests/teleprompt/test_bettertogether.py",
+    "start_line": 84,
+    "end_line": 90,
+    "excerpt": "0084: @pytest.fixture\n0085: def student_with_lm():\n0086:     \"\"\"Create a student module with a DummyLM.\"\"\"\n0087:     student = SimpleModule(\"input -> output\")\n0088:     lm = DummyLM([{\"output\": \"test\"}])\n0089:     student.set_lm(lm)\n0090:     return student"
+  },
+  {
+    "span_id": "s6",
+    "path": "tests/teleprompt/test_bettertogether.py",
+    "start_line": 616,
+    "end_line": 619,
+    "excerpt": "0616: @pytest.mark.parametrize(\"test_valset,expected_marker,test_description\", [\n0617:     (valset, \"p_optimized\", \"With valset: returns best score (p), not latest (w)\"),\n0618:     (None, \"w_optimized\", \"Without valset: returns latest program (w)\"),\n0619: ])"
+  },
+  {
+    "span_id": "s7",
+    "path": "tests/teleprompt/test_bettertogether.py",
+    "start_line": 626,
+    "end_line": 647,
+    "excerpt": "0626:     # Set up scores: baseline=0.5, p=0.9 (best), w=0.7\n0627:     # When test_valset is provided, best score wins; when None, latest wins\n0628:     with patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\") as mock_eval:\n0629:         if test_valset is not None:\n0630:             mock_eval.side_effect = [\n0631:                 Mock(score=0.5),  # Baseline\n0632:                 Mock(score=0.9),  # After p (best score)\n0633:                 Mock(score=0.7),  # After w (lower than p)\n0634:             ]\n0635:         with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n0636:             with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n0637:                 with patch.object(optimizer, \"_models_changed\", return_value=False):\n0638:                     result = optimizer.compile(\n0639:                         student_with_lm,\n0640:                         trainset=trainset,\n0641:                         valset=test_valset,\n0642:                         strategy=\"p -> w\"\n0643:                     )\n0644: \n0645:     # Verify the correct program was returned based on valset presence\n0646:     assert hasattr(result, \"marker\"), \"Result should have marker\"\n0647:     assert result.marker == expected_marker, test_description"
+  }
+]
+
+## Whole evidence files
+### dspy/teleprompt/bettertogether.py
+0001: import inspect
+0002: import logging
+0003: import random
+0004: from typing import Any, Callable
+0005: 
+0006: import dspy
+0007: from dspy.evaluate import Evaluate
+0008: from dspy.primitives.example import Example
+0009: from dspy.primitives.module import Module
+0010: from dspy.teleprompt.bootstrap_finetune import (
+0011:     BootstrapFinetune,
+0012:     all_predictors_have_lms,
+0013:     kill_lms,
+0014:     launch_lms,
+0015:     prepare_student,
+0016:     prepare_teacher,
+0017: )
+0018: from dspy.teleprompt.random_search import BootstrapFewShotWithRandomSearch
+0019: from dspy.teleprompt.teleprompt import Teleprompter
+0020: from dspy.teleprompt.utils import eval_candidate_program
+0021: 
+0022: logger = logging.getLogger(__name__)
+0023: 
+0024: # ANSI color codes for terminal output
+0025: YELLOW = "\033[93m"
+0026: GREEN = "\033[92m"
+0027: BLUE = "\033[94m"
+0028: BOLD = "\033[1m"
+0029: ENDC = "\033[0m"
+0030: 
+0031: 
+0032: class BetterTogether(Teleprompter):
+0033:     """A meta-optimizer that combines prompt and weight optimization in configurable sequences.
+0034: 
+0035:     BetterTogether is a meta-optimizer proposed in the paper
+0036:     [Fine-Tuning and Prompt Optimization: Two Great Steps that Work Better Together](https://arxiv.org/abs/2407.10930).
+0037:     It combines prompt optimization and weight optimization (fine-tuning) by applying them in a
+0038:     configurable sequence, allowing a student program to iteratively improve both its prompts and
+0039:     model parameters.
+0040: 
+0041:     The core insight is that prompt and weight optimization can complement each other: prompt
+0042:     optimization can potentially discover effective task decompositions and reasoning strategies,
+0043:     while weight optimization can specialize the model to execute these patterns more efficiently.
+0044:     Using these approaches together in sequences (e.g., prompt optimization then weight optimization)
+0045:     may allow each to build on the improvements made by the other. Empirically, this approach often
+0046:     outperforms either strategy alone, even with state-of-the-art optimizers. For example, a
+0047:     [Databricks case study](https://www.databricks.com/blog/building-state-art-enterprise-agents-90x-cheaper-automated-prompt-optimization)
+0048:     shows that combining BetterTogether with GEPA and fine-tuning outperforms either approach
+0049:     alone.
+0050: 
+0051:     The optimizer is initialized with a metric and custom optimizers. For example, you can combine
+0052:     GEPA for prompt optimization with BootstrapFinetune for weight optimization:
+0053:     ``BetterTogether(metric=metric, p=GEPA(...), w=BootstrapFinetune(...))``. The ``compile()``
+0054:     method takes a student program, trainset, and strategy string where strategy keys correspond
+0055:     to the optimizer names from initialization. It executes each optimizer in the specified sequence.
+0056:     When a validation set is provided, the best performing program is returned; otherwise, the
+0057:     latest program is returned. Note: Weight optimizers like BootstrapFinetune require student
+0058:     programs to have LMs explicitly set (not relying on global dspy.settings.lm), and BetterTogether
+0059:     mirrors this requirement for simplicity. Therefore we call ``set_lm`` before compiling.
+0060: 
+0061:         >>> from dspy.teleprompt import GEPA, BootstrapFinetune
+0062:         >>>
+0063:         >>> # Combine GEPA for prompt optimization with BootstrapFinetune for weight optimization
+0064:         >>> optimizer = BetterTogether(
+0065:         ...     metric=metric,
+0066:         ...     p=GEPA(metric=metric, auto="medium"),
+0067:         ...     w=BootstrapFinetune(metric=metric)
+0068:         ... )
+0069:         >>>
+0070:         >>> student.set_lm(lm)
+0071:         >>> compiled = optimizer.compile(
+0072:         ...     student,
+0073:         ...     trainset=trainset,
+0074:         ...     valset=valset,
+0075:         ...     strategy="p -> w"
+0076:         ... )
+0077: 
+0078:     You can pass optimizer-specific arguments to each optimizer's ``compile()`` method using
+0079:     ``optimizer_compile_args``. This allows you to customize each optimizer's behavior:
+0080: 
+0081:         >>> from dspy.teleprompt import MIPROv2
+0082:         >>>
+0083:         >>> # Use MIPROv2 for prompt optimization with custom parameters
+0084:         >>> optimizer = BetterTogether(
+0085:         ...     metric=metric,
+0086:         ...     p=MIPROv2(metric=metric),
+0087:         ...     w=BootstrapFinetune(metric=metric)
+0088:         ... )
+0089:         >>>
+0090:         >>> student.set_lm(lm)
+0091:         >>> compiled = optimizer.compile(
+0092:         ...     student,
+0093:         ...     trainset=trainset,
+0094:         ...     valset=valset,
+0095:         ...     strategy="p -> w",
+0096:         ...     optimizer_compile_args={
+0097:         ...         "p": {"num_trials": 10, "max_bootstrapped_demos": 8},  # Configure MIPROv2's compile arguments
+0098:         ...     }
+0099:         ... )
+0100: 
+0101:     Since BetterTogether is a meta-optimizer that can run arbitrary optimizers in sequence, any
+0102:     sequence of optimizers can be combined together. The optimizer names used in the strategy string
+0103:     correspond to the keyword arguments specified in the constructor. For example, different prompt
+0104:     optimizers can be alternated multiple times (though note this is just an illustration of
+0105:     BetterTogether's flexibility, not a recommended configuration):
+0106: 
+0107:         >>> from dspy.teleprompt import MIPROv2, GEPA
+0108:         >>>
+0109:         >>> # Chain two optimizers three times: MIPROv2 -> GEPA -> MIPROv2
+0110:         >>> optimizer = BetterTogether(
+0111:         ...     metric=metric,
+0112:         ...     mipro=MIPROv2(metric=metric, auto="light"),
+0113:         ...     gepa=GEPA(metric=metric, auto="light")
+0114:         ... )
+0115:         >>>
+0116:         >>> student.set_lm(lm)
+0117:         >>> compiled = optimizer.compile(
+0118:         ...     student,
+0119:         ...     trainset=trainset,
+0120:         ...     valset=valset,
+0121:         ...     strategy="mipro -> gepa -> mipro"
+0122:         ... )
+0123: 
+0124:     Note:
+0125:         Output Attributes: The returned program includes two additional attributes:
+0126:         ``candidate_programs`` and ``flag_compilation_error_occurred``. The ``candidate_programs``
+0127:         attribute is a list of dicts, each containing 'program', 'score', and 'strategy' (e.g.,
+0128:         '', 'p', 'p -> w', 'p -> w -> p'), sorted by descending score (similar to
+0129:         ``dspy.MIPROv2.candidate_programs``). If any optimizer step fails,
+0130:         ``flag_compilation_error_occurred`` is set to True and the best program found so far is
+0131:         returned.
+0132: 
+0133:         Model Lifecycle Management: BetterTogether automatically manages language model lifecycle
+0134:         (launching, killing, and relaunching after fine-tuning), which are no-ops for most
+0135:         API-based LMs. This is particularly important when using weight optimizers like
+0136:         BootstrapFinetune with local providers (e.g., dspy.LocalProvider), as it handles model
+0137:         initialization and cleanup between optimization steps.
+0138:     """
+0139: 
+0140:     STRAT_SEP = " -> "
+0141: 
+0142:     def __init__(
+0143:         self,
+0144:         metric: Callable,
+0145:         **optimizers: Teleprompter,
+0146:     ):
+0147:         """Initialize BetterTogether with a metric and custom optimizers.
+0148: 
+0149:         Args:
+0150:             metric: Evaluation metric function for scoring programs. Should accept
+0151:                 ``(example, prediction, trace=None)`` and return a numeric score (higher is better).
+0152:                 This metric is used to evaluate candidate programs during optimization and is passed
+0153:                 to the default optimizers if no custom optimizers are provided.
+0154:             **optimizers: Custom optimizers as keyword arguments, where keys become the optimizer
+0155:                 names used in the strategy string. For example, ``p=GEPA(...), w=BootstrapFinetune(...)``
+0156:                 makes 'p' and 'w' available for use in strategies like ``"p -> w"``. If not provided,
+0157:                 defaults to ``p=BootstrapFewShotWithRandomSearch(metric=metric)`` and
+0158:                 ``w=BootstrapFinetune(metric=metric)``. Any DSPy Teleprompter can be used.
+0159: 
+0160:         Examples:
+0161:             >>> # Use custom optimizers
+0162:             >>> from dspy.teleprompt import GEPA, BootstrapFinetune
+0163:             >>> optimizer = BetterTogether(
+0164:             ...     metric=metric,
+0165:             ...     p=GEPA(metric=metric, auto="medium"),
+0166:             ...     w=BootstrapFinetune(metric=metric)
+0167:             ... )
+0168:             >>>
+0169:             >>> # Use default optimizers
+0170:             >>> optimizer = BetterTogether(metric=metric)
+0171:         """
+0172:         self.metric = metric
+0173: 
+0174:         if not optimizers:
+0175:             logger.info(
+0176:                 "No optimizers provided. Using defaults: "
+0177:                 "BootstrapFewShotWithRandomSearch (p) and BootstrapFinetune (w). "
+0178:                 "You can use the letters p and w to specify the compile strategy. "
+0179:                 "For example, to run weight optimization after prompt optimization, use strategy='p -> w'."
+0180:             )
+0181:             optimizers = {
+0182:                 "p": BootstrapFewShotWithRandomSearch(metric=metric),
+0183:                 "w": BootstrapFinetune(metric=metric),
+0184:             }
+0185:         for key, optimizer in optimizers.items():
+0186:             if not isinstance(optimizer, Teleprompter):
+0187:                 raise TypeError(
+0188:                     f"Optimizer '{key}' must be a Teleprompter, "
+0189:                     f"got {type(optimizer).__name__}"
+0190:                 )
+0191:         self.optimizers: dict[str, Teleprompter] = optimizers
+0192: 
+0193:     def compile(
+0194:         self,
+0195:         student: Module,
+0196:         *,
+0197:         trainset: list[Example],
+0198:         teacher: Module | list[Module] | None = None,
+0199:         valset: list[Example] | None = None,
+0200:         # often specified in init in other optimizers
+0201:         num_threads: int | None = None,
+0202:         max_errors: int | None = None,
+0203:         provide_traceback: bool | None = None,
+0204:         seed: int | None = None,
+0205:         # specific to BetterTogether
+0206:         valset_ratio: float = 0.1,
+0207:         shuffle_trainset_between_steps: bool = True,
+0208:         strategy: str = "p -> w -> p",
+0209:         optimizer_compile_args: dict[str, dict[str, Any]] | None = None,
+0210:     ) -> Module:
+0211:         """Compile and optimize a student program using a sequence of optimization strategies.
+0212: 
+0213:         Executes the optimizers specified in the strategy string sequentially, evaluating each
+0214:         intermediate result and returning the best performing program.
+0215: 
+0216:         Args:
+0217:             student: DSPy program to optimize. All predictors must have language models assigned.
+0218:                 program.set_lm(lm) can be used to assign a language model to all modules of a 
+0219:                 program.
+0220:             trainset: Training examples for optimization. Each optimizer receives the full trainset
+0221:                 (or a shuffled version if ``shuffle_trainset_between_steps=True``).
+0222:             teacher: Optional teacher module(s) for bootstrapping. Can be a single module or list.
+0223:                 Passed to optimizers.
+0224:             valset: Validation set for evaluating optimization steps. If not provided, a portion of
+0225:                 trainset is held out (controlled by ``valset_ratio``). If both ``valset`` and
+0226:                 ``valset_ratio`` are None/0, no validation occurs and the latest program is returned.
+0227:             num_threads: Number of parallel evaluation threads. Default is None, which means sequential evaluation.
+0228:             max_errors: Maximum errors to tolerate during evaluation. Defaults to
+0229:                 ``dspy.settings.max_errors``.
+0230:             provide_traceback: Whether to show detailed tracebacks for evaluation errors.
+0231:             seed: Random seed for reproducibility. Controls trainset shuffling and evaluation sampling.
+0232:             valset_ratio: Fraction of trainset to hold out as validation (range [0, 1)). For example,
+0233:                 0.1 holds out 10%. Set to 0 to skip validation. Default is 0.1.
+0234:             shuffle_trainset_between_steps: Whether to shuffle trainset before each optimization step.
+0235:                 Helps prevent overfitting to example ordering. Default is True.
+0236:             strategy: Sequence of optimizers to apply, separated by ``" -> "``. Each element must be
+0237:                 a key from the optimizers provided in ``__init__``. For example, ``"p -> w -> p"``
+0238:                 applies prompt optimization, then weight optimization, then prompt optimization again.
+0239:                 Default is ``"p -> w -> p"``.
+0240:             optimizer_compile_args: Optional dict mapping optimizer keys to their ``compile()``
+0241:                 arguments. If trainset, valset, or teacher are provided in the dict for a specific
+0242:                 optimizer, they override the defaults from BetterTogether's compile method. For example:
+0243:                 ``{"p": {"num_trials": 10}, "w": {"trainset": custom_trainset}}``. This is useful to
+0244:                 override the default compile arguments for specific optimizers. The ``student`` argument
+0245:                 cannot be included in optimizer_compile_args; BetterTogether's compile method manages
+0246:                 the student reference for all optimizers.
+0247: 
+0248:         Returns:
+0249:             Optimized student program with two additional attributes:
+0250: 
+0251:             - ``candidate_programs``: List of dicts with 'program', 'score', and 'strategy' keys,
+0252:               sorted by score (best first). Contains all evaluated programs including the baseline.
+0253:             - ``flag_compilation_error_occurred``: Boolean indicating if any optimization step failed.
+0254: 
+0255:         Raises:
+0256:             ValueError: If trainset is empty, valset_ratio not in [0, 1), strategy is empty or
+0257:                 contains invalid optimizer keys, or optimizer_compile_args contains invalid arguments.
+0258:             TypeError: If optimizer_compile_args contains a 'student' key (not allowed).
+0259: 
+0260:         Examples:
+0261:             >>> optimizer = BetterTogether(
+0262:             ...     metric=metric,
+0263:             ...     p=GEPA(metric=metric),
+0264:             ...     w=BootstrapFinetune(metric=metric)
+0265:             ... )
+0266:             >>> student.set_lm(lm)
+0267:             >>> compiled = optimizer.compile(
+0268:             ...     student,
+0269:             ...     trainset=trainset,
+0270:             ...     valset=valset,
+0271:             ...     strategy="p -> w"
+0272:             ... )
+0273:             >>> print(f"Best score: {compiled.candidate_programs[0]['score']}")
+0274:         """
+0275:         logger.info(f"\n{BOLD}==> BETTERTOGETHER COMPILATION STARTED <=={ENDC}")
+0276:         logger.info(f"{BLUE}Strategy:{ENDC} {strategy}")
+0277:         logger.info(f"{BLUE}Trainset size:{ENDC} {len(trainset)}")
+0278:         logger.info(f"{BLUE}Validation ratio:{ENDC} {valset_ratio if valset is None else 'using provided valset'}")
+0279: 
+0280:         student, teacher = self._prepare_student_and_teacher(student, teacher)
+0281:         trainset, valset = self._prepare_trainset_and_valset(trainset, valset, valset_ratio)
+0282:         effective_max_errors = max_errors if max_errors is not None else dspy.settings.max_errors
+0283:         parsed_strategy = self._prepare_strategy(strategy)
+0284:         optimizer_compile_args = self._prepare_optimizer_compile_args(optimizer_compile_args, teacher)
+0285: 
+0286:         student = self._run_strategies(
+0287:             student,
+0288:             trainset,
+0289:             teacher,
+0290:             valset,
+0291:             num_threads,
+0292:             effective_max_errors,
+0293:             provide_traceback,
+0294:             seed,
+0295:             parsed_strategy,
+0296:             shuffle_trainset_between_steps,
+0297:             optimizer_compile_args,
+0298:         )
+0299: 
+0300:         logger.info(f"\n{BOLD}{GREEN}==> BETTERTOGETHER COMPILATION COMPLETE <=={ENDC}")
+0301:         logger.info(f"{GREEN}Best score achieved:{ENDC} {student.candidate_programs[0]['score']}")
+0302:         logger.info(f"{GREEN}Best strategy:{ENDC} {student.candidate_programs[0]['strategy'] or 'original (no optimization)'}")
+0303: 
+0304:         student._compiled = True
+0305:         return student
+0306: 
+0307:     def _prepare_student_and_teacher(
+0308:         self, student: Module, teacher: Module | list[Module] | None
+0309:     ) -> tuple[Module, list[Module] | None]:
+0310:         student = prepare_student(student)
+0311:         all_predictors_have_lms(student)
+0312: 
+0313:         if not teacher:
+0314:             return student, None
+0315:         teacher = [teacher] if not isinstance(teacher, list) else teacher
+0316:         teacher = [prepare_teacher(student, t) for t in teacher]
+0317: 
+0318:         return student, teacher
+0319: 
+0320:     def _prepare_trainset_and_valset(
+0321:         self, trainset: list[Example], valset: list[Example] | None, valset_ratio: float
+0322:     ) -> tuple[list[Example], list[Example] | None]:
+0323:         if not trainset:
+0324:             raise ValueError("trainset cannot be empty")
+0325: 
+0326:         if valset_ratio < 0 or valset_ratio >= 1:
+0327:             raise ValueError(f"valset_ratio must be in range [0, 1), got {valset_ratio}")
+0328: 
+0329:         trainset = trainset[:]  # shallow copy to avoid modifying the original
+0330: 
+0331:         if valset:
+0332:             logger.info(f"{BLUE}Using provided validation set ({len(valset)} examples). Ignoring valset_ratio.{ENDC}")
+0333:             return trainset, valset
+0334: 
+0335:         if valset_ratio == 0:
+0336:             logger.info(f"{YELLOW}No validation set provided and valset_ratio=0. No validation set created.{ENDC}")
+0337:             return trainset, None
+0338: 
+0339:         logger.info(f"{BLUE}Sampling {valset_ratio:.1%} of trainset as validation set.{ENDC}")
+0340:         num_val_examples = int(valset_ratio * len(trainset))
+0341:         valset = trainset[:num_val_examples]
+0342:         trainset = trainset[num_val_examples:]
+0343:         logger.info(f"{BLUE}Created validation set: {len(valset)} examples. Training set: {len(trainset)} examples.{ENDC}")
+0344: 
+0345:         return trainset, valset
+0346: 
+0347:     def _prepare_strategy(self, strategy: str) -> list[str]:
+0348:         if not strategy or not strategy.strip():
+0349:             raise ValueError("strategy cannot be empty")
+0350: 
+0351:         parsed_strategy = strategy.split(self.STRAT_SEP)
+0352: 
+0353:         invalid_steps = [s for s in parsed_strategy if s not in self.optimizers]
+0354:         if invalid_steps:
+0355:             raise ValueError(
+0356:                 f"Strategy contains invalid optimizer keys: {invalid_steps}. "
+0357:                 f"Valid keys are: {list(self.optimizers.keys())}"
+0358:             )
+0359: 
+0360:         return parsed_strategy
+0361: 
+0362:     def _prepare_optimizer_compile_args(
+0363:         self,
+0364:         optimizer_compile_args: dict[str, dict[str, Any]] | None,
+0365:         teacher: list[Module] | None,
+0366:     ) -> dict[str, dict[str, Any]]:
+0367:         logger.info(f"{BLUE}Validating optimizer compile arguments...{ENDC}")
+0368: 
+0369:         # Validate user-provided compile args
+0370:         if not optimizer_compile_args:
+0371:             return {}
+0372: 
+0373:         for optimizer_key, compile_args in optimizer_compile_args.items():
+0374:             if optimizer_key not in self.optimizers:
+0375:                 raise ValueError(
+0376:                     f"Invalid optimizer key '{optimizer_key}'. "
+0377:                     f"Valid keys are: {list(self.optimizers.keys())}"
+0378:                 )
+0379:             optimizer = self.optimizers[optimizer_key]
+0380:             self._validate_compile_args(optimizer, optimizer_key, compile_args)
+0381: 
+0382:             # Special checks
+0383:             if optimizer.__class__.__name__ == "GEPA":
+0384:                 # GEPA accepts a teacher argument, but raises an error if it's set.
+0385:                 if teacher is not None:
+0386:                     raise ValueError(
+0387:                         "GEPA does not accept a teacher argument. Please remove the teacher argument."
+0388:                     )
+0389: 
+0390:         return optimizer_compile_args
+0391: 
+0392:     def _validate_compile_args(
+0393:         self, optimizer: Teleprompter, optimizer_key: str, compile_args: dict[str, Any]
+0394:     ) -> None:
+0395:         if "student" in compile_args:
+0396:             raise ValueError(
+0397:                 f"'student' is not allowed in optimizer_compile_args for optimizer '{optimizer_key}'. "
+0398:                 "The same student is used throughout compilation."
+0399:             )
+0400: 
+0401:         valid_params = inspect.signature(optimizer.compile).parameters
+0402:         invalid_args = set(compile_args.keys()) - set(valid_params.keys())
+0403:         if invalid_args:
+0404:             raise ValueError(
+0405:                 f"Invalid compile arguments for optimizer '{optimizer_key}': {sorted(invalid_args)}. "
+0406:                 f"{optimizer.__class__.__name__}.compile() accepts: {list(valid_params.keys())}"
+0407:             )
+0408: 
+0409:     def _run_strategies(
+0410:         self,
+0411:         student: Module,
+0412:         trainset: list[Example],
+0413:         teacher: list[Module] | None,
+0414:         valset: list[Example] | None,
+0415:         num_threads: int | None,
+0416:         effective_max_errors: int | None,
+0417:         provide_traceback: bool | None,
+0418:         seed: int | None,
+0419:         parsed_strategy: list[str],
+0420:         shuffle_trainset_between_steps: bool,
+0421:         optimizer_args: dict[str, dict[str, Any]],
+0422:     ) -> Module:
+0423:         rng = random.Random(seed)
+0424:         candidate_programs = []
+0425:         flag_lms_launched = False
+0426:         flag_compilation_error_occurred = False
+0427: 
+0428:         # Evaluate original program
+0429:         logger.info(f"\n{BOLD}==> BASELINE EVALUATION <=={ENDC}")
+0430:         logger.info("Evaluating original program (no optimization applied)")
+0431: 
+0432:         launch_lms(student)
+0433:         flag_lms_launched = True
+0434: 
+0435:         score = self._evaluate_on_valset(student, valset, rng, num_threads, effective_max_errors, provide_traceback)
+0436:         self._add_candidate(candidate_programs, student, strategy="", score=score)
+0437:         logger.info(f"{YELLOW}Baseline score:{ENDC} {score}")
+0438: 
+0439:         # Apply each optimization step
+0440:         for ind, step_code in enumerate(parsed_strategy):
+0441:             current_strategy = self.STRAT_SEP.join(parsed_strategy[:ind + 1])
+0442:             optimizer = self.optimizers[step_code]
+0443: 
+0444:             logger.info(f"\n{BOLD}==> STEP {ind + 1}/{len(parsed_strategy)}: {optimizer.__class__.__name__.upper()} <=={ENDC}")
+0445:             logger.info(f"{BLUE}Current strategy:{ENDC} '{current_strategy}'")
+0446:             logger.info(f"{BLUE}Optimizer:{ENDC} {optimizer.__class__.__name__}")
+0447: 
+0448:             try:
+0449:                 if shuffle_trainset_between_steps:
+0450:                     logger.info(f"{BLUE}Shuffling trainset...{ENDC}")
+0451:                     rng.shuffle(trainset)
+0452: 
+0453:                 # Run optimizer, evaluate, and record results
+0454:                 compile_args = optimizer_args.get(step_code, {})
+0455:                 student, score, is_new_best, lms_relaunched = self._run_and_evaluate_step(
+0456:                     optimizer, student, teacher, trainset, valset, compile_args,
+0457:                     candidate_programs, current_strategy, rng,
+0458:                     num_threads, effective_max_errors, provide_traceback
+0459:                 )
+0460: 
+0461:                 if lms_relaunched:
+0462:                     flag_lms_launched = True
+0463: 
+0464:                 # Log score
+0465:                 if is_new_best:
+0466:                     logger.info(f"{GREEN}New best score!{ENDC} {score} (strategy: '{current_strategy}')")
+0467:                 else:
+0468:                     logger.info(f"{YELLOW}Score after optimization:{ENDC} {score}")
+0469: 
+0470:             except Exception as e:
+0471:                 flag_compilation_error_occurred = True
+0472:                 logger.error(
+0473:                     f"{YELLOW}Step {ind + 1}/{len(parsed_strategy)} failed with error: {type(e).__name__}: {e}{ENDC}"
+0474:                 )
+0475:                 logger.error(
+0476:                     f"{YELLOW}Stopping optimization early. Returning best program found so far from {len(candidate_programs)} candidate(s).{ENDC}"
+0477:                 )
+0478:                 logger.error(f"{YELLOW}Traceback:{ENDC}", exc_info=True)
+0479:                 break
+0480: 
+0481:         # Cleanup and finalize
+0482:         if flag_lms_launched:
+0483:             kill_lms(student)
+0484: 
+0485:         # Sort candidates by score (best first), with earlier programs winning ties
+0486:         candidate_programs_with_idx = [(i, cp) for i, cp in enumerate(candidate_programs)]
+0487:         candidate_programs_with_idx.sort(
+0488:             key=lambda x: (x[1]["score"] if x[1]["score"] is not None else float("-inf"), -x[0]),
+0489:             reverse=True
+0490:         )
+0491:         candidate_programs = [cp for _, cp in candidate_programs_with_idx]
+0492: 
+0493:         # Select best program based on valset availability
+0494:         if valset is None or len(valset) == 0:
+0495:             # No valset: return the latest program (last in original order)
+0496:             best_program = candidate_programs_with_idx[-1][1]
+0497:         else:
+0498:             # Valset provided: return highest score (first after sorting)
+0499:             best_program = candidate_programs[0]
+0500: 
+0501:         # Attach sorted candidate programs and error flag to the best program
+0502:         best_student = best_program["program"]
+0503:         best_student.candidate_programs = candidate_programs
+0504:         best_student.flag_compilation_error_occurred = flag_compilation_error_occurred
+0505: 
+0506:         logger.info(f"\n{BOLD}==> OPTIMIZATION SUMMARY <=={ENDC}")
+0507:         logger.info(f"{GREEN}Best score:{ENDC} {best_program['score']}")
+0508:         strategy_display = best_program["strategy"] if best_program["strategy"] else "original (no optimization)"
+0509:         logger.info(f"{GREEN}Best strategy:{ENDC} {strategy_display}")
+0510:         logger.info(f"{BLUE}Total candidates evaluated:{ENDC} {len(candidate_programs)}")
+0511: 
+0512:         return best_student
+0513: 
+0514:     def _run_and_evaluate_step(
+0515:         self,
+0516:         optimizer: Teleprompter,
+0517:         student: Module,
+0518:         teacher: list[Module] | None,
+0519:         trainset: list[Example],
+0520:         valset: list[Example] | None,
+0521:         compile_args: dict[str, Any],
+0522:         candidate_programs: list,
+0523:         current_strategy: str,
+0524:         rng: random.Random,
+0525:         num_threads: int | None,
+0526:         effective_max_errors: int | None,
+0527:         provide_traceback: bool | None,
+0528:     ) -> tuple[Module, float | None, bool, bool]:
+0529:         """Run optimizer, evaluate result, and record candidate program.
+0530: 
+0531:         Returns:
+0532:             student: Optimized student program
+0533:             score: Validation score (None if no valset)
+0534:             is_new_best: Whether this score is the best so far
+0535:             lms_relaunched: Whether LMs were relaunched (for flag tracking)
+0536:         """
+0537:         # Save LMs before optimization
+0538:         pred_lms_before = [pred.lm for pred in student.predictors()]
+0539: 
+0540:         # Run optimizer
+0541:         student._compiled = False
+0542:         logger.info(f"{BLUE}Running {optimizer.__class__.__name__} with {len(trainset)} training examples...{ENDC}")
+0543: 
+0544:         # Build compile args with standard parameters, filtering to only what the optimizer accepts
+0545:         potential_args = {"trainset": trainset, "teacher": teacher, "valset": valset, **compile_args}
+0546:         sig = inspect.signature(optimizer.compile)
+0547:         accepted_params = set(sig.parameters.keys())
+0548:         filtered_compile_args = {k: v for k, v in potential_args.items() if k in accepted_params}
+0549: 
+0550:         student = optimizer.compile(student, **filtered_compile_args)
+0551: 
+0552:         # Restore LMs if optimizer incorrectly reset them
+0553:         # TODO: Some optimizers like BootstrapFewShotWithRandomSearch reset predictor LMs during compilation,
+0554:         # which breaks weight optimizers as they require each predictor to have an LM. We should ensure that
+0555:         # all optimizers respect the assigned LMs of programs and do not override them. Until then, we restore
+0556:         # the original LMs here.
+0557:         if not all_predictors_have_lms(student):
+0558:             logger.warning(
+0559:                 f"{YELLOW}Warning: {optimizer.__class__.__name__} incorrectly reset predictor LMs. "
+0560:                 f"Restoring to original LMs.{ENDC}"
+0561:             )
+0562:             for pred, lm in zip(student.predictors(), pred_lms_before, strict=False):
+0563:                 pred.lm = lm
+0564: 
+0565:         # Relaunch LMs if models changed (e.g., after fine-tuning)
+0566:         # Weight optimizers create new model instances and kill the old ones before returning.
+0567:         # We detect this via model name changes and relaunch the new models.
+0568:         # Note: launch() and kill() are no-ops for most API-based LMs; these mainly affect local
+0569:         # LMs that need launch or clean up routines.
+0570:         lms_relaunched = False
+0571:         if self._models_changed(student, pred_lms_before):
+0572:             launch_lms(student)
+0573:             lms_relaunched = True
+0574: 
+0575:         # Evaluate optimized program
+0576:         score = self._evaluate_on_valset(student, valset, rng, num_threads, effective_max_errors, provide_traceback)
+0577:         self._add_candidate(candidate_programs, student, current_strategy, score)
+0578: 
+0579:         # Check if this is the best score so far
+0580:         valid_scores = [cp["score"] for cp in candidate_programs if cp["score"] is not None]
+0581:         best_score_so_far = max(valid_scores) if valid_scores else float("-inf")
+0582:         is_new_best = score is not None and score >= best_score_so_far
+0583: 
+0584:         return student, score, is_new_best, lms_relaunched
+0585: 
+0586:     def _models_changed(self, student: Module, pred_lms_before: list) -> bool:
+0587:         """Check if model names changed after optimization (e.g., fine-tuning)."""
+0588:         pred_lms_after = [pred.lm for pred in student.predictors()]
+0589:         model_names_before = [lm.model if lm else None for lm in pred_lms_before]
+0590:         model_names_after = [lm.model if lm else None for lm in pred_lms_after]
+0591:         return model_names_before != model_names_after
+0592: 
+0593:     def _add_candidate(
+0594:         self,
+0595:         candidate_programs: list,
+0596:         student: Module,
+0597:         strategy: str,
+0598:         score: float,
+0599:     ) -> None:
+0600:         """Add a candidate program to the list."""
+0601:         candidate_programs.append({
+0602:             "score": score,
+0603:             "program": student.deepcopy(),
+0604:             "strategy": strategy,
+0605:         })
+0606: 
+0607:     def _evaluate_on_valset(
+0608:         self,
+0609:         program: Module,
+0610:         valset: list[Example] | None,
+0611:         rng: random.Random,
+0612:         num_threads: int | None,
+0613:         effective_max_errors: int | None,
+0614:         provide_traceback: bool | None,
+0615:     ) -> float | None:
+0616:         if valset is None or len(valset) == 0:
+0617:             logger.info(f"{YELLOW}No validation set provided. Skipping evaluation.{ENDC}")
+0618:             return None
+0619: 
+0620:         logger.info(f"{BLUE}Evaluating on {len(valset)} validation examples...{ENDC}")
+0621:         evaluate = Evaluate(
+0622:             devset=valset,
+0623:             metric=self.metric,
+0624:             num_threads=num_threads,
+0625:             max_errors=effective_max_errors,
+0626:             display_table=False,
+0627:             display_progress=True,
+0628:             provide_traceback=provide_traceback,
+0629:         )
+0630:         eval_result = eval_candidate_program(len(valset), valset, program, evaluate, rng)
+0631:         return eval_result.score
+
+### tests/teleprompt/test_bettertogether.py
+0001: """BetterTogether optimizer tests.
+0002: 
+0003: Most of the code in this test file was LLM-generated but has been verified
+0004: to correctly test the BetterTogether optimizer functionality.
+0005: """
+0006: from unittest.mock import Mock, patch
+0007: 
+0008: import pytest
+0009: 
+0010: import dspy
+0011: from dspy import Example
+0012: from dspy.predict import Predict
+0013: from dspy.teleprompt import BetterTogether, BootstrapFewShotWithRandomSearch, BootstrapFinetune
+0014: from dspy.teleprompt.teleprompt import Teleprompter
+0015: from dspy.utils.dummies import DummyLM
+0016: 
+0017: 
+0018: # Define a simple metric function for testing
+0019: def simple_metric(example, prediction, trace=None):
+0020:     return 1.0 if example.output == prediction.output else 0.0
+0021: 
+0022: 
+0023: examples = [
+0024:     Example(input="What is the oldest known human-made monument?", output="Göbekli Tepe in southeastern Turkiye, dating back to around 9600 BCE").with_inputs("input"),
+0025:     Example(input="Why can't fish fall in love?", output="Because love is in the air").with_inputs("input"),
+0026:     Example(input="What would bring world peace?", output="8 billion people meeting for a tea party in my backyard").with_inputs("input"),
+0027: ]
+0028: trainset = examples[:2]
+0029: valset = [examples[2]]
+0030: 
+0031: 
+0032: class SimpleModule(dspy.Module):
+0033:     def __init__(self, signature):
+0034:         super().__init__()
+0035:         self.predictor = Predict(signature)
+0036: 
+0037:     def forward(self, **kwargs):
+0038:         return self.predictor(**kwargs)
+0039: 
+0040: 
+0041: # ============================================================================
+0042: # Reusable Mock Optimizers
+0043: # ============================================================================
+0044: 
+0045: class SimpleOptimizer(Teleprompter):
+0046:     """A simple optimizer that returns the student unchanged."""
+0047:     def compile(self, student, **kwargs):
+0048:         return student
+0049: 
+0050: 
+0051: class MarkedOptimizer(Teleprompter):
+0052:     """An optimizer that marks the program with a specific identifier."""
+0053:     def __init__(self, marker):
+0054:         self.marker = marker
+0055: 
+0056:     def compile(self, student, **kwargs):
+0057:         prog = SimpleModule("input -> output")
+0058:         prog.marker = self.marker
+0059:         return prog
+0060: 
+0061: 
+0062: class CapturingOptimizer(Teleprompter):
+0063:     """An optimizer that captures the kwargs it receives."""
+0064:     def __init__(self):
+0065:         self.received_kwargs = {}
+0066: 
+0067:     def compile(self, student, trainset=None, valset=None, teacher=None,
+0068:                 num_trials=None, max_bootstrapped_demos=None, **kwargs):
+0069:         self.received_kwargs = {
+0070:             "trainset": trainset,
+0071:             "valset": valset,
+0072:             "teacher": teacher,
+0073:             "num_trials": num_trials,
+0074:             "max_bootstrapped_demos": max_bootstrapped_demos,
+0075:             **kwargs
+0076:         }
+0077:         return student
+0078: 
+0079: 
+0080: # ============================================================================
+0081: # Pytest Fixtures
+0082: # ============================================================================
+0083: 
+0084: @pytest.fixture
+0085: def student_with_lm():
+0086:     """Create a student module with a DummyLM."""
+0087:     student = SimpleModule("input -> output")
+0088:     lm = DummyLM([{"output": "test"}])
+0089:     student.set_lm(lm)
+0090:     return student
+0091: 
+0092: 
+0093: @pytest.fixture
+0094: def mock_bt_dependencies():
+0095:     """Mock the common BetterTogether dependencies."""
+0096:     with patch("dspy.teleprompt.bettertogether.eval_candidate_program") as mock_eval, \
+0097:          patch("dspy.teleprompt.bettertogether.launch_lms") as mock_launch, \
+0098:          patch("dspy.teleprompt.bettertogether.kill_lms") as mock_kill:
+0099:         mock_eval.return_value = Mock(score=0.8)
+0100:         yield mock_eval, mock_launch, mock_kill
+0101: 
+0102: 
+0103: # ============================================================================
+0104: # Tests
+0105: # ============================================================================
+0106: 
+0107: def test_bettertogether_import():
+0108:     """Sanity check: Test that BetterTogether can be imported."""
+0109:     assert BetterTogether is not None, "Failed to import BetterTogether"
+0110: 
+0111: 
+0112: def test_bettertogether_initialization_default():
+0113:     """Test BetterTogether initialization with default optimizers."""
+0114:     optimizer = BetterTogether(metric=simple_metric)
+0115: 
+0116:     assert optimizer.metric == simple_metric, "Metric not correctly initialized"
+0117:     assert "p" in optimizer.optimizers, "Default 'p' optimizer not created"
+0118:     assert "w" in optimizer.optimizers, "Default 'w' optimizer not created"
+0119:     assert isinstance(optimizer.optimizers["p"], BootstrapFewShotWithRandomSearch), \
+0120:         "Default 'p' should be BootstrapFewShotWithRandomSearch"
+0121:     assert isinstance(optimizer.optimizers["w"], BootstrapFinetune), \
+0122:         "Default 'w' should be BootstrapFinetune"
+0123: 
+0124: 
+0125: def test_bettertogether_initialization_custom():
+0126:     """Test BetterTogether initialization with custom optimizers."""
+0127:     custom_p = BootstrapFewShotWithRandomSearch(metric=simple_metric)
+0128:     custom_w = BootstrapFinetune(metric=simple_metric)
+0129: 
+0130:     optimizer = BetterTogether(
+0131:         metric=simple_metric,
+0132:         p=custom_p,
+0133:         w=custom_w
+0134:     )
+0135: 
+0136:     assert optimizer.optimizers["p"] is custom_p, "Custom 'p' optimizer not set"
+0137:     assert optimizer.optimizers["w"] is custom_w, "Custom 'w' optimizer not set"
+0138: 
+0139: 
+0140: def test_bettertogether_initialization_invalid_optimizer():
+0141:     """Test that BetterTogether rejects non-Teleprompter optimizers."""
+0142:     try:
+0143:         optimizer = BetterTogether(
+0144:             metric=simple_metric,
+0145:             p="not_a_teleprompter"  # Invalid type
+0146:         )
+0147:         assert False, "Should have raised TypeError for invalid optimizer"
+0148:     except TypeError as e:
+0149:         assert "must be a Teleprompter" in str(e)
+0150: 
+0151: 
+0152: def test_strategy_validation():
+0153:     """Test strategy validation: valid, invalid, and empty strategies."""
+0154:     optimizer = BetterTogether(metric=simple_metric)
+0155: 
+0156:     # Valid strategies should parse without errors
+0157:     valid_strategies = ["p", "w", "p -> w", "w -> p", "p -> w -> p"]
+0158:     for strategy in valid_strategies:
+0159:         parsed = optimizer._prepare_strategy(strategy)
+0160:         assert parsed is not None, f"Failed to parse valid strategy: {strategy}"
+0161: 
+0162:     # Invalid strategies should raise ValueError
+0163:     with pytest.raises(ValueError, match="invalid optimizer keys"):
+0164:         optimizer._prepare_strategy("p -> x -> w")
+0165: 
+0166:     with pytest.raises(ValueError, match="cannot be empty"):
+0167:         optimizer._prepare_strategy("")
+0168: 
+0169: 
+0170: def test_compile_basic():
+0171:     """Test basic compilation with mocked optimizers."""
+0172:     from dspy.teleprompt.teleprompt import Teleprompter
+0173: 
+0174:     student = SimpleModule("input -> output")
+0175: 
+0176:     lm = DummyLM([{"output": "blue"}, {"output": "4"}])
+0177:     student.set_lm(lm)
+0178: 
+0179:     # Create a mock Teleprompter that returns the student
+0180:     class MockTeleprompter(Teleprompter):
+0181:         def __init__(self):
+0182:             self.compile_called = False
+0183: 
+0184:         def compile(self, student, **kwargs):
+0185:             self.compile_called = True
+0186:             return student
+0187: 
+0188:     mock_p = MockTeleprompter()
+0189:     optimizer = BetterTogether(metric=simple_metric, p=mock_p)
+0190: 
+0191:     # Mock evaluation to avoid actually running the metric
+0192:     with patch("dspy.teleprompt.bettertogether.eval_candidate_program") as mock_eval:
+0193:         mock_eval.return_value = Mock(score=0.8)
+0194: 
+0195:         with patch("dspy.teleprompt.bettertogether.launch_lms"):
+0196:             with patch("dspy.teleprompt.bettertogether.kill_lms"):
+0197:                 compiled = optimizer.compile(
+0198:                     student,
+0199:                     trainset=trainset,
+0200:                     valset=valset,
+0201:                     strategy="p"
+0202:                 )
+0203: 
+0204:     assert compiled is not None, "Compilation returned None"
+0205:     assert hasattr(compiled, "candidate_programs"), "Missing candidate_programs attribute"
+0206:     assert hasattr(compiled, "flag_compilation_error_occurred"), "Missing flag_compilation_error_occurred attribute"
+0207:     assert mock_p.compile_called, "Mock optimizer compile was not called"
+0208: 
+0209: 
+0210: def test_trainset_validation():
+0211:     """Test that empty trainset is rejected."""
+0212:     optimizer = BetterTogether(metric=simple_metric)
+0213:     student = SimpleModule("input -> output")
+0214: 
+0215:     lm = DummyLM([{"output": "test"}])
+0216:     student.set_lm(lm)
+0217: 
+0218:     try:
+0219:         optimizer.compile(student, trainset=[], valset=valset)
+0220:         assert False, "Should have raised ValueError for empty trainset"
+0221:     except ValueError as e:
+0222:         assert "cannot be empty" in str(e).lower()
+0223: 
+0224: 
+0225: def test_valset_ratio_validation():
+0226:     """Test that invalid valset_ratio is rejected."""
+0227:     optimizer = BetterTogether(metric=simple_metric)
+0228:     student = SimpleModule("input -> output")
+0229: 
+0230:     lm = DummyLM([{"output": "test"}])
+0231:     student.set_lm(lm)
+0232: 
+0233:     # Test valset_ratio >= 1
+0234:     try:
+0235:         optimizer.compile(student, trainset=trainset, valset_ratio=1.0)
+0236:         assert False, "Should have raised ValueError for valset_ratio >= 1"
+0237:     except ValueError as e:
+0238:         assert "must be in range [0, 1)" in str(e)
+0239: 
+0240:     # Test valset_ratio < 0
+0241:     try:
+0242:         optimizer.compile(student, trainset=trainset, valset_ratio=-0.1)
+0243:         assert False, "Should have raised ValueError for valset_ratio < 0"
+0244:     except ValueError as e:
+0245:         assert "must be in range [0, 1)" in str(e)
+0246: 
+0247: 
+0248: def test_optimizer_compile_args_validation():
+0249:     """Test that optimizer_compile_args is validated correctly."""
+0250:     optimizer = BetterTogether(metric=simple_metric)
+0251: 
+0252:     # Test invalid optimizer key
+0253:     try:
+0254:         optimizer._prepare_optimizer_compile_args(
+0255:             {"invalid_key": {"num_trials": 10}},
+0256:             teacher=None
+0257:         )
+0258:         assert False, "Should have raised ValueError for invalid optimizer key"
+0259:     except ValueError as e:
+0260:         assert "invalid optimizer key" in str(e).lower()
+0261: 
+0262: 
+0263: def test_student_in_optimizer_compile_args():
+0264:     """Test that 'student' in optimizer_compile_args is rejected."""
+0265:     optimizer = BetterTogether(metric=simple_metric)
+0266: 
+0267:     try:
+0268:         optimizer._validate_compile_args(
+0269:             optimizer.optimizers["p"],
+0270:             "p",
+0271:             {"student": SimpleModule("input -> output")}
+0272:         )
+0273:         assert False, "Should have raised ValueError for 'student' in compile_args"
+0274:     except ValueError as e:
+0275:         assert "student" in str(e).lower()
+0276:         assert "not allowed" in str(e).lower()
+0277: 
+0278: 
+0279: def test_compile_args_passed_to_optimizer(student_with_lm, mock_bt_dependencies):
+0280:     """Test that optimizer_compile_args are correctly passed to optimizers."""
+0281:     mock_eval, _, _ = mock_bt_dependencies
+0282:     mock_eval.return_value = Mock(score=0.9)
+0283: 
+0284:     mock_p = CapturingOptimizer()
+0285:     optimizer = BetterTogether(metric=simple_metric, p=mock_p)
+0286: 
+0287:     # Define custom compile args for optimizer 'p'
+0288:     custom_args = {"num_trials": 20, "max_bootstrapped_demos": 8}
+0289: 
+0290:     optimizer.compile(
+0291:         student_with_lm,
+0292:         trainset=trainset,
+0293:         valset=valset,
+0294:         strategy="p",
+0295:         optimizer_compile_args={"p": custom_args}
+0296:     )
+0297: 
+0298:     # Verify the custom args were passed to the optimizer
+0299:     assert mock_p.received_kwargs is not None, "Optimizer compile was not called"
+0300:     assert "num_trials" in mock_p.received_kwargs, "num_trials not passed to optimizer"
+0301:     assert mock_p.received_kwargs["num_trials"] == 20, "num_trials value incorrect"
+0302:     assert "max_bootstrapped_demos" in mock_p.received_kwargs, "max_bootstrapped_demos not passed"
+0303:     assert mock_p.received_kwargs["max_bootstrapped_demos"] == 8, "max_bootstrapped_demos value incorrect"
+0304: 
+0305: 
+0306: def test_compile_args_multi_optimizer_strategy():
+0307:     """Test that different optimizers in a strategy receive their respective compile_args."""
+0308:     from dspy.teleprompt.teleprompt import Teleprompter
+0309: 
+0310:     student = SimpleModule("input -> output")
+0311:     lm = DummyLM([{"output": "test"}])
+0312:     student.set_lm(lm)
+0313: 
+0314:     # Create mock Teleprompters that capture their compile kwargs
+0315:     class PromptOptimizer(Teleprompter):
+0316:         def __init__(self):
+0317:             self.received_kwargs = {}
+0318: 
+0319:         def compile(self, student, trainset=None, num_trials=None, **kwargs):
+0320:             self.received_kwargs = {
+0321:                 "trainset": trainset,
+0322:                 "num_trials": num_trials,
+0323:                 **kwargs
+0324:             }
+0325:             return student
+0326: 
+0327:     class WeightOptimizer(Teleprompter):
+0328:         def __init__(self):
+0329:             self.received_kwargs = {}
+0330: 
+0331:         def compile(self, student, trainset=None, num_batches=None, **kwargs):
+0332:             self.received_kwargs = {
+0333:                 "trainset": trainset,
+0334:                 "num_batches": num_batches,
+0335:                 **kwargs
+0336:             }
+0337:             return student
+0338: 
+0339:     mock_p = PromptOptimizer()
+0340:     mock_w = WeightOptimizer()
+0341:     optimizer = BetterTogether(metric=simple_metric, p=mock_p, w=mock_w)
+0342: 
+0343:     # Define different compile args for each optimizer
+0344:     compile_args = {
+0345:         "p": {"num_trials": 10},
+0346:         "w": {"num_batches": 5}
+0347:     }
+0348: 
+0349:     with patch("dspy.teleprompt.bettertogether.eval_candidate_program") as mock_eval:
+0350:         mock_eval.return_value = Mock(score=0.85)
+0351:         with patch("dspy.teleprompt.bettertogether.launch_lms"):
+0352:             with patch("dspy.teleprompt.bettertogether.kill_lms"):
+0353:                 with patch.object(optimizer, "_models_changed", return_value=False):
+0354:                     optimizer.compile(
+0355:                         student,
+0356:                         trainset=trainset,
+0357:                         valset=valset,
+0358:                         strategy="p -> w",
+0359:                         optimizer_compile_args=compile_args
+0360:                     )
+0361: 
+0362:     # Verify each optimizer received its specific args
+0363:     assert mock_p.received_kwargs is not None, "Optimizer 'p' compile was not called"
+0364:     assert "num_trials" in mock_p.received_kwargs, "num_trials not passed to optimizer 'p'"
+0365:     assert mock_p.received_kwargs["num_trials"] == 10, "num_trials value incorrect for 'p'"
+0366:     assert mock_p.received_kwargs.get("num_batches") is None, "Optimizer 'p' should not receive 'w' args"
+0367: 
+0368:     assert mock_w.received_kwargs is not None, "Optimizer 'w' compile was not called"
+0369:     assert "num_batches" in mock_w.received_kwargs, "num_batches not passed to optimizer 'w'"
+0370:     assert mock_w.received_kwargs["num_batches"] == 5, "num_batches value incorrect for 'w'"
+0371:     assert mock_w.received_kwargs.get("num_trials") is None, "Optimizer 'w' should not receive 'p' args"
+0372: 
+0373: 
+0374: def test_compile_args_override_global_params():
+0375:     """Test that optimizer_compile_args override global trainset/valset/teacher parameters."""
+0376:     from dspy.teleprompt.teleprompt import Teleprompter
+0377: 
+0378:     student = SimpleModule("input -> output")
+0379:     lm = DummyLM([{"output": "test"}])
+0380:     student.set_lm(lm)
+0381: 
+0382:     # Create a mock Teleprompter that captures compile kwargs
+0383:     class CapturingTeleprompter(Teleprompter):
+0384:         def __init__(self):
+0385:             self.received_kwargs = {}
+0386: 
+0387:         def compile(self, student, trainset=None, valset=None, teacher=None, **kwargs):
+0388:             self.received_kwargs = {
+0389:                 "trainset": trainset,
+0390:                 "valset": valset,
+0391:                 "teacher": teacher,
+0392:                 **kwargs
+0393:             }
+0394:             return student
+0395: 
+0396:     mock_p = CapturingTeleprompter()
+0397:     optimizer = BetterTogether(metric=simple_metric, p=mock_p)
+0398: 
+0399:     # Create override values
+0400:     override_trainset = [examples[2]]  # Different from global trainset
+0401:     override_valset = [examples[0]]    # Different from global valset
+0402:     override_teacher = SimpleModule("input -> output")
+0403: 
+0404:     # Pass global values to compile, but override them in optimizer_compile_args
+0405:     compile_args = {
+0406:         "p": {
+0407:             "trainset": override_trainset,
+0408:             "valset": override_valset,
+0409:             "teacher": override_teacher,
+0410:         }
+0411:     }
+0412: 
+0413:     with patch("dspy.teleprompt.bettertogether.eval_candidate_program") as mock_eval:
+0414:         mock_eval.return_value = Mock(score=0.9)
+0415:         with patch("dspy.teleprompt.bettertogether.launch_lms"):
+0416:             with patch("dspy.teleprompt.bettertogether.kill_lms"):
+0417:                 optimizer.compile(
+0418:                     student,
+0419:                     trainset=trainset,  # Global trainset (examples[:2])
+0420:                     valset=valset,      # Global valset (examples[2])
+0421:                     teacher=None,       # Global teacher (None)
+0422:                     strategy="p",
+0423:                     optimizer_compile_args=compile_args
+0424:                 )
+0425: 
+0426:     # Verify the optimizer received the override values, not the global ones
+0427:     assert mock_p.received_kwargs["trainset"] == override_trainset, \
+0428:         "Optimizer should receive override trainset from compile_args"
+0429:     assert mock_p.received_kwargs["valset"] == override_valset, \
+0430:         "Optimizer should receive override valset from compile_args"
+0431:     assert mock_p.received_kwargs["teacher"] is override_teacher, \
+0432:         "Optimizer should receive override teacher from compile_args"
+0433: 
+0434:     # Verify they're different from the global values
+0435:     assert mock_p.received_kwargs["trainset"] != trainset, \
+0436:         "Override trainset should differ from global trainset"
+0437:     assert mock_p.received_kwargs["valset"] != valset, \
+0438:         "Override valset should differ from global valset"
+0439: 
+0440: 
+0441: def test_trainset_shuffling_between_steps():
+0442:     """Test that trainset is shuffled between steps when shuffle_trainset_between_steps=True."""
+0443:     from dspy.teleprompt.teleprompt import Teleprompter
+0444: 
+0445:     student = SimpleModule("input -> output")
+0446:     lm = DummyLM([{"output": "test"}])
+0447:     student.set_lm(lm)
+0448: 
+0449:     # Create mock optimizers that capture the trainset they receive
+0450:     trainsets_received = []
+0451: 
+0452:     class TrainsetCapturingOptimizer(Teleprompter):
+0453:         def compile(self, student, trainset=None, **kwargs):
+0454:             trainsets_received.append(trainset)
+0455:             return student
+0456: 
+0457:     mock_p = TrainsetCapturingOptimizer()
+0458:     mock_w = TrainsetCapturingOptimizer()
+0459:     optimizer = BetterTogether(metric=simple_metric, p=mock_p, w=mock_w)
+0460: 
+0461:     with patch("dspy.teleprompt.bettertogether.eval_candidate_program") as mock_eval:
+0462:         mock_eval.return_value = Mock(score=0.8)
+0463:         with patch("dspy.teleprompt.bettertogether.launch_lms"):
+0464:             with patch("dspy.teleprompt.bettertogether.kill_lms"):
+0465:                 with patch.object(optimizer, "_models_changed", return_value=False):
+0466:                     optimizer.compile(
+0467:                         student,
+0468:                         trainset=trainset,
+0469:                         valset=valset,
+0470:                         strategy="p -> w",
+0471:                         shuffle_trainset_between_steps=True
+0472:                     )
+0473: 
+0474:     # Verify trainset was shuffled between steps
+0475:     assert len(trainsets_received) == 2, "Should have received trainset twice (for p and w)"
+0476:     trainset_p = trainsets_received[0]
+0477:     trainset_w = trainsets_received[1]
+0478: 
+0479:     # Both should have same examples but potentially different order
+0480:     assert len(trainset_p) == len(trainset_w), "Trainsets should have same length"
+0481:     # With shuffling enabled and only 2 examples, there's a 50% chance they're in different order
+0482:     # We can't reliably test order difference with small dataset, but we can verify they contain same examples
+0483:     assert set(id(ex) for ex in trainset_p) == set(id(ex) for ex in trainset_w), \
+0484:         "Trainsets should contain the same example objects"
+0485: 
+0486: 
+0487: def test_strategy_execution_order():
+0488:     """Test that strategy steps are executed in order and programs are passed correctly."""
+0489:     from dspy.teleprompt.teleprompt import Teleprompter
+0490: 
+0491:     student = SimpleModule("input -> output")
+0492:     lm = DummyLM([{"output": "test"}])
+0493:     student.set_lm(lm)
+0494: 
+0495:     # Track execution order and what program each optimizer receives
+0496:     execution_log = []
+0497: 
+0498:     class LoggingOptimizer(Teleprompter):
+0499:         def __init__(self, name):
+0500:             self.name = name
+0501: 
+0502:         def compile(self, student, **kwargs):
+0503:             # Create a new student with a marker to track the optimization path
+0504:             optimized = SimpleModule("input -> output")
+0505:             if not hasattr(student, "optimization_path"):
+0506:                 optimized.optimization_path = [self.name]
+0507:             else:
+0508:                 optimized.optimization_path = student.optimization_path + [self.name]
+0509:             execution_log.append((self.name, optimized.optimization_path.copy()))
+0510:             return optimized
+0511: 
+0512:     mock_p = LoggingOptimizer("p")
+0513:     mock_w = LoggingOptimizer("w")
+0514:     optimizer = BetterTogether(metric=simple_metric, p=mock_p, w=mock_w)
+0515: 
+0516:     with patch("dspy.teleprompt.bettertogether.eval_candidate_program") as mock_eval:
+0517:         mock_eval.return_value = Mock(score=0.85)
+0518:         with patch("dspy.teleprompt.bettertogether.launch_lms"):
+0519:             with patch("dspy.teleprompt.bettertogether.kill_lms"):
+0520:                 with patch.object(optimizer, "_models_changed", return_value=False):
+0521:                     result = optimizer.compile(
+0522:                         student,
+0523:                         trainset=trainset,
+0524:                         valset=valset,
+0525:                         strategy="p -> w -> p"
+0526:                     )
+0527: 
+0528:     # Verify execution order
+0529:     assert len(execution_log) == 3, "Should have executed 3 optimization steps"
+0530:     assert execution_log[0] == ("p", ["p"]), "First step should be 'p'"
+0531:     assert execution_log[1] == ("w", ["p", "w"]), "Second step should be 'w' receiving output from 'p'"
+0532:     assert execution_log[2] == ("p", ["p", "w", "p"]), "Third step should be 'p' receiving output from 'w'"
+0533: 
+0534: 
+0535: def test_lm_lifecycle_management():
+0536:     """Test that launch_lms and kill_lms are called appropriately between steps."""
+0537:     from dspy.teleprompt.teleprompt import Teleprompter
+0538: 
+0539:     student = SimpleModule("input -> output")
+0540:     lm = DummyLM([{"output": "test"}])
+0541:     student.set_lm(lm)
+0542: 
+0543:     class SimpleOptimizer(Teleprompter):
+0544:         def compile(self, student, **kwargs):
+0545:             return student
+0546: 
+0547:     mock_p = SimpleOptimizer()
+0548:     mock_w = SimpleOptimizer()
+0549:     optimizer = BetterTogether(metric=simple_metric, p=mock_p, w=mock_w)
+0550: 
+0551:     with patch("dspy.teleprompt.bettertogether.eval_candidate_program") as mock_eval:
+0552:         mock_eval.return_value = Mock(score=0.8)
+0553:         with patch("dspy.teleprompt.bettertogether.launch_lms") as mock_launch:
+0554:             with patch("dspy.teleprompt.bettertogether.kill_lms") as mock_kill:
+0555:                 with patch.object(optimizer, "_models_changed", return_value=True):
+0556:                     optimizer.compile(
+0557:                         student,
+0558:                         trainset=trainset,
+0559:                         valset=valset,
+0560:                         strategy="p -> w"
+0561:                     )
+0562: 
+0563:     # Verify launch and kill were called
+0564:     # When models change (which we mocked to return True), launch should be called
+0565:     assert mock_launch.called, "launch_lms should be called when models change"
+0566:     assert mock_kill.called, "kill_lms should be called when models change"
+0567: 
+0568: 
+0569: def test_error_handling_returns_best_program():
+0570:     """Test that if a step fails, the best program found so far is still returned."""
+0571:     from dspy.teleprompt.teleprompt import Teleprompter
+0572: 
+0573:     student = SimpleModule("input -> output")
+0574:     lm = DummyLM([{"output": "test"}])
+0575:     student.set_lm(lm)
+0576: 
+0577:     # Create optimizers where the second one will fail
+0578:     class SuccessfulOptimizer(Teleprompter):
+0579:         def compile(self, student, **kwargs):
+0580:             optimized = SimpleModule("input -> output")
+0581:             optimized.step_name = "p_success"
+0582:             return optimized
+0583: 
+0584:     class FailingOptimizer(Teleprompter):
+0585:         def compile(self, student, **kwargs):
+0586:             raise RuntimeError("Intentional failure for testing")
+0587: 
+0588:     mock_p = SuccessfulOptimizer()
+0589:     mock_w = FailingOptimizer()
+0590:     optimizer = BetterTogether(metric=simple_metric, p=mock_p, w=mock_w)
+0591: 
+0592:     # First call succeeds with score 0.7, second call (to failing optimizer) fails
+0593:     with patch("dspy.teleprompt.bettertogether.eval_candidate_program") as mock_eval:
+0594:         mock_eval.side_effect = [
+0595:             Mock(score=0.5),  # Baseline
+0596:             Mock(score=0.7),  # After p (success)
+0597:         ]
+0598:         with patch("dspy.teleprompt.bettertogether.launch_lms"):
+0599:             with patch("dspy.teleprompt.bettertogether.kill_lms"):
+0600:                 with patch.object(optimizer, "_models_changed", return_value=False):
+0601:                     result = optimizer.compile(
+0602:                         student,
+0603:                         trainset=trainset,
+0604:                         valset=valset,
+0605:                         strategy="p -> w"
+0606:                     )
+0607: 
+0608:     # Verify a program was returned despite the failure
+0609:     assert result is not None, "Should return a program even if a step fails"
+0610:     assert hasattr(result, "flag_compilation_error_occurred"), "Should have error flag"
+0611:     assert result.flag_compilation_error_occurred is True, "Error flag should be True"
+0612:     assert hasattr(result, "candidate_programs"), "Should have candidate_programs"
+0613:     assert len(result.candidate_programs) > 0, "Should have at least one candidate program"
+0614: 
+0615: 
+0616: @pytest.mark.parametrize("test_valset,expected_marker,test_description", [
+0617:     (valset, "p_optimized", "With valset: returns best score (p), not latest (w)"),
+0618:     (None, "w_optimized", "Without valset: returns latest program (w)"),
+0619: ])
+0620: def test_program_selection(student_with_lm, test_valset, expected_marker, test_description):
+0621:     """Test program selection logic with and without validation set."""
+0622:     mock_p = MarkedOptimizer("p_optimized")
+0623:     mock_w = MarkedOptimizer("w_optimized")
+0624:     optimizer = BetterTogether(metric=simple_metric, p=mock_p, w=mock_w)
+0625: 
+0626:     # Set up scores: baseline=0.5, p=0.9 (best), w=0.7
+0627:     # When test_valset is provided, best score wins; when None, latest wins
+0628:     with patch("dspy.teleprompt.bettertogether.eval_candidate_program") as mock_eval:
+0629:         if test_valset is not None:
+0630:             mock_eval.side_effect = [
+0631:                 Mock(score=0.5),  # Baseline
+0632:                 Mock(score=0.9),  # After p (best score)
+0633:                 Mock(score=0.7),  # After w (lower than p)
+0634:             ]
+0635:         with patch("dspy.teleprompt.bettertogether.launch_lms"):
+0636:             with patch("dspy.teleprompt.bettertogether.kill_lms"):
+0637:                 with patch.object(optimizer, "_models_changed", return_value=False):
+0638:                     result = optimizer.compile(
+0639:                         student_with_lm,
+0640:                         trainset=trainset,
+0641:                         valset=test_valset,
+0642:                         strategy="p -> w"
+0643:                     )
+0644: 
+0645:     # Verify the correct program was returned based on valset presence
+0646:     assert hasattr(result, "marker"), "Result should have marker"
+0647:     assert result.marker == expected_marker, test_description
+0648: 
+0649: 
+0650: def test_candidate_programs_structure(student_with_lm):
+0651:     """Test that candidate_programs has the correct structure and content."""
+0652:     mock_p = MarkedOptimizer("p")
+0653:     mock_w = MarkedOptimizer("w")
+0654:     optimizer = BetterTogether(metric=simple_metric, p=mock_p, w=mock_w)
+0655: 
+0656:     # Set up scores: baseline=0.5, p=0.8, w=0.9 (best)
+0657:     with patch("dspy.teleprompt.bettertogether.eval_candidate_program") as mock_eval:
+0658:         mock_eval.side_effect = [
+0659:             Mock(score=0.5),  # Baseline
+0660:             Mock(score=0.8),  # After p
+0661:             Mock(score=0.9),  # After w (best)
+0662:         ]
+0663:         with patch("dspy.teleprompt.bettertogether.launch_lms"):
+0664:             with patch("dspy.teleprompt.bettertogether.kill_lms"):
+0665:                 with patch.object(optimizer, "_models_changed", return_value=False):
+0666:                     result = optimizer.compile(
+0667:                         student_with_lm,
+0668:                         trainset=trainset,
+0669:                         valset=valset,
+0670:                         strategy="p -> w"
+0671:                     )
+0672: 
+0673:     # Verify candidate_programs exists and has correct structure
+0674:     assert hasattr(result, "candidate_programs"), "Result should have candidate_programs attribute"
+0675:     candidates = result.candidate_programs
+0676: 
+0677:     # Should have 3 candidates: baseline, p, w
+0678:     assert len(candidates) == 3, f"Should have 3 candidates, got {len(candidates)}"
+0679: 
+0680:     # Each candidate should have the required keys
+0681:     for i, candidate in enumerate(candidates):
+0682:         assert "score" in candidate, f"Candidate {i} missing 'score' key"
+0683:         assert "program" in candidate, f"Candidate {i} missing 'program' key"
+0684:         assert "strategy" in candidate, f"Candidate {i} missing 'strategy' key"
+0685:         assert isinstance(candidate["score"], (int, float)), f"Candidate {i} score should be numeric"
+0686:         assert isinstance(candidate["program"], dspy.Module), f"Candidate {i} program should be a Module"
+0687:         assert isinstance(candidate["strategy"], (str, type(None))), f"Candidate {i} strategy should be str or None"
+0688: 
+0689:     # Candidates should be sorted by score (best first)
+0690:     scores = [c["score"] for c in candidates]
+0691:     assert scores == sorted(scores, reverse=True), "Candidates should be sorted by score (descending)"
+0692: 
+0693:     # Verify the best candidate is first
+0694:     assert candidates[0]["score"] == 0.9, "Best candidate should have score 0.9"
+0695:     assert candidates[0]["program"].marker == "w", "Best candidate should be from optimizer 'w'"
+0696: 
+0697:     # Verify baseline candidate
+0698:     baseline = [c for c in candidates if c["strategy"] is None or c["strategy"] == ""]
+0699:     assert len(baseline) == 1, "Should have exactly one baseline candidate"
+0700:     assert baseline[0]["score"] == 0.5, "Baseline should have score 0.5"
+0701: 
+0702: 
+0703: def test_empty_valset_handling(student_with_lm):
+0704:     """Test behavior when valset is an empty list vs None."""
+0705:     # Test with empty list []
+0706:     mock_p = MarkedOptimizer("optimized")
+0707:     optimizer = BetterTogether(metric=simple_metric, p=mock_p)
+0708: 
+0709:     with patch("dspy.teleprompt.bettertogether.launch_lms"):
+0710:         with patch("dspy.teleprompt.bettertogether.kill_lms"):
+0711:             with patch.object(optimizer, "_models_changed", return_value=False):
+0712:                 result = optimizer.compile(
+0713:                     student_with_lm,
+0714:                     trainset=trainset,
+0715:                     valset=[],  # Empty list (not None)
+0716:                     strategy="p"
+0717:                 )
+0718: 
+0719:     # With empty valset, should return latest program (same behavior as valset=None)
+0720:     assert hasattr(result, "marker"), "Result should have marker"
+0721:     assert result.marker == "optimized", "Should return the latest program when valset is empty list"
+0722:     assert hasattr(result, "candidate_programs"), "Should have candidate_programs"
+0723: 
+0724:     # Test with None - create fresh student and optimizer
+0725:     student2 = SimpleModule("input -> output")
+0726:     lm = DummyLM([{"output": "test"}])
+0727:     student2.set_lm(lm)
+0728: 
+0729:     mock_p2 = MarkedOptimizer("optimized")
+0730:     optimizer2 = BetterTogether(metric=simple_metric, p=mock_p2)
+0731: 
+0732:     with patch("dspy.teleprompt.bettertogether.launch_lms"):
+0733:         with patch("dspy.teleprompt.bettertogether.kill_lms"):
+0734:             with patch.object(optimizer2, "_models_changed", return_value=False):
+0735:                 result2 = optimizer2.compile(
+0736:                     student2,
+0737:                     trainset=trainset,
+0738:                     valset=None,  # Explicit None
+0739:                     strategy="p"
+0740:                 )
+0741: 
+0742:     # Both should behave the same way
+0743:     assert hasattr(result2, "marker"), "Result2 should have marker"
+0744:     assert result2.marker == "optimized", "Should return the latest program when valset is None"
+
+Return JSON that matches the schema exactly.

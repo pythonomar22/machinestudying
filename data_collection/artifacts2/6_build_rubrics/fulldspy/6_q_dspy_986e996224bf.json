@@ -1,0 +1,128 @@
+{
+ "id": "dspy_986e996224bf",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm using the evolutionary optimizer as a batch-search tool and I turned on per-task best-output tracking. DSPy rejected the configuration unless another, more verbose tracking mode was also enabled, and I want a proof of both the dependency and what appears on the returned program once the config is accepted.\n\nGive me a complete, runnable Python program that stays offline with `DummyLM`, first reproduces the configuration failure, then uses a tiny patched optimizer run to print/assert that the compiled program exposes per-task best outputs when the compatible tracking mode is enabled.",
+ "gold_answer": "```python\nimport types\n\nimport dspy\nimport gepa\nfrom dspy.teleprompt.gepa.gepa import GEPA\nfrom dspy.utils.dummies import DummyLM\n\n\nclass TinyProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\ndef metric(gold, pred, trace=None, pred_name=None, pred_trace=None):\n    return dspy.Prediction(score=1.0, feedback=\"ok\")\n\n\nstudent = TinyProgram()\ntrainset = [dspy.Example(question=\"Q\", answer=\"A\").with_inputs(\"question\")]\nreflection_lm = DummyLM([{\"new_instruction\": \"Keep answering briefly.\"}])\n\ntry:\n    GEPA(metric=metric, reflection_lm=reflection_lm, max_metric_calls=1, track_best_outputs=True)\nexcept AssertionError as e:\n    print(\"init_error:\", str(e))\n    assert \"track_stats\" in str(e)\nelse:\n    raise AssertionError(\"Expected the incompatible tracking configuration to fail.\")\n\noriginal_optimize = gepa.optimize\n\n\ndef fake_optimize(**kwargs):\n    seed_candidate = kwargs[\"seed_candidate\"]\n    return types.SimpleNamespace(\n        best_candidate=seed_candidate,\n        candidates=[seed_candidate],\n        parents=[[None]],\n        val_aggregate_scores=[1.0],\n        best_outputs_valset=[[(0, [dspy.Prediction(answer=\"A\")])]],\n        val_subscores=[[1.0]],\n        per_val_instance_best_candidates=[{0}],\n        discovery_eval_counts=[1],\n        total_metric_calls=1,\n        num_full_val_evals=1,\n        run_dir=None,\n        seed=0,\n    )\n\n\ngepa.optimize = fake_optimize\ntry:\n    dspy.configure(lm=DummyLM({\"Q\": {\"answer\": \"A\"}}))\n    optimized = GEPA(\n        metric=metric,\n        reflection_lm=reflection_lm,\n        max_metric_calls=1,\n        track_stats=True,\n        track_best_outputs=True,\n    ).compile(student, trainset=trainset, valset=trainset)\n    print(\"best_outputs:\", optimized.detailed_results.best_outputs_valset)\n    assert optimized.detailed_results.best_outputs_valset[0][0][0] == 0\n    assert optimized.detailed_results.best_outputs_valset[0][0][1][0].answer == \"A\"\nfinally:\n    gepa.optimize = original_optimize\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "`GEPA` initialization with `track_best_outputs=True` and default or false `track_stats` must raise an `AssertionError`, and the proof should check that the failure message points to the `track_stats` requirement.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The successful run uses GEPA in its documented batch-search configuration by compiling with the batch as the validation set (`valset=trainset` explicitly or via the default) and enabling both `track_stats=True` and `track_best_outputs=True`.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The proof replaces the optimizer function that `GEPA.compile` imports and calls, so `compile(...)` runs against a controlled result object and forwards `track_best_outputs` into that optimizer call.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The answer demonstrates that the returned compiled program only gains a `detailed_results` attribute when `track_stats` is enabled.",
+   "span_ids": [
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer proves that `optimized.detailed_results.best_outputs_valset` comes from the optimizer result itself, because `DspyGEPAResult.from_gepa_result` copies `gepa_result.best_outputs_valset` onto the returned program's `detailed_results`.",
+   "span_ids": [
+    "s8",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The proof checks concrete per-task contents of `best_outputs_valset` as validation-task indices paired with lists of `Prediction` objects, not merely that the attribute exists.",
+   "span_ids": [
+    "s7",
+    "s2"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/gepa/gepa.py",
+   "start_line": 420,
+   "end_line": 422,
+   "excerpt": "0420:         if track_best_outputs:\n0421:             assert track_stats, \"track_stats must be True if track_best_outputs is True.\"\n0422:         self.track_best_outputs = track_best_outputs"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/gepa/gepa.py",
+   "start_line": 194,
+   "end_line": 196,
+   "excerpt": "0194:     GEPA can also be used as a batch inference-time search strategy, by passing `valset=trainset, track_stats=True, track_best_outputs=True`, and using the\n0195:     `detailed_results` attribute of the optimized program (returned by `compile`) to get the Pareto frontier of the batch. `optimized_program.detailed_results.best_outputs_valset` will contain the best outputs for each task in the batch.\n0196: "
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/gepa/gepa.py",
+   "start_line": 504,
+   "end_line": 508,
+   "excerpt": "0504:         if valset is None:\n0505:             logger.warning(\n0506:                 \"No valset provided; Using trainset as valset. This is useful as an inference-time scaling strategy where you want GEPA to find the best solutions for the provided tasks in the trainset, as it makes GEPA overfit prompts to the provided trainset. In order to ensure generalization and perform well on unseen tasks, please provide separate trainset and valset. Provide the smallest valset that is just large enough to match the downstream task distribution, while keeping trainset as large as possible.\"\n0507:             )\n0508:         valset = valset or trainset"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/teleprompt/gepa/gepa.py",
+   "start_line": 482,
+   "end_line": 484,
+   "excerpt": "0482:         from gepa import GEPAResult, optimize\n0483: \n0484:         from dspy.teleprompt.gepa.gepa_utils import DspyAdapter, LoggerAdapter"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/teleprompt/gepa/gepa.py",
+   "start_line": 566,
+   "end_line": 591,
+   "excerpt": "0566:         gepa_result: GEPAResult = optimize(\n0567:             seed_candidate=seed_candidate,\n0568:             trainset=trainset,\n0569:             valset=valset,\n0570:             adapter=adapter,\n0571:             # Reflection-based configuration\n0572:             reflection_lm=(lambda x: adapter.stripped_lm_call(x)[0]) if self.reflection_lm is not None else None,\n0573:             candidate_selection_strategy=self.candidate_selection_strategy,\n0574:             skip_perfect_score=self.skip_perfect_score,\n0575:             reflection_minibatch_size=self.reflection_minibatch_size,\n0576:             module_selector=self.component_selector,\n0577:             perfect_score=self.perfect_score,\n0578:             # Merge-based configuration\n0579:             use_merge=self.use_merge,\n0580:             max_merge_invocations=self.max_merge_invocations,\n0581:             # Budget\n0582:             max_metric_calls=self.max_metric_calls,\n0583:             # Logging\n0584:             logger=LoggerAdapter(logger),\n0585:             run_dir=self.log_dir,\n0586:             use_wandb=self.use_wandb,\n0587:             wandb_api_key=self.wandb_api_key,\n0588:             wandb_init_kwargs=self.wandb_init_kwargs,\n0589:             use_mlflow=self.use_mlflow,\n0590:             track_best_outputs=self.track_best_outputs,\n0591:             display_progress_bar=True,"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/teleprompt/gepa/gepa.py",
+   "start_line": 598,
+   "end_line": 603,
+   "excerpt": "0598:         new_prog = adapter.build_program(gepa_result.best_candidate)\n0599: \n0600:         if self.track_stats:\n0601:             dspy_gepa_result = DspyGEPAResult.from_gepa_result(gepa_result, adapter)\n0602:             new_prog.detailed_results = dspy_gepa_result\n0603: "
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/teleprompt/gepa/gepa.py",
+   "start_line": 89,
+   "end_line": 90,
+   "excerpt": "0089:     # Optional data\n0090:     best_outputs_valset: list[list[tuple[int, list[Prediction]]]] | None = None"
+  },
+  {
+   "span_id": "s8",
+   "path": "dspy/teleprompt/gepa/gepa.py",
+   "start_line": 133,
+   "end_line": 145,
+   "excerpt": "0133:     def from_gepa_result(gepa_result: \"GEPAResult\", adapter: \"DspyAdapter\") -> \"DspyGEPAResult\":\n0134:         return DspyGEPAResult(\n0135:             candidates=[adapter.build_program(c) for c in gepa_result.candidates],\n0136:             parents=gepa_result.parents,\n0137:             val_aggregate_scores=gepa_result.val_aggregate_scores,\n0138:             best_outputs_valset=gepa_result.best_outputs_valset,\n0139:             val_subscores=gepa_result.val_subscores,\n0140:             per_val_instance_best_candidates=gepa_result.per_val_instance_best_candidates,\n0141:             discovery_eval_counts=gepa_result.discovery_eval_counts,\n0142:             total_metric_calls=gepa_result.total_metric_calls,\n0143:             num_full_val_evals=gepa_result.num_full_val_evals,\n0144:             log_dir=gepa_result.run_dir,\n0145:             seed=gepa_result.seed,"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "",
+ "source_index": 50,
+ "smalldspy_scope": false
+}

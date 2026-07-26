@@ -1,0 +1,120 @@
+{
+ "id": "dspy_517e71c3b0a7",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I'm switching between `openai/gpt-5-mini` and `openai/gpt-5-chat` on the same code path. One configuration rejects my normal `temperature` / `max_tokens`, while the other accepts them, and I want to see the exact split DSPy makes between the reasoning family and the chat-branded variant.\n\nGive me a complete, runnable Python program that instantiates both models, proves which token field DSPy stores internally for each, and asserts that the reasoning-family configuration raises the expected error when I use an ordinary small `max_tokens` and non-1.0 temperature.",
+ "gold_answer": "```python\nimport dspy\n\n\nreasoning_lm = dspy.LM(\"openai/gpt-5-mini\", temperature=1.0, max_tokens=16000)\nassert reasoning_lm.kwargs[\"max_completion_tokens\"] == 16000\nassert \"max_tokens\" not in reasoning_lm.kwargs\n\ntry:\n    dspy.LM(\"openai/gpt-5-mini\", temperature=0.7, max_tokens=1000)\nexcept ValueError as exc:\n    reasoning_error = str(exc)\nelse:\n    raise AssertionError(\"Expected a ValueError for the invalid reasoning-model configuration\")\n\nchat_variant = dspy.LM(\"openai/gpt-5-chat\", temperature=0.7, max_tokens=1000)\nassert chat_variant.kwargs[\"max_tokens\"] == 1000\nassert \"max_completion_tokens\" not in chat_variant.kwargs\n\nassert \"reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None\" in reasoning_error\n\nprint(\"reasoning_kwargs=\", reasoning_lm.kwargs)\nprint(\"chat_variant_kwargs=\", chat_variant.kwargs)\nprint(\"reasoning_error=\", reasoning_error)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 10,
+   "statement": "`openai/gpt-5-mini` must be instantiated on DSPy’s reasoning-model path with reasoning-compatible values, using `temperature=1.0` and `max_tokens=16000` in the runnable example.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "For `openai/gpt-5-mini`, DSPy stores the token limit under `lm.kwargs[\"max_completion_tokens\"] == 16000` and does not keep a `max_tokens` key.",
+   "span_ids": [
+    "s1",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Constructing `dspy.LM(\"openai/gpt-5-mini\", temperature=0.7, max_tokens=1000)` raises `ValueError`, and the message contains `reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None`.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 10,
+   "statement": "`openai/gpt-5-chat` is allowed with ordinary chat-style values such as `temperature=0.7` and `max_tokens=1000`; it is not rejected by the reasoning-model validation.",
+   "span_ids": [
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "For `openai/gpt-5-chat`, DSPy stores `lm.kwargs[\"max_tokens\"] == 1000` and `lm.kwargs[\"temperature\"] == 0.7`, with no `max_completion_tokens` key.",
+   "span_ids": [
+    "s2",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The exact split comes from DSPy’s model-name regex: `gpt-5(?!-chat)` matches reasoning-family `gpt-5...` names but explicitly excludes `gpt-5-chat`.",
+   "span_ids": [
+    "s1",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 90,
+   "end_line": 105,
+   "excerpt": "0090:         # Recognize OpenAI reasoning models (o1, o3, o4, gpt-5 family)\n0091:         # Exclude non-reasoning variants like gpt-5-chat this is in azure ai foundry\n0092:         # Allow date suffixes like -2023-01-01 after model name or mini/nano/pro\n0093:         # For gpt-5, use negative lookahead to exclude -chat and allow other suffixes\n0094:         model_pattern = re.match(\n0095:             r\"^(?:o[1345](?:-(?:mini|nano|pro))?(?:-\\d{4}-\\d{2}-\\d{2})?|gpt-5(?!-chat)(?:-.*)?)$\",\n0096:             model_family,\n0097:         )\n0098: \n0099:         if model_pattern:\n0100:             if (temperature and temperature != 1.0) or (max_tokens and max_tokens < 16000):\n0101:                 raise ValueError(\n0102:                     \"OpenAI's reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None to \"\n0103:                     \"`dspy.LM(...)`, e.g., dspy.LM('openai/gpt-5', temperature=1.0, max_tokens=16000)\"\n0104:                 )\n0105:             self.kwargs = dict(temperature=temperature, max_completion_tokens=max_tokens, **kwargs)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 108,
+   "end_line": 109,
+   "excerpt": "0108:         else:\n0109:             self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 306,
+   "end_line": 334,
+   "excerpt": "0306: def test_reasoning_model_token_parameter():\n0307:     test_cases = [\n0308:         (\"openai/o1\", True),\n0309:         (\"openai/o1-mini\", True),\n0310:         (\"openai/o1-2023-01-01\", True),\n0311:         (\"openai/o3\", True),\n0312:         (\"openai/o3-mini-2023-01-01\", True),\n0313:         (\"openai/gpt-5\", True),\n0314:         (\"openai/gpt-5-mini\", True),\n0315:         (\"openai/gpt-5-nano\", True),\n0316:         (\"azure/gpt-5-chat\", False),  # gpt-5-chat is NOT a reasoning model\n0317:         (\"openai/gpt-4\", False),\n0318:         (\"anthropic/claude-2\", False),\n0319:     ]\n0320: \n0321:     for model_name, is_reasoning_model in test_cases:\n0322:         lm = dspy.LM(\n0323:             model=model_name,\n0324:             temperature=1.0 if is_reasoning_model else 0.7,\n0325:             max_tokens=16_000 if is_reasoning_model else 1000,\n0326:         )\n0327:         if is_reasoning_model:\n0328:             assert \"max_completion_tokens\" in lm.kwargs\n0329:             assert \"max_tokens\" not in lm.kwargs\n0330:             assert lm.kwargs[\"max_completion_tokens\"] == 16_000\n0331:         else:\n0332:             assert \"max_completion_tokens\" not in lm.kwargs\n0333:             assert \"max_tokens\" in lm.kwargs\n0334:             assert lm.kwargs[\"max_tokens\"] == 1000"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 337,
+   "end_line": 363,
+   "excerpt": "0337: @pytest.mark.parametrize(\"model_name\", [\"openai/o1\", \"openai/gpt-5-nano\", \"openai/gpt-5-mini\"])\n0338: def test_reasoning_model_requirements(model_name):\n0339:     # Should raise assertion error if temperature or max_tokens requirements not met\n0340:     with pytest.raises(\n0341:         ValueError,\n0342:         match=\"reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None\",\n0343:     ):\n0344:         dspy.LM(\n0345:             model=model_name,\n0346:             temperature=0.7,  # Should be 1.0\n0347:             max_tokens=1000,  # Should be >= 16_000\n0348:         )\n0349: \n0350:     # Should pass with correct parameters\n0351:     lm = dspy.LM(\n0352:         model=model_name,\n0353:         temperature=1.0,\n0354:         max_tokens=16_000,\n0355:     )\n0356:     assert lm.kwargs[\"max_completion_tokens\"] == 16_000\n0357: \n0358:     # Should pass with no parameters\n0359:     lm = dspy.LM(\n0360:         model=model_name,\n0361:     )\n0362:     assert lm.kwargs[\"temperature\"] is None\n0363:     assert lm.kwargs[\"max_completion_tokens\"] is None"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 366,
+   "end_line": 378,
+   "excerpt": "0366: def test_gpt_5_chat_not_reasoning_model():\n0367:     \"\"\"Test that gpt-5-chat is NOT treated as a reasoning model.\"\"\"\n0368:     # Should NOT raise validation error - gpt-5-chat is not a reasoning model\n0369:     lm = dspy.LM(\n0370:         model=\"openai/gpt-5-chat\",\n0371:         temperature=0.7,  # Can be any value\n0372:         max_tokens=1000,  # Can be any value\n0373:     )\n0374:     # Should use max_tokens, not max_completion_tokens\n0375:     assert \"max_completion_tokens\" not in lm.kwargs\n0376:     assert \"max_tokens\" in lm.kwargs\n0377:     assert lm.kwargs[\"max_tokens\"] == 1000\n0378:     assert lm.kwargs[\"temperature\"] == 0.7"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Reasoning-family validation and token-parameter rewrite.",
+ "source_index": 6,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

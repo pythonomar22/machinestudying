@@ -1,0 +1,122 @@
+{
+ "id": "dspy_fcf6cd37f708",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I have a mixed-quality dev set where a few examples can raise exceptions inside the program, but I don't want one bad item to abort the whole run. I also need to know exactly what DSPy puts into the per-example results for the failed row and how that affects the aggregate score.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, makes one example raise during evaluation, keeps the run going with a non-default failure score, and prints/asserts the placeholder prediction and the final percentage.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SometimesBroken(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        if question == \"boom\":\n            raise RuntimeError(\"boom\")\n        return self.predictor(question=question)\n\n\n\ndspy.configure(\n    lm=DummyLM(\n        {\n            \"ok-1\": {\"answer\": \"A\"},\n            \"ok-2\": {\"answer\": \"B\"},\n        }\n    )\n)\n\nprogram = SometimesBroken()\ndevset = [\n    dspy.Example(question=\"ok-1\", answer=\"A\").with_inputs(\"question\"),\n    dspy.Example(question=\"boom\", answer=\"ignored\").with_inputs(\"question\"),\n    dspy.Example(question=\"ok-2\", answer=\"B\").with_inputs(\"question\"),\n]\n\nresult = Evaluate(\n    devset=devset,\n    metric=lambda example, prediction: example.answer == prediction.answer,\n    display_progress=False,\n    max_errors=2,\n    failure_score=-0.25,\n)(program)\n\nfailed_prediction = result.results[1][1]\nfailed_score = result.results[1][2]\nprint(result.score)\nprint(type(failed_prediction).__name__, list(failed_prediction.keys()), failed_score)\nassert isinstance(failed_prediction, dspy.Prediction)\nassert list(failed_prediction.keys()) == []\nassert failed_score == -0.25\nassert result.score == 58.33\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The example that fails should do so when `Evaluate` runs `program(**example.inputs())` for a devset row, so the exception is raised inside DSPy’s per-example evaluation path rather than outside evaluation.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The evaluation call must explicitly set `max_errors` above the single failure count so one bad example does not abort the run; `Evaluate` passes that setting into `ParallelExecutor`, which only cancels once `error_count >= max_errors`.",
+   "span_ids": [
+    "s1",
+    "s3",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "A failed item is not returned as an exception in `result.results`: exception outcomes leave the slot unset, and `Evaluate` rewrites each missing slot to `(dspy.Prediction(), failure_score)` before building `results` as `(example, prediction, score)` tuples. The failed row should therefore be inspected as a placeholder `dspy.Prediction()` plus the configured failure score.",
+   "span_ids": [
+    "s4",
+    "s6",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Because `failure_score` defaults to `0.0`, the program must override it to a non-default value and assert that the failed row’s score equals that configured value.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The final `result.score` must be asserted from DSPy’s aggregate formula `round(100 * sum(row_scores) / len(devset), 2)`, which includes the failure row’s score. With two successful `1` scores and one `-0.25` failure score, the printed/asserted percentage is `58.33`.",
+   "span_ids": [
+    "s6",
+    "s8"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 162,
+   "end_line": 168,
+   "excerpt": "0162:         executor = ParallelExecutor(\n0163:             num_threads=num_threads,\n0164:             disable_progress_bar=not display_progress,\n0165:             max_errors=(self.max_errors if self.max_errors is not None else dspy.settings.max_errors),\n0166:             provide_traceback=self.provide_traceback,\n0167:             compare_results=True,\n0168:         )"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 170,
+   "end_line": 173,
+   "excerpt": "0170:         def process_item(example):\n0171:             prediction = program(**example.inputs())\n0172:             score = metric(example, prediction)\n0173:             return prediction, score"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/utils/parallelizer.py",
+   "start_line": 54,
+   "end_line": 70,
+   "excerpt": "0054:     def _wrap_function(self, user_function):\n0055:         def safe_func(item):\n0056:             if self.cancel_jobs.is_set():\n0057:                 return None\n0058:             try:\n0059:                 return user_function(item)\n0060:             except Exception as e:\n0061:                 with self.error_lock:\n0062:                     self.error_count += 1\n0063:                     if self.error_count >= self.max_errors:\n0064:                         self.cancel_jobs.set()\n0065:                 if self.provide_traceback:\n0066:                     logger.error(f\"Error for {item}: {e}\\n{traceback.format_exc()}\")\n0067:                 else:\n0068:                     logger.error(f\"Error for {item}: {e}. Set `provide_traceback=True` for traceback.\")\n0069:                 return e\n0070: "
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/utils/parallelizer.py",
+   "start_line": 235,
+   "end_line": 242,
+   "excerpt": "0235:     def _process_outcome(self, results, idx, outcome):\n0236:         \"\"\"Store a single outcome and track errors.\"\"\"\n0237:         if isinstance(outcome, Exception):\n0238:             with self.error_lock:\n0239:                 self.failed_indices.append(idx)\n0240:                 self.exceptions_map[idx] = outcome\n0241:         else:\n0242:             results[idx] = outcome"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 79,
+   "end_line": 82,
+   "excerpt": "0079:         max_errors: int | None = None,\n0080:         provide_traceback: bool | None = None,\n0081:         failure_score: float = 0.0,\n0082:         save_as_csv: str | None = None,"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 175,
+   "end_line": 180,
+   "excerpt": "0175:         results = executor.execute(process_item, devset)\n0176:         assert len(devset) == len(results)\n0177: \n0178:         results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]\n0179:         results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results, strict=False)]\n0180:         ncorrect, ntotal = sum(score for *_, score in results), len(devset)"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 48,
+   "end_line": 58,
+   "excerpt": "0048: class EvaluationResult(Prediction):\n0049:     \"\"\"\n0050:     A class that represents the result of an evaluation.\n0051:     It is a subclass of `dspy.Prediction` that contains the following fields\n0052: \n0053:     - score: An float value (e.g., 67.30) representing the overall performance\n0054:     - results: a list of (example, prediction, score) tuples for each example in devset\n0055:     \"\"\"\n0056: \n0057:     def __init__(self, score: float, results: list[tuple[\"dspy.Example\", \"dspy.Example\", Any]]):\n0058:         super().__init__(score=score, results=results)"
+  },
+  {
+   "span_id": "s8",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 223,
+   "end_line": 225,
+   "excerpt": "0223:         return EvaluationResult(\n0224:             score=round(100 * ncorrect / ntotal, 2),\n0225:             results=results,"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "",
+ "source_index": 6,
+ "smalldspy_scope": false
+}

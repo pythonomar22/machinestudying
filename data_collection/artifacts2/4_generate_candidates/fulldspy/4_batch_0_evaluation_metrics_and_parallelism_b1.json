@@ -1,0 +1,431 @@
+{
+ "cluster_id": 0,
+ "label": "evaluation_metrics_and_parallelism",
+ "batch": 1,
+ "seed_numbers": [
+  145,
+  1786,
+  1426,
+  767,
+  8753,
+  991,
+  8351,
+  975,
+  1236,
+  663
+ ],
+ "candidates": [
+  {
+   "question": "I'm evaluating with a reward-style metric that can return values like 7 or 10, not just booleans or numbers between 0 and 1. The log line is ambiguous enough that I can't tell whether DSPy normalizes these scores, caps them, or just treats them as raw totals.\n\nI already know boolean metrics work. What I need to know is the exact aggregation rule for an unbounded numeric metric, because that changes how I compare runs and what \"100%\" even means.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, evaluates a tiny `dspy.Predict` program with a metric that always returns `7.0`, and prints/asserts the final score so the non-normalized aggregation behavior is undeniable.",
+   "answer": "```python\nimport dspy\nfrom dspy.evaluate.evaluate import Evaluate\nfrom dspy.utils.dummies import DummyLM\n\ndef ex(question, answer):\n    return dspy.Example(question=question, answer=answer).with_inputs(\"question\")\n\ndspy.configure(lm=DummyLM({\"q1\": {\"answer\": \"a1\"}, \"q2\": {\"answer\": \"a2\"}}))\nprogram = dspy.Predict(\"question -> answer\")\nevaluator = Evaluate(devset=[ex(\"q1\", \"a1\"), ex(\"q2\", \"a2\")], metric=lambda ex, pred: 7.0, display_progress=False)\nresult = evaluator(program)\nprint(\"per_example_scores:\", [score for _, _, score in result.results])\nprint(\"final_score:\", result.score)\nassert [score for _, _, score in result.results] == [7.0, 7.0]\nassert result.score == 700.0\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "Evaluate.__call__"
+    },
+    {
+     "file": "tests/evaluate/test_evaluate.py",
+     "symbol": "test_evaluate_call"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm adding observability around a large `dspy.Evaluate` run. My callback handler needs to know whether DSPy emits one start/end event for the whole evaluation or one event per example, because I want run-level logging rather than accidentally double-counting every row.\n\nThe behavior is easy to guess wrong from the outside. I want a minimal proof that shows exactly how often the evaluation callback fires and what object comes back at the end.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, registers a callback, runs `dspy.Evaluate` on two examples, and prints/asserts the callback counts plus the final `EvaluationResult` score.",
+   "answer": "```python\nimport dspy\nfrom dspy.evaluate.evaluate import Evaluate\nfrom dspy.evaluate.metrics import answer_exact_match\nfrom dspy.utils.callback import BaseCallback\nfrom dspy.utils.dummies import DummyLM\n\nclass TrackingCallback(BaseCallback):\n    def __init__(self):\n        self.start_count = 0\n        self.end_count = 0\n        self.start_inputs = None\n        self.end_outputs = None\n    def on_evaluate_start(self, call_id, instance, inputs):\n        self.start_count += 1\n        self.start_inputs = inputs\n    def on_evaluate_end(self, call_id, outputs, exception=None):\n        self.end_count += 1\n        self.end_outputs = outputs\n\ndef ex(question, answer):\n    return dspy.Example(question=question, answer=answer).with_inputs(\"question\")\n\ncallback = TrackingCallback()\ndspy.configure(lm=DummyLM({\"What is 1+1?\": {\"answer\": \"2\"}, \"What is 2+2?\": {\"answer\": \"4\"}}), callbacks=[callback])\nprogram = dspy.Predict(\"question -> answer\")\nevaluator = Evaluate(devset=[ex(\"What is 1+1?\", \"2\"), ex(\"What is 2+2?\", \"4\")], metric=answer_exact_match, display_progress=False)\nresult = evaluator(program)\nprint(\"start_count:\", callback.start_count)\nprint(\"end_count:\", callback.end_count)\nprint(\"final_score:\", result.score)\nassert callback.start_count == 1\nassert callback.end_count == 1\nassert callback.start_inputs[\"program\"] == program\nassert callback.end_outputs.score == 100.0\nassert result.score == 100.0\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "Evaluate.__call__"
+    },
+    {
+     "file": "dspy/utils/callback.py",
+     "symbol": "with_callbacks"
+    },
+    {
+     "file": "tests/evaluate/test_evaluate.py",
+     "symbol": "test_evaluate_callback"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm using DSPy's built-in semantic judge, but I'm nervous about bad grader outputs. If the underlying judge produces precision or recall outside the valid `[0, 1]` range, I need to know whether DSPy clamps those numbers before computing F1 or just propagates nonsense.\n\nThis is one of those behaviors that's too easy to misread from a source skim. I want a concrete repro with an obviously invalid pair of grader values.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, makes the semantic judge return precision above 1 and recall below 0, and prints/asserts the final score so the clamping behavior is proven.",
+   "answer": "```python\nimport dspy\nfrom dspy.evaluate.auto_evaluation import SemanticF1\nfrom dspy.utils.dummies import DummyLM\n\ndspy.configure(lm=DummyLM([{\"reasoning\": \"bad grader output\", \"precision\": 1.7, \"recall\": -0.4}]))\nmetric = SemanticF1()\nresult = metric(dspy.Example(question=\"q\", response=\"gold\"), dspy.Prediction(response=\"pred\"))\nprint(\"semantic_f1_score:\", result.score)\nassert result.score == 0.0\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/auto_evaluation.py",
+     "symbol": "f1_score"
+    },
+    {
+     "file": "dspy/evaluate/auto_evaluation.py",
+     "symbol": "SemanticF1.forward"
+    },
+    {
+     "file": "tests/evaluate/test_auto_evaluation.py",
+     "symbol": "test_semantic_f1_score_value"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm running a multi-threaded evaluation over slow examples, and I care about whether Ctrl-C actually interrupts the run instead of waiting for every worker to finish. If DSPy only checks for cancellation after all in-flight work completes, that makes iterative debugging miserable.\n\nI don't want a prose answer because signal handling is easy to get wrong. I want a tiny self-contained repro that interrupts itself.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, starts a multi-threaded `dspy.Evaluate` run over a deliberately slow model, sends itself `SIGINT`, and prints/asserts that a `KeyboardInterrupt` is raised.",
+   "answer": "```python\nimport os\nimport signal\nimport threading\nimport time\n\nimport dspy\nfrom dspy.evaluate.evaluate import Evaluate\nfrom dspy.evaluate.metrics import answer_exact_match\nfrom dspy.utils.dummies import DummyLM\n\nclass SlowLM(DummyLM):\n    def forward(self, *args, **kwargs):\n        time.sleep(1)\n        return super().forward(*args, **kwargs)\n\ndef ex(question, answer):\n    return dspy.Example(question=question, answer=answer).with_inputs(\"question\")\n\ndspy.configure(lm=SlowLM({\"What is 1+1?\": {\"answer\": \"2\"}, \"What is 2+2?\": {\"answer\": \"4\"}}))\nprogram = dspy.Predict(\"question -> answer\")\nevaluator = Evaluate(devset=[ex(\"What is 1+1?\", \"2\"), ex(\"What is 2+2?\", \"4\")], metric=answer_exact_match, display_progress=False, num_threads=2)\n\ndef send_sigint_soon():\n    time.sleep(0.1)\n    os.kill(os.getpid(), signal.SIGINT)\n\nthread = threading.Thread(target=send_sigint_soon)\nthread.start()\ntry:\n    try:\n        evaluator(program)\n        raise AssertionError(\"Expected KeyboardInterrupt from SIGINT\")\n    except KeyboardInterrupt:\n        print(\"caught:\", \"KeyboardInterrupt\")\nfinally:\n    thread.join()\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/utils/parallelizer.py",
+     "symbol": "ParallelExecutor._execute_parallel"
+    },
+    {
+     "file": "dspy/evaluate/evaluate.py",
+     "symbol": "Evaluate.__call__"
+    },
+    {
+     "file": "tests/evaluate/test_evaluate.py",
+     "symbol": "test_multi_thread_evaluate_call_cancelled"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm wiring DSPy into a threaded service, and I need to know whether worker threads are allowed to call `dspy.configure` or whether they have to use `dspy.context` for temporary overrides. If I get this wrong, one request could mutate process-wide settings for another.\n\nWhat I need is a proof that shows both sides: the forbidden global reconfiguration and the allowed temporary override that does not leak back out.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, tries to call `dspy.configure` from a child thread, then uses `dspy.context` in that thread, and prints/asserts the exact behavior in the worker and on the main thread.",
+   "answer": "```python\nfrom concurrent.futures import ThreadPoolExecutor\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\nbase_lm = DummyLM([{\"answer\": \"base\"}])\nbase_lm.tag = \"base\"\ndspy.configure(lm=base_lm, trace=[])\nworker_state = {}\n\ndef worker():\n    try:\n        bad_lm = DummyLM([{\"answer\": \"forbidden\"}])\n        bad_lm.tag = \"forbidden\"\n        dspy.configure(lm=bad_lm)\n    except RuntimeError as e:\n        worker_state[\"configure_error\"] = str(e)\n    local_lm = DummyLM([{\"answer\": \"thread-local\"}])\n    local_lm.tag = \"thread-local\"\n    with dspy.context(lm=local_lm, trace=[\"worker\"]):\n        worker_state[\"inside_tag\"] = dspy.settings.lm.tag\n        worker_state[\"inside_trace\"] = list(dspy.settings.trace)\n    worker_state[\"after_tag\"] = dspy.settings.lm.tag\n    worker_state[\"after_trace\"] = list(dspy.settings.trace)\n\nwith ThreadPoolExecutor(max_workers=1) as executor:\n    executor.submit(worker).result()\n\nprint(\"configure_error:\", worker_state[\"configure_error\"])\nprint(\"inside_context:\", worker_state[\"inside_tag\"], worker_state[\"inside_trace\"])\nprint(\"after_context:\", worker_state[\"after_tag\"], worker_state[\"after_trace\"])\nprint(\"main_thread:\", dspy.settings.lm.tag, list(dspy.settings.trace))\nassert \"initially configured\" in worker_state[\"configure_error\"]\nassert worker_state[\"inside_tag\"] == \"thread-local\"\nassert worker_state[\"inside_trace\"] == [\"worker\"]\nassert worker_state[\"after_tag\"] == \"base\"\nassert worker_state[\"after_trace\"] == []\nassert dspy.settings.lm.tag == \"base\"\nassert list(dspy.settings.trace) == []\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/dsp/utils/settings.py",
+     "symbol": "Settings._ensure_configure_allowed"
+    },
+    {
+     "file": "dspy/dsp/utils/settings.py",
+     "symbol": "Settings.context"
+    },
+    {
+     "file": "tests/utils/test_settings.py",
+     "symbol": "test_forbid_configure_call_in_child_thread"
+    },
+    {
+     "file": "tests/utils/test_settings.py",
+     "symbol": "test_dspy_context_parallel"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I also have async code that fans out several DSPy tasks at once. I need to know whether `dspy.configure` is allowed inside those sibling async tasks, or whether the only safe pattern there is `dspy.context`.\n\nThis matters because I do per-task model overrides in async evaluation and judge pipelines. I want a repro that shows the restriction and also proves the temporary overrides stay isolated across concurrent tasks.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, attempts `dspy.configure` from a non-owner async task, uses `dspy.context` in two concurrent tasks, and prints/asserts the per-task values plus the unchanged global state afterward.",
+   "answer": "```python\nimport asyncio\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\nbase_lm = DummyLM([{\"answer\": \"base\"}])\nbase_lm.tag = \"base\"\ndspy.configure(lm=base_lm, trace=[])\n\nasync def forbidden_configure():\n    try:\n        bad_lm = DummyLM([{\"answer\": \"bad\"}])\n        bad_lm.tag = \"bad\"\n        dspy.configure(lm=bad_lm)\n    except RuntimeError as e:\n        return str(e)\n    raise AssertionError(\"Expected dspy.configure to fail in a sibling async task\")\n\nasync def allowed_context(tag):\n    local_lm = DummyLM([{\"answer\": tag}])\n    local_lm.tag = tag\n    with dspy.context(lm=local_lm, trace=[tag]):\n        await asyncio.sleep(0)\n        return dspy.settings.lm.tag, list(dspy.settings.trace)\n\nasync def main():\n    return await asyncio.gather(forbidden_configure(), allowed_context(\"task-one\"), allowed_context(\"task-two\"))\n\nerror_text, first, second = asyncio.run(main())\nprint(\"configure_error:\", error_text)\nprint(\"task_one:\", first)\nprint(\"task_two:\", second)\nprint(\"global_after:\", dspy.settings.lm.tag, list(dspy.settings.trace))\nassert \"same async task\" in error_text\nassert first == (\"task-one\", [\"task-one\"])\nassert second == (\"task-two\", [\"task-two\"])\nassert dspy.settings.lm.tag == \"base\"\nassert list(dspy.settings.trace) == []\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/dsp/utils/settings.py",
+     "symbol": "Settings._ensure_configure_allowed"
+    },
+    {
+     "file": "dspy/dsp/utils/settings.py",
+     "symbol": "Settings.context"
+    },
+    {
+     "file": "tests/utils/test_settings.py",
+     "symbol": "test_dspy_context_with_async_task_group"
+    },
+    {
+     "file": "tests/utils/test_settings.py",
+     "symbol": "test_dspy_configure_allowance_async"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I have an async DSPy module that works fine with `acall`, but I need to feed it through a synchronous optimizer pipeline. Before I refactor a bunch of code, I want proof of whether DSPy can adapt that kind of module cleanly for compilation.\n\nThe important part is not just one conversion mode. I want to know whether both the in-place conversion and the wrapper-style conversion can make the optimizer complete and actually collect demos.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, converts the same async module both ways, compiles each version with a few-shot optimizer, and prints/asserts the resulting demo counts.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\nclass AsyncProgram(dspy.Module):\n    def __init__(self):\n        self.predict = dspy.Predict(\"question -> answer\")\n    async def aforward(self, question: str):\n        return await self.predict.acall(question=question)\n\ndef metric(example, prediction, trace=None):\n    return True\n\ndspy.configure(lm=DummyLM([{\"answer\": \"dummy\"} for _ in range(100)]))\ndataset = [dspy.Example(question=\"question\", answer=\"answer\").with_inputs(\"question\") for _ in range(10)]\noptimizer = dspy.BootstrapFewShot(metric=metric, max_bootstrapped_demos=2, max_labeled_demos=0)\ncompiled_in_place = optimizer.compile(dspy.syncify(AsyncProgram(), in_place=True), trainset=dataset)\ncompiled_wrapped = optimizer.compile(dspy.syncify(AsyncProgram(), in_place=False), trainset=dataset)\nprint(\"in_place_demos:\", len(compiled_in_place.predictors()[0].demos))\nprint(\"wrapped_demos:\", len(compiled_wrapped.predictors()[0].demos))\nassert len(compiled_in_place.predictors()[0].demos) == 2\nassert len(compiled_wrapped.predictors()[0].demos) == 2\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/utils/syncify.py",
+     "symbol": "syncify"
+    },
+    {
+     "file": "tests/utils/test_syncify.py",
+     "symbol": "test_syncify_works_with_optimizers"
+    },
+    {
+     "file": "tests/utils/test_syncify.py",
+     "symbol": "test_syncify_in_place"
+    },
+    {
+     "file": "tests/utils/test_syncify.py",
+     "symbol": "test_syncify_with_wrapper"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm using `dspy.Parallel` with a module that expects the whole `dspy.Example` object, not just the unpacked input fields. Right now I'm not sure whether DSPy always expands examples into keyword arguments or whether there's a supported path for handing the raw example through.\n\nI want a repro that shows the failure mode with the default behavior and the success case when the raw example is passed through, because this affects custom evaluators and wrappers that need labels or metadata at call time.\n\nGive me a complete, runnable Python program that stays offline, runs the same `(module, example)` pair through `dspy.Parallel` twice, and prints/asserts the default failure plus the successful raw-example behavior.",
+   "answer": "```python\nimport dspy\n\nclass NeedsWholeExample(dspy.Module):\n    def forward(self, example: dspy.Example):\n        return example.answer.upper()\n\nexample = dspy.Example(question=\"sky\", answer=\"blue\").with_inputs(\"question\")\npairs = [(NeedsWholeExample(), example)]\nbad_results, failed_examples, exceptions = dspy.Parallel(num_threads=1, return_failed_examples=True)(pairs)\ngood_results = dspy.Parallel(num_threads=1, access_examples=False)(pairs)\nprint(\"bad_results:\", bad_results)\nprint(\"bad_exception:\", type(exceptions[0]).__name__)\nprint(\"good_results:\", good_results)\nassert bad_results == [None]\nassert failed_examples[0] == example\nassert isinstance(exceptions[0], TypeError)\nassert good_results == [\"BLUE\"]\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/parallel.py",
+     "symbol": "Parallel.forward"
+    },
+    {
+     "file": "dspy/teleprompt/simba.py",
+     "symbol": "SIMBA.compile"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I want to nest a parallel fan-out inside another parallel fan-out. The confusing part is that the inner payload is itself a list of work items, so I can't tell whether DSPy treats that as a supported nested parallel call or as just an invalid example type.\n\nI don't want a yes/no answer. I want a concrete offline program that proves the outer call can hand a nested job list to an inner parallel executor and that the result structure comes back nested rather than flattened or rejected.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, builds a module with an outer and inner `dspy.Parallel`, and prints/asserts the nested output structure and the number of distinct results.",
+   "answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\ndspy.configure(lm=DummyLM([\n    {\"output\": \"test output 1\"},\n    {\"output\": \"test output 2\"},\n    {\"output\": \"test output 3\"},\n    {\"output\": \"test output 4\"},\n    {\"output\": \"test output 5\"},\n]))\n\nclass NestedParallelModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n        self.predictor2 = dspy.Predict(\"input -> output\")\n        self.parallel = dspy.Parallel(num_threads=2)\n    def forward(self, input):\n        return self.parallel([\n            (self.predictor, input),\n            (self.predictor2, input),\n            (self.parallel, [(self.predictor2, input), (self.predictor, input)]),\n        ])\n\noutput = NestedParallelModule()(dspy.Example(input=\"test input\").with_inputs(\"input\"))\nflat_outputs = {output[0].output, output[1].output, output[2][0].output, output[2][1].output}\nprint(\"outer_types:\", type(output[0]).__name__, type(output[1]).__name__, type(output[2]).__name__)\nprint(\"flat_outputs:\", sorted(flat_outputs))\nassert isinstance(output[2], list)\nassert len(output[2]) == 2\nassert len(flat_outputs) == 4\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/predict/parallel.py",
+     "symbol": "Parallel.forward"
+    },
+    {
+     "file": "tests/predict/test_parallel.py",
+     "symbol": "test_nested_parallel_module"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": true
+  },
+  {
+   "question": "I'm compiling with `dspy.BetterTogether` and I left out a validation set because I thought that meant \"no validation\". The run behavior makes me suspect DSPy may be silently holding out part of the trainset by default instead.\n\nThat matters a lot for small datasets, because I don't want to accidentally shrink the optimization set without noticing. I need a proof that shows exactly how many examples go to optimization versus validation when I keep the defaults.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, compiles a tiny `dspy.BetterTogether` pipeline with no explicit valset, and prints/asserts the trainset size seen by the optimizer and the validation-set size seen by the evaluator.",
+   "answer": "```python\nfrom unittest.mock import Mock, patch\n\nimport dspy\nfrom dspy.teleprompt import BetterTogether\nfrom dspy.teleprompt.teleprompt import Teleprompter\nfrom dspy.utils.dummies import DummyLM\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\nclass CapturingOptimizer(Teleprompter):\n    def __init__(self):\n        self.seen_trainset_len = None\n    def compile(self, student, trainset=None, **kwargs):\n        self.seen_trainset_len = len(trainset)\n        return student\n\ndef metric(example, prediction, trace=None):\n    return 1.0\n\nstudent = SimpleModule()\nstudent.set_lm(DummyLM([{\"output\": \"ok\"}]))\ntrainset = [dspy.Example(input=f\"q{i}\", output=f\"a{i}\").with_inputs(\"input\") for i in range(10)]\noptimizer_step = CapturingOptimizer()\noptimizer = BetterTogether(metric=metric, p=optimizer_step)\nseen_eval_sizes = []\n\ndef fake_eval(batch_size, dataset, candidate_program, evaluate, rng=None):\n    seen_eval_sizes.append(len(dataset))\n    return Mock(score=0.5)\n\nwith patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\", side_effect=fake_eval):\n    with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n        with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n            with patch.object(optimizer, \"_models_changed\", return_value=False):\n                optimizer.compile(student, trainset=trainset, strategy=\"p\")\n\nprint(\"optimizer_trainset_len:\", optimizer_step.seen_trainset_len)\nprint(\"eval_dataset_sizes:\", seen_eval_sizes)\nassert optimizer_step.seen_trainset_len == 9\nassert seen_eval_sizes == [1, 1]\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether.compile"
+    },
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether._prepare_trainset_and_valset"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm chaining two optimizers with `dspy.BetterTogether`. When I do have a real validation set, I want the best-scoring intermediate checkpoint back even if it wasn't the last step. But when I intentionally disable validation, I want the latest program in the chain.\n\nI can imagine either policy being reasonable, so I don't want a guess. I want one small repro that demonstrates both modes side by side.\n\nGive me a complete, runnable Python program that stays offline, uses tiny custom teleprompters plus patched evaluation scores, compiles once with validation and once with validation turned off, and prints/asserts which marked program is returned in each case.",
+   "answer": "```python\nfrom unittest.mock import Mock, patch\n\nimport dspy\nfrom dspy.teleprompt import BetterTogether\nfrom dspy.teleprompt.teleprompt import Teleprompter\nfrom dspy.utils.dummies import DummyLM\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\nclass MarkedOptimizer(Teleprompter):\n    def __init__(self, marker):\n        self.marker = marker\n    def compile(self, student, **kwargs):\n        program = SimpleModule()\n        program.marker = self.marker\n        return program\n\ndef metric(example, prediction, trace=None):\n    return 1.0\n\ntrainset = [dspy.Example(input=\"train\", output=\"out\").with_inputs(\"input\")]\nvalset = [dspy.Example(input=\"val\", output=\"out\").with_inputs(\"input\")]\nstudent1 = SimpleModule(); student1.set_lm(DummyLM([{\"output\": \"out\"}]))\nstudent2 = SimpleModule(); student2.set_lm(DummyLM([{\"output\": \"out\"}]))\noptimizer = BetterTogether(metric=metric, p=MarkedOptimizer(\"p_optimized\"), w=MarkedOptimizer(\"w_optimized\"))\nwith patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\") as mock_eval:\n    mock_eval.side_effect = [Mock(score=0.5), Mock(score=0.9), Mock(score=0.7)]\n    with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n        with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n            with patch.object(optimizer, \"_models_changed\", return_value=False):\n                best_with_valset = optimizer.compile(student1, trainset=trainset, valset=valset, strategy=\"p -> w\")\noptimizer_no_val = BetterTogether(metric=metric, p=MarkedOptimizer(\"p_optimized\"), w=MarkedOptimizer(\"w_optimized\"))\nwith patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n    with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n        with patch.object(optimizer_no_val, \"_models_changed\", return_value=False):\n            latest_without_valset = optimizer_no_val.compile(student2, trainset=trainset, valset=None, valset_ratio=0, strategy=\"p -> w\")\nprint(\"with_valset_marker:\", best_with_valset.marker)\nprint(\"without_valset_marker:\", latest_without_valset.marker)\nassert best_with_valset.marker == \"p_optimized\"\nassert latest_without_valset.marker == \"w_optimized\"\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether._run_strategies"
+    },
+    {
+     "file": "tests/teleprompt/test_bettertogether.py",
+     "symbol": "test_program_selection"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I want to inspect every checkpoint `dspy.BetterTogether` considered, not just the final return value. In particular, I need to know whether the baseline program is included, whether each step contributes another candidate, and whether the stored list is already sorted by score.\n\nThis is the kind of state that is easy to assume incorrectly when debugging optimizer behavior. I want a minimal repro that prints the candidate list and then asserts the ordering.\n\nGive me a complete, runnable Python program that stays offline, runs a two-step `dspy.BetterTogether` strategy with patched scores, and prints/asserts the `candidate_programs` contents, including the baseline entry and descending score order.",
+   "answer": "```python\nfrom unittest.mock import Mock, patch\n\nimport dspy\nfrom dspy.teleprompt import BetterTogether\nfrom dspy.teleprompt.teleprompt import Teleprompter\nfrom dspy.utils.dummies import DummyLM\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\nclass MarkedOptimizer(Teleprompter):\n    def __init__(self, marker):\n        self.marker = marker\n    def compile(self, student, **kwargs):\n        program = SimpleModule()\n        program.marker = self.marker\n        return program\n\ndef metric(example, prediction, trace=None):\n    return 1.0\n\nstudent = SimpleModule(); student.set_lm(DummyLM([{\"output\": \"out\"}]))\ntrainset = [dspy.Example(input=\"train\", output=\"out\").with_inputs(\"input\")]\nvalset = [dspy.Example(input=\"val\", output=\"out\").with_inputs(\"input\")]\noptimizer = BetterTogether(metric=metric, p=MarkedOptimizer(\"p\"), w=MarkedOptimizer(\"w\"))\nwith patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\") as mock_eval:\n    mock_eval.side_effect = [Mock(score=0.5), Mock(score=0.8), Mock(score=0.9)]\n    with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n        with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n            with patch.object(optimizer, \"_models_changed\", return_value=False):\n                result = optimizer.compile(student, trainset=trainset, valset=valset, strategy=\"p -> w\")\nsummary = [(candidate[\"strategy\"], candidate[\"score\"]) for candidate in result.candidate_programs]\nprint(\"candidate_programs:\", summary)\nassert len(result.candidate_programs) == 3\nassert summary == [(\"p -> w\", 0.9), (\"p\", 0.8), (\"\", 0.5)]\nassert any(candidate[\"strategy\"] == \"\" for candidate in result.candidate_programs)\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether._add_candidate"
+    },
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether._run_strategies"
+    },
+    {
+     "file": "tests/teleprompt/test_bettertogether.py",
+     "symbol": "test_candidate_programs_structure"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm worried about partial progress getting lost if a later `dspy.BetterTogether` step crashes. In a long optimization chain, I would much rather get the best program found so far plus an explicit failure flag than lose the entire run.\n\nI don't want to infer that from log messages. I want a minimal repro that makes one step succeed, the next step fail, and then proves exactly what object comes back.\n\nGive me a complete, runnable Python program that stays offline, runs a two-step `dspy.BetterTogether` strategy where the second optimizer raises, and prints/asserts the returned program marker plus the compilation-error flag.",
+   "answer": "```python\nfrom unittest.mock import Mock, patch\n\nimport dspy\nfrom dspy.teleprompt import BetterTogether\nfrom dspy.teleprompt.teleprompt import Teleprompter\nfrom dspy.utils.dummies import DummyLM\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\nclass SuccessfulOptimizer(Teleprompter):\n    def compile(self, student, **kwargs):\n        program = SimpleModule(); program.marker = \"p_success\"; return program\n\nclass FailingOptimizer(Teleprompter):\n    def compile(self, student, **kwargs):\n        raise RuntimeError(\"Intentional failure for testing\")\n\ndef metric(example, prediction, trace=None):\n    return 1.0\n\nstudent = SimpleModule(); student.set_lm(DummyLM([{\"output\": \"out\"}]))\ntrainset = [dspy.Example(input=\"train\", output=\"out\").with_inputs(\"input\")]\nvalset = [dspy.Example(input=\"val\", output=\"out\").with_inputs(\"input\")]\noptimizer = BetterTogether(metric=metric, p=SuccessfulOptimizer(), w=FailingOptimizer())\nwith patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\") as mock_eval:\n    mock_eval.side_effect = [Mock(score=0.5), Mock(score=0.7)]\n    with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n        with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n            with patch.object(optimizer, \"_models_changed\", return_value=False):\n                result = optimizer.compile(student, trainset=trainset, valset=valset, strategy=\"p -> w\")\nprint(\"returned_marker:\", result.marker)\nprint(\"error_flag:\", result.flag_compilation_error_occurred)\nassert result.marker == \"p_success\"\nassert result.flag_compilation_error_occurred is True\nassert len(result.candidate_programs) == 2\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether._run_strategies"
+    },
+    {
+     "file": "tests/teleprompt/test_bettertogether.py",
+     "symbol": "test_error_handling_returns_best_program"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm giving different compile-time knobs to the prompt step and the weight step inside `dspy.BetterTogether`. My concern is that DSPy might either broadcast every extra argument to every optimizer or silently drop step-specific ones.\n\nI need a tiny repro that makes the routing visible, not a summary. The proof I want is that one optimizer receives only its own custom argument and the other one receives only its own.\n\nGive me a complete, runnable Python program that stays offline, runs a two-step `dspy.BetterTogether` strategy with custom per-step compile arguments, and prints/asserts exactly which kwargs each optimizer received.",
+   "answer": "```python\nfrom unittest.mock import Mock, patch\n\nimport dspy\nfrom dspy.teleprompt import BetterTogether\nfrom dspy.teleprompt.teleprompt import Teleprompter\nfrom dspy.utils.dummies import DummyLM\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\nclass PromptOptimizer(Teleprompter):\n    def __init__(self):\n        self.received_kwargs = None\n    def compile(self, student, trainset=None, num_trials=None, **kwargs):\n        self.received_kwargs = {\"trainset\": trainset, \"num_trials\": num_trials, **kwargs}\n        return student\n\nclass WeightOptimizer(Teleprompter):\n    def __init__(self):\n        self.received_kwargs = None\n    def compile(self, student, trainset=None, num_batches=None, **kwargs):\n        self.received_kwargs = {\"trainset\": trainset, \"num_batches\": num_batches, **kwargs}\n        return student\n\ndef metric(example, prediction, trace=None):\n    return 1.0\n\nstudent = SimpleModule(); student.set_lm(DummyLM([{\"output\": \"out\"}]))\ntrainset = [dspy.Example(input=\"train\", output=\"out\").with_inputs(\"input\")]\nvalset = [dspy.Example(input=\"val\", output=\"out\").with_inputs(\"input\")]\nprompt_opt = PromptOptimizer(); weight_opt = WeightOptimizer()\noptimizer = BetterTogether(metric=metric, p=prompt_opt, w=weight_opt)\nwith patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\", return_value=Mock(score=0.85)):\n    with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n        with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n            with patch.object(optimizer, \"_models_changed\", return_value=False):\n                optimizer.compile(student, trainset=trainset, valset=valset, strategy=\"p -> w\", optimizer_compile_args={\"p\": {\"num_trials\": 10}, \"w\": {\"num_batches\": 5}})\nprint(\"prompt_kwargs:\", prompt_opt.received_kwargs)\nprint(\"weight_kwargs:\", weight_opt.received_kwargs)\nassert prompt_opt.received_kwargs[\"num_trials\"] == 10\nassert \"num_batches\" not in prompt_opt.received_kwargs or prompt_opt.received_kwargs[\"num_batches\"] is None\nassert weight_opt.received_kwargs[\"num_batches\"] == 5\nassert \"num_trials\" not in weight_opt.received_kwargs or weight_opt.received_kwargs[\"num_trials\"] is None\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether._validate_compile_args"
+    },
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether._run_and_evaluate_step"
+    },
+    {
+     "file": "tests/teleprompt/test_bettertogether.py",
+     "symbol": "test_compile_args_multi_optimizer_strategy"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I also need to override the dataset and teacher for just one step inside `dspy.BetterTogether`. The top-level compile call has one trainset and one valset, but one optimizer in the chain should see different ones.\n\nThis is risky enough that I do not want to trust my intuition. I want a repro that proves whether the step-specific overrides really replace the top-level objects before the optimizer sees them.\n\nGive me a complete, runnable Python program that stays offline, runs a one-step `dspy.BetterTogether` compile with per-step overrides for trainset, valset, and teacher, and prints/asserts that the optimizer received the override objects rather than the top-level ones.",
+   "answer": "```python\nfrom unittest.mock import Mock, patch\n\nimport dspy\nfrom dspy.teleprompt import BetterTogether\nfrom dspy.teleprompt.teleprompt import Teleprompter\nfrom dspy.utils.dummies import DummyLM\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\nclass CapturingTeleprompter(Teleprompter):\n    def __init__(self):\n        self.received_kwargs = None\n    def compile(self, student, trainset=None, valset=None, teacher=None, **kwargs):\n        self.received_kwargs = {\"trainset\": trainset, \"valset\": valset, \"teacher\": teacher, **kwargs}\n        return student\n\ndef metric(example, prediction, trace=None):\n    return 1.0\n\nstudent = SimpleModule(); student.set_lm(DummyLM([{\"output\": \"out\"}]))\noptimizer_step = CapturingTeleprompter(); optimizer = BetterTogether(metric=metric, p=optimizer_step)\nglobal_trainset = [dspy.Example(input=\"global-train\", output=\"out\").with_inputs(\"input\")]\nglobal_valset = [dspy.Example(input=\"global-val\", output=\"out\").with_inputs(\"input\")]\noverride_trainset = [dspy.Example(input=\"override-train\", output=\"out\").with_inputs(\"input\")]\noverride_valset = [dspy.Example(input=\"override-val\", output=\"out\").with_inputs(\"input\")]\noverride_teacher = SimpleModule()\nwith patch(\"dspy.teleprompt.bettertogether.eval_candidate_program\", return_value=Mock(score=0.9)):\n    with patch(\"dspy.teleprompt.bettertogether.launch_lms\"):\n        with patch(\"dspy.teleprompt.bettertogether.kill_lms\"):\n            with patch.object(optimizer, \"_models_changed\", return_value=False):\n                optimizer.compile(student, trainset=global_trainset, valset=global_valset, strategy=\"p\", optimizer_compile_args={\"p\": {\"trainset\": override_trainset, \"valset\": override_valset, \"teacher\": override_teacher}})\nreceived = optimizer_step.received_kwargs\nprint(\"received_trainset_input:\", received[\"trainset\"][0].input)\nprint(\"received_valset_input:\", received[\"valset\"][0].input)\nprint(\"received_teacher_is_override:\", received[\"teacher\"] is override_teacher)\nassert received[\"trainset\"] is override_trainset\nassert received[\"valset\"] is override_valset\nassert received[\"teacher\"] is override_teacher\nassert received[\"trainset\"] is not global_trainset\nassert received[\"valset\"] is not global_valset\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/bettertogether.py",
+     "symbol": "BetterTogether._run_and_evaluate_step"
+    },
+    {
+     "file": "tests/teleprompt/test_bettertogether.py",
+     "symbol": "test_compile_args_override_global_params"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "My callback handler wraps a prompt-search optimizer that sometimes scores the whole trainset and sometimes only a minibatch. I need to know whether DSPY tags those two cases differently so I can separate full evaluations from cheap screening passes.\n\nA prose answer is not enough here because I care about the exact metadata value and the exact dataset size used in each call.\n\nGive me a complete, runnable Python program that stays offline, exercises both the full-set and minibatch scoring paths, and prints/asserts the callback metadata and devset length for each path.",
+   "answer": "```python\nfrom unittest.mock import Mock\n\nfrom dspy.teleprompt.utils import eval_candidate_program\n\ntrainset = [1, 2, 3, 4, 5]\ncandidate_program = object()\nfull_evaluate = Mock(return_value=\"full-result\")\nmini_evaluate = Mock(return_value=\"mini-result\")\nfull_result = eval_candidate_program(10, trainset, candidate_program, full_evaluate)\nmini_result = eval_candidate_program(3, trainset, candidate_program, mini_evaluate)\nfull_kwargs = full_evaluate.call_args.kwargs\nmini_kwargs = mini_evaluate.call_args.kwargs\nprint(\"full_metadata:\", full_kwargs[\"callback_metadata\"], \"devset_len:\", len(full_kwargs[\"devset\"]))\nprint(\"mini_metadata:\", mini_kwargs[\"callback_metadata\"], \"devset_len:\", len(mini_kwargs[\"devset\"]))\nassert full_result == \"full-result\"\nassert mini_result == \"mini-result\"\nassert full_kwargs[\"callback_metadata\"] == {\"metric_key\": \"eval_full\"}\nassert len(full_kwargs[\"devset\"]) == 5\nassert mini_kwargs[\"callback_metadata\"] == {\"metric_key\": \"eval_minibatch\"}\nassert len(mini_kwargs[\"devset\"]) == 3\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/utils.py",
+     "symbol": "eval_candidate_program"
+    },
+    {
+     "file": "tests/teleprompt/test_utils.py",
+     "symbol": "test_eval_candidate_program_full_trainset"
+    },
+    {
+     "file": "tests/teleprompt/test_utils.py",
+     "symbol": "test_eval_candidate_program_minibatch"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm debugging an optimizer search loop where one candidate occasionally crashes during scoring. I need to know whether DSPY propagates that exception immediately or quietly converts it into a zero-score result so the search can keep going.\n\nThis changes how I should interpret a suspiciously bad candidate. I want a direct proof of the returned object, not just a description.\n\nGive me a complete, runnable Python program that stays offline, makes the evaluator raise inside one scoring pass, and prints/asserts the exact fallback object and score that come back.",
+   "answer": "```python\nfrom unittest.mock import Mock\n\nimport dspy\nfrom dspy.teleprompt.utils import eval_candidate_program\n\nresult = eval_candidate_program(3, [1, 2, 3], object(), Mock(side_effect=ValueError(\"boom\")))\nprint(\"result_type:\", type(result).__name__)\nprint(\"score:\", result.score)\nprint(\"results:\", result.results)\nassert isinstance(result, dspy.Prediction)\nassert result.score == 0.0\nassert result.results == []\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/utils.py",
+     "symbol": "eval_candidate_program"
+    },
+    {
+     "file": "tests/teleprompt/test_utils.py",
+     "symbol": "test_eval_candidate_program_failure"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm asking a prompt-search routine to generate several candidate demo sets with an acceptance threshold, and I'm worried the deterministic unshuffled pass may ignore that threshold while only the shuffled candidates honor it.\n\nThis is subtle enough that I don't want to inspect logs or rely on intuition. I want a proof that the threshold value is forwarded into every bootstrap call involved in building those candidate sets.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, requests several candidate demo sets with a nontrivial threshold, and prints/asserts the threshold values that the underlying bootstrap calls actually received.",
+   "answer": "```python\nfrom unittest.mock import Mock, patch\n\nimport dspy\nfrom dspy.teleprompt.utils import create_n_fewshot_demo_sets\nfrom dspy.utils.dummies import DummyLM\n\nclass DummyModule(dspy.Module):\n    def forward(self, **kwargs):\n        return dspy.Prediction()\n\nstudent = DummyModule(); student.predictor = dspy.Predict(\"input -> output\")\ntrainset = [dspy.Example(input=\"test\", output=\"test\").with_inputs(\"input\")]\ndspy.configure(lm=DummyLM([{\"output\": \"test\"}]))\nwith patch(\"dspy.teleprompt.utils.BootstrapFewShot\") as MockBootstrap:\n    instance = Mock(); instance.compile.return_value = student; MockBootstrap.return_value = instance\n    create_n_fewshot_demo_sets(student=student, num_candidate_sets=4, trainset=trainset, max_labeled_demos=1, max_bootstrapped_demos=1, metric=lambda ex, pred, trace=None: 1.0, teacher_settings={}, metric_threshold=0.9)\nthresholds = [kwargs[\"metric_threshold\"] for _, kwargs in MockBootstrap.call_args_list]\nprint(\"thresholds_seen:\", thresholds)\nassert thresholds and all(t == 0.9 for t in thresholds)\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/utils.py",
+     "symbol": "create_n_fewshot_demo_sets"
+    },
+    {
+     "file": "tests/teleprompt/test_utils.py",
+     "symbol": "test_create_n_fewshot_demo_sets_passes_metric_threshold_for_unshuffled"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm using the random-search few-shot optimizer and I omitted a separate validation set. What I need to know is whether DSPY then evaluates the candidate on the trainset itself, rather than leaving validation empty or inventing some other split.\n\nI want a minimal repro that isolates the evaluation phase and makes the dataset choice visible, because this has a big effect on how much I trust the reported score.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, restricts the run to the baseline candidate so the metric sees only evaluation examples, and prints/asserts whether the optimizer reused the trainset as its valset.",
+   "answer": "```python\nimport dspy\nfrom dspy import Example\nfrom dspy.teleprompt import BootstrapFewShotWithRandomSearch\nfrom dspy.utils.dummies import DummyLM\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        self.predictor = dspy.Predict(\"input -> output\")\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\ntrainset = [Example(input=\"q1\", output=\"a1\").with_inputs(\"input\"), Example(input=\"q2\", output=\"a2\").with_inputs(\"input\")]\nstudent = SimpleModule(); student.set_lm(DummyLM({\"q1\": {\"output\": \"a1\"}, \"q2\": {\"output\": \"a2\"}}))\nseen_inputs = []\n\ndef recording_metric(example, prediction, trace=None):\n    seen_inputs.append(example.input)\n    return 1.0\n\noptimizer = BootstrapFewShotWithRandomSearch(metric=recording_metric, max_bootstrapped_demos=1, max_labeled_demos=0, num_candidate_programs=1)\ncompiled = optimizer.compile(student, trainset=trainset, valset=None, restrict={-3})\nprint(\"valset_is_trainset:\", optimizer.valset is trainset)\nprint(\"inputs_seen_by_metric:\", seen_inputs)\nprint(\"candidate_seeds:\", [candidate[\"seed\"] for candidate in compiled.candidate_programs])\nassert optimizer.valset is trainset\nassert seen_inputs == [\"q1\", \"q2\"]\nassert [candidate[\"seed\"] for candidate in compiled.candidate_programs] == [-3]\n```",
+   "difficulty": "very_hard",
+   "code_evidence": [
+    {
+     "file": "dspy/teleprompt/random_search.py",
+     "symbol": "BootstrapFewShotWithRandomSearch.compile"
+    },
+    {
+     "file": "tests/teleprompt/test_random_search.py",
+     "symbol": "test_basic_workflow"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  },
+  {
+   "question": "I'm using DSPY's built-in completeness-and-groundedness judge, and I need to know exactly how it combines those two sub-scores. If one leg is perfect and the other is weak, I care whether DSPY averages them, takes the minimum, or uses some other formula.\n\nA direct repro is much better than prose here, because the numeric difference changes how I tune downstream thresholds.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, makes completeness equal `1.0` and groundedness equal `0.25`, and prints/asserts the final score so the combination rule is mathematically proven.",
+   "answer": "```python\nimport dspy\nfrom dspy.evaluate.auto_evaluation import CompleteAndGrounded\nfrom dspy.utils.dummies import DummyLM\n\ndspy.configure(lm=DummyLM([\n    {\"reasoning\": \"Completeness analysis\", \"ground_truth_key_ideas\": \"gold ideas\", \"system_response_key_ideas\": \"pred ideas\", \"discussion\": \"completeness discussion\", \"completeness\": 1.0},\n    {\"reasoning\": \"Groundedness analysis\", \"system_response_claims\": \"claims\", \"discussion\": \"groundedness discussion\", \"groundedness\": 0.25},\n]))\nmetric = CompleteAndGrounded()\nresult = metric(dspy.Example(question=\"What is 1+1?\", response=\"2\"), dspy.Prediction(response=\"2\", context=\"1+1 equals 2\"))\nexpected = 2 * (1.0 * 0.25) / (1.0 + 0.25)\nprint(\"score:\", result.score)\nprint(\"expected:\", expected)\nassert abs(result.score - expected) < 1e-12\nassert abs(result.score - 0.4) < 1e-12\n```",
+   "difficulty": "hard",
+   "code_evidence": [
+    {
+     "file": "dspy/evaluate/auto_evaluation.py",
+     "symbol": "f1_score"
+    },
+    {
+     "file": "dspy/evaluate/auto_evaluation.py",
+     "symbol": "CompleteAndGrounded.forward"
+    },
+    {
+     "file": "tests/evaluate/test_auto_evaluation.py",
+     "symbol": "test_complete_and_grounded_returns_prediction_without_trace"
+    }
+   ],
+   "note": "",
+   "topic": "evaluation_metrics_and_parallelism",
+   "smalldspy_scope": false
+  }
+ ]
+}

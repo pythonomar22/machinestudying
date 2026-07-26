@@ -1,0 +1,108 @@
+{
+ "id": "dspy_9a52cde7e743",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I'm trying to use `BootstrapFinetune` on a tiny offline program before I swap in a real provider. Plain inference works if I only do `dspy.configure(lm=...)`, so I expected the optimizer to inherit that and start compiling.\n\nWhat I'm actually seeing is that compilation fails because one of the predictors supposedly has no LM assigned, even though the global LM is set and the same module can answer questions. I want a proof that this is about per-predictor wiring, not about the dataset or the metric.\n\nGive me a complete, runnable Python program that uses `DummyLM`, triggers the optimizer error first, then fixes it by attaching the LM directly to the module, with prints and assertions that prove the before/after behavior.",
+ "gold_answer": "```python\nimport dspy\nfrom unittest.mock import patch\nfrom dspy.teleprompt import BootstrapFinetune\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"input -> output\")\n\n    def forward(self, input):\n        return self.predictor(input=input)\n\n\ntrainset = [\n    dspy.Example(input=\"What is the color of the sky?\", output=\"blue\").with_inputs(\"input\")\n]\nlm = DummyLM([{\"output\": \"blue\"}])\ndspy.configure(lm=lm)\n\noptimizer = BootstrapFinetune(metric=lambda example, pred, trace=None: example.output == pred.output)\nstudent = SimpleModule()\n\ntry:\n    optimizer.compile(student, trainset=trainset)\n    raise AssertionError(\"Expected BootstrapFinetune to reject a predictor that only relies on dspy.configure(lm=...)\")\nexcept ValueError as e:\n    msg = str(e)\n    print(\"missing_lm_error:\", msg)\n    assert \"does not have an LM assigned\" in msg\n    assert \"set_lm\" in msg\n\nstudent = SimpleModule()\nteacher = SimpleModule()\nstudent.set_lm(lm)\nteacher.set_lm(lm)\noptimizer = BootstrapFinetune(metric=lambda example, pred, trace=None: example.output == pred.output)\n\nwith patch.object(optimizer, \"finetune_lms\", return_value={(lm, None): lm}) as mocked:\n    compiled = optimizer.compile(student, teacher=teacher, trainset=trainset)\n    mocked.assert_called_once()\n\nassert compiled._compiled is True\nassert compiled.predictor.lm is lm\nprint(\"compiled_flag:\", compiled._compiled)\nprint(\"predictor_lm_model:\", compiled.predictor.lm.model)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "Shows a failing `BootstrapFinetune.compile(...)` call where a `DummyLM` is only installed via `dspy.configure(lm=lm)` and the student module has not been wired with `set_lm`, then checks that the raised `ValueError` says the predictor has no LM assigned and points to `set_lm`.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Keeps the same `trainset` and the same metric across the failing and repaired compile attempts, so the demonstration isolates LM attachment rather than changing data or scoring logic.",
+   "span_ids": [
+    "s3",
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Repairs the failure by attaching the LM directly to the module(s) passed to `compile` with `set_lm(lm)`, demonstrating that `BootstrapFinetune` relies on each predictor's `pred.lm` instead of inheriting from global `dspy.configure`.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Makes the success path runnable with `DummyLM` by patching or mocking `finetune_lms`, returning the expected training-key mapping such as `{(lm, None): lm}`, and verifying that the patched fine-tuning method is invoked during `compile`.",
+   "span_ids": [
+    "s1",
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "After the fix, proves successful compilation by checking that the returned module is marked compiled and that its predictor LM matches the LM object supplied by the mocked fine-tuning step.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/bootstrap_finetune.py",
+   "start_line": 80,
+   "end_line": 101,
+   "excerpt": "0080:         for pred_ind, pred in enumerate(student.predictors()):\n0081:             data_pred_ind = None if self.multitask else pred_ind\n0082:             if pred.lm is None:\n0083:                 raise ValueError(\n0084:                     f\"Predictor {pred_ind} does not have an LM assigned. \"\n0085:                     f\"Please ensure the module's predictors have their LM set before fine-tuning. \"\n0086:                     f\"You can set it using: your_module.set_lm(your_lm)\"\n0087:                 )\n0088:             training_key = (pred.lm, data_pred_ind)\n0089: \n0090:             if training_key not in key_to_data:\n0091:                 train_data, data_format = self._prepare_finetune_data(\n0092:                     trace_data=trace_data, lm=pred.lm, pred_ind=data_pred_ind\n0093:                 )\n0094:                 logger.info(f\"Using {len(train_data)} data points for fine-tuning the model: {pred.lm.model}\")\n0095:                 finetune_kwargs = {\n0096:                     \"lm\": pred.lm,\n0097:                     \"train_data\": train_data,\n0098:                     \"train_data_format\": data_format,\n0099:                     \"train_kwargs\": self.train_kwargs[pred.lm],\n0100:                 }\n0101:                 key_to_data[training_key] = finetune_kwargs"
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/teleprompt/test_bootstrap_finetune.py",
+   "start_line": 64,
+   "end_line": 81,
+   "excerpt": "0064: def test_error_handling_missing_lm():\n0065:     \"\"\"Test error handling when predictor doesn't have an LM assigned.\"\"\"\n0066: \n0067:     lm = DummyLM([{\"output\": \"test\"}])\n0068:     dspy.configure(lm=lm)\n0069: \n0070:     student = SimpleModule(\"input -> output\")\n0071:     # Intentionally NOT setting LM for the student module\n0072: \n0073:     bootstrap = BootstrapFinetune(metric=simple_metric)\n0074: \n0075:     # This should raise ValueError about missing LM and hint to use set_lm\n0076:     try:\n0077:         bootstrap.compile(student, trainset=trainset)\n0078:         assert False, \"Should have raised ValueError for missing LM\"\n0079:     except ValueError as e:\n0080:         assert \"does not have an LM assigned\" in str(e)\n0081:         assert \"set_lm\" in str(e)"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/teleprompt/test_bootstrap_finetune.py",
+   "start_line": 10,
+   "end_line": 19,
+   "excerpt": "0010: # Define a simple metric function for testing\n0011: def simple_metric(example, prediction, trace=None):\n0012:     return example.output == prediction.output\n0013: \n0014: \n0015: examples = [\n0016:     Example(input=\"What is the color of the sky?\", output=\"blue\").with_inputs(\"input\"),\n0017:     Example(input=\"What does the fox say?\", output=\"Ring-ding-ding-ding-dingeringeding!\").with_inputs(\"input\"),\n0018: ]\n0019: trainset = [examples[0]]"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/teleprompt/test_bootstrap_finetune.py",
+   "start_line": 38,
+   "end_line": 61,
+   "excerpt": "0038: def test_compile_with_predict_instances():\n0039:     \"\"\"Test BootstrapFinetune compilation with Predict instances.\"\"\"\n0040:     # Create SimpleModule instances for student and teacher\n0041:     student = SimpleModule(\"input -> output\")\n0042:     teacher = SimpleModule(\"input -> output\")\n0043: \n0044:     lm = DummyLM([{\"output\": \"blue\"}, {\"output\": \"Ring-ding-ding-ding-dingeringeding!\"}])\n0045:     dspy.configure(lm=lm)\n0046: \n0047:     # Set LM for both student and teacher\n0048:     student.set_lm(lm)\n0049:     teacher.set_lm(lm)\n0050: \n0051:     bootstrap = BootstrapFinetune(metric=simple_metric)\n0052: \n0053:     # Mock the fine-tuning process since DummyLM doesn't support it\n0054:     with patch.object(bootstrap, \"finetune_lms\") as mock_finetune:\n0055:         mock_finetune.return_value = {(lm, None): lm}\n0056:         compiled_student = bootstrap.compile(student, teacher=teacher, trainset=trainset)\n0057: \n0058:         assert compiled_student is not None, \"Failed to compile student\"\n0059:         assert hasattr(compiled_student, \"_compiled\") and compiled_student._compiled, \"Student compilation flag not set\"\n0060: \n0061:         mock_finetune.assert_called_once()"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/teleprompt/bootstrap_finetune.py",
+   "start_line": 103,
+   "end_line": 117,
+   "excerpt": "0103:         logger.info(\"Starting LM fine-tuning...\")\n0104:         # TODO(feature): We could run batches of fine-tuning jobs in sequence\n0105:         # to avoid exceeding the number of threads.\n0106:         if len(key_to_data) > num_threads:\n0107:             raise ValueError(\n0108:                 \"BootstrapFinetune requires `num_threads` to be bigger than or equal to the number of fine-tuning \"\n0109:                 f\"jobs. There are {len(key_to_data)} fine-tuning jobs to start, but the number of threads is: \"\n0110:                 f\"{num_threads}! If the `multitask` flag is set to False, the number of fine-tuning jobs will \"\n0111:                 \"be equal to the number of predictors in the student program. If the `multitask` flag is set to True, \"\n0112:                 \"the number of fine-tuning jobs will be equal to: 1 if there is only a context LM, or the number of \"\n0113:                 \"unique LMs attached to the predictors in the student program. In any case, the number of fine-tuning \"\n0114:                 \"jobs will be less than or equal to the number of predictors.\"\n0115:             )\n0116:         logger.info(f\"{len(key_to_data)} fine-tuning job(s) to start\")\n0117:         key_to_lm = self.finetune_lms(key_to_data)"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/teleprompt/bootstrap_finetune.py",
+   "start_line": 119,
+   "end_line": 134,
+   "excerpt": "0119:         logger.info(\"Updating the student program with the fine-tuned LMs...\")\n0120:         for pred_ind, pred in enumerate(student.predictors()):\n0121:             data_pred_ind = None if self.multitask else pred_ind\n0122:             training_key = (pred.lm, data_pred_ind)\n0123:             finetuned_lm = key_to_lm[training_key]\n0124:             if isinstance(finetuned_lm, Exception):\n0125:                 raise RuntimeError(f\"Finetuned LM for predictor {pred_ind} failed.\") from finetuned_lm\n0126:             pred.lm = finetuned_lm\n0127:             # TODO: What should the correct behavior be here? Should\n0128:             # BootstrapFinetune modify the prompt demos according to the\n0129:             # train data?\n0130:             pred.demos = [] if self.exclude_demos else pred.demos\n0131: \n0132:         logger.info(\"BootstrapFinetune has finished compiling the student program\")\n0133:         student._compiled = True\n0134:         return student"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Shows that `BootstrapFinetune` reads predictor-local LM attachments rather than falling back to the globally configured LM during compile.",
+ "source_index": 0,
+ "smalldspy_scope": false
+}

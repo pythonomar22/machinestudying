@@ -1,0 +1,116 @@
+{
+ "id": "dspy_04b75fc414f2",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I have a conversational task where I pass prior turns through a signature field, and I need to know how DSPy turns that into the next LM request. I'm specifically trying to confirm whether old turns become separate user/assistant messages, or whether the history object just gets dumped into the current prompt as one blob.\n\nI don't want a verbal explanation. I want a tiny offline repro that uses a signature with a history field, makes one real call with `DummyLM`, and shows exactly what went into the request.\n\nGive me a complete, runnable Python program that prints the rendered messages for the prior turns plus the current turn, and asserts that the earlier exchanges appear as separate user/assistant pairs before the final user message.",
+ "gold_answer": "```python\nimport pprint\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass ChatQA(dspy.Signature):\n    question: str = dspy.InputField()\n    history: dspy.History = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nhistory = dspy.History(\n    messages=[\n        {\"question\": \"What is the capital of France?\", \"answer\": \"Paris\"},\n        {\"question\": \"What is the capital of Germany?\", \"answer\": \"Berlin\"},\n    ]\n)\n\nlm = DummyLM([{\"answer\": \"Rome\"}])\ndspy.configure(lm=lm, adapter=dspy.ChatAdapter())\n\npredict = dspy.Predict(ChatQA)\nresult = predict(question=\"What is the capital of Italy?\", history=history)\nmessages = lm.history[-1][\"messages\"]\n\npprint.pp(messages)\nprint(\"ANSWER:\", result.answer)\n\nassert len(messages) == 6\nassert messages[1][\"role\"] == \"user\"\nassert messages[2][\"role\"] == \"assistant\"\nassert messages[3][\"role\"] == \"user\"\nassert messages[4][\"role\"] == \"assistant\"\nassert \"France\" in messages[1][\"content\"]\nassert \"Paris\" in messages[2][\"content\"]\nassert \"Italy\" in messages[5][\"content\"]\nassert result.answer == \"Rome\"\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 10,
+   "statement": "The example signature includes a `history` input annotated as `dspy.History`, and the sample history stores prior turns as `question`/`answer` records matching the signature fields.",
+   "span_ids": [
+    "s3",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The program makes an actual call with `DummyLM` through `dspy.ChatAdapter`, using the normal adapter path that formats inputs and sends them to the LM as `messages`.",
+   "span_ids": [
+    "s1",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "DSPy expands each record in `history.messages` into its own prior `user` turn built from the non-history input fields, rather than concatenating the whole history into one blob.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "For every prior history record, DSPy also emits a separate `assistant` turn from the output fields, so the old conversation becomes alternating user/assistant pairs.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The rendered request order is `system` first, then all expanded history pairs, and then the current input as the final `user` message.",
+   "span_ids": [
+    "s2",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The program includes explicit checks on the rendered request structure/content and on the canned answer returned by the dummy call.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/base.py",
+   "start_line": 202,
+   "end_line": 205,
+   "excerpt": "0202:         processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)\n0203:         inputs = self.format(processed_signature, demos, inputs)\n0204: \n0205:         outputs = lm(messages=inputs, **lm_kwargs)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/base.py",
+   "start_line": 281,
+   "end_line": 289,
+   "excerpt": "0281:         messages = []\n0282:         system_message = self.format_system_message(signature)\n0283:         messages.append({\"role\": \"system\", \"content\": system_message})\n0284:         messages.extend(self.format_demos(signature, demos))\n0285:         if history_field_name:\n0286:             # Conversation history and current input\n0287:             content = self.format_user_message_content(signature_without_history, inputs_copy, main_request=True)\n0288:             messages.extend(conversation_history)\n0289:             messages.append({\"role\": \"user\", \"content\": content})"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/base.py",
+   "start_line": 458,
+   "end_line": 462,
+   "excerpt": "0458:     def _get_history_field_name(self, signature: type[Signature]) -> bool:\n0459:         for name, field in signature.input_fields.items():\n0460:             if field.annotation == History:\n0461:                 return name\n0462:         return None"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/base.py",
+   "start_line": 498,
+   "end_line": 521,
+   "excerpt": "0498:         conversation_history = inputs[history_field_name].messages if history_field_name in inputs else None\n0499: \n0500:         if conversation_history is None:\n0501:             return []\n0502: \n0503:         messages = []\n0504:         for message in conversation_history:\n0505:             messages.append(\n0506:                 {\n0507:                     \"role\": \"user\",\n0508:                     \"content\": self.format_user_message_content(signature, message),\n0509:                 }\n0510:             )\n0511:             messages.append(\n0512:                 {\n0513:                     \"role\": \"assistant\",\n0514:                     \"content\": self.format_assistant_message_content(signature, message),\n0515:                 }\n0516:             )\n0517: \n0518:         # Remove the history field from the inputs\n0519:         del inputs[history_field_name]\n0520: \n0521:         return messages"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/adapters/test_chat_adapter.py",
+   "start_line": 85,
+   "end_line": 90,
+   "excerpt": "0085: def test_chat_adapter_sync_call():\n0086:     signature = dspy.make_signature(\"question->answer\")\n0087:     adapter = dspy.ChatAdapter()\n0088:     lm = dspy.utils.DummyLM([{\"answer\": \"Paris\"}])\n0089:     result = adapter(lm, {}, signature, [], {\"question\": \"What is the capital of France?\"})\n0090:     assert result == [{\"answer\": \"Paris\"}]"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/adapters/test_chat_adapter.py",
+   "start_line": 435,
+   "end_line": 454,
+   "excerpt": "0435:     class MySignature(dspy.Signature):\n0436:         question: str = dspy.InputField()\n0437:         history: dspy.History = dspy.InputField()\n0438:         answer: str = dspy.OutputField()\n0439: \n0440:     history = dspy.History(\n0441:         messages=[\n0442:             {\"question\": \"What is the capital of France?\", \"answer\": \"Paris\"},\n0443:             {\"question\": \"What is the capital of Germany?\", \"answer\": \"Berlin\"},\n0444:         ]\n0445:     )\n0446: \n0447:     adapter = dspy.ChatAdapter()\n0448:     messages = adapter.format(MySignature, [], {\"question\": \"What is the capital of France?\", \"history\": history})\n0449: \n0450:     assert len(messages) == 6\n0451:     assert messages[1][\"content\"] == \"[[ ## question ## ]]\\nWhat is the capital of France?\"\n0452:     assert messages[2][\"content\"] == \"[[ ## answer ## ]]\\nParis\\n\\n[[ ## completed ## ]]\\n\"\n0453:     assert messages[3][\"content\"] == \"[[ ## question ## ]]\\nWhat is the capital of Germany?\"\n0454:     assert messages[4][\"content\"] == \"[[ ## answer ## ]]\\nBerlin\\n\\n[[ ## completed ## ]]\\n\""
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Strong history-expansion case: it targets a specific formatting path, not generic prompt introspection.",
+ "source_index": 2,
+ "smalldspy_scope": false
+}

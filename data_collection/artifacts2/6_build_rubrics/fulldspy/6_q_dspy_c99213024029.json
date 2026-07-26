@@ -1,0 +1,97 @@
+{
+ "id": "dspy_c99213024029",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I tried setting custom field prefixes because I wanted the prompt labels to say something other than the default markers, but the rendered request did not change. That makes me worry I am editing metadata DSPy no longer uses.\n\nI want a minimal proof, not a prose answer. Show me whether those custom prefixes survive anywhere useful, and whether they actually affect the prompt text the default chat rendering produces.\n\nGive me a complete, runnable Python program that captures any warning, prints the stored field metadata and the rendered prompt, and asserts that the custom prefixes are stored but do not appear in the final prompt text.",
+ "gold_answer": "```python\nimport warnings\n\nimport dspy\n\n\nwith warnings.catch_warnings(record=True) as caught:\n    warnings.simplefilter(\"always\")\n\n    class PrefixedQA(dspy.Signature):\n        question: str = dspy.InputField(prefix=\"QUESTION PREFIX:\", desc=\"Question\")\n        answer: str = dspy.OutputField(prefix=\"ANSWER PREFIX:\", desc=\"Answer\")\n\n\nadapter = dspy.ChatAdapter()\nmessages = adapter.format(PrefixedQA, [], {\"question\": \"Why?\"})\nsystem_message = messages[0][\"content\"]\nuser_message = messages[1][\"content\"]\n\nprint(\"WARNING MESSAGES:\", [str(w.message) for w in caught])\nprint(\"STORED QUESTION PREFIX:\", PrefixedQA.input_fields[\"question\"].json_schema_extra[\"prefix\"])\nprint(\"STORED ANSWER PREFIX:\", PrefixedQA.output_fields[\"answer\"].json_schema_extra[\"prefix\"])\nprint(\"SYSTEM MESSAGE:\\n\", system_message)\nprint(\"USER MESSAGE:\\n\", user_message)\n\nassert any(\"has no effect in DSPy\" in str(w.message) for w in caught)\nassert PrefixedQA.input_fields[\"question\"].json_schema_extra[\"prefix\"] == \"QUESTION PREFIX:\"\nassert PrefixedQA.output_fields[\"answer\"].json_schema_extra[\"prefix\"] == \"ANSWER PREFIX:\"\nassert \"QUESTION PREFIX:\" not in system_message\nassert \"ANSWER PREFIX:\" not in system_message\nassert \"QUESTION PREFIX:\" not in user_message\nassert \"ANSWER PREFIX:\" not in user_message\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program wraps the prefixed signature definition in warning capture and verifies a deprecation warning saying the `prefix` argument has no effect in DSPy.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program inspects the signature fields and asserts that the custom input and output prefixes are still stored in each field's `json_schema_extra[\"prefix\"]`.",
+   "span_ids": [
+    "s3",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "The proof renders both the system-side structure and the user-side content through `dspy.ChatAdapter`, so it checks the actual default chat prompt instead of only inspecting metadata.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The program asserts that neither custom prefix string appears in the rendered system message or user message, consistent with chat rendering that uses field-name markers and output reminders rather than the stored `prefix` metadata.",
+   "span_ids": [
+    "s4",
+    "s5",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/signatures/field.py",
+   "start_line": 12,
+   "end_line": 25,
+   "excerpt": "0012: _DEPRECATED_FIELD_ARGS = {\n0013:     \"prefix\": (\n0014:         \"The 'prefix' argument in InputField/OutputField is deprecated and has no effect in DSPy. \"\n0015:         \"It will be removed in a future version.\"\n0016:     ),\n0017:     \"format\": (\n0018:         \"The 'format' argument in InputField/OutputField is deprecated and has no effect in DSPy. \"\n0019:         \"It will be removed in a future version.\"\n0020:     ),\n0021:     \"parser\": (\n0022:         \"The 'parser' argument in InputField/OutputField is deprecated and has no effect in DSPy. \"\n0023:         \"It will be removed in a future version.\"\n0024:     ),\n0025: }"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/signatures/field.py",
+   "start_line": 73,
+   "end_line": 86,
+   "excerpt": "0073: def _warn_deprecated_field_args(**kwargs):\n0074:     for arg, message in _DEPRECATED_FIELD_ARGS.items():\n0075:         if arg in kwargs:\n0076:             warnings.warn(message, DeprecationWarning, stacklevel=3)\n0077: \n0078: \n0079: def InputField(**kwargs): # noqa: N802\n0080:     _warn_deprecated_field_args(**kwargs)\n0081:     return pydantic.Field(**move_kwargs(**kwargs, __dspy_field_type=\"input\"))\n0082: \n0083: \n0084: def OutputField(**kwargs): # noqa: N802\n0085:     _warn_deprecated_field_args(**kwargs)\n0086:     return pydantic.Field(**move_kwargs(**kwargs, __dspy_field_type=\"output\"))"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/signatures/field.py",
+   "start_line": 39,
+   "end_line": 59,
+   "excerpt": "0039: def move_kwargs(**kwargs):\n0040:     # Pydantic doesn't allow arbitrary arguments to be given to fields,\n0041:     # but asks that\n0042:     # > any extra data you want to add to the JSON schema should be passed\n0043:     # > as a dictionary to the json_schema_extra keyword argument.\n0044:     # See: https://docs.pydantic.dev/2.6/migration/#changes-to-pydanticfield\n0045:     pydantic_kwargs = {}\n0046:     json_schema_extra = {}\n0047:     for k, v in kwargs.items():\n0048:         if k in DSPY_FIELD_ARG_NAMES:\n0049:             json_schema_extra[k] = v\n0050:         else:\n0051:             pydantic_kwargs[k] = v\n0052:     # Also copy over the pydantic \"description\" if no dspy \"desc\" is given.\n0053:     if \"description\" in kwargs and \"desc\" not in json_schema_extra:\n0054:         json_schema_extra[\"desc\"] = kwargs[\"description\"]\n0055:     constraints = _translate_pydantic_field_constraints(**kwargs)\n0056:     if constraints:\n0057:         json_schema_extra[\"constraints\"] = constraints\n0058:     pydantic_kwargs[\"json_schema_extra\"] = json_schema_extra\n0059:     return pydantic_kwargs"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 117,
+   "end_line": 137,
+   "excerpt": "0117:     def format_field_structure(self, signature: type[Signature]) -> str:\n0118:         \"\"\"\n0119:         `ChatAdapter` requires input and output fields to be in their own sections, with section header using markers\n0120:         `[[ ## field_name ## ]]`. An arbitrary field `completed` ([[ ## completed ## ]]) is added to the end of the\n0121:         output fields section to indicate the end of the output fields.\n0122:         \"\"\"\n0123:         parts = []\n0124:         parts.append(\"All interactions will be structured in the following way, with the appropriate values filled in.\")\n0125: \n0126:         def format_signature_fields_for_instructions(fields: dict[str, FieldInfo]):\n0127:             return self.format_field_with_value(\n0128:                 fields_with_values={\n0129:                     FieldInfoWithName(name=field_name, info=field_info): translate_field_type(field_name, field_info)\n0130:                     for field_name, field_info in fields.items()\n0131:                 },\n0132:             )\n0133: \n0134:         parts.append(format_signature_fields_for_instructions(signature.input_fields))\n0135:         parts.append(format_signature_fields_for_instructions(signature.output_fields))\n0136:         parts.append(\"[[ ## completed ## ]]\\n\")\n0137:         return \"\\n\\n\".join(parts).strip()"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 144,
+   "end_line": 165,
+   "excerpt": "0144:     def format_user_message_content(\n0145:         self,\n0146:         signature: type[Signature],\n0147:         inputs: dict[str, Any],\n0148:         prefix: str = \"\",\n0149:         suffix: str = \"\",\n0150:         main_request: bool = False,\n0151:     ) -> str:\n0152:         messages = [prefix]\n0153:         for k, v in signature.input_fields.items():\n0154:             if k in inputs:\n0155:                 value = inputs.get(k)\n0156:                 formatted_field_value = format_field_value(field_info=v, value=value)\n0157:                 messages.append(f\"[[ ## {k} ## ]]\\n{formatted_field_value}\")\n0158: \n0159:         if main_request:\n0160:             output_requirements = self.user_message_output_requirements(signature)\n0161:             if output_requirements is not None:\n0162:                 messages.append(output_requirements)\n0163: \n0164:         messages.append(suffix)\n0165:         return \"\\n\\n\".join(messages).strip()"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 167,
+   "end_line": 194,
+   "excerpt": "0167:     def user_message_output_requirements(self, signature: type[Signature]) -> str:\n0168:         \"\"\"Returns a simplified format reminder for the language model.\n0169: \n0170:         In chat-based interactions, language models may lose track of the required output format\n0171:         as the conversation context grows longer. This method generates a concise reminder of\n0172:         the expected output structure that can be included in user messages.\n0173: \n0174:         Args:\n0175:             signature (Type[Signature]): The DSPy signature defining the expected input/output fields.\n0176: \n0177:         Returns:\n0178:             str: A simplified description of the required output format.\n0179: \n0180:         Note:\n0181:             This is a more lightweight version of `format_field_structure` specifically designed\n0182:             for inline reminders within chat messages.\n0183:         \"\"\"\n0184: \n0185:         def type_info(v):\n0186:             if v.annotation is not str:\n0187:                 return f\" (must be formatted as a valid Python {get_annotation_name(v.annotation)})\"\n0188:             else:\n0189:                 return \"\"\n0190: \n0191:         message = \"Respond with the corresponding output fields, starting with the field \"\n0192:         message += \", then \".join(f\"`[[ ## {f} ## ]]`{type_info(v)}\" for f, v in signature.output_fields.items())\n0193:         message += \", and then ending with the marker for `[[ ## completed ## ]]`.\"\n0194:         return message"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Subtle but well-supported: the metadata survives, but the default prompt builder ignores it and warns.",
+ "source_index": 5,
+ "smalldspy_scope": false
+}

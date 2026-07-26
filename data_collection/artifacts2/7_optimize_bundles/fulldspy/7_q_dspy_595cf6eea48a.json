@@ -1,0 +1,148 @@
+{
+ "id": "dspy_595cf6eea48a",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I'm testing DSPy's finetuning teleprompter offline before switching to a real provider. Plain calls work after `dspy.configure(lm=...)`, so I expected the compile step to inherit that too.\n\nInstead, compile fails saying a predictor has no LM. I want proof this is specifically about predictor-local LM wiring, not my metric or trainset.\n\nGive me a complete, runnable Python program that uses DSPy's offline dummy LM, shows the compile error first, then fixes it by attaching the LM to the module, with prints or assertions that prove the before/after behavior.",
+ "gold_answer": "```python\nimport dspy\nfrom unittest.mock import patch\nfrom dspy.teleprompt import BootstrapFinetune\nfrom dspy.utils.dummies import DummyLM\n\n\nclass M(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.p = dspy.Predict(\"x -> y\")\n\n    def forward(self, x):\n        return self.p(x=x)\n\n\n# Dict-mode DummyLM is repeatable across multiple offline calls for the same input.\nlm = DummyLM({\"sky?\": {\"y\": \"blue\"}})\ndspy.configure(lm=lm)\n\ntrainset = [dspy.Example(x=\"sky?\", y=\"blue\").with_inputs(\"x\")]\nmetric = lambda ex, pred, trace=None: ex.y == pred.y\nopt = BootstrapFinetune(metric=metric)\n\nbefore = M()\nplain = before(x=\"sky?\")\nassert plain.y == \"blue\"\nassert dspy.settings.lm is lm\nassert before.p.lm is None\n\ntry:\n    opt.compile(before, trainset=trainset)\n    raise AssertionError(\"expected missing-LM failure\")\nexcept ValueError as e:\n    print(\"compile failed as expected:\", e)\n    assert \"does not have an LM assigned\" in str(e)\n    assert \"set_lm\" in str(e)\n\nafter = M()\nassert after.p.lm is None\nafter.set_lm(lm)\nassert after.p.lm is lm\n\nwith patch.object(opt, \"finetune_lms\", return_value={(lm, None): lm}) as mocked:\n    compiled = opt.compile(after, trainset=trainset)\n    mocked.assert_called_once()\n\nassert compiled is after\nassert compiled._compiled is True\nassert compiled.p.lm is lm\nprint(\"compile succeeds after set_lm:\", compiled._compiled, compiled.p.lm.model)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "Demonstrates that plain predictor calls still fall back to `dspy.settings.lm` after `dspy.configure(lm=...)` even when the predictor-local `lm` is `None`, then verifies `BootstrapFinetune.compile(...)` on that unwired module raises a `ValueError` containing both `does not have an LM assigned` and `set_lm`.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Reuses the same metric and the same `trainset` variable for both compile attempts, so the only behavioral change between before and after is the module-local LM assignment rather than a different dataset or metric.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Fixes the failure by calling `set_lm(lm)` on the module before the second compile and proves the local predictor LM changes from `None` to the `DummyLM` instance.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Uses `DummyLM` in dictionary mode keyed by the input text, so repeated offline calls for the same prompt can return the same structured output instead of exhausting a one-shot response list.",
+   "span_ids": [
+    "s7",
+    "s8"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Patches `finetune_lms` to return `{(lm, None): lm}`, checks the patch is called once, and after compile asserts the module is marked `_compiled` with its predictor `lm` set to the returned `DummyLM`.",
+   "span_ids": [
+    "s5",
+    "s9"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/predict.py",
+   "start_line": 138,
+   "end_line": 152,
+   "excerpt": "0138:     def _forward_preprocess(self, **kwargs):\n0139:         # Extract the three privileged keyword arguments.\n0140:         assert \"new_signature\" not in kwargs, \"new_signature is no longer a valid keyword argument.\"\n0141:         signature = ensure_signature(kwargs.pop(\"signature\", self.signature))\n0142:         demos = kwargs.pop(\"demos\", self.demos)\n0143:         config = {**self.config, **kwargs.pop(\"config\", {})}\n0144: \n0145:         # Get the right LM to use.\n0146:         lm = kwargs.pop(\"lm\", self.lm) or settings.lm\n0147: \n0148:         if lm is None:\n0149:             raise ValueError(\n0150:                 \"No LM is loaded. Please configure the LM using `dspy.configure(lm=dspy.LM(...))`. e.g, \"\n0151:                 \"`dspy.configure(lm=dspy.LM('openai/gpt-4o-mini'))`\"\n0152:             )"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/bootstrap_finetune.py",
+   "start_line": 80,
+   "end_line": 87,
+   "excerpt": "0080:         for pred_ind, pred in enumerate(student.predictors()):\n0081:             data_pred_ind = None if self.multitask else pred_ind\n0082:             if pred.lm is None:\n0083:                 raise ValueError(\n0084:                     f\"Predictor {pred_ind} does not have an LM assigned. \"\n0085:                     f\"Please ensure the module's predictors have their LM set before fine-tuning. \"\n0086:                     f\"You can set it using: your_module.set_lm(your_lm)\"\n0087:                 )"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/teleprompt/test_bootstrap_finetune.py",
+   "start_line": 64,
+   "end_line": 81,
+   "excerpt": "0064: def test_error_handling_missing_lm():\n0065:     \"\"\"Test error handling when predictor doesn't have an LM assigned.\"\"\"\n0066: \n0067:     lm = DummyLM([{\"output\": \"test\"}])\n0068:     dspy.configure(lm=lm)\n0069: \n0070:     student = SimpleModule(\"input -> output\")\n0071:     # Intentionally NOT setting LM for the student module\n0072: \n0073:     bootstrap = BootstrapFinetune(metric=simple_metric)\n0074: \n0075:     # This should raise ValueError about missing LM and hint to use set_lm\n0076:     try:\n0077:         bootstrap.compile(student, trainset=trainset)\n0078:         assert False, \"Should have raised ValueError for missing LM\"\n0079:     except ValueError as e:\n0080:         assert \"does not have an LM assigned\" in str(e)\n0081:         assert \"set_lm\" in str(e)"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/teleprompt/test_bootstrap_finetune.py",
+   "start_line": 10,
+   "end_line": 19,
+   "excerpt": "0010: # Define a simple metric function for testing\n0011: def simple_metric(example, prediction, trace=None):\n0012:     return example.output == prediction.output\n0013: \n0014: \n0015: examples = [\n0016:     Example(input=\"What is the color of the sky?\", output=\"blue\").with_inputs(\"input\"),\n0017:     Example(input=\"What does the fox say?\", output=\"Ring-ding-ding-ding-dingeringeding!\").with_inputs(\"input\"),\n0018: ]\n0019: trainset = [examples[0]]"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/teleprompt/test_bootstrap_finetune.py",
+   "start_line": 38,
+   "end_line": 61,
+   "excerpt": "0038: def test_compile_with_predict_instances():\n0039:     \"\"\"Test BootstrapFinetune compilation with Predict instances.\"\"\"\n0040:     # Create SimpleModule instances for student and teacher\n0041:     student = SimpleModule(\"input -> output\")\n0042:     teacher = SimpleModule(\"input -> output\")\n0043: \n0044:     lm = DummyLM([{\"output\": \"blue\"}, {\"output\": \"Ring-ding-ding-ding-dingeringeding!\"}])\n0045:     dspy.configure(lm=lm)\n0046: \n0047:     # Set LM for both student and teacher\n0048:     student.set_lm(lm)\n0049:     teacher.set_lm(lm)\n0050: \n0051:     bootstrap = BootstrapFinetune(metric=simple_metric)\n0052: \n0053:     # Mock the fine-tuning process since DummyLM doesn't support it\n0054:     with patch.object(bootstrap, \"finetune_lms\") as mock_finetune:\n0055:         mock_finetune.return_value = {(lm, None): lm}\n0056:         compiled_student = bootstrap.compile(student, teacher=teacher, trainset=trainset)\n0057: \n0058:         assert compiled_student is not None, \"Failed to compile student\"\n0059:         assert hasattr(compiled_student, \"_compiled\") and compiled_student._compiled, \"Student compilation flag not set\"\n0060: \n0061:         mock_finetune.assert_called_once()"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/primitives/module.py",
+   "start_line": 179,
+   "end_line": 195,
+   "excerpt": "0179:     def set_lm(self, lm):\n0180:         \"\"\"Set the language model for all predictors in this module.\n0181: \n0182:         This method recursively sets the language model for all Predict\n0183:         instances contained within this module.\n0184: \n0185:         Args:\n0186:             lm: The language model instance to use for all predictors.\n0187: \n0188:         Examples:\n0189:             >>> import dspy\n0190:             >>> lm = dspy.LM(\"openai/gpt-4o-mini\")\n0191:             >>> program = dspy.Predict(\"question -> answer\")\n0192:             >>> program.set_lm(lm)\n0193:         \"\"\"\n0194:         for _, param in self.named_predictors():\n0195:             param.lm = lm"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/utils/dummies.py",
+   "start_line": 38,
+   "end_line": 42,
+   "excerpt": "0038:     Mode 2: Dictionary of dictionaries\n0039: \n0040:     If a dictionary of dictionaries is provided, the dummy model will return the value\n0041:     corresponding to the key which is contained with the final message of the prompt,\n0042:     formatted according to the `format_field_with_value` function from the chat adapter."
+  },
+  {
+   "span_id": "s8",
+   "path": "dspy/utils/dummies.py",
+   "start_line": 130,
+   "end_line": 134,
+   "excerpt": "0130:             elif isinstance(self.answers, dict):\n0131:                 current_output = next(\n0132:                     (self._format_answer_fields(v) for k, v in self.answers.items() if k in messages[-1][\"content\"]),\n0133:                     \"No more responses\",\n0134:                 )"
+  },
+  {
+   "span_id": "s9",
+   "path": "dspy/teleprompt/bootstrap_finetune.py",
+   "start_line": 116,
+   "end_line": 133,
+   "excerpt": "0116:         logger.info(f\"{len(key_to_data)} fine-tuning job(s) to start\")\n0117:         key_to_lm = self.finetune_lms(key_to_data)\n0118: \n0119:         logger.info(\"Updating the student program with the fine-tuned LMs...\")\n0120:         for pred_ind, pred in enumerate(student.predictors()):\n0121:             data_pred_ind = None if self.multitask else pred_ind\n0122:             training_key = (pred.lm, data_pred_ind)\n0123:             finetuned_lm = key_to_lm[training_key]\n0124:             if isinstance(finetuned_lm, Exception):\n0125:                 raise RuntimeError(f\"Finetuned LM for predictor {pred_ind} failed.\") from finetuned_lm\n0126:             pred.lm = finetuned_lm\n0127:             # TODO: What should the correct behavior be here? Should\n0128:             # BootstrapFinetune modify the prompt demos according to the\n0129:             # train data?\n0130:             pred.demos = [] if self.exclude_demos else pred.demos\n0131: \n0132:         logger.info(\"BootstrapFinetune has finished compiling the student program\")\n0133:         student._compiled = True"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Compile-time fine-tuning checks predictor-local LMs, not just the global configured LM.",
+ "source_index": 0,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 1,
+  "revised": true,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [
+     "sandbox run failed (exit 1); stderr tail:\n2026/07/22 22:16:22 INFO dspy.teleprompt.bootstrap_finetune: Preparing the student and teacher programs...\n2026/07/22 22:16:22 INFO dspy.teleprompt.bootstrap_finetune: Bootstrapping data...\n2026/07/22 22:16:22 INFO dspy.evaluate.evaluate: Average Metric: 1 / 1 (100.0%)\n2026/07/22 22:16:22 INFO dspy.teleprompt.bootstrap_finetune: Preparing the train data...\n2026/07/22 22:16:22 INFO dspy.teleprompt.bootstrap_finetune: Preparing the student and teacher programs...\n2026/07/22 22:16:22 INFO dspy.teleprompt.bootstrap_finetune: Bootstrapping data...\n2026/07/22 22:16:22 INFO dspy.evaluate.evaluate: Average Metric: -1 / 1 (-100.0%)\n2026/07/22 22:16:22 INFO dspy.teleprompt.bootstrap_finetune: Preparing the train data...\n2026/07/22 22:16:22 INFO dspy.teleprompt.bootstrap_finetune: Collected data for 1 examples\n2026/07/22 22:16:22 INFO dspy.teleprompt.bootstrap_finetune: After filtering with the metric, 1 examples remain\nTraceback (most recent call last):\n  File \"/matx/u/omarah/ms2/data_collection/artifacts2/7_optimize_bundles/fulldspy/runs/dspy_595cf6eea48a_r0/program.py\", line 31, in <module>\n    compiled = opt.compile(student, teacher=teacher, trainset=trainset)\n               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/matx/u/omarah/ms2/corpora/dspy/dspy/teleprompt/bootstrap_finetune.py\", line 91, in compile\n    train_data, data_format = self._prepare_finetune_data(\n                              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/matx/u/omarah/ms2/corpora/dspy/dspy/teleprompt/bootstrap_finetune.py\", line 182, in _prepare_finetune_data\n    call_data = build_call_data_from_trace(\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/matx/u/omarah/ms2/corpora/dspy/dspy/teleprompt/bootstrap_finetune.py\", line 207, in build_call_data_from_trace\n    call_data = adapter.format_finetune_data(\n                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/matx/u/omarah/ms2/corpora/dspy/dspy/adapters/chat_adapter.py\", line 285, in format_finetune_data\n    assistant_message_content = self.format_assistant_message_content(  # returns a string, without the role\n                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"/matx/u/omarah/ms2/corpora/dspy/dspy/adapters/chat_adapter.py\", line 204, in format_assistant_message_content\n    FieldInfoWithName(name=k, info=v): outputs.get(k, missing_field_message)\n                                       ^^^^^^^^^^^\nAttributeError: 'FailedPrediction' object has no attribute 'get'\n"
+    ],
+    "self_score": null
+   },
+   {
+    "round": 1,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

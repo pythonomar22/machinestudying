@@ -1,0 +1,97 @@
+{
+ "id": "dspy_fcdcc02cecc6",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I'm trying to squeeze more cache reuse out of a long-input workflow. The changing document should be the first message and the reusable instructions should come later, but the default chat request layout is the opposite of what I want.\n\nBefore I fork anything, I want to know whether a tiny custom adapter is enough for this, and whether `dspy.Predict` will really use my message ordering instead of rebuilding its own prompt internally.\n\nGive me a complete, runnable Python program that defines a custom adapter, runs offline with `DummyLM`, prints the message roles that were actually sent, and asserts that the first non-empty request message is the user content and the second is the system content.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass UserFirstAdapter(dspy.ChatAdapter):\n    def format(self, signature, demos, inputs):\n        messages = super().format(signature, demos, inputs)\n        return [messages[1], messages[0], *messages[2:]]\n\n\nclass QA(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\n\nadapter = UserFirstAdapter()\nlm = DummyLM([{\"answer\": \"Paris\"}], adapter=adapter)\ndspy.configure(lm=lm, adapter=adapter)\n\npredict = dspy.Predict(QA)\nresult = predict(question=\"What is the capital of France?\")\nroles = [message[\"role\"] for message in lm.history[-1][\"messages\"]]\n\nprint(\"ROLES:\", roles)\nprint(\"MESSAGES:\", lm.history[-1][\"messages\"])\nprint(\"ANSWER:\", result.answer)\n\nassert roles[:2] == [\"user\", \"system\"]\nassert result.answer == \"Paris\"\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "Defines a small custom chat adapter that overrides `format(signature, demos, inputs)` and reorders the emitted messages so that, in the demonstrated call, the first two request messages are `user` then `system`.",
+   "span_ids": [
+    "s1",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Explains that the stock adapter layout is system-first, with demos and optional history between that system message and the current user input, so adapter-level reordering is the minimal customization needed for this cache-friendly layout.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "Routes `dspy.Predict` through the custom adapter via DSPy settings (or an equivalent settings override) and states that `Predict.forward` uses `settings.adapter` directly with the selected LM, rather than rebuilding a separate prompt internally.",
+   "span_ids": [
+    "s5",
+    "s6",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "Provides a complete offline `DummyLM` example that runs `Predict`, prints or otherwise inspects the actual `messages` sent on the LM call, and asserts that the executed request begins with `user` then `system`.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/base.py",
+   "start_line": 222,
+   "end_line": 232,
+   "excerpt": "0222:     def format(\n0223:         self,\n0224:         signature: type[Signature],\n0225:         demos: list[dict[str, Any]],\n0226:         inputs: dict[str, Any],\n0227:     ) -> list[dict[str, Any]]:\n0228:         \"\"\"Format the input messages for the LM call.\n0229: \n0230:         This method converts the DSPy structured input along with few-shot examples and conversation history into\n0231:         multiturn messages as expected by the LM. For custom adapters, this method can be overridden to customize\n0232:         the formatting of the input messages."
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/base.py",
+   "start_line": 234,
+   "end_line": 256,
+   "excerpt": "0234:         In general we recommend the messages to have the following structure:\n0235:         ```\n0236:         [\n0237:             {\"role\": \"system\", \"content\": system_message},\n0238:             # Begin few-shot examples\n0239:             {\"role\": \"user\", \"content\": few_shot_example_1_input},\n0240:             {\"role\": \"assistant\", \"content\": few_shot_example_1_output},\n0241:             {\"role\": \"user\", \"content\": few_shot_example_2_input},\n0242:             {\"role\": \"assistant\", \"content\": few_shot_example_2_output},\n0243:             ...\n0244:             # End few-shot examples\n0245:             # Begin conversation history\n0246:             {\"role\": \"user\", \"content\": conversation_history_1_input},\n0247:             {\"role\": \"assistant\", \"content\": conversation_history_1_output},\n0248:             {\"role\": \"user\", \"content\": conversation_history_2_input},\n0249:             {\"role\": \"assistant\", \"content\": conversation_history_2_output},\n0250:             ...\n0251:             # End conversation history\n0252:             {\"role\": \"user\", \"content\": current_input},\n0253:         ]\n0254: \n0255:         And system message should contain the field description, field structure, and task description.\n0256:         ```"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/base.py",
+   "start_line": 281,
+   "end_line": 296,
+   "excerpt": "0281:         messages = []\n0282:         system_message = self.format_system_message(signature)\n0283:         messages.append({\"role\": \"system\", \"content\": system_message})\n0284:         messages.extend(self.format_demos(signature, demos))\n0285:         if history_field_name:\n0286:             # Conversation history and current input\n0287:             content = self.format_user_message_content(signature_without_history, inputs_copy, main_request=True)\n0288:             messages.extend(conversation_history)\n0289:             messages.append({\"role\": \"user\", \"content\": content})\n0290:         else:\n0291:             # Only current input\n0292:             content = self.format_user_message_content(signature, inputs_copy, main_request=True)\n0293:             messages.append({\"role\": \"user\", \"content\": content})\n0294: \n0295:         messages = split_message_content_for_custom_types(messages)\n0296:         return messages"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/base.py",
+   "start_line": 202,
+   "end_line": 206,
+   "excerpt": "0202:         processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)\n0203:         inputs = self.format(processed_signature, demos, inputs)\n0204: \n0205:         outputs = lm(messages=inputs, **lm_kwargs)\n0206:         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/predict/predict.py",
+   "start_line": 243,
+   "end_line": 255,
+   "excerpt": "0243:     def forward(self, **kwargs):\n0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)\n0245: \n0246:         adapter = settings.adapter or ChatAdapter()\n0247: \n0248:         if self._should_stream():\n0249:             with settings.context(caller_predict=self):\n0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0251:         else:\n0252:             with settings.context(send_stream=None):\n0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0254: \n0255:         return self._forward_postprocess(completions, signature, **kwargs)"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/predict/predict.py",
+   "start_line": 141,
+   "end_line": 147,
+   "excerpt": "0141:         signature = ensure_signature(kwargs.pop(\"signature\", self.signature))\n0142:         demos = kwargs.pop(\"demos\", self.demos)\n0143:         config = {**self.config, **kwargs.pop(\"config\", {})}\n0144: \n0145:         # Get the right LM to use.\n0146:         lm = kwargs.pop(\"lm\", self.lm) or settings.lm\n0147: "
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Keeps a real customization scenario: subclass the adapter, then prove `Predict` uses that ordering verbatim.",
+ "source_index": 1,
+ "smalldspy_scope": true
+}

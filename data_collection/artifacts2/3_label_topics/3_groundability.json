@@ -1,0 +1,1216 @@
+{
+ "model": "gpt-5.4",
+ "reasoning_effort": "low",
+ "screened": 302,
+ "groundable": 195,
+ "verdicts": {
+  "13": {
+   "groundable": false,
+   "reason": "The question is primarily a feature request and roadmap inquiry ('Do you have any plans') about adding support for locally served Hugging Face models instead of API-based providers. Source code and tests can show current support or architecture, but they cannot answer future plans or intentions. The core friction here is not resolvable from the code/tests corpus alone."
+  },
+  "18": {
+   "groundable": false,
+   "reason": "The question is mainly about reproducing a notebook/tutorial setup for a ColBERTv2 server on custom data, which likely depends on documentation/notebook instructions and external ColBERT server/indexing workflow rather than DSPy source code and tests alone. While the code may show how DSPy calls a ColBERTv2 endpoint, the practical setup on one’s own documents is primarily outside the source corpus."
+  },
+  "19": {
+   "groundable": false,
+   "reason": "The issue is about the empirical behavior and quality of external OpenAI models (`davinci-text-003` vs `davinci-text-002`) on a task, not about DSPy’s source-code logic itself. While the code/tests may show how DSPy calls an LM, they cannot resolve why one hosted model performs worse than another or whether others observed the same benchmark results."
+  },
+  "22": {
+   "groundable": false,
+   "reason": "This is mainly about support for a specific external model/provider name ('gpt-3.5-turbo') and whether the project will add it, which depends on integrations and release decisions outside the source/tests alone. The error may also come from the behavior or API expectations of an underlying model client library rather than DSPy’s own core code."
+  },
+  "52": {
+   "groundable": false,
+   "reason": "The request is primarily about tutorial/notebook guidance (`intro.ipynb`) and how to use an external hosted model service (`gpt-3.5-turbo`/Chat). While the source code may show some LM classes or APIs, the specific friction described is about instructional notebook content and model-usage setup outside the source-and-tests corpus, so it is not primarily resolvable by reading only the library’s source code and tests."
+  },
+  "58": {
+   "groundable": true,
+   "reason": "The question is about how to use DSPy's own `hf_client` with its `hf_server`, including request formatting and endpoint behavior. That friction should be resolvable from the library's source code and tests by inspecting the implementations of `dsp.modules.hf_client` and `dsp.modules.hf_server`, their expected URLs/routes, constructor arguments, and any tests covering client-server interaction. It does not primarily depend on external docs, packaging, or third-party hosted services."
+  },
+  "69": {
+   "groundable": true,
+   "reason": "This asks about DSPy’s functional capabilities and input/output handling—whether it can work with JSON/OpenAPI-style structured data or only plain text. That is the kind of question that can be answered by inspecting the library’s source and tests for how modules, signatures, adapters/parsers, and example inputs are represented and processed."
+  },
+  "71": {
+   "groundable": false,
+   "reason": "The question is about legal permissibility under OpenAI’s terms of service for using model outputs to train or fine-tune another model. That depends on external legal/policy documents and interpretation of OpenAI’s terms, not on DSPy’s source code or tests. Reading the DSPy codebase could show how compilation works technically, but it cannot resolve whether such use is allowed or illegal."
+  },
+  "74": {
+   "groundable": false,
+   "reason": "The question is only partially addressable from DSPy’s source/tests. While the codebase may reveal the retrieval-model wrapper interface (e.g., how ColBERTv2 is implemented) and thus suggest how to build a custom retriever adapter, the specific integration with Azure Cognitive Search depends on an external service/API not contained in the corpus. The question also asks whether this functionality is planned for the future, which is not reliably answerable from source/tests alone."
+  },
+  "77": {
+   "groundable": false,
+   "reason": "This asks for usage guidance and best practices for preparing training Q/A pairs, and specifically references the 'Program5 on intro notebook.' That kind of advice is primarily conveyed in tutorials/notebooks or external documentation, not something that can be reliably resolved from DSPy's source code and tests alone."
+  },
+  "80": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s program/teleprompt compilation behavior—specifically whether the 'demonstrate' stage recomputes annotations for each input and whether demonstrations can be reused to avoid extra LM calls. That behavior should be inspectable in the library’s source and tests, even if the user learned it from an intro notebook. It does not primarily depend on website/tutorial prose, packaging, CI, or external services."
+  },
+  "82": {
+   "groundable": false,
+   "reason": "The question is mainly about DSPy’s intended use cases and asks for illustrative examples beyond the ones the user has seen. While source code/tests may show that DSPy can operate over arbitrary input/output fields, the clarification about whether it is 'meant' for short factual answers and the request for a usage example are primarily documentation/tutorial-level concerns rather than something resolved directly from source and tests alone."
+  },
+  "85": {
+   "groundable": false,
+   "reason": "The question is about reproducing results from a paper and obtaining the specific data used in that paper. That primarily depends on external research artifacts and experimental setup details outside the library’s source code and tests, so it is not resolvable from the source/test corpus alone."
+  },
+  "102": {
+   "groundable": false,
+   "reason": "The question is mainly asking for usage guidance and examples on how to architect DSPy programs for long-form answer synthesis (e.g., RAG/SimplifiedBaleen composition, sub-question aggregation, prompt/program design). That kind of answer would typically live in tutorials, notebooks, docs, or community examples rather than being directly resolvable from source code and tests alone. While the code/tests may reveal available primitives like Predict and retrieval components, they are unlikely to answer the high-level 'how should I design this?' and 'are there examples?' parts of the question."
+  },
+  "110": {
+   "groundable": true,
+   "reason": "This question is about DSPy’s internal evaluation/compilation APIs: whether teleprompters accept custom metric/evaluator functions, what signature/return type they expect, and why an `Example` lacks `dspy_uuid` during compilation. Those behaviors are likely determined by DSPy’s source code and tests for `Example`, teleprompters/compilers, and evaluation utilities, rather than external docs or third-party services."
+  },
+  "115": {
+   "groundable": true,
+   "reason": "The question is about whether DSPy can express and enforce a task pattern like entity extraction / structured field extraction, and why outputs may come back as free-form passages instead of structured values. That friction is fundamentally about the library’s programming model—signatures, predictors/modules, output fields, and examples of structured outputs—which can be investigated from the source code and tests. It does not primarily depend on website docs, tutorials, packaging, CI, or third-party hosted services."
+  },
+  "117": {
+   "groundable": false,
+   "reason": "The request is for demos/examples showing how to use Hugging Face models locally and on a server, which is primarily documentation/tutorial material rather than something resolvable from DSPy's source code and tests alone."
+  },
+  "129": {
+   "groundable": false,
+   "reason": "The question is primarily asking for high-level conceptual/documentation clarification about DSPy’s system design (how ColBERT fits with LLMs, indexes, and vector databases, and whether documentation should explain this better). While source code/tests might show that ColBERT-related components exist and whether they are optional in some code paths, they are not a reliable source for the broader architectural explanation and lifecycle description being requested. This is mainly a documentation/overview concern rather than something resolvable from source/tests alone."
+  },
+  "133": {
+   "groundable": false,
+   "reason": "The question is primarily about how a Wikipedia retrieval corpus was constructed and whether scripts or processed data can be shared. That concerns external datasets/data-preprocessing artifacts and possibly released resources, not behavior that can be resolved from DSPy’s source code and tests alone."
+  },
+  "135": {
+   "groundable": true,
+   "reason": "The question is about runtime behavior of DSPy’s compiled model state loading/serialization and a specific exception path in the library source (`template_v2.py`), including how `demos` are represented and why `ChainOfThought` may return `rationale` instead of `answer`. These are implementation details that can be investigated from DSPy’s source code and tests without needing external docs, services, or repository process artifacts."
+  },
+  "139": {
+   "groundable": true,
+   "reason": "The core of this question is about DSPy’s runtime behavior: whether an evaluation function can use a GPT-based LM and when that evaluation is invoked (for teleprompting/optimization versus normal prediction). Those mechanics are determined by DSPy’s source code and tests. While the phrase 'financially feasible' depends partly on external model pricing, the underlying source of cost—how often DSPy calls the evaluator—can be resolved from the codebase."
+  },
+  "145": {
+   "groundable": true,
+   "reason": "Whether DSPy validation metrics can return non-boolean values is a behavior/interface question about the library’s optimization and evaluation code. That can be resolved by inspecting the relevant source and tests for metric handling, scorer expectations, and optimizer/teleprompter logic. The speculative ideas about weighted or natural-language losses are feature/design discussion, but the core friction—what metric return types are supported—is grounded in the codebase."
+  },
+  "154": {
+   "groundable": false,
+   "reason": "This question is about packaging/build-system configuration and project metadata management (setup.py vs pyproject.toml, possibly Poetry), which lives outside the library’s runtime source code and tests. The source/tests corpus would not determine why the project chose one packaging standard over another or whether migration is desired."
+  },
+  "157": {
+   "groundable": true,
+   "reason": "The question is about whether DSPy supports composing or selecting among multiple retrievers/tools within a RAG pipeline. That is a library capability that can be investigated in the source code and tests by checking tool/retriever abstractions, agent/program composition, and any tests covering multiple tools or retrieval routing. Although the user asks for an example, the underlying friction is about DSPy functionality rather than docs-only, packaging, or external services."
+  },
+  "158": {
+   "groundable": false,
+   "reason": "The question depends on external artifacts and services rather than DSPy’s source/tests: specific pretrained ColBERTv2 checkpoints, indexing details for a Wikipedia/MS MARCO corpus, and comparison against an online API’s behavior. Those details are typically not recoverable from the library code/tests alone."
+  },
+  "163": {
+   "groundable": true,
+   "reason": "The question asks for conceptual clarification about DSPy teleprompters (teacher/student roles and the differences among classes like BootstrapFewShotWithRandomSearch, BootstrapFewShot, Ensemble, and BootstrapFinetune). These are library-internal abstractions whose behavior and relationships should be inferable from the source code and tests, rather than requiring website/tutorial or external-service knowledge."
+  },
+  "168": {
+   "groundable": true,
+   "reason": "The core issue is about DSPy’s runtime behavior and API for configuring/overriding language models across different parts of a program. That behavior should be discoverable from the library source and tests, even if the user first encountered it in a tutorial notebook. The notebook is only the prompting context; the question itself is about how model selection/overwriting works in DSPy."
+  },
+  "169": {
+   "groundable": true,
+   "reason": "This asks about configuring output token limits in DSPy, which is likely implemented in the library’s LM wrappers/settings (e.g., parameters such as max_tokens or generation kwargs). Whether and how to adjust that should be discoverable from the source code and tests without needing external docs or services."
+  },
+  "175": {
+   "groundable": true,
+   "reason": "This asks about the expected return type and optimization behavior of a DSPy teleprompter metric, which should be determined by the library’s implementation and tests for teleprompter/optimizer components. Reading the source and tests should reveal whether metrics are treated as booleans, floats, or both, and how they are optimized."
+  },
+  "178": {
+   "groundable": true,
+   "reason": "This is about DSPy’s current API for customizing prompt/template behavior and how older DSP concepts like Type/Template map to DSPy. That can be investigated from the library’s source code and tests by examining prompt/signature, adapter, and formatting-related classes/usages. It does not primarily depend on external docs, website tutorials, packaging, or third-party service behavior."
+  },
+  "180": {
+   "groundable": false,
+   "reason": "This is primarily a feature-request/roadmap question about adding support for an external library (llama-cpp-python), including maintainer interest and integration considerations. That cannot be resolved just by reading DSPy’s source code and tests."
+  },
+  "193": {
+   "groundable": true,
+   "reason": "Whether DSPy validation/metric functions can return numeric scores instead of booleans is a library behavior/API question that should be answerable from the source code and tests. The relevant friction concerns how DSPy defines, consumes, and evaluates metrics internally, not external docs, tutorials, packaging, or third-party services."
+  },
+  "206": {
+   "groundable": false,
+   "reason": "The question asks for an ETA and availability of introduction tutorials/documentation, which concerns project plans and external learning materials rather than behavior that can be determined from the library’s source code or tests."
+  },
+  "212": {
+   "groundable": true,
+   "reason": "The question is about how to structure a DSPy program for a multi-stage LM workflow: extracting key points/evidence, avoiding duplication, and then generating constrained text with a chosen tone. That concerns DSPy’s core programming model—signatures, modules, composition of steps, and possibly assertions/constraints—which can be inferred from the library’s source code and tests. It does not primarily depend on website docs, hosted services, packaging, or external repository processes."
+  },
+  "219": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s teleprompter/optimizer behavior and implementation semantics: whether it only selects/retrieves training examples or can synthesize/update prompts from scratch, and how. That is the kind of thing that can be answered by inspecting the library’s source code and tests for teleprompters/optimizers, prompt compilation, and related classes. It does not primarily depend on website/tutorial content, packaging, or external services."
+  },
+  "220": {
+   "groundable": false,
+   "reason": "The issue is primarily about environment/dependency compatibility with the external `openai` package and a Colab example setup, not behavior that can be resolved from DSPy source code and tests alone. While the repo may reference OpenAI imports, answering this question depends on package-version/install context and external library changes (`openai.error`), which falls outside the allowed source/test corpus."
+  },
+  "224": {
+   "groundable": true,
+   "reason": "The question is about the intended behavior of DSPy’s BaseModule save/load methods and what compiled state gets serialized. That can be determined by inspecting the BaseModule implementation and any related tests for serialization, saving, loading, and compiled modules. It does not primarily depend on docs, releases, or external services."
+  },
+  "228": {
+   "groundable": true,
+   "reason": "The question asks about the user-facing mechanism in DSPy for controlling prompt/template formatting for an LM, which is likely implemented in the library’s LM/adapters/signature/prompt-construction code and exercised in tests. This is about DSPy’s code-level API behavior, not external docs, hosting, packaging, or third-party service internals."
+  },
+  "232": {
+   "groundable": false,
+   "reason": "The question is primarily about user-facing setup/examples for using DSPy with external Hugging Face LMs/RMs and datasets, plus an error shown only in a screenshot. While source/tests may expose some LM/RM APIs, the requested friction centers on tutorial/example usage, external model support, and debugging an environment-specific integration issue that cannot be resolved from DSPy source/tests alone."
+  },
+  "243": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s internal model-binding and prompt-formatting behavior: how signatures/examples are serialized for OpenAI-style clients, and whether/chat how HFClientVLLM or other backends support chat-completion message structures. Those implementation details and current capabilities should be inspectable in the library source and tests. While the motivation mentions external model behavior, the core friction is DSPy’s own API support and prompt mapping logic, which is groundable in the code corpus."
+  },
+  "253": {
+   "groundable": true,
+   "reason": "The question is primarily about DSPy’s internal architecture and extension points: how Signatures/prompts are structured, whether `dspy.PythonInterpreter` exists and how it is used, and whether a teleprompter/optimizer-like component is the right place to generate, evaluate, score, and persist code variants. Those are questions that can be investigated from DSPy’s source code and tests. Although the prompt references an external paper and broader product ideas, the actual friction described is about implementing a capability within DSPy using its existing internals, which is groundable in the codebase."
+  },
+  "264": {
+   "groundable": true,
+   "reason": "This asks about DSPy’s runtime capabilities for structured/JSON inputs and outputs, which should be determinable from the library’s source code and tests (e.g., how signatures, fields, adapters/parsers, and output constraints are implemented and exercised). It does not primarily depend on docs, tutorials, packaging, CI, or external services."
+  },
+  "266": {
+   "groundable": false,
+   "reason": "The question is about supporting OpenAI's external Assistants API beta, which is a third-party service/interface. Whether DSPy supports that API depends on integration choices and external API behavior, not something that can be reliably resolved from DSPy's source code and tests alone."
+  },
+  "293": {
+   "groundable": true,
+   "reason": "The issue appears to be a runtime bug in DSPy’s own code path for LM calls/caching/token-usage accounting when used with Ollama, not a question that depends mainly on website/tutorial prose, packaging, or external service configuration. Even though it occurs while following a notebook, the reported `NoneType` + `int` error on a repeated run likely comes from DSPy source handling cached responses or missing usage fields, which should be inspectable in the library source and tests."
+  },
+  "298": {
+   "groundable": true,
+   "reason": "Whether a DSPy metric must return a bool or can return a numeric score is an API/behavior question that should be answerable from the library’s source code and tests. The relevant friction concerns how optimizers/evaluation code consume metric return values, which is typically encoded in function signatures, comparisons, and test cases—not primarily in external docs or tutorials."
+  },
+  "307": {
+   "groundable": false,
+   "reason": "The question is mainly asking for production deployment guidance and best practices ('best way to deploy,' 'guide on configuration and deployment to production'), which typically live in docs, tutorials, or external operational material rather than being answerable from source code and tests alone. While source/tests might hint that compilation is an offline step versus per-input execution, the requested deployment recommendations are not reliably grounded in the code corpus."
+  },
+  "321": {
+   "groundable": false,
+   "reason": "This is mainly a feature request for integrating an external third-party system/library (Activeloop Deeplake) as a retriever wrapper. While DSPy source/tests may show existing retriever abstractions, they cannot by themselves answer whether Deeplake support will be added or how Deeplake-specific behavior works."
+  },
+  "336": {
+   "groundable": false,
+   "reason": "The question is primarily about future plans or roadmap ('any future provision') for adding toolkits like calendar/search/calculators. That cannot be resolved from source code and tests alone, which show current behavior and implementation, not maintainers’ intentions or planned features."
+  },
+  "355": {
+   "groundable": true,
+   "reason": "This is about a library feature/API capability—whether DSPy’s GPT model integration supports passing or configuring a system prompt. That can be investigated in the source and tests by inspecting the model wrapper implementations, message formatting logic, and any tests around prompt construction or config options."
+  },
+  "356": {
+   "groundable": false,
+   "reason": "The question is primarily about future plans/roadmap for supporting VQA or image captioning with image inputs using Hugging Face models. Source code and tests can show current capabilities, but they generally cannot answer whether there is a plan to add such support."
+  },
+  "362": {
+   "groundable": true,
+   "reason": "This asks about whether DSPy supports composing or calling multiple retriever objects within a single Module, which is a usage/API capability that should be inferable from the library’s source code and tests by inspecting Module composition patterns and retriever implementations."
+  },
+  "367": {
+   "groundable": true,
+   "reason": "This is a feature request about adding a new VectorDB backend to DSPy. Whether and how DSPy supports vector databases, the relevant abstractions/interfaces, and patterns for existing backend integrations would be found in the library’s source code and tests."
+  },
+  "376": {
+   "groundable": false,
+   "reason": "This is about repository/release management and project process, not behavior that could be understood or resolved by reading DSPy’s source code and tests."
+  },
+  "377": {
+   "groundable": false,
+   "reason": "The issue depends on the behavior and version-specific API contract of the external `openai` Python library (`openai >= 1.0.0`), especially its Azure client handling of `base_url` vs `azure_endpoint`. While DSPy source can show that it passes `api_base`/`base_url`, the core friction is an interoperability problem with another library’s internals and version changes, not something that can be fully resolved from DSPy source and tests alone."
+  },
+  "385": {
+   "groundable": false,
+   "reason": "This is a feature request/speculation about adding support for an external third-party backend (MLX), not a question that can be resolved solely by reading the current DSPy source code and tests. The corpus might show current backend abstractions and existing integrations, but whether MLX support is possible or planned depends on external-library behavior and project roadmap/design decisions outside the source/tests."
+  },
+  "414": {
+   "groundable": true,
+   "reason": "This asks how to configure/select a model within DSPy, which is typically determined by the library’s code paths and tests for LM/provider initialization and local model support. The answer should be inferable from source and tests that show how DSPy accepts model identifiers or custom/local backends."
+  },
+  "416": {
+   "groundable": true,
+   "reason": "Whether DSPy can integrate with a custom language-model endpoint is primarily determined by the library’s code and tests: they define the LM abstraction, supported provider/client interfaces, configuration options (such as base URLs/endpoints), and any extension points for custom backends. A reader could inspect the source and tests to see how to wire an EC2-hosted inference API into DSPy."
+  },
+  "429": {
+   "groundable": true,
+   "reason": "This concerns the behavior and implementation of DSPy’s `Evaluate` class—specifically how it checks or accepts metric objects—which is the kind of friction that can be investigated directly in the library’s source code and tests. Determining whether callable objects are currently supported, and what code change would be needed, does not primarily depend on external docs, tutorials, packaging, CI, or third-party hosted services."
+  },
+  "438": {
+   "groundable": false,
+   "reason": "This question is mainly about how to use DSPy with a specific local Llama model file format (`llama-2-7b.ggmlv3.q4_K_S.bin`), which depends on external runtime/provider support (for example llama.cpp or another serving layer), not just DSPy’s own source and tests. The answer would likely require integration/setup guidance or documentation outside the DSPy codebase, rather than something that can be resolved purely by reading DSPy source/tests."
+  },
+  "441": {
+   "groundable": true,
+   "reason": "This is primarily about DSPy’s provider integration behavior: which client/wrapper to use for a Mistral-hosted model, what request parameters DSPy sends by default, and whether unsupported fields like `frequency_penalty`, `n`, and `presence_penalty` can be suppressed or configured. Those questions can be investigated in the library’s source and tests by reading the LM/provider adapter code and any tests covering OpenAI-compatible backends or Mistral usage. Although the exact 422 response comes from Mistral’s external API, the DSPy-side friction described is still largely resolvable from source/tests."
+  },
+  "448": {
+   "groundable": true,
+   "reason": "This is about whether DSPy’s code supports or can interface with a llama-cpp-python-backed model. That can be investigated from DSPy’s source and tests by checking its LM abstractions, provider/client integrations, accepted model interfaces, and any existing adapters or tests for local/OpenAI-compatible backends. It does not primarily depend on website docs, repo process, or hosted services."
+  },
+  "454": {
+   "groundable": false,
+   "reason": "The question is mainly asking for deployment/integration guidance and an example of using DSPy inside Flask/FastAPI, plus possible threading behavior in a web server context. That kind of usage pattern is typically outside what can be resolved from DSPy’s source code and tests alone, unless the repo explicitly contains Flask/FastAPI server examples or tests for threaded serving. It also depends on the behavior of external web frameworks and runtime threading, not just DSPy internals."
+  },
+  "463": {
+   "groundable": false,
+   "reason": "This is primarily a roadmap/feature-request question about whether DSPy plans to add VertexAI support, not something that can be resolved from the current source code and tests alone. It also references an external implementation in LangChain, which is outside the study corpus."
+  },
+  "475": {
+   "groundable": false,
+   "reason": "The question is mainly about correcting documentation content on the docs site and asking about contribution workflow for a PR. Those concerns are outside a study corpus limited to the library’s source code and tests, even if the underlying behavior of ChainOfThought vs. hint usage might be inferable from code."
+  },
+  "479": {
+   "groundable": true,
+   "reason": "This is about the behavior and supported initialization/configuration of DSPy’s `dspy.OpenAI` wrapper—e.g., what constructor arguments it accepts, how it calls the OpenAI-compatible client, and whether custom API base URLs or vLLM-style endpoints are supported. Those details are typically inspectable in the library’s source code and tests, so the question is groundable in the source corpus."
+  },
+  "487": {
+   "groundable": true,
+   "reason": "The question is about whether DSPy’s code supports a specific model provider/endpoint pattern and whether `dspy.OpenAI()` can be configured for it. That is the kind of thing that can usually be verified from the source and tests by checking implemented LM/provider classes, constructor options such as `api_base`/`base_url`, any Bedrock-specific integrations, and tests covering provider compatibility. While an example snippet may not be present, the core support question is grounded in the codebase rather than external docs or services."
+  },
+  "494": {
+   "groundable": false,
+   "reason": "The question is mainly asking for usage guidance and examples about applying DSPy to PDF-based question answering, including PDF ingestion/retrieval setup. That friction is not likely resolved from DSPy source code and tests alone, because it depends on application-level pipelines, external document parsing/retrieval tools, and example/tutorial material rather than a library-internal API behavior."
+  },
+  "495": {
+   "groundable": false,
+   "reason": "The question is mainly about integrating DSPy with quantized Hugging Face Transformers models, which depends heavily on external library behavior (e.g. transformers quantization/loading patterns, bitsandbytes, device/memory setup) rather than DSPy’s own source and tests alone. While DSPy code may show its LM interfaces, resolving 'how to use any quantized huggingface transformers model' would primarily require understanding artifacts outside the DSPy source corpus."
+  },
+  "518": {
+   "groundable": true,
+   "reason": "This concerns the runtime behavior of a specific DSPy component (`PgVectorRM`)—which fields it retrieves from the database and passes through in examples. That behavior should be visible in the library’s implementation and any related tests, so the issue could be investigated and resolved from source code and tests alone."
+  },
+  "524": {
+   "groundable": false,
+   "reason": "The request depends heavily on artifacts and decisions outside DSPy’s source code and tests: identifying suitable hosted Hugging Face endpoints/models, judging their appropriateness for DSPy tasks, writing documentation, and adding notebooks. While the source/tests may reveal existing adapter patterns and integration points (e.g. hf_client, LM/adapter structure), the core friction here is external model/service selection and contribution planning rather than behavior that can be resolved from the codebase alone."
+  },
+  "525": {
+   "groundable": false,
+   "reason": "This is a feature request to design and add a new module (`dspy/predict/society-of-thought.py`) based on an external research concept/paper. While the existing source and tests may show how current predictors are structured, the core requirements for what 'society-of-thought' should do come from outside the repository, so the request is not fully resolvable from source code and tests alone."
+  },
+  "572": {
+   "groundable": false,
+   "reason": "This is primarily about Python-version support, packaging/dependency compatibility, and release timing for an external library (onnx), not behavior that can be resolved from DSPy’s source code and tests alone. The key friction depends on metadata, supported environments, and third-party dependency support outside the source/test corpus."
+  },
+  "575": {
+   "groundable": true,
+   "reason": "The issue is plausibly resolvable from DSPy’s source and tests because it concerns how teleprompter/compile handles module state serialization and how DSPy’s `ChromadbRM` is implemented/stored inside a `Module`. Even if the root cause involves a non-pickleable Chroma client object, the relevant friction is about DSPy’s compile/teleprompt interaction with that retriever wrapper, which should be inspectable in the library code and any tests around retrievers, copying, or serialization."
+  },
+  "577": {
+   "groundable": true,
+   "reason": "The question is about the runtime/API behavior of DSPy’s `InputField`/`OutputField` when given non-string types, including how `format_handler`/`format` are interpreted and why a compiler error occurs. That behavior should be determined by the library’s implementation and any tests around signatures, fields, templates, or typed formatting. Although the user references docs and an issue, the core friction is explainable from source code and tests rather than requiring website/tutorial/release/process artifacts."
+  },
+  "578": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s caching behavior: where cache is stored, how to clear it, and how to disable it. Those are implementation details that are typically defined in the library code and exercised in tests (e.g., cache wrappers, settings/config flags, environment-variable handling, or file-path defaults). A studier could inspect the source/tests to determine whether DSPy supports disabling cache, what cache backend/path it uses, and whether repeated calls are intentionally deduplicated."
+  },
+  "587": {
+   "groundable": false,
+   "reason": "The question is about documentation infrastructure and workflow: how docs are generated, why Vercel and mkdocs differ, why `mkdocs serve` no longer builds, and how contributors should work on docs. Those issues primarily involve documentation-site configuration, hosting/deployment setup, and repository/process artifacts outside the library’s source code and tests."
+  },
+  "590": {
+   "groundable": true,
+   "reason": "The question is about DSPy runtime behavior—how output length is determined when initializing an LM and using `dspy.OutputField()`. That behavior should be inspectable in the library’s source and tests, such as default generation parameters, adapter/signature formatting, and any truncation or max-token logic. It does not primarily depend on external docs, packaging, or hosted services."
+  },
+  "595": {
+   "groundable": false,
+   "reason": "The issue is about running a Colab notebook/example and a suggestion related to how the notebook fetches the DSPy codebase via a GitHub URL/commit. That friction primarily involves notebook/tutorial content and the Colab execution environment, not behavior that could be resolved by reading only the library’s source code and tests."
+  },
+  "621": {
+   "groundable": false,
+   "reason": "This is primarily a speculative feature proposal about project scope and future design direction ('would that be in scope?'), not a question whose answer can be determined from the existing source code and tests alone. While the codebase might show current extension points or planner-like components if any exist, deciding whether integrated planning algorithms functionality belongs in DSPy depends on maintainer intent, roadmap, and discussion outside the source corpus."
+  },
+  "632": {
+   "groundable": true,
+   "reason": "The question is about integrating a custom language model client with DSPy, which is likely addressed by DSPy’s code interfaces for LM wrappers/adapters and possibly tests showing how to implement or plug in a custom model backend. Resolving it mainly requires understanding DSPy’s source-defined LM abstraction and extension points, not external website/tutorial, packaging, or third-party service behavior."
+  },
+  "633": {
+   "groundable": false,
+   "reason": "This asks where to obtain external datasets/models (Wikipedia 2017 abstracts for HotPotQA and ColBERTv2 indexes) for local deployment. That friction depends on external artifacts and setup resources, not behavior that could be resolved by reading DSPy’s source code and tests alone."
+  },
+  "650": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s runtime behavior when formatting examples/demos with missing fields, including how `inspect_history(n=1)` renders separators and whether examples disappear when a trailing field is absent. That behavior is likely implemented in DSPy’s source (template/prompt/example formatting, history inspection, demo serialization) and may also be covered by tests. It does not primarily depend on external docs, packaging, hosted services, or another library’s internals."
+  },
+  "662": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s internal LM prompting/backend behavior: how prompts/messages are constructed for chat-capable models, whether DSPy treats chat APIs like completion APIs, and how output formatting/system messages could be implemented. Those are aspects that should be inspectable in the library’s source code and tests, without relying primarily on external docs, tutorials, packaging, or third-party service internals."
+  },
+  "663": {
+   "groundable": true,
+   "reason": "The question concerns the behavior of DSPy’s own Evaluate class—specifically how it renders metric tables in different environments. That behavior would be implemented in the library’s source code and potentially covered by tests, so the friction could be investigated and addressed from the source/test corpus alone."
+  },
+  "691": {
+   "groundable": true,
+   "reason": "The question points to a specific prompt hardcoded in DSPy source (`dspy/functional/functional.py`) and asks whether its wording causes invalid example objects for `TypedPredictor`. That behavior, along with any schema-validation or example-generation logic and related tests, can be investigated directly in the library’s source code and tests. Although the observed manifestation depends on an external model (GPT-4), the friction being raised is about DSPy’s own prompt/template design and output-handling logic, which is groundable in the corpus."
+  },
+  "715": {
+   "groundable": true,
+   "reason": "This concerns DSPy’s internal runtime behavior: predictor invocation, error propagation, and multithreading/concurrency handling. Those mechanisms should be inspectable in the library’s source code and tests, including how TypedPredictor.forward is called, how worker threads/futures are managed, and why exceptions might be swallowed or cause hangs. It does not primarily depend on website docs, tutorials, packaging, CI, or external hosted services."
+  },
+  "718": {
+   "groundable": true,
+   "reason": "The question is about the implementation of DSPy’s `HFClientVLLM`—specifically how `__init__` and `_generate` handle `kwargs`. That behavior can be verified directly from the source code, and any intended supported parameters may also be inferable from tests. Although the question references external docs and asks for the reason behind the design, the core friction is about library code behavior rather than website/tutorial content or third-party service internals."
+  },
+  "724": {
+   "groundable": true,
+   "reason": "The question is about how to use a DSPy feature (`TypedPredictors` / pydantic-typed outputs) and an error arising inside DSPy code (`dspy/functional/functional.py`). That kind of usage and failure mode is likely inspectable through the library’s implementation and tests, which can show the expected input/output formats and supported patterns. Although the user references the README and a GitHub discussion, the core friction is still about behavior of DSPy itself rather than external infrastructure or third-party hosted services."
+  },
+  "736": {
+   "groundable": false,
+   "reason": "The question is mainly about configuring DSPy to talk to a model server running on a Databricks cluster, including what hostname/port to use instead of localhost and how to handle a Databricks-specific port error. Those details depend on external infrastructure and deployment setup, not just DSPy’s source code or tests. While the code/tests may show that HFClientVLLM expects a base URL, they would not resolve the Databricks networking/hosting specifics."
+  },
+  "767": {
+   "groundable": true,
+   "reason": "The issue is about DSPy’s internal runtime behavior: how COPRO passes `eval_kwargs` to an evaluator, and how `return_outputs=True` changes the evaluator’s return type and triggers an error. That behavior should be inspectable in the library’s source code and tests by reading COPRO, the evaluator implementation, and any tests around optimization/evaluation kwargs. It does not primarily depend on external docs, packaging, hosted services, or another library’s hidden behavior."
+  },
+  "768": {
+   "groundable": false,
+   "reason": "The core question is about maintainer preference and contribution acceptance ('Would a PR be welcome?') for adding a new retry dependency/policy, which cannot be determined from source code and tests alone. While the related invoke_model call site and any existing retry behavior might be inspectable in the codebase, deciding whether to introduce exponential backoff via the backoff library is primarily a repository/process and design-governance question outside the source/test corpus."
+  },
+  "776": {
+   "groundable": true,
+   "reason": "Whether DSPy supports Fireworks-hosted models, and how model loading is implemented, should be checkable in the source code and tests by inspecting the LM/provider integration code, supported adapter classes, and any tests for provider-specific behavior. Although the runtime failure involves an external service, the core friction described—'does DSPy support Fireworks and is there a bug in DSPy model loading?'—is grounded in the library’s implementation."
+  },
+  "778": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s own integration code (`HFClientVLLM`), specifically whether it currently targets only completion endpoints and how one might add chat-completion support by modifying `_generate`. That behavior should be inspectable in the library source and any related tests. While vLLM itself is an external service, the friction described is primarily about DSPy’s adapter implementation, which is groundable in the source corpus."
+  },
+  "789": {
+   "groundable": false,
+   "reason": "The question asks about the existence of a GPT/assistant for generating DSPy code, which concerns external tooling or services rather than behavior that could be determined from DSPy's source code and tests."
+  },
+  "799": {
+   "groundable": true,
+   "reason": "This asks about DSPy’s runtime API and behavior for configuring LM parameters like `max_tokens`/context length via `dspy.configure`, `dspy.context`, or LM `kwargs`. Whether this is possible, and how to pass such arguments, should be discoverable from the library’s source code and tests that define LM classes, configuration/context mechanisms, and call-time argument handling."
+  },
+  "802": {
+   "groundable": false,
+   "reason": "This is primarily about official Python version support/compatibility policy and packaging metadata (e.g., declared supported versions, release constraints, CI matrix), not behavior that can be reliably resolved from the library’s source code and tests alone."
+  },
+  "813": {
+   "groundable": true,
+   "reason": "This concerns DSPy’s core runtime and optimization behavior: what a Module.forward may return, how Signatures/Prediction objects are handled in inference, and what BootstrapFewShotWithRandomSearch expects from program outputs and metric functions during compile. Those expectations and the resulting error should be inspectable in the library source and tests for Module, Signature/Prediction, Example handling, and teleprompter/optimizer code."
+  },
+  "814": {
+   "groundable": false,
+   "reason": "The issue is primarily about a documentation example using a gated external model and suggesting a different model in the docs. That friction depends on website/tutorial content and access behavior of hosted third-party models, not something that can be resolved from DSPy’s source code and tests alone."
+  },
+  "823": {
+   "groundable": true,
+   "reason": "The core friction is about DSPy’s HFModel behavior: why its Prediction includes the full prompt while another backend does not. That is likely determined by DSPy’s own HFModel adapter/wrapper logic and any related tests, which are in the source corpus. Reading the implementation should reveal whether DSPy passes Hugging Face generation settings that return prompt+completion, whether it trims the prompt, and whether this behavior is expected/deprecated. Although the user also mentions external alternatives like LangChain, LlamaIndex, Ollama, Docker, and cluster constraints, those are peripheral; the main issue is grounded in DSPy’s source/tests."
+  },
+  "832": {
+   "groundable": true,
+   "reason": "Whether DSPy supports quantization for Hugging Face models is a library capability question that can be determined from the source code and tests by inspecting the HF model integration code, accepted initialization parameters, and any related tests."
+  },
+  "852": {
+   "groundable": true,
+   "reason": "The core question is about whether DSPy’s code supports configuring OpenAI-compatible endpoints and credentials (for example base URL and API key) for third-party providers. That can be answered by inspecting the library’s source and tests for the OpenAI/client wrappers, constructor arguments, environment-variable handling, and any tests covering custom endpoints. Although the user cites documentation confusion, the underlying friction is about library behavior exposed in code, not website-only content or external services’ internals."
+  },
+  "878": {
+   "groundable": true,
+   "reason": "This asks about the existence or implementation of a specific DSPy API/class/feature (`TypedChainOfThoughtHint` or hint support for `TypedChainOfThought`). That can be determined by inspecting the library source and tests for typed predictor / chain-of-thought modules and related hint-handling code."
+  },
+  "886": {
+   "groundable": false,
+   "reason": "This is primarily a feature request about integrating DSPy with OpenAI’s external Batch API. Whether and how to support it depends on OpenAI’s hosted service/API semantics and documentation, not just DSPy’s existing source code and tests. The corpus may show current OpenAI integration patterns, but it would not fully resolve the friction described without relying on outside API details."
+  },
+  "892": {
+   "groundable": true,
+   "reason": "Whether DSPy accepts an async function as a metric is determined by how metrics are invoked and awaited inside the library’s evaluation/optimization code, which can be checked directly in the source and tests."
+  },
+  "899": {
+   "groundable": false,
+   "reason": "This asks about the provenance/authorship of the documentation, which is not something that can be determined from the library’s source code and tests alone. It concerns documentation process/creation outside the available corpus."
+  },
+  "913": {
+   "groundable": true,
+   "reason": "The question is about where DSPy-generated prompt text (e.g., 'Follow the following format') comes from and how to change the generated output structure. That behavior is implemented inside the library’s prompt/signature/adapter code and can be investigated via source and tests without needing external docs or services."
+  },
+  "915": {
+   "groundable": true,
+   "reason": "The question is about runtime behavior of DSPy’s `dspy.OpenAI` wrapper when multiple model instances are created and used together. That behavior would be determined by DSPy’s own source code and possibly its tests—e.g., how `OpenAI` instances store configuration, whether any global/shared client state is used, and how requests are routed per instance. Although the backend is an OpenAI-compatible llama.cpp server, the reported friction centers on DSPy’s wrapper behavior, not on external docs, packaging, or hosted services."
+  },
+  "947": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s own configuration/state design: `dsp.settings.configure(...)`, whether settings are global, and how retrievers could retain independent settings or run in parallel. That behavior should be directly inspectable in the library’s source code and tests, which can show how settings are stored, propagated, and whether instance-local or thread/task-local patterns already exist. It does not primarily depend on external docs, services, or release process."
+  },
+  "954": {
+   "groundable": true,
+   "reason": "The question is about runtime behavior inside DSPy when loading from a checkpoint: how signatures are reconstructed, how `make_signature` defaults are applied, and why a predictor becomes a `StringPredictor`. That friction can be investigated directly in the library source and tests, especially the signature and predictor loading/serialization code."
+  },
+  "975": {
+   "groundable": true,
+   "reason": "The question is about changing the behavior of DSPy’s `Evaluate(...)` implementation, specifically its multi-threaded interruptibility. That behavior should be determined by the library’s own source code and possibly tests around evaluation/concurrency, so the relevant friction is groundable in the source corpus."
+  },
+  "991": {
+   "groundable": true,
+   "reason": "The question is mainly about whether DSPy supports batching requests through its LM client abstractions and/or `dspy.Predict`, and how that compares to `Evaluate(num_threads=...)`. Those are implementation details that should be discoverable from the library’s source code and tests: e.g., whether `Predict` accepts batched inputs, whether LM wrappers expose batch APIs, and how `Evaluate` executes work. Although the user mentions OpenAI/vLLM performance intuitions, the core friction is about DSPy feature support and behavior, which is groundable in the source corpus."
+  },
+  "994": {
+   "groundable": false,
+   "reason": "The reported friction is primarily about running a very large Hugging Face model in a constrained Colab environment (RAM limits, session crashes, model loading/runtime behavior). That depends mainly on Colab resources and the behavior of external libraries/models such as Hugging Face Transformers and the Llama-2 checkpoint, not on DSPy’s source code or tests alone. While DSPy’s HFModel wrapper may be inspectable, the core issue here is environment/model memory usage outside the study corpus."
+  },
+  "996": {
+   "groundable": true,
+   "reason": "This asks about an internal DSPy mechanism: how prompts/templates are constructed, whether TemplateV2 is hardcoded, and whether the template class could be injected or customized. Those are questions about the library’s implementation and extension points, which should be inspectable in the source code and tests without needing external docs or services."
+  },
+  "997": {
+   "groundable": false,
+   "reason": "The issue is framed around behavior in the Intro Notebook demo and an LLM answering a changed question, which depends on tutorial/notebook setup and model behavior rather than something that can be resolved from DSPy’s source code and tests alone. The referenced artifact is the notebook, and the observed answer may also depend on external model/retrieval behavior."
+  },
+  "998": {
+   "groundable": true,
+   "reason": "The question is about inconsistent retriever return types and expectations inside DSPy’s own code (e.g., `dspy.Retrieve`, retriever base classes, and specific retriever implementations). That friction can be investigated directly from the library source and tests by comparing the relevant classes, call sites, and tests for expected interfaces/normalization behavior. It does not primarily depend on external docs, packaging, CI, or third-party hosted behavior."
+  },
+  "1003": {
+   "groundable": true,
+   "reason": "Whether DSPy supports multimodal/VLM models is a capability question that can be answered from the library’s source code and tests by checking model interfaces, input/output handling, and any multimodal-specific integrations or test coverage. While polished usage examples may live outside the source corpus, the core support itself is groundable in code/tests."
+  },
+  "1006": {
+   "groundable": false,
+   "reason": "This is a feature request to add support for an external third-party SDK (PremAI). While DSPy’s source may show patterns for existing provider integrations, actually resolving the request depends on the external PremAI Python SDK’s API and behavior, which are outside the DSPy source-code-and-tests corpus."
+  },
+  "1016": {
+   "groundable": false,
+   "reason": "This is primarily a feature proposal / maintainer-interest question about whether a new `BootstrapFewShotVision` module would be desirable and mergeable. That cannot be resolved from DSPy’s existing source code and tests alone, even though related component patterns may exist there."
+  },
+  "1018": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s Python API and supported model wrapper interfaces—specifically whether/how a Hugging Face `AutoModelForCausalLM` instance can be used as a DSPy LM object instead of passing a model name string. That behavior should be determinable from DSPy’s source code and tests by inspecting the `HFModel`/LM wrapper constructors, accepted argument types, and any tests for Hugging Face integration. Although the traceback comes from `transformers`, the core friction is about DSPy’s supported integration surface, which is grounded in the library code."
+  },
+  "1055": {
+   "groundable": false,
+   "reason": "This is primarily a product roadmap/feature-planning question ('When will i18n be supported?') rather than something that can be resolved from source code and tests alone. While the code might reveal whether localization settings or translated strings currently exist, it would not answer when support will be added."
+  },
+  "1071": {
+   "groundable": true,
+   "reason": "Whether DSPy exposes or records the underlying LM request payloads is something that can be determined from the library code and tests. The source should show how API calls are constructed, what logging/history/debug hooks exist, and whether examples of inspecting requests appear in tests. This does not primarily depend on website docs, release process, or third-party hosted behavior."
+  },
+  "1073": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s internal history/trace data structure for LLM responses across modules in `dsp.modules`, and proposes changing those entries to include unique IDs and timestamps. Whether history is currently stored as a list, what fields entries contain, and where such metadata would need to be added are all things that can be determined from the library’s source code and tests."
+  },
+  "1076": {
+   "groundable": false,
+   "reason": "The question is primarily about behavior observed while running a tutorial notebook locally (`intro.ipynb`) and about GPU utilization/hanging during compilation in a specific runtime environment. While DSPy source may show how `compile` is implemented, whether a local GPU is used depends on the configured LM/backend and other libraries/services outside DSPy, and the reported stall at 65% is tied to notebook execution/runtime conditions rather than something that source code and tests alone would reliably resolve."
+  },
+  "1079": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s runtime behavior: how an optimizer invokes an LM, what kwargs it passes (`n`, `temperature`), and why the library’s rate-limit/backoff log message shows certain values. That should be traceable in the source code and tests by inspecting the optimizer implementation, LM wrapper/call path, and any retry/backoff logging code. It does not primarily depend on docs, packaging, CI, or external services."
+  },
+  "1095": {
+   "groundable": false,
+   "reason": "This is a feature request about integrating external systems (Triton Inference Server and TensorRT-LLM). Whether or how such an integration should exist depends on third-party services/libraries and future project scope, not something that can be resolved just by reading DSPy’s current source code and tests."
+  },
+  "1103": {
+   "groundable": true,
+   "reason": "The question is about the runtime behavior and API design of `MultiChainComparison`—specifically how the `M` parameter affects assembling the signature and why it only works with a certain number of predictions unless `M` is changed. That behavior should be directly inspectable in the library’s source code and any related tests, especially in `dspy/predict/multi_chain_comparison.py`. It does not primarily depend on external docs, packaging, hosted services, or third-party internals."
+  },
+  "1106": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s internal use of tqdm progress bars in optimizers/teleprompters and whether they could display additional status text or nested progress. That behavior would be implemented in the library code itself, and any existing expectations may appear in tests. It does not primarily depend on external docs, packaging, CI, or third-party hosted services."
+  },
+  "1119": {
+   "groundable": true,
+   "reason": "This asks where DSPy makes provider/API calls and how to configure a custom endpoint/interface, which is typically implemented in the library’s source (LM/provider classes, client setup, configuration paths) and often exercised in tests. It does not primarily depend on website docs, tutorials, packaging, or external services."
+  },
+  "1122": {
+   "groundable": true,
+   "reason": "This asks about whether DSPy exposes a way to alter or override the optimized prompt used by `dspy.Predict`/optimized programs, especially around few-shot prompt construction and repeated class lists. That behavior is part of DSPy’s core prompt-generation, predictor, signature, and optimization/teleprompting code, which should be inspectable in the library source and tests. It does not primarily depend on external docs, hosted services, or repository process."
+  },
+  "1131": {
+   "groundable": true,
+   "reason": "This asks about how two DSPy library features relate in usage: `LabeledFewShot` (likely `LabelFewShot`/`LabeledFewShot`) and `dspy.Suggest`/assertions for constraining outputs. Whether and how these can be combined is the kind of behavior/API question that can be answered from DSPy’s source code and tests, which should define the compiler/teleprompter behavior, assertion machinery, and examples of composing them. Although the pasted `[code]` is missing and there may also be documentation examples elsewhere, the core friction is about library functionality rather than website/tutorial, packaging, CI, or third-party hosted services."
+  },
+  "1132": {
+   "groundable": true,
+   "reason": "The question asks whether DSPy itself provides a way to cap or truncate prompt/input length before sending requests to an LLM. That is a library-behavior/API question that can be answered by inspecting DSPy’s source and tests for LM wrappers, request construction, truncation logic, and configurable generation parameters. Although Hugging Face TGI is mentioned as the serving backend, the core friction is about whether DSPy exposes or implements input-length limiting, which is grounded in the code corpus."
+  },
+  "1133": {
+   "groundable": false,
+   "reason": "The question is primarily about interoperability with LangChain's ChatOpenAI and an error arising from that external library integration. Resolving it would likely require understanding LangChain/OpenAI wrapper behavior and the specific error details, not just DSPy's source code and tests. Since the issue centers on another library's model object and usage pattern, it is not reliably groundable in the DSPy source corpus alone."
+  },
+  "1144": {
+   "groundable": true,
+   "reason": "The core issue is about DSPy’s ReAct agent/tool interface: how to provide a retriever as a tool and how the agent uses tools to produce outputs. That behavior is likely inspectable in DSPy’s source code and tests for ReAct/modules/tool calling, even if the user happens to use LlamaIndex retrievers underneath. While LlamaIndex itself is external, the DSPy-side friction—what shape a tool must have, how tools are invoked, and how outputs are routed—is grounded in the library code/tests."
+  },
+  "1150": {
+   "groundable": true,
+   "reason": "The issue is about DSPy’s Bedrock integration lacking support for a specific API path (Amazon Bedrock Messages API for Claude 3). Whether DSPy currently calls the older Bedrock invoke API, how model IDs are handled, and where support would need to be added are all matters that should be inspectable in the library’s source code and tests. Although the exact Bedrock API requirements come from AWS, the reported friction is primarily about missing functionality in DSPy’s own code rather than docs, packaging, CI, or external service operations."
+  },
+  "1159": {
+   "groundable": false,
+   "reason": "The question is about whether/how to use a FAISS retriever in a DSPy RAG pipeline, which depends on external FAISS integration/support and likely example/tutorial usage rather than behavior that can be fully resolved from DSPy source and tests alone. If FAISS support is missing, this is a feature request; if it exists, practical usage details are often outside the core source corpus."
+  },
+  "1199": {
+   "groundable": false,
+   "reason": "The question is mainly about installation/packaging and the difference between the Git repository state and the published PyPI package. Even though `setup.py` is in the source tree, explaining why placeholder values appear and why the PyPI package differs depends on the release/build process rather than the library’s runtime source code or tests."
+  },
+  "1201": {
+   "groundable": true,
+   "reason": "This asks about library functionality for persisting and reloading a compiled DSPy program/agent, which is the kind of behavior typically defined in the source code and exercised in tests (e.g., save/load or serialization methods). It does not primarily depend on website docs, packaging, CI, or external services."
+  },
+  "1206": {
+   "groundable": false,
+   "reason": "The issue is primarily about a missing external dependency/module (`mlc_chat`) and how to install/configure it in the user’s environment, not about DSPy’s internal logic. While DSPy source may show where `mlc_chat` is imported, resolving the error depends on package installation/availability and possibly third-party library behavior, which is outside the source-code-and-tests corpus."
+  },
+  "1207": {
+   "groundable": true,
+   "reason": "This asks about configuring a parameter of DSPy’s MIPROv2 component. Whether and how training epochs can be set should be discoverable from the MIPROv2 implementation, its constructor/function signatures, and any related tests in the source corpus."
+  },
+  "1210": {
+   "groundable": true,
+   "reason": "The question is about whether DSPy itself has a setting or API to control output language, which is a library behavior that can be determined from the source code and tests. Reading them should reveal whether such a parameter exists or whether language control must be done through prompts/signatures instead."
+  },
+  "1212": {
+   "groundable": true,
+   "reason": "This asks about the capabilities and extension points of DSPy retriever implementations—specifically whether built-in retrievers accept metadata/filter parameters and how to implement such behavior in a custom Retriever. That is the kind of question that can be answered by inspecting the retriever classes, method signatures, adapter code, and tests in the source corpus."
+  },
+  "1213": {
+   "groundable": true,
+   "reason": "The question is about whether and how DSPy supports function/tool calling when building an agent. That is likely answerable from the library’s source code and tests by inspecting the relevant LM adapter/model wrappers, agent/tool abstractions, and any tests covering tool or function calling behavior. It does not primarily depend on website docs, packaging, hosted services, or external repository processes."
+  },
+  "1220": {
+   "groundable": false,
+   "reason": "This question depends on how DSPy is used with MTEB, which is an external benchmark/task library. Resolving it would likely require documentation or examples about integration and usage patterns outside DSPy’s source/tests, and possibly knowledge of MTEB’s own APIs, rather than something answerable purely from DSPy’s code and tests."
+  },
+  "1236": {
+   "groundable": true,
+   "reason": "This asks about DSPy’s runtime request/concurrency behavior and where such a parameter would be configured when using a custom API. That is the kind of implementation detail that can typically be determined from the library’s source code and tests, without needing external docs, hosted services, or repository process information."
+  },
+  "1238": {
+   "groundable": true,
+   "reason": "This asks about extending DSPy's QdrantRM with a `query_filter` field/parameter, which is a code-level capability of a retriever module. Whether and how to add it should be determinable from the library's source code and tests for QdrantRM and related retriever interfaces, without needing external docs, services, or repository process details."
+  },
+  "1244": {
+   "groundable": true,
+   "reason": "The question is about whether DSPy supports a custom signature format, which likely depends on how signatures are defined, parsed, validated, and used internally. Those behaviors should be inspectable in the library’s source code and tests, without needing external docs, hosted services, or release/process information."
+  },
+  "1251": {
+   "groundable": true,
+   "reason": "The question is about whether DSPy imports or depends on the `cohere` package and under what code paths that happens. That can be investigated directly from the source and tests by checking dependency declarations, optional integrations, import sites, and any exception handling referencing `cohere.CohereAPIError`. While the exact behavior of the external `cohere` package is outside the corpus, the core friction—why DSPy is requiring or forcing `cohere`—is grounded in DSPy’s own code."
+  },
+  "1283": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s runtime behavior and API semantics: whether setting a generation parameter like \"n\" should produce multiple completions, and why the returned object prints something like \"omitted.\" Those behaviors are determined by DSPy’s own source code (e.g., prediction/result classes, LM wrapper calls, and parameter plumbing) and may also be illustrated in tests. Although the underlying LM provider may support \"n,\" the core friction here is how DSPy exposes or suppresses multiple outputs, which is inspectable in the library code and tests."
+  },
+  "1304": {
+   "groundable": true,
+   "reason": "This asks about runtime observability/debugging behavior of DSPy features (`ChainOfThought`, `ReAct`) while a program is executing. Whether DSPy exposes callbacks, logging, streaming, tracing, or other inspection hooks can be determined from the library’s implementation and tests, without needing external docs or services."
+  },
+  "1308": {
+   "groundable": true,
+   "reason": "This asks how to inspect or retrieve an optimized prompt produced by DSPy. That behavior is likely implemented in the library code and exercised in tests (e.g., compiled modules, prompt construction, signatures, predictors, teleprompters/optimizers), so the answer could be derived from reading source and tests without relying on external docs or services."
+  },
+  "1318": {
+   "groundable": true,
+   "reason": "The issue is about an apparent mismatch between two parts of DSPy’s own codebase: `dsp/primitives/search.py` expecting a returned object with `long_text`, while `dspy/retrieve/llama_index_rm.py` appears to construct or return an object with `text`. Determining whether this is a bug, intended contract, or test-covered behavior can be done by inspecting the source and tests for the retriever interface, `Example` usage, and retrieval pipeline. Although LlamaIndex is a third-party dependency, the friction described here is specifically about DSPy’s adapter/output shape and how DSPy consumes it, which is groundable in the repository’s code and tests."
+  },
+  "1326": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s runtime behavior when wrapping Azure/OpenAI calls: how exceptions are propagated or retried, and whether request/response payloads are accessible. Those behaviors are determined by DSPy’s source code and tests for its LM clients/adapters, retry logic, and error handling. While the specific BadRequestError class originates from the OpenAI/Azure client, the core friction—DSPy retrying indefinitely and how to intercept/access API-call details through DSPy—is inspectable in the library code/tests."
+  },
+  "1342": {
+   "groundable": true,
+   "reason": "The question is about a runtime error arising from DSPy’s own Python code paths (`BootstrapFinetune.compile` and `dsp/modules/finetuning/finetune_hf.py`) when using the `peft` option. Whether PEFT settings are supported, how `peft` is expected to be passed, and why `TaskType` is undefined can all be investigated directly in the library source and tests. Although PEFT itself is an external library, the specific friction described is rooted in DSPy’s implementation/integration code, not primarily in docs, packaging, or external services."
+  },
+  "1351": {
+   "groundable": true,
+   "reason": "Whether DSPy supports asynchronous or concurrent LM API calls during optimization is a library-behavior question that can be answered by inspecting the source code and tests for async APIs, concurrency primitives, executor usage, and optimizer execution flow."
+  },
+  "1360": {
+   "groundable": true,
+   "reason": "This concerns the API and implementation of `dspy.Bedrock` itself—specifically what constructor/function parameters it accepts and how it initializes AWS access. That can be determined from the library’s source code and tests, without needing website docs, tutorials, release artifacts, or third-party hosted behavior."
+  },
+  "1367": {
+   "groundable": true,
+   "reason": "The issue concerns DSPy’s own OpenAI wrapper implementation—specifically whether its initializer and client construction pass through a `default_headers` argument. That behavior should be inspectable and fixable from DSPy’s source code and tests alone, without needing website docs, release process, or hosted services. While the parameter originates from the OpenAI SDK, the friction described is about DSPy’s wrapper not exposing/forwarding it, which is groundable in the repository code."
+  },
+  "1379": {
+   "groundable": false,
+   "reason": "The question is primarily about using DSPy with Arize Phoenix and exporting/loading traces for inspection outside the hosted Phoenix app. That behavior depends on the Phoenix integration and external tooling/workflows, not just DSPy’s own source and tests. Even if DSPy contains tracing hooks, the specific ask about saving traces as a local file and inspecting them locally is mainly about artifacts and behavior outside the DSPy source corpus."
+  },
+  "1404": {
+   "groundable": true,
+   "reason": "This appears to be about DSPy’s output formatting/behavior—e.g., how a module or signature can be configured so the model returns only the final answer instead of extra text. That kind of behavior is defined in DSPy’s code and exercised in tests, so the likely resolution is groundable in the source corpus."
+  },
+  "1424": {
+   "groundable": false,
+   "reason": "The question is about future plans and project intent for adding DeepSeek support, which cannot be determined from the source code and tests alone. While the codebase may show current LM integrations, it does not ground roadmap or maintainers’ intentions."
+  },
+  "1426": {
+   "groundable": true,
+   "reason": "The issue is about how DSPy’s evaluation code aggregates and logs metric values in `dspy/evaluate/evaluate.py`. Whether scores are assumed to be normalized, and whether the implementation incorrectly mixes score sums with counts, can be determined from the source and any related tests. Although the user mentions docs as a possible mitigation, the underlying friction is rooted in library behavior visible in the codebase."
+  },
+  "1433": {
+   "groundable": true,
+   "reason": "Whether DSPy already has an implementation for calling Wenxin's LLM is something that can be determined by inspecting the source code and tests for existing LM client/integration classes, provider adapters, and related test coverage. The friction is about current library support, not external docs or services."
+  },
+  "1447": {
+   "groundable": true,
+   "reason": "The question asks whether a specific optimizer implementation ('0-Shot MIPRO') exists in DSPy and where its code is located. That can be answered by inspecting the repository's source code and tests for MIPRO-related classes, functions, or references."
+  },
+  "1455": {
+   "groundable": false,
+   "reason": "This request is about repository/release process and external tooling (GitHub Releases, commit history, Commitizen, conventional commits, semantic versioning, changelog generation), not about DSPy library behavior that could be resolved from its source code and tests. The source/tests would not determine whether this functionality is desired or how release notes should be generated."
+  },
+  "1459": {
+   "groundable": false,
+   "reason": "The question is primarily about whether DSPy’s Groq integration works in practice for a docs/tutorial workflow using Groq’s hosted cloud service and a notebook example. That depends on external artifacts and services: the documentation page, the tutorial notebook, Groq’s API/service behavior, credentials/access, and possibly version compatibility with LlamaIndex. While the source/tests may show that a `dspy.GROQ` client exists and how it is implemented, they would not fully resolve whether the referenced tutorial works end-to-end with the free Groq/Llama3 service."
+  },
+  "1505": {
+   "groundable": true,
+   "reason": "This issue is about a runtime NameError triggered by importing a module from DSPy, apparently caused by a symbol referenced in the library’s own Python source (`mistralai_api_error` in the `Mistral` class). Determining why the name is undefined, how the import chain reaches that code, and whether tests cover it can be done by inspecting the repository’s source code and tests alone."
+  },
+  "1514": {
+   "groundable": true,
+   "reason": "The question is about whether DSPy’s OpenAI adapter supports passing an OpenAI `project` parameter and where that would be wired in the adapter code. That is directly answerable from the library’s source and tests by inspecting the OpenAI adapter implementation, its constructor/kwargs handling, and any tests around client initialization or request parameter forwarding."
+  },
+  "1518": {
+   "groundable": true,
+   "reason": "The issue is a runtime error in DSPy’s own code path: `BaseModule.save()` calls `dump_state(save_field_meta)`, and a DSPy component (`Retrieve`) appears to implement `dump_state()` with an incompatible signature. Whether `ReAct`, teleprompt/`tp.compile`, optimized modules, and retrieval tools are serializable is determined by DSPy’s source and tests. This can be investigated and resolved by reading the library code and any serialization/state-saving tests, without needing external docs, tutorials, or third-party service behavior."
+  },
+  "1525": {
+   "groundable": true,
+   "reason": "The core friction—whether DSPy Synthesizer can be configured to produce non-English output, or why it defaults to English—should be answerable from the library’s source and tests. The code can reveal available Synthesizer parameters, prompt templates/instructions, and any language-related logic or hardcoded English assumptions. Although the user mentions missing docs and a Colab, the main question is about behavior and configurability of Synthesizer itself, which is groundable in the source corpus."
+  },
+  "1534": {
+   "groundable": true,
+   "reason": "The question points to a specific runtime error in DSPy’s `ProgramOfThought` flow and proposes a concrete code change in `python_interpreter.py` involving Python AST handling. Whether `ast.Name` conditions are unsupported, why `'Name' object has no attribute 'ops'` occurs, and how `ProgramOfThought` uses the interpreter are all issues that can be investigated directly in the library’s source code and tests, without needing external docs or services."
+  },
+  "1540": {
+   "groundable": true,
+   "reason": "This question is about DSPy’s LangFuse tracing integration behavior—specifically whether and how trace IDs are generated/passed, and whether methods like `fetch_trace_id()` can be used without a custom tracer. That is the kind of friction that should be inspectable in DSPy’s source code and tests by examining the tracer integration implementation, method definitions, and any tests covering LangFuse tracing."
+  },
+  "1560": {
+   "groundable": true,
+   "reason": "This is a library-capability question about whether DSPy implements or exposes soft prompt optimization. That can be determined by inspecting the source code and tests for relevant classes, optimizers, parameter types, or integration points, without needing website docs, tutorials, releases, or external services."
+  },
+  "1601": {
+   "groundable": false,
+   "reason": "The question is primarily about a bug in the documentation/tutorial example on the docs website ('Custom LM tutorial'), which is outside the available study corpus. While the source code may show that `super().__init__(model)` sets `self.model` to a string, resolving the friction requires checking the tutorial/example itself and its intended guidance, not just the library source and tests."
+  },
+  "1615": {
+   "groundable": false,
+   "reason": "This is primarily about package/distribution metadata and how to inspect an installed package’s version, which is usually tied to packaging/release artifacts rather than the library’s runtime source logic. While the source might contain a version string, the user’s question is about the correct user-facing way to check the current dspy package version, and that is not reliably answerable from source code and tests alone."
+  },
+  "1625": {
+   "groundable": true,
+   "reason": "Whether `dspy.configure` exists in DSPy 2.5.7 is directly answerable from the library’s source code and tests by checking the top-level `dspy` package exports and where configuration is implemented. The reported `AttributeError` concerns the public Python API surface of the package, which is part of the source corpus."
+  },
+  "1631": {
+   "groundable": true,
+   "reason": "The core friction appears to be DSPy itself attempting to create or write to a local path ('local_cache'), which is behavior that should be inspectable in the library’s source code and possibly its tests. Even though the deployment target is Azure Functions, the question is fundamentally about where DSPy writes files, how that path is configured, and whether logging/caching can be redirected or disabled—issues that are likely grounded in the codebase rather than requiring external website/tutorial material."
+  },
+  "1646": {
+   "groundable": false,
+   "reason": "The question is mainly about support for or integrating with OpenAI's Swarm/agent method, which is an external library/concept outside DSPy's source and tests. While DSPy's code could show whether such support currently exists, the core friction depends on third-party behavior/integration and a feature-request decision, not something resolvable from DSPy's source corpus alone."
+  },
+  "1648": {
+   "groundable": true,
+   "reason": "This asks about the library’s runtime default behavior when `max_tokens` is omitted from a DSPy call. That behavior should be determined by DSPy’s source code and tests: e.g., how `ChainOfThought` forwards generation kwargs, whether DSPy sets a default `max_tokens`, and whether it defers to the configured LM/provider. It does not primarily depend on website/tutorial content or external repo processes."
+  },
+  "1659": {
+   "groundable": true,
+   "reason": "The issue is about how DSPy formats and sends image inputs for VLMs, and whether its integration path differs from using the OpenAI client directly. That behavior should be inspectable in DSPy’s source and tests: model wrappers, message construction, image serialization/encoding, and LiteLLM integration code. Even though the thrown exception originates from LiteLLM/OpenAI, the user’s friction is primarily about DSPy’s handling of images and prompt content, which can be investigated from the library code and tests."
+  },
+  "1672": {
+   "groundable": false,
+   "reason": "This question is about repository documentation files and links in README/CONTRIBUTING, not the library’s runtime behavior. The friction concerns docs/repo content outside the source code and tests corpus, so it would not be resolvable by reading only source and tests."
+  },
+  "1675": {
+   "groundable": false,
+   "reason": "This is primarily a how-to/integration question about connecting DSPy to an external LLM gateway/model provider. While the source and tests may show some provider interfaces, the practical setup and usage details for a specific gateway are likely to depend on external service configuration and documentation rather than being fully resolvable from DSPy’s code and tests alone."
+  },
+  "1721": {
+   "groundable": false,
+   "reason": "The question primarily asks for cookbook/examples for using local multimodal models, including usage patterns like data format and model loading. That kind of guidance usually lives in documentation, notebooks, or tutorials rather than being directly answerable from source code and tests alone. While source/tests might reveal some underlying multimodal APIs if they exist, they would not reliably answer whether there are cookbook-style examples."
+  },
+  "1738": {
+   "groundable": true,
+   "reason": "The request is about changing the behavior of a library method (`BaseModule.load`) so it can return a predictor instead of only mutating in place. That behavior is defined in the source code, and whether/how to implement or test it can be determined from the library’s classes and tests alone, without needing docs, tutorials, packaging, CI, or external services."
+  },
+  "1754": {
+   "groundable": false,
+   "reason": "This asks about DSPy’s relationship to an external research paper and whether it uses that paper’s technique. That is primarily about design lineage, intent, and comparison to outside work, which source code and tests alone usually cannot establish definitively. While the code might show what optimization methods are implemented, answering whether DSPy specifically used or was based on that external technique would require paper/documentation or maintainer commentary outside the source corpus."
+  },
+  "1758": {
+   "groundable": false,
+   "reason": "The reported friction is primarily about the behavior and limits of an external serving stack/model combination (vLLM + qwen2.5-7b-instruct, surfaced through LiteLLM/OpenAI-style errors), not DSPy itself. While DSPy source may show how it passes max_tokens, the core question—why the deployed model is capped at 2048 and why changing max_tokens does not help—depends on backend/model configuration and third-party library behavior outside the DSPy source-and-tests corpus."
+  },
+  "1786": {
+   "groundable": true,
+   "reason": "This asks about whether DSPy supports an asynchronous form of `dspy.LM`, which is an API/runtime capability of the library itself. That can be determined by inspecting the source and tests for `dspy.LM`, async methods/interfaces, and any related test coverage. It does not primarily depend on external docs, tutorials, packaging, or third-party hosted services."
+  },
+  "1788": {
+   "groundable": true,
+   "reason": "This is about the implementation and configuration surface of a specific DSPy component, Neo4jRM—e.g., whether it hardcodes OpenAI embeddings/API keys or accepts pluggable embedding models/clients. That can be determined from the library’s source and tests by inspecting Neo4jRM’s constructor, method calls, environment-variable usage, and any tests/examples around non-OpenAI or local embeddings."
+  },
+  "1798": {
+   "groundable": true,
+   "reason": "This asks about whether the library supports a specific capability (multi-image input for VLMs), which is typically determinable from the source code and tests by inspecting model input handling, multimodal APIs, and any related test coverage."
+  },
+  "1811": {
+   "groundable": false,
+   "reason": "The question is mainly about future roadmap/deprecation policy and forward guidance for `dspy.OllamaLocal` versus `dspy.LM`, plus behavior that depends on `litellm` and Ollama model support. Those are not reliably answerable from DSPy source code and tests alone, because they concern maintainers’ plans and third-party library/provider support outside the corpus."
+  },
+  "1814": {
+   "groundable": false,
+   "reason": "The issue is about documentation/build instructions in the `/docs` folder and a missing `package.json`, which are documentation/repository artifacts rather than behavior that could be resolved from the library’s source code and tests alone."
+  },
+  "1831": {
+   "groundable": false,
+   "reason": "The main friction is about integrating DSPy with external observability/client tooling (LangSmith, OpenAI client wrapping, LiteLLM tracing behavior) and how traces are unified across those systems. While DSPy source/tests may show whether it accepts certain LM/client configuration hooks, resolving the LangSmith instrumentation behavior itself depends primarily on the behavior and integration patterns of other libraries/services, not DSPy’s source corpus alone."
+  },
+  "1835": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s internal prompt-construction behavior—specifically how Signatures and input fields are ordered in the rendered prompt, and whether that ordering can be changed. That is core library behavior that should be inspectable in the source code and tests (e.g., prompt/template/adapters/signature formatting logic), rather than depending on external docs, hosted services, or repository process."
+  },
+  "1842": {
+   "groundable": true,
+   "reason": "The core of the question is whether DSPy still has `Assertions`/`Suggests` functionality and whether it has been replaced by something else. That can be investigated in the source code and tests by checking whether those APIs still exist, are deprecated, are aliased to newer mechanisms, or have replacement implementations. Although the prompt mentions the docs no longer linking to them, the substantive friction is about feature status and replacement, which is grounded in code/tests."
+  },
+  "1859": {
+   "groundable": true,
+   "reason": "The question is about the runtime behavior and parameter semantics of DSPy’s MIPROv2 teleprompter—specifically how `max_labeled_demos` and `max_bootstrapped_demos` affect the final number of examples. This can be investigated directly in the library’s source code and tests by inspecting the teleprompter implementation, how demo sets are constructed/merged, and any tests covering demo-count limits. It does not primarily depend on external docs, tutorials, packaging, or third-party services."
+  },
+  "1865": {
+   "groundable": true,
+   "reason": "This is about extending or configuring DSPy to work with a custom language model backend, which is likely determined by DSPy’s own LM abstraction layers, adapters, and integration tests in the source corpus. The answer should be discoverable from source code and tests showing how DSPy expects LM clients/configuration to be implemented, even if the external model itself is not supported by LiteLLM."
+  },
+  "1899": {
+   "groundable": true,
+   "reason": "The question is about extending DSPy’s Signature typed parsing implementation to support an additional Python AST node type (`ast.Constant`). It points directly to a source file and describes a concrete code-path change that could be understood and validated from the library’s source code and tests alone. Although it mentions a website example, the underlying friction is an implementation detail in DSPy’s codebase, not primarily website/tutorial content or external systems."
+  },
+  "1927": {
+   "groundable": false,
+   "reason": "This question is primarily about how to use a specific external model variant ('Quantised Model of molmo'), which depends on the model/provider ecosystem and likely integration details outside DSPy’s own source code and tests. The friction is not clearly about DSPy library behavior that could be resolved just by reading DSPy’s implementation and tests."
+  },
+  "1932": {
+   "groundable": false,
+   "reason": "The source and tests can confirm that `ChatAdapter` is the default and that code may fall back to `JSONAdapter`, but the question asks for the design rationale behind that choice ('why isn't `JSONAdapter` the default?'). That kind of motivation is usually not recoverable from code/tests alone unless explicitly documented there, so this is not reliably groundable in the source corpus."
+  },
+  "1940": {
+   "groundable": true,
+   "reason": "The question is about a runtime behavior change inside DSPy when switching from `dspy.OpenAI(...)` to `dspy.LM(...)`, specifically around structured/JSON outputs. That kind of friction is likely determined by DSPy’s own implementation of LM wrappers, adapters, parsing/serialization, and any tests covering structured output or provider-specific behavior. It does not primarily depend on website/tutorial content, packaging, CI, or third-party hosted services beyond normal model responses."
+  },
+  "1954": {
+   "groundable": true,
+   "reason": "The issue describes how DSPy’s own optimizer (MIPROv2) and its `dspy.Image` type interact when bootstrapped demos are inserted into prompts. That behavior should be traceable in DSPy’s source and tests: prompt/demo serialization, `Image` formatting, and MIPROv2 bootstrapping logic are all library-internal code paths. Although the suggested `image -> answer` shorthand is a feature idea, the underlying friction—why base64 image data is ending up in the prompt and blowing up context—is groundable in the source corpus."
+  },
+  "1966": {
+   "groundable": true,
+   "reason": "This question concerns the behavior and configurability of DSPy’s random search optimizer and bootstrap process—specifically whether an initial no-demonstration round can be skipped. That is likely determined by the optimizer’s implementation, parameters, and tests in the source corpus, rather than external docs or services."
+  },
+  "1971": {
+   "groundable": false,
+   "reason": "The question is primarily asking for conceptual usage guidance about whether and how DSPy can be used for regression, including changing a model architecture or loss function. That kind of guidance is not likely to be resolvable from source code and tests alone, especially since it depends on how DSPy is intended to be used rather than on a specific code path or tested API behavior. The mention of supported tasks and architectural/loss modifications suggests tutorial or documentation-level explanation rather than something directly answerable from the library corpus."
+  },
+  "1982": {
+   "groundable": true,
+   "reason": "The question is about whether and how DSPy can call a vLLM-served model, and why DSPy errors while the OpenAI client works. That behavior depends on DSPy’s own LM/provider integration code, request formatting, supported parameters, and any tests for OpenAI-compatible/base_url-style backends. Those are things that can be investigated in the DSPy source code and tests, even though vLLM itself is external."
+  },
+  "1987": {
+   "groundable": false,
+   "reason": "This issue is primarily about configuring and calling an external Gemini provider endpoint (`api_base`, model naming, provider-specific request behavior) and likely depends on DSPy’s integration layer with another library/service rather than DSPy’s own source logic alone. The question also references following instructions from an \"other provider\" tag, which points to documentation content outside the source/tests corpus."
+  },
+  "1989": {
+   "groundable": false,
+   "reason": "The question is mainly about GPU memory release behavior for a Hugging Face/PyTorch-backed model, which depends on the underlying libraries’ memory management rather than DSPy’s source alone. While DSPy source/tests might show whether HFModel exposes any cleanup API, the actual freeing of GPU memory is primarily controlled by external libraries, so this is not reliably resolvable from DSPy source and tests only."
+  },
+  "2001": {
+   "groundable": true,
+   "reason": "This asks about DSPy’s internal handling of generated fields like `reasoning` during bootstrapping and few-shot example construction—specifically why exemplar fields are replaced or omitted later. That behavior is likely determined by DSPy’s source code for modules/signatures/predictions/example serialization and teleprompter/bootstrapping logic, and could be investigated from the library code and tests without needing external docs or services."
+  },
+  "2007": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s runtime behavior and data structures for LM interaction history—specifically why `last_prompt`/history returns a chat-style `messages` record with `prompt: None` instead of a single prompt string. That behavior is likely defined in the library code and covered by tests around LM adapters/history/logging/chat vs text prompting, so it should be resolvable from source code and tests alone."
+  },
+  "2011": {
+   "groundable": false,
+   "reason": "This is not a technical question about DSPy that could be answered from the library's source code or tests. It is a repository/process request about deleting an issue, which is outside the source corpus."
+  },
+  "2014": {
+   "groundable": false,
+   "reason": "This is a usage/best-practice question about how DSPy recommends injecting general background knowledge into prompts/signatures versus examples/inputs, especially with few-shot optimization. While source code and tests may show some implementation details or incidental patterns, the recommendation it asks for is primarily documented in tutorials/docs/examples rather than something resolvable from code/tests alone."
+  },
+  "2026": {
+   "groundable": false,
+   "reason": "The question asks for practical guidance on how to choose/tune optimizer hyperparameters like `max_bootstrapped_demos` and `max_labeled_demos` for a specific use case. While the source code and tests can show what these parameters do, their defaults, and how they affect execution, they usually cannot determine the 'best' values for a user's task or provide general tuning methodology. That kind of advice is more likely to come from docs, tutorials, examples, or experimentation outside the source/tests."
+  },
+  "2027": {
+   "groundable": true,
+   "reason": "The question appears to be about DSPy's saved optimization artifacts and how to reload or reuse them in code/notebooks without retraining, including the JSON produced by save(). That behavior is likely determined by DSPy's implementation and tests for saving/loading modules, optimizers, and datasets, so the friction could plausibly be resolved by inspecting the source code and tests alone."
+  },
+  "2041": {
+   "groundable": true,
+   "reason": "The issue is about DSPy’s own client code not exposing or forwarding a `timeout` parameter in `LM.__init__`/`__call__`. That behavior is implemented in the library source and can be verified from the code path and any related tests, without needing website docs, tutorials, CI, or external services. While LiteLLM is mentioned, the concrete friction described is DSPy’s wrapper interface and argument passing, which is groundable in DSPy’s source/tests."
+  },
+  "3358": {
+   "groundable": false,
+   "reason": "The reported issue is primarily about an external hosted dataset artifact on the Hugging Face Hub ('lighteval/MATH') being unavailable or inaccessible. While DSPy source code might contain the dataset identifier, determining and resolving the actual friction depends on the state of a third-party service/resource outside the library's source and tests."
+  },
+  "3964": {
+   "groundable": false,
+   "reason": "The question is anchored to a website tutorial example (`dspy.ai/tutorials/math/`) rather than clearly to library source or tests, and the reported `KeyError: 'tags'` lacks enough code/context to trace purely from the DSPy codebase. Resolving it would likely require inspecting the tutorial content or surrounding documentation/example setup outside the source-and-tests corpus."
+  },
+  "6743": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s runtime behavior when constructing a ChainOfThought signature/prompt, specifically how the reasoning output field’s `prefix`/`desc` are populated and then shown via `lm.inspect_history()`. That behavior should be determinable from the library source and tests: e.g., the implementation of `ChainOfThought`, how it creates the rationale field, how `rationale_type` is handled, and how prompt/history rendering uses field metadata. Although the user references docs, the core issue is an internal code-path question, not primarily website/tutorial or external-service behavior."
+  },
+  "7139": {
+   "groundable": false,
+   "reason": "The question is primarily about integrating DSPy with another library, LangChain, and references an outdated LangChain tutorial. That friction depends on external-library APIs and documentation outside DSPy’s source/tests, so it is not mainly resolvable by reading only the DSPy codebase and tests."
+  },
+  "7767": {
+   "groundable": true,
+   "reason": "The reported friction is a suspected code bug in DSPy itself (`dspy/clients/lm_local.py`), specifically a missing `output_dir` lookup leading to `name 'output_dir' is not defined`. That can be investigated and confirmed from the library's source code and tests alone. Although the user mentions a tutorial/Colab notebook, the core issue is not about tutorial content or external services; it is about internal library behavior."
+  },
+  "7783": {
+   "groundable": true,
+   "reason": "This concerns a library API change/regression within DSPy itself: whether `activate_assertions()` exists in 2.6.2, whether old assertions code was removed/commented out, and what replacement mechanism exists. Those questions can be investigated from the source and tests by examining the assertions-related modules, public API, and any tests covering assertion behavior or migration to a new mechanism."
+  },
+  "7793": {
+   "groundable": true,
+   "reason": "The core friction is about how DSPy handles and exposes a provider-specific response field (`reasoning_content`) in its own abstractions such as `ChainOfThought()` and `inspect_history()`. That behavior should be inspectable in DSPy’s source code and tests: LM/provider wrappers, message/response normalization, tracing/history utilities, and ChainOfThought formatting. Although the exact semantics of DeepSeek’s `reasoning_content` come from an external model API, the question is mainly asking how DSPy should store, align, and display that field, which is groundable in the library codebase."
+  },
+  "7798": {
+   "groundable": true,
+   "reason": "The reported friction is a runtime API/implementation issue inside DSPy itself: `dspy.utils.callback` accesses `dspy.settings`, and the question is whether the installed `dspy` package exposes that attribute in version 2.6.2. That can be investigated directly from the library source and tests by checking package exports, initialization code, settings implementation, and any tests covering `dspy.configure`/callbacks. Although the user mentions a tutorials page, the core problem is not tutorial-only content but an internal library attribute/export mismatch that is groundable in the source corpus."
+  },
+  "7835": {
+   "groundable": false,
+   "reason": "The issue is about installation/packaging behavior on Windows (`pip install dspy`) and a dependency (`uvloop`) that does not support Windows. This primarily involves package metadata, dependency resolution, and third-party library/platform support rather than DSPy’s source code or tests."
+  },
+  "7854": {
+   "groundable": false,
+   "reason": "This asks about DSPy’s external community channels (e.g., Discord or user groups), which are project/community artifacts outside the library’s source code and tests. Reading the codebase would not determine whether such a community exists."
+  },
+  "7866": {
+   "groundable": true,
+   "reason": "The issue is about code-quality violations reported against the DSPy repository’s own Python files. Resolving Ruff errors would primarily involve inspecting and modifying the library source and tests themselves, which are within the available corpus."
+  },
+  "7867": {
+   "groundable": false,
+   "reason": "The reported friction is tied to a specific released package version (`dspy-ai==2.6.7`) failing at import time with `ModuleNotFoundError`, which strongly suggests a packaging/release artifact issue (e.g., what files were included in the built distribution) rather than behavior that can be resolved from source code and tests alone. The source may show an `__init__` import, but determining why the installed package is missing `dspy.predict` depends on distribution/build contents outside the source/test corpus."
+  },
+  "7888": {
+   "groundable": true,
+   "reason": "This is a runtime behavior question about DSPy’s own `MIPROv2` optimizer and its `log_dir` parameter. Whether saving to `log_dir` is implemented correctly, broken, or unsupported should be inspectable in the library source and possibly tests for `MIPROv2`/logging behavior, without needing external docs or services."
+  },
+  "7938": {
+   "groundable": true,
+   "reason": "Whether DSPy supports optimization against multiple metrics, or how metrics are accepted by evaluators/optimizers/teleprompters, is primarily determined by the library’s implementation and tests. Reading the source and tests should reveal if APIs accept only a single metric callable, how optimization feedback is computed, and whether multi-metric support already exists or would require code changes."
+  },
+  "7948": {
+   "groundable": true,
+   "reason": "The question is about whether DSPy supports custom adapters/prompt formatting (e.g., XML or JSON) and how the compiler uses them. That behavior is likely implemented in the library code and exercised in tests, so a studier could inspect adapter classes, compiler/prompt-generation paths, and related tests to determine support and extension points. Although the request for a 'good reference' might normally point to docs, the underlying feature question is still answerable from source and tests."
+  },
+  "7951": {
+   "groundable": true,
+   "reason": "The reported friction is likely caused by DSPy’s own handling of multimodal inputs under its JSON adapter/mode, which should be visible in the source code and tests. The specific error message ('Images are not yet supported in JSON mode') appears to come from DSPy itself, and the relevant logic for LM configuration, adapters, signatures with dspy.Image, and any restrictions for Ollama/chat models can be investigated directly in the library code/tests. Although Ollama is an external service, the core 'why does DSPy raise this error' question is answerable from the DSPy source corpus."
+  },
+  "7956": {
+   "groundable": false,
+   "reason": "The error is primarily about external dependencies/services (LiteLLM/OpenAI API returning 'invalid model ID') and likely model/provider configuration, not DSPy’s own source or tests. Resolving it would depend on OpenAI/LiteLLM model naming and runtime setup rather than behavior that can be determined from DSPy code alone."
+  },
+  "7999": {
+   "groundable": true,
+   "reason": "The issue describes runtime behavior of DSPy’s `inspect_history` when an LM returns multiple outputs (`n > 1`). That behavior should be implemented in DSPy’s source code, and any expected handling may be inferable from existing tests around LM history/logging or multi-output generation. It does not primarily depend on docs, packaging, CI, or third-party hosted services."
+  },
+  "8016": {
+   "groundable": true,
+   "reason": "The question is about whether DSPy’s code supports passing a `system_message` via `dspy.configure(...)` and how that compares to providing context as a signature input field. That is primarily determined by the library’s implemented API, prompt-construction logic, and tests, all of which live in the source corpus. It does not mainly depend on external docs, services, or repo process."
+  },
+  "8018": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s internal fine-tuning/provider logic: why LocalProvider() still leads to an AuthenticationError and which providers support fine-tuning. Those behaviors should be discoverable from the library’s source code and tests by inspecting the fine-tuning implementation, provider dispatch, default LM/client selection, and any provider capability checks or tests around finetuning."
+  },
+  "8026": {
+   "groundable": true,
+   "reason": "The issue is about runtime behavior implemented inside DSPy itself: when `prompt_model` is passed, COPRO ends up calling `self.prompt_model.inspect_history`, which prints logs directly and ignores normal logger disabling. Whether and how to suppress that output should be discoverable from the library’s source code and tests, because it concerns DSPy’s own logging/printing paths rather than external docs, packaging, or third-party services."
+  },
+  "8055": {
+   "groundable": true,
+   "reason": "This is about whether DSPy’s vLLM integration/backend accepts and forwards a specific configuration parameter (`tensor_parallel_size`). That behavior should be inspectable in DSPy’s source code and tests by checking the vLLM adapter/backend implementation, its constructor/signature, and any tests covering backend kwargs or parameter passing. It does not primarily depend on website docs, packaging, CI, or external hosted services."
+  },
+  "8059": {
+   "groundable": true,
+   "reason": "This asks about the behavior and supported mechanisms of `dspy.Signature` instruction overriding at runtime versus class definition time. That can be answered by inspecting the implementation of `Signature`, its metaclass/class attributes, and any related tests for updating instructions or creating signatures dynamically. The described restart/reload behavior is normal Python/class-definition behavior, and whether DSPy provides an alternative API is determinable from source and tests alone."
+  },
+  "8068": {
+   "groundable": true,
+   "reason": "This question is about DSPy’s runtime behavior when using BootstrapFewShot, then saving/loading a compiled program and observing different generation language. That likely depends on code paths in the library for teleprompt/optimizer compilation, serialization to JSON, restoration/loading, and how signatures/examples/instructions are preserved and used at inference. Those behaviors should be inspectable in DSPy’s source and tests, without needing external docs or services."
+  },
+  "8111": {
+   "groundable": false,
+   "reason": "This is primarily an installation/packaging/dependency-resolution issue about installing `litellm` alongside `dspy`, not a friction that would be resolved by reading DSPy's source code and tests. It depends on packaging metadata and external library/version interactions rather than library behavior implemented in the source corpus."
+  },
+  "8119": {
+   "groundable": true,
+   "reason": "It directly concerns adding tests for a specific source file (`dspy/retrievers/embeddings.py`). The needed behavior, interfaces, and expected usage can be inferred from the library’s source code and existing tests, without relying on external docs, tutorials, services, or repository-process artifacts."
+  },
+  "8122": {
+   "groundable": true,
+   "reason": "The question is about creating unit tests for an existing class in the library (`dspy.Parallel` / `dspy/utils/parallelizer.py`) and validating behaviors like thread isolation, parallel execution, and `max_errors` handling. Those behaviors should be inspectable and testable from the source code and existing tests alone, without needing external docs, tutorials, CI, packaging, or third-party hosted services."
+  },
+  "8164": {
+   "groundable": true,
+   "reason": "The issue is an import-time runtime error in DSPy itself. In principle, this could be investigated by reading DSPy’s source and tests to see what happens during `import dspy`—for example, whether the package reads files, decodes text, or performs other initialization that could trigger a `UnicodeDecodeError`. While environment details may matter, the reported friction is primarily about DSPy’s import behavior rather than docs, tutorials, CI, or external services."
+  },
+  "8195": {
+   "groundable": true,
+   "reason": "This is about the runtime behavior of DSPy components (`dspy.ReAct`, `dspy.History`, `InputField`, `OutputField`) and how they are formatted/passed through the LLM call chain. That behavior should be inspectable in the library’s source code and tests, without needing external docs, tutorials, packaging, or third-party hosted services."
+  },
+  "8206": {
+   "groundable": true,
+   "reason": "The core friction is about whether and how DSPy lets users pass model-generation arguments like `top_p`, `top_k`, or custom flags such as `enable_thinking=False`. That behavior is typically defined in the library’s LM wrappers, adapter/call paths, and tests showing how kwargs are forwarded to providers or local endpoints. While the specific semantics of Qwen3/vLLM are external, the DSPy-side question—how to set and pass these arguments through DSPy—is resolvable from the source code and tests."
+  },
+  "8221": {
+   "groundable": true,
+   "reason": "The question describes a runtime error involving DSPy’s own ReAct agent flow, Bedrock model integration, and LLM usage tracking. Those behaviors are likely implemented and testable within the library’s source code and tests, so the friction could plausibly be investigated from that corpus without needing external docs, release notes, or third-party hosted services."
+  },
+  "8244": {
+   "groundable": false,
+   "reason": "The question mainly asks for setup guidance/documentation and version compatibility for using DSPy with Ollama on a local machine. That friction depends on external docs/tutorials, packaging/versioning, and behavior of the third-party Ollama service, rather than something that could be reliably resolved from DSPy source code and tests alone."
+  },
+  "8259": {
+   "groundable": true,
+   "reason": "This asks about DSPy’s internal prompt construction for `Predict`—whether the full formatted prompt/messages (including the user question) can be accessed, and whether such functionality already exists. That behavior should be inspectable in the library’s source and tests, where `Predict`, adapters/chat formatting, and any tracing or LM-call interfaces are implemented and exercised."
+  },
+  "8265": {
+   "groundable": true,
+   "reason": "The reported friction is primarily about DSPy runtime behavior: the interaction between `dspy.settings.configure(track_usage=True)`, `dspy.streamify`, and the Bedrock LM integration, with FastAPI acting as the execution context that exposes the bug. Those mechanisms are likely implemented in DSPy source code and possibly covered by tests (usage tracking, streaming, context propagation, provider adapters). Even though FastAPI and Bedrock are external systems, the question is asking about a DSPy bug in how these features interact, not about deployment, docs, or third-party service configuration."
+  },
+  "8351": {
+   "groundable": true,
+   "reason": "This asks about the runtime behavior of `dspy.Evaluate` under multiprocessing and a custom metric, which is likely determined by the library’s implementation details in source and tests (e.g., task scheduling, worker pooling, result collection, or per-example evaluation flow). The slowdown near the final cases could plausibly be explained by reading the `Evaluate` code and related tests."
+  },
+  "8366": {
+   "groundable": true,
+   "reason": "The reported friction is an AttributeError arising from DSPy runtime behavior inside `dspy/teleprompt/bootstrap_finetune.py` (`pred.lm` being `None` during `compile`). Whether optimizer compilation requires a predictor/module-local LM, how `dspy.configure(lm=...)` propagates, and what assumptions `BootstrapFinetune.compile` makes are all questions that can be investigated from DSPy source code and tests. Although the user says the example came from the website, the actual issue is about library code behavior rather than website-only content."
+  },
+  "8369": {
+   "groundable": true,
+   "reason": "This asks about runtime behavior of DSPy’s Vertex AI integration—specifically whether the `location` argument passed to `dspy.LM(...)` is propagated or ignored. That is the kind of issue that can be investigated from the library’s source and tests by checking the Vertex AI provider implementation, argument plumbing, and any tests covering `project`/`location` handling. It does not primarily depend on docs, packaging, CI, or external services."
+  },
+  "8376": {
+   "groundable": true,
+   "reason": "The question is about whether DSPy currently supports optimizing tool descriptions, which is a library capability that can be verified by inspecting the source code and tests for tool-related abstractions and optimizer behavior. Although the user mentions checking the docs, the underlying issue is about implemented functionality in DSPy itself, not primarily about external documentation or infrastructure."
+  },
+  "8393": {
+   "groundable": false,
+   "reason": "The reported friction depends primarily on external behavior outside DSPy’s source/tests: LiteLLM mutates the request schema when targeting Gemini, which changes the cache inputs between get/put. While DSPy’s cache.py and JSONAdapter code can show that the cache key is recomputed and that additionalProperties is injected, the core breakage hinges on LiteLLM/Gemini behavior rather than something fully explainable or reproducible from DSPy’s code and tests alone."
+  },
+  "8430": {
+   "groundable": true,
+   "reason": "The core friction is about DSPy’s own exception handling in its JSON adapter—specifically a blanket `Exception` catch preventing propagation of a provider error. That behavior should be inspectable in the library source and potentially in tests. Although the trigger involves AzureOpenAI/litellm, the question is mainly about DSPy’s internal wrapping/propagation logic rather than external docs, packaging, or hosted-service behavior."
+  },
+  "8434": {
+   "groundable": false,
+   "reason": "The reported friction centers on DSPy’s interaction with external libraries/frameworks—specifically MLflow’s `mlflow.dspy.autolog()` behavior and a FastAPI async app. While DSPy source/tests may show how `dspy.configure()` changed, confirming or resolving this integration breakage would require understanding MLflow’s integration code and possibly FastAPI’s async execution context, which are outside the allowed corpus."
+  },
+  "8473": {
+   "groundable": true,
+   "reason": "Whether changing a signature/module docstring should invalidate DSPy’s cache is determined by the library’s own caching and request-construction logic. The source and tests should reveal what fields are included in the cache key, how docstrings affect prompt generation, and whether this behavior is intended or a bug. This does not primarily depend on external docs, packaging, or third-party service behavior."
+  },
+  "8491": {
+   "groundable": false,
+   "reason": "The question is mainly about whether external agent frameworks (e.g. LangGraph, CrewAI, Pydantic AI) support or integrate with DSPy-fine-tuned models, which depends on third-party projects and ecosystem-level integration rather than DSPy's own source code and tests. While DSPy's code may show how fine-tuned models are represented or used internally, it would not answer the compatibility/support status of those outside frameworks."
+  },
+  "8541": {
+   "groundable": true,
+   "reason": "The question is about whether DSPy supports particular model backends/providers (Hugging Face and Ollama) and how to configure them. That can be determined from DSPy’s source code and tests by inspecting LM/provider integrations, accepted model string formats, configuration paths, and any backend-specific tests. It does not primarily depend on website docs, packaging, or external service behavior."
+  },
+  "8612": {
+   "groundable": true,
+   "reason": "The reported friction is about DSPy’s internal LM/OpenAI request-construction logic: whether it detects certain model names and maps/removes parameters like `max_tokens`, `max_completion_tokens`, `temperature`, and `top_p` before calling the provider layer. That behavior should be inspectable in DSPy’s source and tests, including any model-specific parameter normalization and LiteLLM/OpenAI adapter code. Although the report references OpenAI’s external API requirements, the question is still primarily about DSPy’s own code path and could be investigated from the repository corpus."
+  },
+  "8695": {
+   "groundable": false,
+   "reason": "The request is mainly about adding a runtime warning based on model-specific tokenization and context-window limits, which depend heavily on external LM providers/tokenizers and their metadata rather than DSPy source/tests alone. While DSPy code may show how prompts are assembled and where LM calls happen, the core friction—accurately measuring total tokens against a model’s true context window—primarily involves behavior and limits outside the repository corpus."
+  },
+  "8734": {
+   "groundable": true,
+   "reason": "The question describes a runtime bug in DSPy’s own code paths: GEPA temporarily patching `module.forward` to return `(prediction, trace)`, and `Module.__call__` assuming the return value has `set_lm_usage`. Whether this is true, why it fails, and how to fix it should be verifiable directly from the library source and tests, without needing external docs, services, or repository process context."
+  },
+  "8738": {
+   "groundable": true,
+   "reason": "The reported friction is about a runtime bug in DSPy itself: GEPA interacting with the `track_usage` setting and raising `AttributeError: 'tuple' object has no attribute 'set_lm_usage'`. That behavior should be inspectable in the library source and tests by tracing GEPA compilation, usage-tracking hooks, and any code paths that expect objects with `set_lm_usage`. It does not primarily depend on external docs, tutorials, packaging, CI, or third-party hosted services."
+  },
+  "8753": {
+   "groundable": true,
+   "reason": "The core friction is about DSPy runtime behavior—whether creating/using `dspy.LM` reloads the model on each call, and what in-library factors affect request latency. Those questions can be investigated from DSPy’s source and tests by examining LM initialization, request dispatch, caching/reuse, sync/async behavior, and token parameter handling. While absolute speed relative to other frameworks depends on external providers and network conditions, the DSPy-specific behavior described is substantially groundable in the source corpus."
+  },
+  "8760": {
+   "groundable": false,
+   "reason": "The reported friction depends on the behavior/API of an external library (`fastmcp`'s `CallToolResult` using `is_error` vs `isError`). While DSPy's source may contain the `_convert_mcp_tool_result` check, determining that it is wrong requires knowledge outside DSPy's source/tests. The report also references the website tutorial and a specific transport setup, which are outside the allowed corpus."
+  },
+  "8787": {
+   "groundable": true,
+   "reason": "The question is mainly about DSPy’s code-level support for integrating local/custom language models and whether there are examples in the repository. That can be answered by inspecting the source and tests for LM abstraction/interfaces, adapters/wrappers, and any test fixtures or examples showing custom model definitions. Although the specific model name qwen3-32B may imply external serving details, the core friction—whether DSPy can work with local models and how to define a custom LLM in this repo—is grounded in the source corpus."
+  },
+  "8793": {
+   "groundable": true,
+   "reason": "The warning originates from DSPy’s own `json_adapter` logic, so the source and tests should show when DSPy attempts structured output, what exceptions or validation failures trigger the fallback to plain JSON mode, and how `Predict` handles provider/model responses. While the exact behavior of `meta-llama/Llama-3.3-70B-Instruct-Turbo` is external, the user’s main friction—why DSPy emits this warning despite apparently valid JSON—can be investigated from DSPy’s adapter/source code and tests."
+  },
+  "8795": {
+   "groundable": false,
+   "reason": "The question primarily asks for a tutorial/example or a new feature for multi-label classification, which is not something the source code and tests alone can fully answer. While code/tests might show whether current primitives could be adapted for multi-label outputs, the main friction here is about user-facing guidance/tutorial material or feature support, which lies outside the study corpus."
+  },
+  "8800": {
+   "groundable": true,
+   "reason": "This asks about GEPA’s supported behavior and configuration inside DSPy itself: whether it can start from an existing prompt, whether it rewrites instructions, and whether prompt segments/examples can be frozen or reordered. Those are implementation/API questions that can be answered by inspecting the GEPA optimizer code, prompt/program representations, and relevant tests. Although the user mentions not finding it in tutorials/docs, the core friction is about library functionality rather than external documentation or services."
+  },
+  "8841": {
+   "groundable": false,
+   "reason": "This is primarily a feature request about supporting an external third-party model/service (OpenAI GPT-5). Whether DSPy supports that model depends on integrations with the external provider and release-level changes, not just behavior that can be conclusively resolved from DSPy’s source code and tests alone."
+  },
+  "8858": {
+   "groundable": true,
+   "reason": "This is a runtime bug report tied directly to DSPy’s internal code path (`adapters/base.py`) and the interaction between `ReAct` and tools. Whether `field.annotation` can be a non-class and trigger `issubclass()` is something that can be investigated from the library source and tests alone by tracing the relevant adapter, schema/signature handling, and any `ReAct` tool tests. It does not primarily depend on external docs, packaging, CI, or third-party hosted services."
+  },
+  "8866": {
+   "groundable": false,
+   "reason": "This request is about visual styling of rendered Markdown/code blocks (font size consistency), which is typically controlled by documentation website/frontend CSS or UI assets rather than the DSPy library’s Python source code and tests. The friction is not primarily resolvable by reading the library logic/tests alone."
+  },
+  "8889": {
+   "groundable": true,
+   "reason": "The question is about runtime behavior of DSPy’s streaming implementation, specifically `dspy.streamify()` and `StreamListener` logic in `dspy/streaming/streaming_listener.py`. The described friction depends on buffer handling, regex-based marker detection, `flush()` conditions, and chunk finalization behavior—all of which are inspectable in the library source and likely testable from existing or missing tests. It does not primarily depend on external docs, packaging, hosted services, or another library’s internal behavior."
+  },
+  "8896": {
+   "groundable": true,
+   "reason": "This asks about whether specific DSPy optimizers and the ReAct agent support async tool calls during optimization, which is a question about implemented library behavior. That can be investigated by reading the source code and tests for the optimizers, agent, and async execution paths."
+  },
+  "8898": {
+   "groundable": true,
+   "reason": "The question is about extending DSPy’s internal abstractions—adding a new adapter/type and aggregation-style functions, and possibly using them as `reduce_fn` in existing optimizers. Whether and how this fits can be evaluated from the source and tests by inspecting current adapters (for example JSON-based ones), type handling, existing aggregation utilities like majority-style reducers, and optimizer interfaces such as Ensemble. It does not primarily depend on website docs, tutorials, release process, or third-party hosted behavior."
+  },
+  "8926": {
+   "groundable": false,
+   "reason": "This is primarily a repository contribution/process request, not a technical friction about DSPy behavior that could be resolved from source code and tests alone. It depends on external artifacts and maintainer workflow: creating GitHub issues/PRs, following CONTRIBUTING.md, reviewer tagging, and the external Google Python style guide. While source code can show which public APIs lack docstrings, the question itself is about contribution instructions and standards outside the source/tests corpus."
+  },
+  "8940": {
+   "groundable": true,
+   "reason": "The question is about how DSPy serializes/saves programs and LM configuration, specifically whether API keys are written into saved JSON/PKL artifacts. That behavior should be implemented in the library’s source code and likely covered by serialization/save/load tests, so the friction can be investigated and potentially resolved from source and tests alone."
+  },
+  "8985": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s own handling of `dspy.Image` inputs when constructing requests for `dspy.LM(..., model_type=\"responses\")`. That behavior is likely implemented in DSPy source code and could be validated or reproduced through its tests. Although the thrown error comes from LiteLLM, the described fix concerns how DSPy formats image inputs for that API mode, which is an integration path plausibly covered by DSPy’s code rather than external docs or release/process artifacts."
+  },
+  "9012": {
+   "groundable": true,
+   "reason": "This is a bug report about COPRO’s internal behavior in DSPy—specifically whether the `breadth`/`n` parameter is being respected when generating prompt variants. That behavior should be inspectable in the library’s source code and possibly its tests, without needing external docs, tutorials, packaging, or third-party services."
+  },
+  "9016": {
+   "groundable": true,
+   "reason": "The reported friction is a runtime failure in DSPy’s tool-calling path (`'str' object has no attribute 'tool_calls'`) when executing a DSPy program. That behavior should be investigable from DSPy’s source and tests: the relevant tool-execution/message-handling code, type assumptions, and any version guards or compatibility tests are part of the library itself. Although the repro references a docs example and a specific Python version, the core question is about DSPy’s implementation breaking under that environment, not about website/tutorial content or external services."
+  },
+  "9098": {
+   "groundable": true,
+   "reason": "The question is about runtime behavior of DSPy’s own `Signature` type parsing/validation logic differing between Python versions. That behavior should be traceable in the library source and its tests, which likely define how structured outputs are parsed, converted, and validated. Although Python 3.14 itself is external, the reported friction centers on DSPy’s implementation and whether it correctly handles that environment, so it is groundable in the source/test corpus."
+  },
+  "9122": {
+   "groundable": false,
+   "reason": "The reported failure centers on DSPy’s integration with external Responses-model semantics via LiteLLM/OpenAI-style APIs—specifically that the structured-output parameters DSPy sends are incompatible with the Responses API. While DSPy source/tests may show how it constructs and falls back from structured-output requests, determining that this construction is invalid and why it fails depends on behavior/specs of another library/service outside the DSPy source corpus."
+  },
+  "9136": {
+   "groundable": true,
+   "reason": "This request is about improving inline docstrings for a specific source file/class (`dspy/retrievers/embeddings.py`), which is directly inspectable in the library source. The needed context—class methods, signatures, behavior, and likely examples from tests—can be derived from the source code and tests without relying on external docs, packaging, CI, or third-party services."
+  },
+  "9139": {
+   "groundable": true,
+   "reason": "The request is about adding docstrings directly to public APIs in a specific source file (`dspy/clients/provider.py`). Determining what those classes and methods do, what parameters/returns/exceptions they have, and how to document them can be grounded by inspecting the source code and any related tests that exercise the provider, training job, and reinforcement job interfaces. Although it references a GitHub issue for broader context, the actual friction is internal to the codebase rather than depending on external docs, tutorials, packaging, or third-party services."
+  },
+  "9150": {
+   "groundable": false,
+   "reason": "The question is primarily asking for recommended usage patterns, design guidance, and existing tutorials/examples for integrating DSPy with external stateful benchmark frameworks like AppWorld or Terminal Bench. Those concerns depend on documentation/tutorial content and on third-party environment behavior, not just DSPy’s source code and tests. While the code/tests might show whether APIs like Module, ReAct, or GEPA expose certain hooks, they would not reliably answer the broader 'standard pattern' or tutorial/example questions."
+  },
+  "9166": {
+   "groundable": true,
+   "reason": "This is a runtime behavior question about how DSPy handles `Signature` definitions, `InputField(default=...)`, omitted call-time arguments, prompt construction, and missing-field validation. Those behaviors should be implemented and testable in the library’s source code and tests, so the described friction could be investigated and resolved from that corpus alone."
+  },
+  "9171": {
+   "groundable": true,
+   "reason": "The question is about specific control flow and error handling in DSPy’s `ReAct` implementation (`react.py`), including named methods (`_call_with_potential_trajectory_truncation`, `_async_call_with_potential_trajectory_truncation`, `forward`) and a concrete proposed code change. Whether the method can return `None`, how the caller uses `pred`, and whether retries are exhausted without raising are all resolvable by inspecting the library source and tests alone."
+  },
+  "9174": {
+   "groundable": true,
+   "reason": "The request is about adding docstrings to public APIs in a specific source file, dspy/primitives/module.py. The needed information—what the Module class and its methods do, their parameters/returns/raises, and plausible examples—can be inferred from the library’s source code and tests. Although it mentions a broader docstring initiative issue, the core friction is source-grounded rather than dependent on external docs, tutorials, packaging, CI, or third-party services."
+  },
+  "9230": {
+   "groundable": true,
+   "reason": "The question describes a runtime bug in DSPy’s Python code path involving `BootstrapFewShot`, `ChainOfThought`, `dspy.Example`, and specifically mentions a workaround in `bootstrap.py`. Whether duplicate `context` kwargs are being passed, and how examples are constructed during bootstrapping, can be determined by inspecting the library source and tests alone. It does not primarily depend on external docs, packaging, hosted services, or another library’s internal behavior."
+  },
+  "9254": {
+   "groundable": false,
+   "reason": "This request is primarily about adding a new integration with an external product/service (Moss) and its JS/Python SDKs. While DSPy’s source and tests might show patterns for existing retrievers/tools, the specifics needed to implement or evaluate Moss support depend on artifacts outside the corpus, especially Moss’s API/SDK behavior and integration details."
+  },
+  "9286": {
+   "groundable": true,
+   "reason": "The question is about DSPy’s internal architecture and extension points: how the proposer represents outputs, why adding fields propagates through adapters, and whether there is a supported code-level way to make the proposer emit multiple fields. That friction should be investigable from the library’s source and tests by examining proposer-related modules, signatures/fields, and adapter handling of outputs. It does not primarily depend on website docs, tutorials, packaging, hosted services, or third-party internals."
+  },
+  "9292": {
+   "groundable": true,
+   "reason": "This is about modifying a specific source file in the library (`dspy/utils/hasher.py`) to add docstrings to its public APIs. The necessary context—what functions/classes are public, their signatures, and expected behavior—can be determined from the source code and tests without relying on external docs, tutorials, packaging, or third-party services."
+  },
+  "9299": {
+   "groundable": false,
+   "reason": "This request is about updating the project's website artifact (`dspy.ai/llms.txt`) and MkDocs plugin configuration (`mkdocs-llmstxt`) used for site generation. That friction concerns documentation-site tooling and external plugin usage, not behavior that could be resolved by studying DSPy's source code and tests alone."
+  },
+  "9308": {
+   "groundable": true,
+   "reason": "The question is about a specific runtime behavior in DSPy code (`dspy/teleprompt/utils.py`) and claims an inconsistency in how `metric_threshold` is passed to `BootstrapFewShot` for different seed cases. That can be verified or falsified directly by inspecting the source and any related tests, and a fix could also be derived from source alone. It does not primarily depend on external docs, packaging, CI, or third-party hosted services."
+  },
+  "9343": {
+   "groundable": true,
+   "reason": "This request is about adding docstrings to specific public APIs in the library’s source files. The necessary information to write accurate docstrings—method/class behavior, parameters, return values, and async/sync differences—can be inferred from the implementation and tests in the source corpus. It does not primarily depend on external docs, packaging, CI, or third-party services."
+  },
+  "9378": {
+   "groundable": true,
+   "reason": "The question describes a runtime behavior/bug in DSPy’s output parsing and type validation path when an LM returns an empty string. Whether DSPy converts empty outputs into null/None instead of enforcing the declared schema should be inspectable in the library’s source code and tests, especially around signature parsing, JSON/result coercion, and Pydantic-based typing/validation."
+  },
+  "9425": {
+   "groundable": true,
+   "reason": "The question describes a runtime error in DSPy’s own code path (`ReAct` with tools, specifically the adapter’s `_call_preprocess` logic around `issubclass(field.annotation, Type)`). Whether this bug exists, why it happens, and how tool function annotations are handled should be inspectable in the library source and tests. It does not primarily depend on external docs, packaging, CI, or third-party hosted services."
+  },
+  "9437": {
+   "groundable": true,
+   "reason": "The request is directly about modifying a source file in the library (`dspy/clients/lm.py`) by adding docstrings. Understanding what docstrings should describe can be grounded in the source code and tests for that module and related code paths. It does not primarily depend on external docs, tutorials, packaging, CI, or third-party services."
+  },
+  "9462": {
+   "groundable": true,
+   "reason": "This request is about adding docstrings to specific functions in DSPy's source files. The behavior, arguments, returns, and possible exceptions for those functions can be inferred from the source code and tests, so the needed information is grounded in the code corpus. Although it references an issue number and the Google Python Style Guide, those are secondary to the core task."
+  },
+  "9491": {
+   "groundable": false,
+   "reason": "This is primarily a speculative feature request based on an external prompt-format concept and an external implementation/repository, not a friction that can be resolved by reading DSPy’s existing source code and tests. While the codebase could show how Signatures, Modules, and optimizers are implemented today, it would not ground the claimed sinc-prompt theory, Nyquist-completeness metric, empirical weights, or the external sinc JSON design."
+  },
+  "9496": {
+   "groundable": false,
+   "reason": "The question is mainly about external runtime behavior and requirements: GPU/VRAM sizing, performance and OOM/timeouts during tutorials, and interactions with LMDeploy/Ollama and a specific 32B quantized model. Those depend on deployment backends, model characteristics, and tutorial workloads rather than DSPy source/tests alone. While DSPy code may show some generation/optimization parameters, it would not reliably answer minimum hardware/software requirements or diagnose LMDeploy KV-cache growth and crashes."
+  },
+  "9523": {
+   "groundable": true,
+   "reason": "The issue is entirely about a missing docstring in a specific source file and can be verified and addressed by inspecting the library’s code (and possibly tests for style or coverage conventions). It does not depend on external docs, packaging, CI, or third-party service behavior."
+  },
+  "9525": {
+   "groundable": true,
+   "reason": "The request is directly about a specific source file and public API elements in the codebase (`dspy/datasets/dataset.py`). Whether the class and methods/properties lack docstrings can be verified and addressed by reading the library source, with no dependence on docs site, tutorials, releases, or external services."
+  },
+  "9530": {
+   "groundable": true,
+   "reason": "The request is directly about modifying a function in the DSPy source tree (`dspy/teleprompt/bootstrap.py`). Determining the function’s purpose, arguments, return behavior, and prevailing docstring format can be done by inspecting the source code and tests, especially usages of `BootstrapFewShot.compile()` and existing docstring conventions in the codebase."
+  },
+  "9535": {
+   "groundable": true,
+   "reason": "The request is directly about modifying a specific source file in the DSPy codebase by adding docstrings to functions and TypedDicts. The necessary context—what the functions do, their parameters/returns, and expected behavior—can be inferred from the source code and tests without relying on external docs, services, or repository process details."
+  },
+  "9547": {
+   "groundable": true,
+   "reason": "The request is directly about modifying code in the DSPy source tree (`dspy/teleprompt/vanilla.py`) by adding docstrings to a class and method. Understanding what to document can be resolved from the implementation and tests in the repository; it does not primarily depend on external docs, packaging, CI, or third-party services."
+  }
+ }
+}

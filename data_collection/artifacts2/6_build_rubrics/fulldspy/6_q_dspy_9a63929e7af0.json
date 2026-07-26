@@ -1,0 +1,94 @@
+{
+ "id": "dspy_9a63929e7af0",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I'm wiring an async helper into a synchronous `dspy.ReAct` workflow because the rest of my program is still sync. The confusing part is that the run doesn't crash at the top level; instead the tool step seems to turn into an observation-level failure and the agent keeps going.\n\nBefore I redesign the whole thing, I want a proof of the exact before/after behavior when I flip the async-to-sync setting. The only thing I care about is whether the observation string records the conversion error by default and whether the real tool output appears once I opt in.\n\nGive me a complete, runnable Python program that uses `DummyLM`, runs the same `dspy.ReAct` call twice with an async tool, and proves the first trajectory contains the async-to-sync error while the second trajectory contains the real tool result.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\nasync def lookup(city: str) -> str:\n    return f'lookup:{city}'\n\nclass Sig(dspy.Signature):\n    question: str = dspy.InputField()\n    answer: str = dspy.OutputField()\n\ndef make_lm():\n    return DummyLM([\n        {'next_thought': 'tool', 'next_tool_name': 'lookup', 'next_tool_args': {'city': 'Paris'}},\n        {'next_thought': 'finish', 'next_tool_name': 'finish', 'next_tool_args': {}},\n        {'reasoning': 'done', 'answer': 'ok'},\n    ])\n\nagent = dspy.ReAct(Sig, tools=[lookup], max_iters=2)\nwith dspy.context(lm=make_lm(), allow_tool_async_sync_conversion=False):\n    bad = agent(question='x')\nwith dspy.context(lm=make_lm(), allow_tool_async_sync_conversion=True):\n    good = agent(question='x')\n\nassert 'allow_tool_async_sync_conversion' in bad.trajectory['observation_0']\nassert good.trajectory['observation_0'] == 'lookup:Paris'\nprint(bad.trajectory['observation_0'])\nprint(good.trajectory['observation_0'])\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The proof inspects `prediction.trajectory['observation_0']`, because synchronous `ReAct.forward` writes each tool outcome there and converts tool exceptions into observation text instead of raising them from the agent call.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The same synchronous `dspy.ReAct` agent with the same async tool is run twice under `dspy.context`, once with `allow_tool_async_sync_conversion=False` and once with it set to `True`, since the conversion flag is checked inside `Tool.__call__` at execution time.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "In the disabled-conversion run, the first tool observation is validated as an async-to-sync failure string containing `allow_tool_async_sync_conversion` (and/or `acall`), not as a normal tool value.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "In the enabled-conversion run, the first tool observation is asserted to equal the real async tool return value exactly, proving the coroutine result is surfaced through the synchronous workflow.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 5,
+   "statement": "The scripted agent run forces an actual tool step before selecting `finish`, so `observation_0` exists in both runs and the program can terminate after recording that observation.",
+   "span_ids": [
+    "s3",
+    "s2"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/types/tool.py",
+   "start_line": 177,
+   "end_line": 189,
+   "excerpt": "0177:     def __call__(self, **kwargs):\n0178:         parsed_kwargs = self._validate_and_parse_args(**kwargs)\n0179:         result = self.func(**parsed_kwargs)\n0180:         if asyncio.iscoroutine(result):\n0181:             if settings.allow_tool_async_sync_conversion:\n0182:                 return self._run_async_in_sync(result)\n0183:             else:\n0184:                 raise ValueError(\n0185:                     \"You are calling `__call__` on an async tool, please use `acall` instead or enable \"\n0186:                     \"async-to-sync conversion with `dspy.configure(allow_tool_async_sync_conversion=True)` \"\n0187:                     \"or `with dspy.context(allow_tool_async_sync_conversion=True):`.\"\n0188:                 )\n0189:         return result"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/react.py",
+   "start_line": 95,
+   "end_line": 118,
+   "excerpt": "0095:     def forward(self, **input_args):\n0096:         trajectory = {}\n0097:         max_iters = input_args.pop(\"max_iters\", self.max_iters)\n0098:         for idx in range(max_iters):\n0099:             try:\n0100:                 pred = self._call_with_potential_trajectory_truncation(self.react, trajectory, **input_args)\n0101:             except ValueError as err:\n0102:                 logger.warning(f\"Ending the trajectory: Agent failed to select a valid tool: {_fmt_exc(err)}\")\n0103:                 break\n0104: \n0105:             trajectory[f\"thought_{idx}\"] = pred.next_thought\n0106:             trajectory[f\"tool_name_{idx}\"] = pred.next_tool_name\n0107:             trajectory[f\"tool_args_{idx}\"] = pred.next_tool_args\n0108: \n0109:             try:\n0110:                 trajectory[f\"observation_{idx}\"] = self.tools[pred.next_tool_name](**pred.next_tool_args)\n0111:             except Exception as err:\n0112:                 trajectory[f\"observation_{idx}\"] = f\"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}\"\n0113: \n0114:             if pred.next_tool_name == \"finish\":\n0115:                 break\n0116: \n0117:         extract = self._call_with_potential_trajectory_truncation(self.extract, trajectory, **input_args)\n0118:         return dspy.Prediction(trajectory=trajectory, **extract)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/predict/react.py",
+   "start_line": 62,
+   "end_line": 67,
+   "excerpt": "0062:         tools[\"finish\"] = Tool(\n0063:             func=lambda: \"Completed.\",\n0064:             name=\"finish\",\n0065:             desc=f\"Marks the task as complete. That is, signals that all information for producing the outputs, i.e. {outputs}, are now available to be extracted.\",\n0066:             args={},\n0067:         )"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/adapters/test_tool.py",
+   "start_line": 385,
+   "end_line": 393,
+   "excerpt": "0385: def test_async_tool_call_in_sync_mode():\n0386:     tool = Tool(async_dummy_function)\n0387:     with dspy.context(allow_tool_async_sync_conversion=False):\n0388:         with pytest.raises(ValueError, match=r\".*acall.*allow_tool_async_sync_conversion.*\"):\n0389:             result = tool(x=1, y=\"hello\")\n0390: \n0391:     with dspy.context(allow_tool_async_sync_conversion=True):\n0392:         result = tool(x=1, y=\"hello\")\n0393:         assert result == \"hello 1\""
+  }
+ ],
+ "difficulty": "hard",
+ "note": "ReAct catches the tool exception and records it as an observation unless async-to-sync conversion is enabled.",
+ "source_index": 21,
+ "smalldspy_scope": false
+}

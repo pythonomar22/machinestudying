@@ -1,0 +1,124 @@
+You are optimizing one DSPy expert QA benchmark bundle (question, gold answer, private rubric, evidence spans) inside the official DSPy repository. The bundle failed verification; revise it so it passes.
+
+## Verification the bundle must pass
+1. Deterministic syntax check: every fenced ```python block in the gold answer compiles.
+2. Sandbox run: the reference program (the longest fenced python block) runs to completion offline - no API key, no network; whenever a language model is needed it must use the offline stub the library ships for its own tests (`dspy.utils.dummies.DummyLM`).
+3. Self-grading: the gold answer, graded against the private rubric by an independent grader, must earn score 1 on every claim.
+
+## Rules
+- Revise the answer, the rubric, and (only if unavoidable) the question TOGETHER; fix root causes, and change as little as possible.
+- Preserve the question's intent and difficulty. Do not weaken the question or the rubric merely to make grading easy.
+- The question must keep the naming discipline: it may name brand-level user-facing concepts, but never the internal class/method/helper/file that is the answer - those belong only in the gold answer and evidence.
+- The rubric must still satisfy: 2-8 atomic, minimally overlapping claims; each `core` or `supporting`; weights sum to exactly 100 with core claims carrying most of the weight; every claim cites 1-3 evidence spans; every span is a real `*.py` file under the code roots (`dspy/`, `tests/`) with exact 1-indexed line numbers; spans stay focused (prefer 1-40 lines, never exceed 300); claims judgeable from code and tests alone.
+- The repository is available read-only in your working directory - verify behavior in the source before asserting it. If the gold answer contradicts the code, the code wins.
+
+## Current bundle
+{
+  "id": "dspy_1855dd7a0655",
+  "topic": "lm_provider_integration_and_configuration",
+  "question": "I'm debugging async streaming against an OpenAI-compatible backend. Regular async calls work with my custom auth header, but streamed ones seem to lose auth somewhere between DSPy and the provider.\n\nI also rely on usage accounting in stream mode, so I want to see both things at once: whether DSPy adds the streamed usage option, and whether the header survives when I go through the async path instead of a sync call.\n\nGive me a complete, runnable Python program that exercises the async streaming path offline, captures the exact outbound kwargs, and ends with prints/assertions proving whether the custom header was preserved and whether usage tracking added the stream option.",
+  "gold_answer": "```python\nimport asyncio\nfrom unittest import mock\n\nimport dspy\nfrom litellm.utils import Choices, Message, ModelResponse\n\n\nclass DummySendStream:\n    def __init__(self):\n        self.chunks = []\n\n    async def send(self, chunk):\n        self.chunks.append(chunk)\n\n\nasync def empty_async_generator():\n    if False:\n        yield None\n\n\nasync def main():\n    stream = DummySendStream()\n    final_response = ModelResponse(\n        choices=[Choices(message=Message(content=\"streamed\"))],\n        usage={\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2},\n        model=\"openai/gpt-4o-mini\",\n    )\n\n    with (\n        mock.patch(\"litellm.acompletion\", return_value=empty_async_generator()) as mock_acompletion,\n        mock.patch(\"litellm.stream_chunk_builder\", return_value=final_response),\n    ):\n        lm = dspy.LM(model=\"openai/gpt-4o-mini\", cache=False)\n        with dspy.context(send_stream=stream, track_usage=True, caller_predict=None):\n            result = await lm.acall(\"hello\", headers={\"Authorization\": \"Bearer secret-token\"})\n\n    call_kwargs = mock_acompletion.call_args.kwargs\n    print(\"result:\", result)\n    print(\"streamed_call_kwargs:\", call_kwargs)\n\n    assert result == [\"streamed\"]\n    assert call_kwargs[\"stream\"] is True\n    assert call_kwargs[\"stream_options\"] == {\"include_usage\": True}\n    assert call_kwargs[\"headers\"] is None\n\n\nasyncio.run(main())\n```",
+  "rubric": [
+    {
+      "claim_id": "c1",
+      "claim_type": "core",
+      "weight": 20,
+      "statement": "The program must force DSPy's streamed async branch by making an async chat-model call while `send_stream` is set in DSPy settings; otherwise `_get_stream_completion_fn` returns `None` and the streamed helper is not used.",
+      "span_ids": [
+        "s1",
+        "s2"
+      ]
+    },
+    {
+      "claim_id": "c2",
+      "claim_type": "core",
+      "weight": 15,
+      "statement": "It must capture the outbound async LiteLLM call kwargs and show that the streamed path sends `stream=True`.",
+      "span_ids": [
+        "s3",
+        "s5"
+      ]
+    },
+    {
+      "claim_id": "c3",
+      "claim_type": "core",
+      "weight": 25,
+      "statement": "It must show that enabling usage tracking on the streamed path adds `stream_options == {\"include_usage\": True}` to the outbound request.",
+      "span_ids": [
+        "s2"
+      ]
+    },
+    {
+      "claim_id": "c4",
+      "claim_type": "core",
+      "weight": 25,
+      "statement": "It must show that custom auth headers are lost in async streaming: `alitellm_completion` removes `headers` from the request and calls `_get_stream_completion_fn` without forwarding them, so the helper's `litellm.acompletion` call receives `headers=None`.",
+      "span_ids": [
+        "s2",
+        "s3",
+        "s5"
+      ]
+    },
+    {
+      "claim_id": "c5",
+      "claim_type": "supporting",
+      "weight": 10,
+      "statement": "The offline harness should supply a dummy stream with an async `send`, mock `litellm.acompletion` as an async iterator, and stub `litellm.stream_chunk_builder` so the streamed helper can iterate/send chunks and still complete without a real backend.",
+      "span_ids": [
+        "s3",
+        "s4"
+      ]
+    },
+    {
+      "claim_id": "c6",
+      "claim_type": "supporting",
+      "weight": 5,
+      "statement": "It should explain that the auth loss is specific to the streamed async branch, because the non-stream async fallback explicitly passes `_add_dspy_identifier_to_headers(headers)` into `litellm.acompletion`.",
+      "span_ids": [
+        "s5"
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "span_id": "s1",
+      "path": "dspy/clients/lm.py",
+      "start_line": 218,
+      "end_line": 231,
+      "excerpt": "0218:         if self.model_type == \"chat\":\n0219:             completion = alitellm_completion\n0220:         elif self.model_type == \"text\":\n0221:             completion = alitellm_text_completion\n0222:         elif self.model_type == \"responses\":\n0223:             completion = alitellm_responses_completion\n0224:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0225: \n0226:         try:\n0227:             results = await completion(\n0228:                 request=dict(model=self.model, messages=messages, **kwargs),\n0229:                 num_retries=self.num_retries,\n0230:                 cache=litellm_cache_args,\n0231:             )"
+    },
+    {
+      "span_id": "s2",
+      "path": "dspy/clients/lm.py",
+      "start_line": 337,
+      "end_line": 355,
+      "excerpt": "0337: def _get_stream_completion_fn(\n0338:     request: dict[str, Any],\n0339:     cache_kwargs: dict[str, Any],\n0340:     sync=True,\n0341:     headers: dict[str, Any] | None = None,\n0342: ):\n0343:     stream = dspy.settings.send_stream\n0344:     caller_predict = dspy.settings.caller_predict\n0345: \n0346:     if stream is None:\n0347:         return None\n0348: \n0349:     # The stream is already opened, and will be closed by the caller.\n0350:     stream = cast(MemoryObjectSendStream, stream)\n0351:     caller_predict_id = id(caller_predict) if caller_predict else None\n0352: \n0353:     if dspy.settings.track_usage:\n0354:         request[\"stream_options\"] = {\"include_usage\": True}\n0355: "
+    },
+    {
+      "span_id": "s3",
+      "path": "dspy/clients/lm.py",
+      "start_line": 356,
+      "end_line": 362,
+      "excerpt": "0356:     async def stream_completion(request: dict[str, Any], cache_kwargs: dict[str, Any]):\n0357:         response = await litellm.acompletion(\n0358:             cache=cache_kwargs,\n0359:             stream=True,\n0360:             headers=headers,\n0361:             **request,\n0362:         )"
+    },
+    {
+      "span_id": "s4",
+      "path": "dspy/clients/lm.py",
+      "start_line": 363,
+      "end_line": 370,
+      "excerpt": "0363:         chunks = []\n0364:         async for chunk in response:\n0365:             if caller_predict_id:\n0366:                 # Add the predict id to the chunk so that the stream listener can identify which predict produces it.\n0367:                 chunk.predict_id = caller_predict_id\n0368:             chunks.append(chunk)\n0369:             await stream.send(chunk)\n0370:         return litellm.stream_chunk_builder(chunks)"
+    },
+    {
+      "span_id": "s5",
+      "path": "dspy/clients/lm.py",
+      "start_line": 433,
+      "end_line": 448,
+      "excerpt": "0433: async def alitellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0434:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0435:     request = dict(request)\n0436:     request.pop(\"rollout_id\", None)\n0437:     headers = request.pop(\"headers\", None)\n0438:     stream_completion = _get_stream_completion_fn(request, cache, sync=False)\n0439:     if stream_completion is None:\n0440:         return await litellm.acompletion(\n0441:             cache=cache,\n0442:             num_retries=num_retries,\n0443:             retry_strategy=\"exponential_backoff_retry\",\n0444:             headers=_add_dspy_identifier_to_headers(headers),\n0445:             **request,\n0446:         )\n0447: \n0448:     return await stream_completion()"
+    }
+  ]
+}
+
+## Verification failures
+- self-grade: claim c6 scored 0.5: It isolates the streamed async failure, but it does not explicitly explain or demonstrate that the non-stream async fallback preserves headers via `_add_dspy_identifier_to_headers`.
+
+Return JSON that matches the provided schema and nothing else - the complete revised bundle (all fields, including parts you did not change).

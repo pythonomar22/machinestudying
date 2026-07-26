@@ -1,0 +1,726 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_986e996224bf`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I'm using the evolutionary optimizer as a batch-search tool and I turned on per-task best-output tracking. DSPy rejected the configuration unless another, more verbose tracking mode was also enabled, and I want a proof of both the dependency and what appears on the returned program once the config is accepted.
+
+Give me a complete, runnable Python program that stays offline with `DummyLM`, first reproduces the configuration failure, then uses a tiny patched optimizer run to print/assert that the compiled program exposes per-task best outputs when the compatible tracking mode is enabled.`
+- Gold answer:
+```python
+import types
+
+import dspy
+import gepa
+from dspy.teleprompt.gepa.gepa import GEPA
+from dspy.utils.dummies import DummyLM
+
+
+class TinyProgram(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.predictor = dspy.Predict("question -> answer")
+
+    def forward(self, question):
+        return self.predictor(question=question)
+
+
+def metric(gold, pred, trace=None, pred_name=None, pred_trace=None):
+    return dspy.Prediction(score=1.0, feedback="ok")
+
+
+student = TinyProgram()
+trainset = [dspy.Example(question="Q", answer="A").with_inputs("question")]
+reflection_lm = DummyLM([{"new_instruction": "Keep answering briefly."}])
+
+try:
+    GEPA(metric=metric, reflection_lm=reflection_lm, max_metric_calls=1, track_best_outputs=True)
+except AssertionError as e:
+    print("init_error:", str(e))
+    assert "track_stats" in str(e)
+else:
+    raise AssertionError("Expected the incompatible tracking configuration to fail.")
+
+original_optimize = gepa.optimize
+
+
+def fake_optimize(**kwargs):
+    seed_candidate = kwargs["seed_candidate"]
+    return types.SimpleNamespace(
+        best_candidate=seed_candidate,
+        candidates=[seed_candidate],
+        parents=[[None]],
+        val_aggregate_scores=[1.0],
+        best_outputs_valset=[[(0, [dspy.Prediction(answer="A")])]],
+        val_subscores=[[1.0]],
+        per_val_instance_best_candidates=[{0}],
+        discovery_eval_counts=[1],
+        total_metric_calls=1,
+        num_full_val_evals=1,
+        run_dir=None,
+        seed=0,
+    )
+
+
+gepa.optimize = fake_optimize
+try:
+    dspy.configure(lm=DummyLM({"Q": {"answer": "A"}}))
+    optimized = GEPA(
+        metric=metric,
+        reflection_lm=reflection_lm,
+        max_metric_calls=1,
+        track_stats=True,
+        track_best_outputs=True,
+    ).compile(student, trainset=trainset, valset=trainset)
+    print("best_outputs:", optimized.detailed_results.best_outputs_valset)
+    assert optimized.detailed_results.best_outputs_valset[0][0][0] == 0
+    assert optimized.detailed_results.best_outputs_valset[0][0][1][0].answer == "A"
+finally:
+    gepa.optimize = original_optimize
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/teleprompt/gepa/gepa.py",
+    "symbol": "GEPA.__init__"
+  },
+  {
+    "file": "dspy/teleprompt/gepa/gepa.py",
+    "symbol": "GEPA.compile"
+  },
+  {
+    "file": "dspy/teleprompt/gepa/gepa.py",
+    "symbol": "DspyGEPAResult.from_gepa_result"
+  }
+]
+
+## Full evidence files
+### dspy/teleprompt/gepa/gepa.py
+0001: import inspect
+0002: import logging
+0003: import random
+0004: from dataclasses import dataclass
+0005: from typing import Any, Literal, Optional, Protocol, Union
+0006: 
+0007: from gepa import GEPAResult
+0008: from gepa.core.adapter import ProposalFn
+0009: from gepa.proposer.reflective_mutation.base import ReflectionComponentSelector
+0010: 
+0011: from dspy.clients.lm import LM
+0012: from dspy.primitives import Example, Module, Prediction
+0013: from dspy.teleprompt.gepa.gepa_utils import DspyAdapter, DSPyTrace, PredictorFeedbackFn, ScoreWithFeedback
+0014: from dspy.teleprompt.teleprompt import Teleprompter
+0015: from dspy.utils.annotation import experimental
+0016: 
+0017: logger = logging.getLogger(__name__)
+0018: 
+0019: AUTO_RUN_SETTINGS = {
+0020:     "light": {"n": 6},
+0021:     "medium": {"n": 12},
+0022:     "heavy": {"n": 18},
+0023: }
+0024: 
+0025: 
+0026: @experimental(version="3.0.0")
+0027: class GEPAFeedbackMetric(Protocol):
+0028:     def __call__(
+0029:         self,
+0030:         gold: Example,
+0031:         pred: Prediction,
+0032:         trace: Optional["DSPyTrace"],
+0033:         pred_name: str | None,
+0034:         pred_trace: Optional["DSPyTrace"],
+0035:     ) -> Union[float, "ScoreWithFeedback"]:
+0036:         """
+0037:         This function is called with the following arguments:
+0038:         - gold: The gold example.
+0039:         - pred: The predicted output.
+0040:         - trace: Optional. The trace of the program's execution.
+0041:         - pred_name: Optional. The name of the target predictor currently being optimized by GEPA, for which
+0042:             the feedback is being requested.
+0043:         - pred_trace: Optional. The trace of the target predictor's execution GEPA is seeking feedback for.
+0044: 
+0045:         Note the `pred_name` and `pred_trace` arguments. During optimization, GEPA will call the metric to obtain
+0046:         feedback for individual predictors being optimized. GEPA provides the name of the predictor in `pred_name`
+0047:         and the sub-trace (of the trace) corresponding to the predictor in `pred_trace`.
+0048:         If available at the predictor level, the metric should return dspy.Prediction(score: float, feedback: str)
+0049:         corresponding to the predictor.
+0050:         If not available at the predictor level, the metric can also return a text feedback at the program level
+0051:         (using just the gold, pred and trace).
+0052:         If no feedback is returned, GEPA will use a simple text feedback consisting of just the score:
+0053:         f"This trajectory got a score of {score}."
+0054:         """
+0055:         ...
+0056: 
+0057: 
+0058: @experimental(version="3.0.0")
+0059: @dataclass(frozen=True)
+0060: class DspyGEPAResult:
+0061:     """
+0062:     Additional data related to the GEPA run.
+0063: 
+0064:     Fields:
+0065:     - candidates: list of proposed candidates (component_name -> component_text)
+0066:     - parents: lineage info; for each candidate i, parents[i] is a list of parent indices or None
+0067:     - val_aggregate_scores: per-candidate aggregate score on the validation set (higher is better)
+0068:     - val_subscores: per-candidate per-instance scores on the validation set (len == num_val_instances)
+0069:     - per_val_instance_best_candidates: for each val instance t, a set of candidate indices achieving the best score on t
+0070:     - discovery_eval_counts: Budget (number of metric calls / rollouts) consumed up to the discovery of each candidate
+0071: 
+0072:     - total_metric_calls: total number of metric calls made across the run
+0073:     - num_full_val_evals: number of full validation evaluations performed
+0074:     - log_dir: where artifacts were written (if any)
+0075:     - seed: RNG seed for reproducibility (if known)
+0076: 
+0077:     - best_idx: candidate index with the highest val_aggregate_scores
+0078:     - best_candidate: the program text mapping for best_idx
+0079:     """
+0080: 
+0081:     # Data about the proposed candidates
+0082:     candidates: list[Module]
+0083:     parents: list[list[int | None]]
+0084:     val_aggregate_scores: list[float]
+0085:     val_subscores: list[list[float]]
+0086:     per_val_instance_best_candidates: list[set[int]]
+0087:     discovery_eval_counts: list[int]
+0088: 
+0089:     # Optional data
+0090:     best_outputs_valset: list[list[tuple[int, list[Prediction]]]] | None = None
+0091: 
+0092:     # Optimization metadata
+0093:     total_metric_calls: int | None = None
+0094:     num_full_val_evals: int | None = None
+0095:     log_dir: str | None = None
+0096:     seed: int | None = None
+0097: 
+0098:     @property
+0099:     def best_idx(self) -> int:
+0100:         scores = self.val_aggregate_scores
+0101:         return max(range(len(scores)), key=lambda i: scores[i])
+0102: 
+0103:     @property
+0104:     def best_candidate(self) -> dict[str, str]:
+0105:         return self.candidates[self.best_idx]
+0106: 
+0107:     @property
+0108:     def highest_score_achieved_per_val_task(self) -> list[float]:
+0109:         return [
+0110:             self.val_subscores[list(self.per_val_instance_best_candidates[val_idx])[0]][val_idx]
+0111:             for val_idx in range(len(self.val_subscores[0]))
+0112:         ]
+0113: 
+0114:     def to_dict(self) -> dict[str, Any]:
+0115:         cands = [{k: v for k, v in cand.items()} for cand in self.candidates]
+0116: 
+0117:         return dict(
+0118:             candidates=cands,
+0119:             parents=self.parents,
+0120:             val_aggregate_scores=self.val_aggregate_scores,
+0121:             best_outputs_valset=self.best_outputs_valset,
+0122:             val_subscores=self.val_subscores,
+0123:             per_val_instance_best_candidates=[list(s) for s in self.per_val_instance_best_candidates],
+0124:             discovery_eval_counts=self.discovery_eval_counts,
+0125:             total_metric_calls=self.total_metric_calls,
+0126:             num_full_val_evals=self.num_full_val_evals,
+0127:             log_dir=self.log_dir,
+0128:             seed=self.seed,
+0129:             best_idx=self.best_idx,
+0130:         )
+0131: 
+0132:     @staticmethod
+0133:     def from_gepa_result(gepa_result: "GEPAResult", adapter: "DspyAdapter") -> "DspyGEPAResult":
+0134:         return DspyGEPAResult(
+0135:             candidates=[adapter.build_program(c) for c in gepa_result.candidates],
+0136:             parents=gepa_result.parents,
+0137:             val_aggregate_scores=gepa_result.val_aggregate_scores,
+0138:             best_outputs_valset=gepa_result.best_outputs_valset,
+0139:             val_subscores=gepa_result.val_subscores,
+0140:             per_val_instance_best_candidates=gepa_result.per_val_instance_best_candidates,
+0141:             discovery_eval_counts=gepa_result.discovery_eval_counts,
+0142:             total_metric_calls=gepa_result.total_metric_calls,
+0143:             num_full_val_evals=gepa_result.num_full_val_evals,
+0144:             log_dir=gepa_result.run_dir,
+0145:             seed=gepa_result.seed,
+0146:         )
+0147: 
+0148: 
+0149: @experimental(version="3.0.0")
+0150: class GEPA(Teleprompter):
+0151:     """
+0152:     GEPA is an evolutionary optimizer, which uses reflection to evolve text components
+0153:     of complex systems. GEPA is proposed in the paper [GEPA: Reflective Prompt Evolution Can Outperform Reinforcement Learning](https://arxiv.org/abs/2507.19457).
+0154:     The GEPA optimization engine is provided by the `gepa` package, available from [https://github.com/gepa-ai/gepa](https://github.com/gepa-ai/gepa).
+0155: 
+0156:     GEPA captures full traces of the DSPy module's execution, identifies the parts of the trace
+0157:     corresponding to a specific predictor, and reflects on the behaviour of the predictor to
+0158:     propose a new instruction for the predictor. GEPA allows users to provide textual feedback
+0159:     to the optimizer, which is used to guide the evolution of the predictor. The textual feedback
+0160:     can be provided at the granularity of individual predictors, or at the level of the entire system's
+0161:     execution.
+0162: 
+0163:     To provide feedback to the GEPA optimizer, implement a metric as follows:
+0164:     ```
+0165:     def metric(
+0166:         gold: Example,
+0167:         pred: Prediction,
+0168:         trace: Optional[DSPyTrace] = None,
+0169:         pred_name: Optional[str] = None,
+0170:         pred_trace: Optional[DSPyTrace] = None,
+0171:     ) -> float | ScoreWithFeedback:
+0172:         \"""
+0173:         This function is called with the following arguments:
+0174:         - gold: The gold example.
+0175:         - pred: The predicted output.
+0176:         - trace: Optional. The trace of the program's execution.
+0177:         - pred_name: Optional. The name of the target predictor currently being optimized by GEPA, for which
+0178:             the feedback is being requested.
+0179:         - pred_trace: Optional. The trace of the target predictor's execution GEPA is seeking feedback for.
+0180: 
+0181:         Note the `pred_name` and `pred_trace` arguments. During optimization, GEPA will call the metric to obtain
+0182:         feedback for individual predictors being optimized. GEPA provides the name of the predictor in `pred_name`
+0183:         and the sub-trace (of the trace) corresponding to the predictor in `pred_trace`.
+0184:         If available at the predictor level, the metric should return {'score': float, 'feedback': str} corresponding
+0185:         to the predictor.
+0186:         If not available at the predictor level, the metric can also return a text feedback at the program level
+0187:         (using just the gold, pred and trace).
+0188:         If no feedback is returned, GEPA will use a simple text feedback consisting of just the score:
+0189:         f"This trajectory got a score of {score}."
+0190:         \"""
+0191:         ...
+0192:     ```
+0193: 
+0194:     GEPA can also be used as a batch inference-time search strategy, by passing `valset=trainset, track_stats=True, track_best_outputs=True`, and using the
+0195:     `detailed_results` attribute of the optimized program (returned by `compile`) to get the Pareto frontier of the batch. `optimized_program.detailed_results.best_outputs_valset` will contain the best outputs for each task in the batch.
+0196: 
+0197:     Examples:
+0198:     ```
+0199:     gepa = GEPA(metric=metric, track_stats=True)
+0200:     batch_of_tasks = [dspy.Example(...) for task in tasks]
+0201:     new_prog = gepa.compile(student, trainset=trainset, valset=batch_of_tasks)
+0202:     pareto_frontier = new_prog.detailed_results.val_aggregate_scores
+0203:     # pareto_frontier is a list of scores, one for each task in the batch.
+0204:     ```
+0205: 
+0206:     Args:
+0207:         metric: The metric function to use for feedback and evaluation.
+0208:         auto: The auto budget to use for the run. Options: "light", "medium", "heavy".
+0209:         max_full_evals: The maximum number of full evaluations to perform.
+0210:         max_metric_calls: The maximum number of metric calls to perform.
+0211:         reflection_minibatch_size: The number of examples to use for reflection in a single GEPA step. Default is 3.
+0212:         candidate_selection_strategy: The strategy to use for candidate selection. Default is "pareto",
+0213:             which stochastically selects candidates from the Pareto frontier of all validation scores.
+0214:             Options: "pareto", "current_best".
+0215:         reflection_lm: The language model to use for reflection. Required parameter. GEPA benefits from
+0216:             a strong reflection model. Consider using `dspy.LM(model='gpt-5', temperature=1.0, max_tokens=32000)`
+0217:             for optimal performance.
+0218:         skip_perfect_score: Whether to skip examples with perfect scores during reflection. Default is True.
+0219:         instruction_proposer: Optional custom instruction proposer implementing GEPA's ProposalFn protocol.
+0220:             **Default: None (recommended for most users)** - Uses GEPA's proven instruction proposer from
+0221:             the [GEPA library](https://github.com/gepa-ai/gepa), which implements the
+0222:             [`ProposalFn`](https://github.com/gepa-ai/gepa/blob/main/src/gepa/core/adapter.py). This default
+0223:             proposer is highly capable and was validated across diverse experiments reported in the GEPA
+0224:             paper and tutorials.
+0225: 
+0226:             See documentation on custom instruction proposers
+0227:             [here](https://dspy.ai/api/optimizers/GEPA/GEPA_Advanced/#custom-instruction-proposers).
+0228: 
+0229:             **Advanced Feature**: Only needed for specialized scenarios:
+0230:             - **Multi-modal handling**: Processing dspy.Image inputs alongside textual information
+0231:             - **Nuanced control over constraints**: Fine-grained control over instruction length, format,
+0232:               and structural requirements beyond standard feedback mechanisms
+0233:             - **Domain-specific knowledge injection**: Specialized terminology or context that cannot be
+0234:               provided through feedback_func alone
+0235:             - **Provider-specific prompting**: Optimizations for specific LLM providers (OpenAI, Anthropic)
+0236:               with unique formatting preferences
+0237:             - **Coupled component updates**: Coordinated updates of multiple components together rather
+0238:               than independent optimization
+0239:             - **External knowledge integration**: Runtime access to databases, APIs, or knowledge bases
+0240: 
+0241:             The default proposer handles the vast majority of use cases effectively. Use
+0242:             MultiModalInstructionProposer() from dspy.teleprompt.gepa.instruction_proposal for visual
+0243:             content or implement custom ProposalFn for highly specialized requirements.
+0244: 
+0245:             Note: When both instruction_proposer and reflection_lm are set, the instruction_proposer is called
+0246:             in the reflection_lm context. However, reflection_lm is optional when using a custom instruction_proposer.
+0247:             Custom instruction proposers can invoke their own LLMs if needed.
+0248:         component_selector: Custom component selector implementing the [ReflectionComponentSelector](https://github.com/gepa-ai/gepa/blob/main/src/gepa/proposer/reflective_mutation/base.py) protocol,
+0249:             or a string specifying a built-in selector strategy. Controls which components (predictors) are selected
+0250:             for optimization at each iteration. Defaults to 'round_robin' strategy which cycles through components
+0251:             one at a time. Available string options: 'round_robin' (cycles through components sequentially),
+0252:             'all' (selects all components for simultaneous optimization). Custom selectors can implement strategies
+0253:             using LLM-driven selection logic based on optimization state and trajectories.
+0254:             See [gepa component selectors](https://github.com/gepa-ai/gepa/blob/main/src/gepa/strategies/component_selector.py)
+0255:             for available built-in selectors and the ReflectionComponentSelector protocol for implementing custom selectors.
+0256:         add_format_failure_as_feedback: Whether to add format failures as feedback. Default is False.
+0257:         use_merge: Whether to use merge-based optimization. Default is True.
+0258:         max_merge_invocations: The maximum number of merge invocations to perform. Default is 5.
+0259:         num_threads: The number of threads to use for evaluation with `Evaluate`. Optional.
+0260:         failure_score: The score to assign to failed examples. Default is 0.0.
+0261:         perfect_score: The maximum score achievable by the metric. Default is 1.0. Used by GEPA
+0262:             to determine if all examples in a minibatch are perfect.
+0263:         log_dir: The directory to save the logs. GEPA saves elaborate logs, along with all candidate
+0264:             programs, in this directory. Running GEPA with the same `log_dir` will resume the run
+0265:             from the last checkpoint.
+0266:         track_stats: Whether to return detailed results and all proposed programs in the `detailed_results`
+0267:             attribute of the optimized program. Default is False.
+0268:         use_wandb: Whether to use wandb for logging. Default is False.
+0269:         wandb_api_key: The API key to use for wandb. If not provided, wandb will use the API key
+0270:             from the environment variable `WANDB_API_KEY`.
+0271:         wandb_init_kwargs: Additional keyword arguments to pass to `wandb.init`.
+0272:         track_best_outputs: Whether to track the best outputs on the validation set. track_stats must
+0273:             be True if track_best_outputs is True. The optimized program's `detailed_results.best_outputs_valset`
+0274:             will contain the best outputs for each task in the validation set.
+0275:         warn_on_score_mismatch: GEPA (currently) expects the metric to return the same module-level score when
+0276:             called with and without the pred_name. This flag (defaults to True) determines whether a warning is
+0277:             raised if a mismatch in module-level and predictor-level score is detected.
+0278:         seed: The random seed to use for reproducibility. Default is 0.
+0279:         gepa_kwargs: (Optional) Additional keyword arguments to pass directly to [gepa.optimize](https://github.com/gepa-ai/gepa/blob/main/src/gepa/api.py).
+0280:             Useful for accessing advanced GEPA features not directly exposed through DSPy's GEPA interface.
+0281: 
+0282:             Available parameters:
+0283:             - batch_sampler: Strategy for selecting training examples. Can be a [BatchSampler](https://github.com/gepa-ai/gepa/blob/main/src/gepa/strategies/batch_sampler.py) instance or a string
+0284:               ('epoch_shuffled'). Defaults to 'epoch_shuffled'. Only valid when reflection_minibatch_size is None.
+0285:             - merge_val_overlap_floor: Minimum number of shared validation ids required between parents before
+0286:               attempting a merge subsample. Only relevant when using `val_evaluation_policy` other than 'full_eval'.
+0287:               Default is 5.
+0288:             - stop_callbacks: Optional stopper(s) that return True when optimization should stop. Can be a single
+0289:               [StopperProtocol](https://github.com/gepa-ai/gepa/blob/main/src/gepa/utils/stop_condition.py) or a list of StopperProtocol instances.
+0290:               Examples: [FileStopper](https://github.com/gepa-ai/gepa/blob/main/src/gepa/utils/stop_condition.py),
+0291:               [TimeoutStopCondition](https://github.com/gepa-ai/gepa/blob/main/src/gepa/utils/stop_condition.py),
+0292:               [SignalStopper](https://github.com/gepa-ai/gepa/blob/main/src/gepa/utils/stop_condition.py),
+0293:               [NoImprovementStopper](https://github.com/gepa-ai/gepa/blob/main/src/gepa/utils/stop_condition.py),
+0294:               or custom stopping logic. Note: This overrides the default
+0295:               max_metric_calls stopping condition.
+0296:             - use_cloudpickle: Use cloudpickle instead of pickle for serialization. Can be helpful when the
+0297:               serialized state contains dynamically generated DSPy signatures. Default is False.
+0298:             - val_evaluation_policy: Strategy controlling which validation ids to score each iteration. Can be
+0299:               'full_eval' (evaluate every id each time) or an [EvaluationPolicy](https://github.com/gepa-ai/gepa/blob/main/src/gepa/strategies/eval_policy.py) instance. Default is 'full_eval'.
+0300:             - use_mlflow: If True, enables MLflow integration to log optimization progress.
+0301:               MLflow can be used alongside Weights & Biases (WandB).
+0302:             - mlflow_tracking_uri: The tracking URI to use for MLflow (when use_mlflow=True).
+0303:             - mlflow_experiment_name: The experiment name to use for MLflow (when use_mlflow=True).
+0304: 
+0305:             Note: Parameters already handled by DSPy's GEPA class will be overridden by the direct parameters
+0306:             and should not be passed through gepa_kwargs.
+0307: 
+0308:     Note:
+0309:         Budget Configuration: Exactly one of `auto`, `max_full_evals`, or `max_metric_calls` must be provided.
+0310:         The `auto` parameter provides preset configurations: "light" for quick experimentation, "medium" for
+0311:         balanced optimization, and "heavy" for thorough optimization.
+0312: 
+0313:         Reflection Configuration: The `reflection_lm` parameter is required and should be a strong language model.
+0314:         GEPA performs best with models like `dspy.LM(model='gpt-5', temperature=1.0, max_tokens=32000)`.
+0315:         The reflection process analyzes failed examples to generate feedback for program improvement.
+0316: 
+0317:         Merge Configuration: GEPA can merge successful program variants using `use_merge=True`.
+0318:         The `max_merge_invocations` parameter controls how many merge attempts are made during optimization.
+0319: 
+0320:         Evaluation Configuration: Use `num_threads` to parallelize evaluation. The `failure_score` and
+0321:         `perfect_score` parameters help GEPA understand your metric's range and optimize accordingly.
+0322: 
+0323:         Logging Configuration: Set `log_dir` to save detailed logs and enable checkpoint resuming.
+0324:         Use `track_stats=True` to access detailed optimization results via the `detailed_results` attribute.
+0325:         Enable `use_wandb=True` for experiment tracking and visualization.
+0326: 
+0327:         Reproducibility: Set `seed` to ensure consistent results across runs with the same configuration.
+0328:     """
+0329: 
+0330:     def __init__(
+0331:         self,
+0332:         metric: GEPAFeedbackMetric,
+0333:         *,
+0334:         # Budget configuration
+0335:         auto: Literal["light", "medium", "heavy"] | None = None,
+0336:         max_full_evals: int | None = None,
+0337:         max_metric_calls: int | None = None,
+0338:         # Reflection configuration
+0339:         reflection_minibatch_size: int = 3,
+0340:         candidate_selection_strategy: Literal["pareto", "current_best"] = "pareto",
+0341:         reflection_lm: LM | None = None,
+0342:         skip_perfect_score: bool = True,
+0343:         add_format_failure_as_feedback: bool = False,
+0344:         instruction_proposer: "ProposalFn | None" = None,
+0345:         component_selector: "ReflectionComponentSelector | str" = "round_robin",
+0346:         # Merge-based configuration
+0347:         use_merge: bool = True,
+0348:         max_merge_invocations: int | None = 5,
+0349:         # Evaluation configuration
+0350:         num_threads: int | None = None,
+0351:         failure_score: float = 0.0,
+0352:         perfect_score: float = 1.0,
+0353:         # Logging
+0354:         log_dir: str | None = None,
+0355:         track_stats: bool = False,
+0356:         use_wandb: bool = False,
+0357:         wandb_api_key: str | None = None,
+0358:         wandb_init_kwargs: dict[str, Any] | None = None,
+0359:         track_best_outputs: bool = False,
+0360:         warn_on_score_mismatch: bool = True,
+0361:         use_mlflow: bool = False,
+0362:         # Reproducibility
+0363:         seed: int | None = 0,
+0364:         # GEPA passthrough kwargs
+0365:         gepa_kwargs: dict | None = None,
+0366:     ):
+0367:         try:
+0368:             inspect.signature(metric).bind(None, None, None, None, None)
+0369:         except TypeError as e:
+0370:             raise TypeError(
+0371:                 "GEPA metric must accept five arguments: (gold, pred, trace, pred_name, pred_trace). "
+0372:                 "See https://dspy.ai/api/optimizers/GEPA for details."
+0373:             ) from e
+0374: 
+0375:         self.metric_fn = metric
+0376: 
+0377:         # Budget configuration
+0378:         assert (max_metric_calls is not None) + (max_full_evals is not None) + (auto is not None) == 1, (
+0379:             "Exactly one of max_metric_calls, max_full_evals, auto must be set. "
+0380:             f"You set max_metric_calls={max_metric_calls}, "
+0381:             f"max_full_evals={max_full_evals}, "
+0382:             f"auto={auto}."
+0383:         )
+0384:         self.auto = auto
+0385:         self.max_full_evals = max_full_evals
+0386:         self.max_metric_calls = max_metric_calls
+0387: 
+0388:         # Reflection configuration
+0389:         self.reflection_minibatch_size = reflection_minibatch_size
+0390:         self.candidate_selection_strategy = candidate_selection_strategy
+0391: 
+0392:         assert reflection_lm is not None or instruction_proposer is not None, (
+0393:             "GEPA requires a reflection language model, or custom instruction proposer to be provided. "
+0394:             "Typically, you can use `dspy.LM(model='gpt-5', temperature=1.0, max_tokens=32000)` to get a good reflection model. "
+0395:             "Reflection LM is used by GEPA to reflect on the behavior of the program and propose new instructions, and will benefit from a strong model. "
+0396:         )
+0397: 
+0398:         self.reflection_lm = reflection_lm
+0399:         self.skip_perfect_score = skip_perfect_score
+0400:         self.add_format_failure_as_feedback = add_format_failure_as_feedback
+0401: 
+0402:         # Merge-based configuration
+0403:         self.use_merge = use_merge
+0404:         self.max_merge_invocations = max_merge_invocations
+0405: 
+0406:         # Evaluation Configuration
+0407:         self.num_threads = num_threads
+0408:         self.failure_score = failure_score
+0409:         self.perfect_score = perfect_score
+0410: 
+0411:         # Logging configuration
+0412:         self.log_dir = log_dir
+0413:         self.track_stats = track_stats
+0414:         self.use_wandb = use_wandb
+0415:         self.wandb_api_key = wandb_api_key
+0416:         self.wandb_init_kwargs = wandb_init_kwargs
+0417:         self.warn_on_score_mismatch = warn_on_score_mismatch
+0418:         self.use_mlflow = use_mlflow
+0419: 
+0420:         if track_best_outputs:
+0421:             assert track_stats, "track_stats must be True if track_best_outputs is True."
+0422:         self.track_best_outputs = track_best_outputs
+0423: 
+0424:         # Reproducibility
+0425:         self.seed = seed
+0426: 
+0427:         self.custom_instruction_proposer = instruction_proposer
+0428:         self.component_selector = component_selector
+0429:         self.gepa_kwargs = gepa_kwargs or {}
+0430: 
+0431:     def auto_budget(
+0432:         self, num_preds, num_candidates, valset_size: int, minibatch_size: int = 35, full_eval_steps: int = 5
+0433:     ) -> int:
+0434:         import numpy as np
+0435: 
+0436:         num_trials = int(max(2 * (num_preds * 2) * np.log2(num_candidates), 1.5 * num_candidates))
+0437:         if num_trials < 0 or valset_size < 0 or minibatch_size < 0:
+0438:             raise ValueError("num_trials, valset_size, and minibatch_size must be >= 0.")
+0439:         if full_eval_steps < 1:
+0440:             raise ValueError("full_eval_steps must be >= 1.")
+0441: 
+0442:         V = valset_size
+0443:         N = num_trials
+0444:         M = minibatch_size
+0445:         m = full_eval_steps
+0446: 
+0447:         # Initial full evaluation on the default program
+0448:         total = V
+0449: 
+0450:         # Assume upto 5 trials for bootstrapping each candidate
+0451:         total += num_candidates * 5
+0452: 
+0453:         # N minibatch evaluations
+0454:         total += N * M
+0455:         if N == 0:
+0456:             return total  # no periodic/full evals inside the loop
+0457:         # Periodic full evals occur when trial_num % (m+1) == 0, where trial_num runs 2..N+1
+0458:         periodic_fulls = (N + 1) // (m) + 1
+0459:         # If 1 <= N < m, the code triggers one final full eval at the end
+0460:         extra_final = 1 if N < m else 0
+0461: 
+0462:         total += (periodic_fulls + extra_final) * V
+0463:         return total
+0464: 
+0465:     def compile(
+0466:         self,
+0467:         student: Module,
+0468:         *,
+0469:         trainset: list[Example],
+0470:         teacher: Module | None = None,
+0471:         valset: list[Example] | None = None,
+0472:     ) -> Module:
+0473:         """
+0474:         GEPA uses the trainset to perform reflective updates to the prompt, but uses the valset for tracking Pareto scores.
+0475:         If no valset is provided, GEPA will use the trainset for both.
+0476: 
+0477:         Parameters:
+0478:         - student: The student module to optimize.
+0479:         - trainset: The training set to use for reflective updates.
+0480:         - valset: The validation set to use for tracking Pareto scores. If not provided, GEPA will use the trainset for both.
+0481:         """
+0482:         from gepa import GEPAResult, optimize
+0483: 
+0484:         from dspy.teleprompt.gepa.gepa_utils import DspyAdapter, LoggerAdapter
+0485: 
+0486:         assert trainset is not None and len(trainset) > 0, "Trainset must be provided and non-empty"
+0487:         assert teacher is None, "Teacher is not supported in DspyGEPA yet."
+0488: 
+0489:         if self.auto is not None:
+0490:             self.max_metric_calls = self.auto_budget(
+0491:                 num_preds=len(student.predictors()),
+0492:                 num_candidates=AUTO_RUN_SETTINGS[self.auto]["n"],
+0493:                 valset_size=len(valset) if valset is not None else len(trainset),
+0494:             )
+0495:         elif self.max_full_evals is not None:
+0496:             self.max_metric_calls = self.max_full_evals * (len(trainset) + (len(valset) if valset is not None else 0))
+0497:         else:
+0498:             assert self.max_metric_calls is not None, "Either auto, max_full_evals, or max_metric_calls must be set."
+0499: 
+0500:         logger.info(
+0501:             f"Running GEPA for approx {self.max_metric_calls} metric calls of the program. This amounts to {self.max_metric_calls / len(trainset) if valset is None else self.max_metric_calls / (len(trainset) + len(valset)):.2f} full evals on the {'train' if valset is None else 'train+val'} set."
+0502:         )
+0503: 
+0504:         if valset is None:
+0505:             logger.warning(
+0506:                 "No valset provided; Using trainset as valset. This is useful as an inference-time scaling strategy where you want GEPA to find the best solutions for the provided tasks in the trainset, as it makes GEPA overfit prompts to the provided trainset. In order to ensure generalization and perform well on unseen tasks, please provide separate trainset and valset. Provide the smallest valset that is just large enough to match the downstream task distribution, while keeping trainset as large as possible."
+0507:             )
+0508:         valset = valset or trainset
+0509:         # 35 matches the default minibatch_size in auto_budget(); when the valset is
+0510:         # at or below this size, suggesting further reduction is unhelpful since GEPA
+0511:         # would already evaluate the full valset per step.
+0512:         if len(valset) > 35:
+0513:             logger.info(
+0514:                 f"Using {len(valset)} examples for tracking Pareto scores. You can consider using a smaller sample of the valset to allow GEPA to explore more diverse solutions within the same budget. GEPA requires you to provide the smallest valset that is just large enough to match your downstream task distribution, while providing as large trainset as possible."
+0515:             )
+0516:         else:
+0517:             logger.info(f"Using {len(valset)} examples for tracking Pareto scores.")
+0518: 
+0519:         rng = random.Random(self.seed)
+0520: 
+0521:         def feedback_fn_creator(pred_name: str, predictor) -> "PredictorFeedbackFn":
+0522:             def feedback_fn(
+0523:                 predictor_output: dict[str, Any],
+0524:                 predictor_inputs: dict[str, Any],
+0525:                 module_inputs: Example,
+0526:                 module_outputs: Prediction,
+0527:                 captured_trace: "DSPyTrace",
+0528:             ) -> "ScoreWithFeedback":
+0529:                 trace_for_pred = [(predictor, predictor_inputs, predictor_output)]
+0530:                 o = self.metric_fn(
+0531:                     module_inputs,
+0532:                     module_outputs,
+0533:                     captured_trace,
+0534:                     pred_name,
+0535:                     trace_for_pred,
+0536:                 )
+0537:                 if hasattr(o, "feedback"):
+0538:                     if o["feedback"] is None:
+0539:                         o["feedback"] = f"This trajectory got a score of {o['score']}."
+0540:                     return o
+0541:                 else:
+0542:                     return dict(score=o, feedback=f"This trajectory got a score of {o}.")
+0543: 
+0544:             return feedback_fn
+0545: 
+0546:         feedback_map = {k: feedback_fn_creator(k, v) for k, v in student.named_predictors()}
+0547: 
+0548:         # Build the DSPy adapter that encapsulates evaluation, trace capture, feedback extraction, and instruction proposal
+0549:         adapter = DspyAdapter(
+0550:             student_module=student,
+0551:             metric_fn=self.metric_fn,
+0552:             feedback_map=feedback_map,
+0553:             failure_score=self.failure_score,
+0554:             num_threads=self.num_threads,
+0555:             add_format_failure_as_feedback=self.add_format_failure_as_feedback,
+0556:             rng=rng,
+0557:             reflection_lm=self.reflection_lm,
+0558:             custom_instruction_proposer=self.custom_instruction_proposer,
+0559:             warn_on_score_mismatch=self.warn_on_score_mismatch,
+0560:             reflection_minibatch_size=self.reflection_minibatch_size,
+0561:         )
+0562: 
+0563:         # Build the seed candidate: map each predictor name to its current instruction
+0564:         seed_candidate = {name: pred.signature.instructions for name, pred in student.named_predictors()}
+0565: 
+0566:         gepa_result: GEPAResult = optimize(
+0567:             seed_candidate=seed_candidate,
+0568:             trainset=trainset,
+0569:             valset=valset,
+0570:             adapter=adapter,
+0571:             # Reflection-based configuration
+0572:             reflection_lm=(lambda x: adapter.stripped_lm_call(x)[0]) if self.reflection_lm is not None else None,
+0573:             candidate_selection_strategy=self.candidate_selection_strategy,
+0574:             skip_perfect_score=self.skip_perfect_score,
+0575:             reflection_minibatch_size=self.reflection_minibatch_size,
+0576:             module_selector=self.component_selector,
+0577:             perfect_score=self.perfect_score,
+0578:             # Merge-based configuration
+0579:             use_merge=self.use_merge,
+0580:             max_merge_invocations=self.max_merge_invocations,
+0581:             # Budget
+0582:             max_metric_calls=self.max_metric_calls,
+0583:             # Logging
+0584:             logger=LoggerAdapter(logger),
+0585:             run_dir=self.log_dir,
+0586:             use_wandb=self.use_wandb,
+0587:             wandb_api_key=self.wandb_api_key,
+0588:             wandb_init_kwargs=self.wandb_init_kwargs,
+0589:             use_mlflow=self.use_mlflow,
+0590:             track_best_outputs=self.track_best_outputs,
+0591:             display_progress_bar=True,
+0592:             raise_on_exception=True,
+0593:             # Reproducibility
+0594:             seed=self.seed,
+0595:             **self.gepa_kwargs,
+0596:         )
+0597: 
+0598:         new_prog = adapter.build_program(gepa_result.best_candidate)
+0599: 
+0600:         if self.track_stats:
+0601:             dspy_gepa_result = DspyGEPAResult.from_gepa_result(gepa_result, adapter)
+0602:             new_prog.detailed_results = dspy_gepa_result
+0603: 
+0604:         return new_prog
+
+Return JSON that matches the schema exactly.

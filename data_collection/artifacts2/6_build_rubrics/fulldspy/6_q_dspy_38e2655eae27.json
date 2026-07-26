@@ -1,0 +1,110 @@
+{
+ "id": "dspy_38e2655eae27",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm using an async DSPy module that works when I await it directly, but I need to feed it through a synchronous optimizer pipeline. Before I refactor a bunch of code, I want proof of whether DSPy can adapt that kind of module cleanly for compilation.\n\nThe important part is not just one conversion mode. I want to know whether both the in-place conversion and the wrapper-style conversion can make the optimizer complete and actually collect demos.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, converts the same async module into sync form both ways, compiles each version with a few-shot optimizer, and prints/asserts the resulting demo counts.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass AsyncProgram(dspy.Module):\n    def __init__(self):\n        self.predict = dspy.Predict(\"question -> answer\")\n\n    async def aforward(self, question: str):\n        return await self.predict.acall(question=question)\n\n\ndef metric(example, prediction, trace=None):\n    return True\n\n\ndspy.configure(lm=DummyLM([{\"answer\": \"dummy\"} for _ in range(100)]))\ndataset = [dspy.Example(question=\"question\", answer=\"answer\").with_inputs(\"question\") for _ in range(10)]\noptimizer = dspy.BootstrapFewShot(metric=metric, max_bootstrapped_demos=2, max_labeled_demos=0)\ncompiled_in_place = optimizer.compile(dspy.syncify(AsyncProgram(), in_place=True), trainset=dataset)\ncompiled_wrapped = optimizer.compile(dspy.syncify(AsyncProgram(), in_place=False), trainset=dataset)\nprint(\"in_place_demos:\", len(compiled_in_place.predictors()[0].demos))\nprint(\"wrapped_demos:\", len(compiled_wrapped.predictors()[0].demos))\nassert len(compiled_in_place.predictors()[0].demos) == 2\nassert len(compiled_wrapped.predictors()[0].demos) == 2\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "Defines one async `dspy.Module` implementation with an `aforward(question)` method that awaits a `dspy.Predict`/`acall` call for a question-to-answer signature.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Configures DSPy to run offline with `DummyLM` and builds a small trainset of `dspy.Example(question=..., answer=...).with_inputs(\"question\")` examples.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Instantiates `dspy.BootstrapFewShot` with a metric and the demo limits `max_bootstrapped_demos=2` and `max_labeled_demos=0`.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 27,
+   "statement": "Compiles an in-place syncified version of the async module with `optimizer.compile(..., trainset=dataset)` using `dspy.syncify(..., in_place=True)`, and verifies that the compiled predictor collects exactly 2 demos.",
+   "span_ids": [
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 28,
+   "statement": "Compiles a wrapper-based syncified version of the async module with `optimizer.compile(..., trainset=dataset)` using `dspy.syncify(..., in_place=False)`, and verifies that the compiled predictor collects exactly 2 demos.",
+   "span_ids": [
+    "s7"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/utils/syncify.py",
+   "start_line": 26,
+   "end_line": 40,
+   "excerpt": "0026: def syncify(program: \"Module\", in_place: bool = True) -> \"Module\":\n0027:     \"\"\"Convert an async DSPy module to a sync program.\n0028: \n0029:     There are two modes of this function:\n0030: \n0031:     - `in_place=True` (recommended): Modify the module in place. But this may not work if you already have a `forward`\n0032:         method which does different things from `aforward`.\n0033:     - `in_place=False`: Return a wrapper module. This changes the module's architecture, but it's more robust.\n0034: \n0035:     Args:\n0036:         program: The async program to convert, must have an `aforward` method implemented.\n0037:         in_place: If True, modify the module in place. Otherwise, return a wrapper module.\n0038: \n0039:     Returns:\n0040:         The sync program, which has a `forward` method that can be called from a synchronous context."
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/utils/test_syncify.py",
+   "start_line": 29,
+   "end_line": 35,
+   "excerpt": "0029:     class MyProgram(dspy.Module):\n0030:         def __init__(self):\n0031:             self.predict = dspy.Predict(\"question->answer\")\n0032: \n0033:         async def aforward(self, question: str):\n0034:             return await self.predict.acall(question=question)\n0035: "
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/utils/test_syncify.py",
+   "start_line": 41,
+   "end_line": 45,
+   "excerpt": "0041:     # We only test the optimizer completes without errors, so the LM response doesn't matter.\n0042:     lm = dspy.utils.DummyLM([{\"answer\": \"dummy\"} for _ in range(100)])\n0043:     dspy.configure(lm=lm)\n0044: \n0045:     dataset = [dspy.Example(question=\"question\", answer=\"answer\").with_inputs(\"question\") for _ in range(10)]"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/utils/test_syncify.py",
+   "start_line": 38,
+   "end_line": 39,
+   "excerpt": "0038:     def dummy_metric(gold, pred, traces=None):\n0039:         return True"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/utils/test_syncify.py",
+   "start_line": 47,
+   "end_line": 47,
+   "excerpt": "0047:     optimizer = dspy.BootstrapFewShot(metric=dummy_metric, max_bootstrapped_demos=2, max_labeled_demos=0)"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/utils/test_syncify.py",
+   "start_line": 49,
+   "end_line": 52,
+   "excerpt": "0049:     # Test syncify in place\n0050:     sync_program = dspy.syncify(async_program, in_place=True)\n0051:     optimized_program = optimizer.compile(sync_program, trainset=dataset)\n0052:     assert len(optimized_program.predictors()[0].demos) == 2"
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/utils/test_syncify.py",
+   "start_line": 54,
+   "end_line": 57,
+   "excerpt": "0054:     # Test syncify with wrapper\n0055:     sync_program = dspy.syncify(async_program, in_place=False)\n0056:     optimized_program = optimizer.compile(sync_program, trainset=dataset)\n0057:     assert len(optimized_program.predictors()[0].demos) == 2"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "",
+ "source_index": 26,
+ "smalldspy_scope": false
+}

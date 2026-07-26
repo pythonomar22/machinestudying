@@ -1,0 +1,127 @@
+{
+ "id": "dspy_fb447be4a7c8",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I'm pointing DSPy at a vLLM or other OpenAI-compatible server that understands extra sampling knobs like `top_p`, `top_k`, and a provider-specific `enable_thinking=False`. The server works when I call it directly, but I can't tell whether DSPy is silently filtering those kwargs or actually forwarding them.\n\nI don't want a prose answer. Give me a complete, runnable Python program that patches DSPy's outbound chat call, constructs one `dspy.LM` with those extra kwargs plus a timeout, invokes it once offline, and prints/asserts the exact request kwargs so it's undeniable which fields survived the trip.",
+ "gold_answer": "```python\nimport dspy\nfrom types import SimpleNamespace\nfrom unittest import mock\n\nclass FakeChatResponse(dict):\n    def __init__(self, text='ok', finish_reason='stop', model='openai/test-model'):\n        choice = SimpleNamespace(message=SimpleNamespace(content=text), finish_reason=finish_reason)\n        super().__init__(choices=[choice])\n        self.choices = self['choices']\n        self.usage = {'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2}\n        self.model = model\n\nwith mock.patch('litellm.completion', return_value=FakeChatResponse()) as patched:\n    lm = dspy.LM(\n        model='openai/test-model',\n        cache=False,\n        top_p=0.23,\n        top_k=17,\n        enable_thinking=False,\n        timeout=45,\n    )\n    result = lm('hello')\n\ncall = patched.call_args.kwargs\nprint(result)\nprint({k: call[k] for k in ('top_p', 'top_k', 'enable_thinking', 'timeout')})\nassert call['top_p'] == 0.23\nassert call['top_k'] == 17\nassert call['enable_thinking'] is False\nassert call['timeout'] == 45\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "Intercepts DSPy's final chat outbound path at `litellm.completion` or an equivalent boundary below `litellm_completion`, so the exact kwargs sent to LiteLLM can be inspected after DSPy assembles the request.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Constructs a `dspy.LM` with an OpenAI-style chat model and passes the extra provider kwargs (`top_p`, `top_k`, `enable_thinking`) plus `timeout` into the LM constructor, relying on DSPy's `**kwargs` storage for later forwarding.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Disables DSPy caching (for example with `cache=False`) or otherwise forces the live completion path, so the observed call reflects an outbound request rather than a cache hit.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Uses a mocked return value compatible with `LM.forward`, including a `choices` payload whose items expose `finish_reason`, so the single offline invocation can complete without a real provider.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "Invokes the LM once with a prompt, causing DSPy to synthesize a user message from that prompt, merge the LM's stored kwargs into the request, and build the outbound payload as `model` + `messages` + forwarded kwargs.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Reads the patched call's kwargs and prints and/or asserts that `top_p`, `top_k`, `enable_thinking`, and `timeout` are present with the exact values supplied at construction, demonstrating that DSPy forwarded them unchanged apart from fields it explicitly strips like `rollout_id` and `headers`.",
+   "span_ids": [
+    "s4",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 33,
+   "end_line": 48,
+   "excerpt": "0033:     def __init__(\n0034:         self,\n0035:         model: str,\n0036:         model_type: Literal[\"chat\", \"text\", \"responses\"] = \"chat\",\n0037:         temperature: float | None = None,\n0038:         max_tokens: int | None = None,\n0039:         cache: bool = True,\n0040:         callbacks: list[BaseCallback] | None = None,\n0041:         num_retries: int = 3,\n0042:         provider: Provider | None = None,\n0043:         finetuning_model: str | None = None,\n0044:         launch_kwargs: dict[str, Any] | None = None,\n0045:         train_kwargs: dict[str, Any] | None = None,\n0046:         use_developer_role: bool = False,\n0047:         **kwargs,\n0048:     ):"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 105,
+   "end_line": 110,
+   "excerpt": "0105:             self.kwargs = dict(temperature=temperature, max_completion_tokens=max_tokens, **kwargs)\n0106:             if self.kwargs.get(\"rollout_id\") is None:\n0107:                 self.kwargs.pop(\"rollout_id\", None)\n0108:         else:\n0109:             self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)\n0110:             if self.kwargs.get(\"rollout_id\") is None:"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 147,
+   "end_line": 157,
+   "excerpt": "0147:     def _get_cached_completion_fn(self, completion_fn, cache):\n0148:         ignored_args_for_cache_key = [\"api_key\", \"api_base\", \"base_url\"]\n0149:         if cache:\n0150:             completion_fn = request_cache(\n0151:                 cache_arg_name=\"request\",\n0152:                 ignored_args_for_cache_key=ignored_args_for_cache_key,\n0153:             )(completion_fn)\n0154: \n0155:         litellm_cache_args = {\"no-cache\": True, \"no-store\": True}\n0156: \n0157:         return completion_fn, litellm_cache_args"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/lm.py",
+   "start_line": 159,
+   "end_line": 190,
+   "excerpt": "0159:     def forward(\n0160:         self,\n0161:         prompt: str | None = None,\n0162:         messages: list[dict[str, Any]] | None = None,\n0163:         **kwargs\n0164:     ):\n0165:         # Build the request.\n0166:         kwargs = dict(kwargs)\n0167:         cache = kwargs.pop(\"cache\", self.cache)\n0168: \n0169:         messages = messages or [{\"role\": \"user\", \"content\": prompt}]\n0170:         if self.use_developer_role and self.model_type == \"responses\":\n0171:             messages = [{**m, \"role\": \"developer\"} if m.get(\"role\") == \"system\" else m for m in messages]\n0172:         kwargs = {**self.kwargs, **kwargs}\n0173:         self._warn_zero_temp_rollout(kwargs.get(\"temperature\"), kwargs.get(\"rollout_id\"))\n0174:         if kwargs.get(\"rollout_id\") is None:\n0175:             kwargs.pop(\"rollout_id\", None)\n0176: \n0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0184: \n0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,\n0189:                 cache=litellm_cache_args,\n0190:             )"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/lm.py",
+   "start_line": 326,
+   "end_line": 334,
+   "excerpt": "0326:     def _check_truncation(self, results):\n0327:         if self.model_type != \"responses\" and any(c.finish_reason == \"length\" for c in results[\"choices\"]):\n0328:             logger.warning(\n0329:                 f\"LM response was truncated due to exceeding max_tokens={self.kwargs['max_tokens']}. \"\n0330:                 \"You can inspect the latest LM interactions with `dspy.inspect_history()`. \"\n0331:                 \"To avoid truncation, consider passing a larger max_tokens when setting up dspy.LM. \"\n0332:                 f\"You may also consider increasing the temperature (currently {self.kwargs['temperature']}) \"\n0333:                 \" if the reason for truncation is repetition.\"\n0334:             )"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/clients/lm.py",
+   "start_line": 385,
+   "end_line": 398,
+   "excerpt": "0385: def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0386:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0387:     request = dict(request)\n0388:     request.pop(\"rollout_id\", None)\n0389:     headers = _add_dspy_identifier_to_headers(request.pop(\"headers\", None))\n0390:     stream_completion = _get_stream_completion_fn(request, cache, sync=True, headers=headers)\n0391:     if stream_completion is None:\n0392:         return litellm.completion(\n0393:             cache=cache,\n0394:             num_retries=num_retries,\n0395:             retry_strategy=\"exponential_backoff_retry\",\n0396:             headers=headers,\n0397:             **request,\n0398:         )"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Generic pass-through of provider/server-specific kwargs on the chat path.",
+ "source_index": 20,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

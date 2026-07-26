@@ -1,0 +1,92 @@
+{
+ "id": "dspy_8d0bef8ff001",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I have a small multi-step program and I'm trying to finetune it offline. Even with just one local LM, the compile step can complain that `num_threads` is too small, which makes me think the job count might be based on predictors rather than models in some cases.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, builds a two-predictor module, compiles with the finetune optimizer in a configuration that triggers that thread-count check, and prints/asserts the error so the job-count rule is obvious.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.teleprompt import BootstrapFinetune\nfrom dspy.utils.dummies import DummyLM\n\n\nclass TwoPredictorModule(dspy.Module):\n    def __init__(self, lm):\n        super().__init__()\n        self.first = dspy.Predict(\"input -> mid\")\n        self.second = dspy.Predict(\"mid -> output\")\n        self.first.lm = lm\n        self.second.lm = lm\n\n    def forward(self, input):\n        mid = self.first(input=input).mid\n        return self.second(mid=mid)\n\n\nlm = DummyLM([{\"mid\": \"intermediate\"}, {\"output\": \"final\"}])\nstudent = TwoPredictorModule(lm)\ntrainset = [dspy.Example(input=\"x\", output=\"final\").with_inputs(\"input\")]\noptimizer = BootstrapFinetune(\n    metric=lambda example, prediction, trace=None: True,\n    multitask=False,\n    num_threads=1,\n)\n\ntry:\n    optimizer.compile(student, trainset=trainset)\nexcept ValueError as e:\n    message = str(e)\n    print(message)\n    assert \"num_threads\" in message\n    assert \"fine-tuning jobs\" in message\nelse:\n    raise AssertionError(\"Expected BootstrapFinetune to reject too few threads.\")\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The student module defines exactly two `dspy.Predict` predictors, so `BootstrapFinetune.compile()` will iterate over two predictor slots when counting fine-tuning work.",
+   "span_ids": [
+    "s4",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Both predictors share one LM instance, so the example specifically tests whether fine-tuning job count can be greater than model count.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The optimizer is configured with `multitask=False`, which makes `compile()` use the predictor index in each training key and therefore create one fine-tuning job per predictor instead of merging jobs by LM.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The program calls `compile(student, trainset=...)` with `num_threads=1`, so two distinct fine-tuning jobs exceed the available thread count and `compile()` raises `ValueError`.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "The `ValueError` is treated as the expected outcome, and the code prints or asserts message text mentioning `num_threads` and fine-tuning jobs or predictors so the job-count rule is explicit.",
+   "span_ids": [
+    "s3"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/bootstrap_finetune.py",
+   "start_line": 60,
+   "end_line": 76,
+   "excerpt": "0060:     def compile(\n0061:         self, student: Module, trainset: list[Example], teacher: Module | list[Module] | None = None\n0062:     ) -> Module:\n0063:         # TODO: Print statements can be converted to logger.info if we ensure\n0064:         # that the default DSPy logger logs info level messages in notebook\n0065:         # environments.\n0066:         logger.info(\"Preparing the student and teacher programs...\")\n0067:         all_predictors_have_lms(student)\n0068: \n0069:         logger.info(\"Bootstrapping data...\")\n0070:         trace_data = []\n0071: \n0072:         teachers = teacher if isinstance(teacher, list) else [teacher]\n0073:         teachers = [prepare_teacher(student, t) for t in teachers]\n0074:         num_threads = self.num_threads or dspy.settings.num_threads\n0075:         for t in teachers:\n0076:             trace_data += bootstrap_trace_data(program=t, dataset=trainset, metric=self.metric, num_threads=num_threads)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/bootstrap_finetune.py",
+   "start_line": 80,
+   "end_line": 101,
+   "excerpt": "0080:         for pred_ind, pred in enumerate(student.predictors()):\n0081:             data_pred_ind = None if self.multitask else pred_ind\n0082:             if pred.lm is None:\n0083:                 raise ValueError(\n0084:                     f\"Predictor {pred_ind} does not have an LM assigned. \"\n0085:                     f\"Please ensure the module's predictors have their LM set before fine-tuning. \"\n0086:                     f\"You can set it using: your_module.set_lm(your_lm)\"\n0087:                 )\n0088:             training_key = (pred.lm, data_pred_ind)\n0089: \n0090:             if training_key not in key_to_data:\n0091:                 train_data, data_format = self._prepare_finetune_data(\n0092:                     trace_data=trace_data, lm=pred.lm, pred_ind=data_pred_ind\n0093:                 )\n0094:                 logger.info(f\"Using {len(train_data)} data points for fine-tuning the model: {pred.lm.model}\")\n0095:                 finetune_kwargs = {\n0096:                     \"lm\": pred.lm,\n0097:                     \"train_data\": train_data,\n0098:                     \"train_data_format\": data_format,\n0099:                     \"train_kwargs\": self.train_kwargs[pred.lm],\n0100:                 }\n0101:                 key_to_data[training_key] = finetune_kwargs"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/bootstrap_finetune.py",
+   "start_line": 103,
+   "end_line": 115,
+   "excerpt": "0103:         logger.info(\"Starting LM fine-tuning...\")\n0104:         # TODO(feature): We could run batches of fine-tuning jobs in sequence\n0105:         # to avoid exceeding the number of threads.\n0106:         if len(key_to_data) > num_threads:\n0107:             raise ValueError(\n0108:                 \"BootstrapFinetune requires `num_threads` to be bigger than or equal to the number of fine-tuning \"\n0109:                 f\"jobs. There are {len(key_to_data)} fine-tuning jobs to start, but the number of threads is: \"\n0110:                 f\"{num_threads}! If the `multitask` flag is set to False, the number of fine-tuning jobs will \"\n0111:                 \"be equal to the number of predictors in the student program. If the `multitask` flag is set to True, \"\n0112:                 \"the number of fine-tuning jobs will be equal to: 1 if there is only a context LM, or the number of \"\n0113:                 \"unique LMs attached to the predictors in the student program. In any case, the number of fine-tuning \"\n0114:                 \"jobs will be less than or equal to the number of predictors.\"\n0115:             )"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/primitives/module.py",
+   "start_line": 156,
+   "end_line": 177,
+   "excerpt": "0156:         from dspy.predict.predict import Predict\n0157: \n0158:         return [(name, param) for name, param in self.named_parameters() if isinstance(param, Predict)]\n0159: \n0160:     def predictors(self):\n0161:         \"\"\"Return all Predict modules in this module.\n0162: \n0163:         Returns:\n0164:             list[Predict]: A list of all Predict instances in this module.\n0165: \n0166:         Examples:\n0167:             >>> import dspy\n0168:             >>> class MyProgram(dspy.Module):\n0169:             ...     def __init__(self):\n0170:             ...         super().__init__()\n0171:             ...         self.qa = dspy.Predict(\"question -> answer\")\n0172:             ...\n0173:             >>> program = MyProgram()\n0174:             >>> len(program.predictors())\n0175:             1\n0176:         \"\"\"\n0177:         return [param for _, param in self.named_predictors()]"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "",
+ "source_index": 14,
+ "smalldspy_scope": false
+}

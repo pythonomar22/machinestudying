@@ -1,0 +1,105 @@
+{
+ "id": "dspy_4e666dd45d2e",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "My offline unit tests started failing the moment I switched to a different adapter, but only with `DummyLM`; the same prompt design works with real providers. I suspect the fake model is still emitting the old completion format.\n\nI want a tiny proof that demonstrates the failure mode and the fix, because otherwise the harness is going to keep giving me false negatives whenever I change adapters.\n\nGive me a complete, runnable Python program that first fails with a mismatched `DummyLM` and adapter pair, then succeeds with a matched pair, printing the exception type and successful output and asserting that exact split in behavior.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\njson_adapter = dspy.JSONAdapter()\npredict = dspy.Predict('question -> answer')\n\nbad_lm = DummyLM([{'answer': 'OK'}])\ndspy.configure(lm=bad_lm, adapter=json_adapter)\n\ncaught = None\ntry:\n    predict(question='Why?')\nexcept Exception as exc:\n    caught = exc\n\ngood_lm = DummyLM([{'answer': 'OK'}], adapter=json_adapter)\nwith dspy.context(lm=good_lm, adapter=json_adapter):\n    good_pred = predict(question='Why?')\n\nprint(type(caught).__name__)\nprint(good_pred.answer)\n\nassert caught is not None\nassert type(caught).__name__ == 'AdapterParseError'\nassert good_pred.answer == 'OK'\nassert 'Outputs will be a JSON object' in good_lm.history[-1]['messages'][0]['content']\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The failing branch uses a `DummyLM` created without `adapter=json_adapter` while the active DSPy adapter is `JSONAdapter`, so `DummyLM` still formats its canned completion with its own default `ChatAdapter` and emits the old `[[ ## field ## ]]` style instead of JSON.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The first prediction call fails with `AdapterParseError`, because `JSONAdapter.parse` only accepts a JSON-object completion and raises when the completion is not a dict or does not match the signature's output fields.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The fix creates a second `DummyLM` with `adapter=json_adapter` and runs the success case under that same JSON adapter, so the assistant-side completion is serialized as JSON and the prediction can return `answer == \"OK\"`.",
+   "span_ids": [
+    "s2",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The runnable proof explicitly exposes the split in behavior by catching and printing the first exception type, then printing and asserting that the matched branch succeeds with the answer `OK`.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The successful branch additionally checks the recorded prompt/history for the JSONAdapter instruction fragment `Outputs will be a JSON object...`, confirming that the matched setup really used JSON-style prompting.",
+   "span_ids": [
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/utils/dummies.py",
+   "start_line": 83,
+   "end_line": 87,
+   "excerpt": "0083:         # Set adapter, defaulting to ChatAdapter\n0084:         if adapter is None:\n0085:             from dspy.adapters.chat_adapter import ChatAdapter\n0086:             adapter = ChatAdapter()\n0087:         self.adapter = adapter"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/utils/dummies.py",
+   "start_line": 106,
+   "end_line": 120,
+   "excerpt": "0106:     def _format_answer_fields(self, field_names_and_values: dict[str, Any]):\n0107:         fields_with_values = {\n0108:             FieldInfoWithName(name=field_name, info=OutputField()): value\n0109:             for field_name, value in field_names_and_values.items()\n0110:         }\n0111:         # The reason why DummyLM needs an adapter is because it needs to know which output format to mimic.\n0112:         # Normally LMs should not have any knowledge of an adapter, because the output format is defined in the prompt.\n0113:         adapter = self.adapter\n0114: \n0115:         # Try to use role=\"assistant\" if the adapter supports it (like JSONAdapter)\n0116:         try:\n0117:             return adapter.format_field_with_value(fields_with_values, role=\"assistant\")\n0118:         except TypeError:\n0119:             # Fallback for adapters that don't support role parameter (like ChatAdapter)\n0120:             return adapter.format_field_with_value(fields_with_values)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 248,
+   "end_line": 266,
+   "excerpt": "0248:     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any]) -> str:\n0249:         \"\"\"\n0250:         Formats the values of the specified fields according to the field's DSPy type (input or output),\n0251:         annotation (e.g. str, int, etc.), and the type of the value itself. Joins the formatted values\n0252:         into a single string, which is is a multiline string if there are multiple fields.\n0253: \n0254:         Args:\n0255:             fields_with_values: A dictionary mapping information about a field to its corresponding\n0256:                 value.\n0257: \n0258:         Returns:\n0259:             The joined formatted values of the fields, represented as a string\n0260:         \"\"\"\n0261:         output = []\n0262:         for field, field_value in fields_with_values.items():\n0263:             formatted_field_value = format_field_value(field_info=field.info, value=field_value)\n0264:             output.append(f\"[[ ## {field.name} ## ]]\\n{formatted_field_value}\")\n0265: \n0266:         return \"\\n\\n\".join(output).strip()"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 148,
+   "end_line": 180,
+   "excerpt": "0148:     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:\n0149:         fields = json_repair.loads(completion)\n0150: \n0151:         if not isinstance(fields, dict):\n0152:             pattern = r\"\\{(?:[^{}]|(?R))*\\}\"\n0153:             match = regex.search(pattern, completion, regex.DOTALL)\n0154:             if match:\n0155:                 completion = match.group(0)\n0156:                 fields = json_repair.loads(completion)\n0157: \n0158:         if not isinstance(fields, dict):\n0159:             raise AdapterParseError(\n0160:                 adapter_name=\"JSONAdapter\",\n0161:                 signature=signature,\n0162:                 lm_response=completion,\n0163:                 message=\"LM response cannot be serialized to a JSON object.\",\n0164:             )\n0165: \n0166:         fields = {k: v for k, v in fields.items() if k in signature.output_fields}\n0167: \n0168:         # Attempt to cast each value to type signature.output_fields[k].annotation.\n0169:         for k, v in fields.items():\n0170:             if k in signature.output_fields:\n0171:                 fields[k] = parse_value(v, signature.output_fields[k].annotation)\n0172: \n0173:         if fields.keys() != signature.output_fields.keys():\n0174:             raise AdapterParseError(\n0175:                 adapter_name=\"JSONAdapter\",\n0176:                 signature=signature,\n0177:                 lm_response=completion,\n0178:                 parsed_result=fields,\n0179:             )\n0180: "
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 183,
+   "end_line": 203,
+   "excerpt": "0183:     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any], role: str = \"user\") -> str:\n0184:         \"\"\"\n0185:         Formats the values of the specified fields according to the field's DSPy type (input or output),\n0186:         annotation (e.g. str, int, etc.), and the type of the value itself. Joins the formatted values\n0187:         into a single string, which is a multiline string if there are multiple fields.\n0188: \n0189:         Args:\n0190:             fields_with_values: A dictionary mapping information about a field to its corresponding value.\n0191:         Returns:\n0192:             The joined formatted values of the fields, represented as a string.\n0193:         \"\"\"\n0194:         if role == \"user\":\n0195:             output = []\n0196:             for field, field_value in fields_with_values.items():\n0197:                 formatted_field_value = format_field_value(field_info=field.info, value=field_value)\n0198:                 output.append(f\"[[ ## {field.name} ## ]]\\n{formatted_field_value}\")\n0199:             return \"\\n\\n\".join(output).strip()\n0200:         else:\n0201:             d = fields_with_values.items()\n0202:             d = {k.name: v for k, v in d}\n0203:             return json.dumps(serialize_for_json(d), indent=2, ensure_ascii=False)"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/adapters/json_adapter.py",
+   "start_line": 104,
+   "end_line": 121,
+   "excerpt": "0104:     def format_field_structure(self, signature: type[Signature]) -> str:\n0105:         parts = []\n0106:         parts.append(\"All interactions will be structured in the following way, with the appropriate values filled in.\")\n0107: \n0108:         def format_signature_fields_for_instructions(fields: dict[str, FieldInfo], role: str):\n0109:             return self.format_field_with_value(\n0110:                 fields_with_values={\n0111:                     FieldInfoWithName(name=field_name, info=field_info): translate_field_type(field_name, field_info)\n0112:                     for field_name, field_info in fields.items()\n0113:                 },\n0114:                 role=role,\n0115:             )\n0116: \n0117:         parts.append(\"Inputs will have the following structure:\")\n0118:         parts.append(format_signature_fields_for_instructions(signature.input_fields, role=\"user\"))\n0119:         parts.append(\"Outputs will be a JSON object with the following fields.\")\n0120:         parts.append(format_signature_fields_for_instructions(signature.output_fields, role=\"assistant\"))\n0121:         return \"\\n\\n\".join(parts).strip()"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Good harness-quality question: it exposes the adapter-aware behavior of `DummyLM`, which is easy to miss from public concepts alone.",
+ "source_index": 27,
+ "smalldspy_scope": false
+}

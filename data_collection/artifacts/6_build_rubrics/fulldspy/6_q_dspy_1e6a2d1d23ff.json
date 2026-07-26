@@ -1,0 +1,96 @@
+{
+ "id": "dspy_1e6a2d1d23ff",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I have a custom DSPy module defined in a local Python file, and I want to save the whole program architecture, not just the state. The awkward part is that loading in a fresh process fails once that original Python module is gone from `sys.path`.\n\nI don't want documentation about pickle safety or package layout. I want one tight repro that shows the exact difference between saving a whole program by reference versus embedding the custom module definition so the saved artifact can be loaded after the original import path disappears.\n\nGive me a complete, runnable Python program that writes a temporary custom module, saves the program both ways, simulates the module becoming unavailable, and uses prints/assertions to prove the first load fails while the second succeeds.",
+ "gold_answer": "```python\nimport importlib\nimport pathlib\nimport sys\nimport tempfile\nimport textwrap\n\nimport dspy\n\n\nwith tempfile.TemporaryDirectory() as tmpdir:\n    tmp_path = pathlib.Path(tmpdir)\n    module_path = tmp_path / \"custom_module.py\"\n    save_dir = tmp_path / \"saved_program\"\n\n    module_path.write_text(\n        textwrap.dedent(\n            \"\"\"\n            import dspy\n\n            class MyModule(dspy.Module):\n                def __init__(self):\n                    self.cot = dspy.ChainOfThought(dspy.Signature(\"q -> a\"))\n\n                def forward(self, q):\n                    return self.cot(q=q)\n            \"\"\"\n        )\n    )\n\n    sys.path.insert(0, str(tmp_path))\n    custom_module = importlib.import_module(\"custom_module\")\n    program = custom_module.MyModule()\n\n    program.save(save_dir, save_program=True)\n\n    sys.modules.pop(\"custom_module\", None)\n    sys.path.remove(str(tmp_path))\n\n    try:\n        dspy.load(save_dir, allow_pickle=True)\n        raise AssertionError(\"Expected a missing-module failure when the custom module is only saved by reference\")\n    except ModuleNotFoundError as e:\n        print(\"first_load_error:\", e)\n\n    sys.path.insert(0, str(tmp_path))\n    custom_module = importlib.import_module(\"custom_module\")\n    program.save(save_dir, save_program=True, modules_to_serialize=[custom_module])\n\n    sys.modules.pop(\"custom_module\", None)\n    sys.path.remove(str(tmp_path))\n\n    loaded = dspy.load(save_dir, allow_pickle=True)\n    assert loaded.cot.predict.signature == program.cot.predict.signature\n    print(\"loaded_type:\", type(loaded).__name__)\n    print(\"loaded_signature:\", loaded.cot.predict.signature)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "The example creates a temporary `custom_module.py` that defines a custom `dspy.Module`, temporarily adds that directory to `sys.path`, imports the module, instantiates it, and saves the program with `save_program=True`.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The first round saves the whole program without `modules_to_serialize`, then removes `custom_module` from `sys.modules` and removes the temp directory from `sys.path`, and shows that `dspy.load(..., allow_pickle=True)` fails specifically with `ModuleNotFoundError`.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The second round saves with `save(..., save_program=True, modules_to_serialize=[custom_module])`, reflecting DSPy’s by-value path where `BaseModule.save` registers those modules with `cloudpickle.register_pickle_by_value` instead of relying on import-by-reference resolution.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "After re-saving with `modules_to_serialize`, the example again removes the original import path/module and proves `dspy.load(..., allow_pickle=True)` now succeeds, preserving observable program architecture state such as the nested predictor signature.",
+   "span_ids": [
+    "s3",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/primitives/base_module.py",
+   "start_line": 168,
+   "end_line": 181,
+   "excerpt": "0168:     def save(self, path, save_program=False, modules_to_serialize=None):\n0169:         \"\"\"Save the module.\n0170: \n0171:         Save the module to a directory or a file. There are two modes:\n0172:         - `save_program=False`: Save only the state of the module to a json or pickle file, based on the value of\n0173:             the file extension.\n0174:         - `save_program=True`: Save the whole module to a directory via cloudpickle, which contains both the state and\n0175:             architecture of the model.\n0176: \n0177:         If `save_program=True` and `modules_to_serialize` are provided, it will register those modules for serialization\n0178:         with cloudpickle's `register_pickle_by_value`. This causes cloudpickle to serialize the module by value rather\n0179:         than by reference, ensuring the module is fully preserved along with the saved program. This is useful\n0180:         when you have custom modules that need to be serialized alongside your program. If None, then no modules\n0181:         will be registered for serialization."
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/primitives/base_module.py",
+   "start_line": 213,
+   "end_line": 218,
+   "excerpt": "0213:                 modules_to_serialize = modules_to_serialize or []\n0214:                 for module in modules_to_serialize:\n0215:                     cloudpickle.register_pickle_by_value(module)\n0216: \n0217:                 with open(path / \"program.pkl\", \"wb\") as f:\n0218:                     cloudpickle.dump(self, f)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/utils/saving.py",
+   "start_line": 27,
+   "end_line": 61,
+   "excerpt": "0027: def load(path: str, allow_pickle: bool = False) -> \"Module\":\n0028:     \"\"\"Load saved DSPy model.\n0029: \n0030:     This method is used to load a saved DSPy model with `save_program=True`, i.e., the model is saved with cloudpickle.\n0031: \n0032:     Args:\n0033:         path (str): Path to the saved model.\n0034:         allow_pickle (bool): Whether to allow loading the model with pickle. This is dangerous and should only be used if you are sure you trust the source of the model.\n0035: \n0036:     Returns:\n0037:         The loaded model, a `dspy.Module` instance.\n0038:     \"\"\"\n0039:     if not allow_pickle:\n0040:         raise ValueError(\"Loading with pickle is not allowed. Please set `allow_pickle=True` if you are sure you trust the source of the model.\")\n0041: \n0042:     path = Path(path)\n0043:     if not path.exists():\n0044:         raise FileNotFoundError(f\"The path '{path}' does not exist.\")\n0045: \n0046:     with open(path / \"metadata.json\") as f:\n0047:         metadata = orjson.loads(f.read())\n0048: \n0049:     dependency_versions = get_dependency_versions()\n0050:     saved_dependency_versions = metadata[\"dependency_versions\"]\n0051:     for key, saved_version in saved_dependency_versions.items():\n0052:         if dependency_versions[key] != saved_version:\n0053:             logger.warning(\n0054:                 f\"There is a mismatch of {key} version between saved model and current environment. You saved with \"\n0055:                 f\"`{key}=={saved_version}`, but now you have `{key}=={dependency_versions[key]}`. This might cause \"\n0056:                 \"errors or performance downgrade on the loaded model, please consider loading the model in the same \"\n0057:                 \"environment as the saving environment.\"\n0058:             )\n0059: \n0060:     with open(path / \"program.pkl\", \"rb\") as f:\n0061:         return cloudpickle.load(f)"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/primitives/test_base_module.py",
+   "start_line": 135,
+   "end_line": 156,
+   "excerpt": "0135:     # Create a temporary Python file with our custom module\n0136:     custom_module_path = tmp_path / \"custom_module.py\"\n0137:     with open(custom_module_path, \"w\") as f:\n0138:         f.write(\"\"\"\n0139: import dspy\n0140: \n0141: class MyModule(dspy.Module):\n0142:     def __init__(self):\n0143:         self.cot = dspy.ChainOfThought(dspy.Signature(\"q -> a\"))\n0144: \n0145:     def forward(self, q):\n0146:         return self.cot(q=q)\n0147: \"\"\")\n0148: \n0149:     # Add the tmp_path to Python path so we can import the module\n0150:     sys.path.insert(0, str(tmp_path))\n0151:     try:\n0152:         import custom_module\n0153: \n0154:         cot = custom_module.MyModule()\n0155: \n0156:         cot.save(tmp_path, save_program=True)"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/primitives/test_base_module.py",
+   "start_line": 157,
+   "end_line": 165,
+   "excerpt": "0157:         # Remove the custom module from sys.modules to simulate it not being available\n0158:         sys.modules.pop(\"custom_module\", None)\n0159:         # Also remove it from sys.path\n0160:         sys.path.remove(str(tmp_path))\n0161:         del custom_module\n0162: \n0163:         # Test the loading fails without using `modules_to_serialize`\n0164:         with pytest.raises(ModuleNotFoundError):\n0165:             dspy.load(tmp_path, allow_pickle=True)"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/primitives/test_base_module.py",
+   "start_line": 167,
+   "end_line": 183,
+   "excerpt": "0167:         sys.path.insert(0, str(tmp_path))\n0168:         import custom_module\n0169: \n0170:         cot.save(\n0171:             tmp_path,\n0172:             modules_to_serialize=[custom_module],\n0173:             save_program=True,\n0174:         )\n0175: \n0176:         # Remove the custom module from sys.modules to simulate it not being available\n0177:         sys.modules.pop(\"custom_module\", None)\n0178:         # Also remove it from sys.path\n0179:         sys.path.remove(str(tmp_path))\n0180:         del custom_module\n0181: \n0182:         loaded_module = dspy.load(tmp_path, allow_pickle=True)\n0183:         assert loaded_module.cot.predict.signature == cot.cot.predict.signature"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Captures the by-reference vs by-value serialization boundary for custom program code.",
+ "source_index": 6,
+ "smalldspy_scope": false
+}

@@ -1,0 +1,109 @@
+{
+ "id": "dspy_7061ddc73a59",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm using DSPy's built-in semantic judge, but I'm nervous about bad grader outputs. If the underlying judge produces precision or recall outside the valid `[0, 1]` range, I need to know whether DSPy clamps those numbers before computing F1 or just propagates nonsense.\n\nThis is one of those behaviors that's too easy to misread from a source skim. I want a concrete repro with an obviously invalid pair of grader values.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, makes the semantic judge return precision above 1 and recall below 0, and prints/asserts the final score so the clamping behavior is proven.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.evaluate.auto_evaluation import SemanticF1\nfrom dspy.utils.dummies import DummyLM\n\ndspy.configure(lm=DummyLM([{\"reasoning\": \"bad grader output\", \"precision\": 1.7, \"recall\": -0.4}]))\nmetric = SemanticF1()\nresult = metric(dspy.Example(question=\"q\", response=\"gold\"), dspy.Prediction(response=\"pred\"))\nprint(\"semantic_f1_score:\", result.score)\nassert result.score == 0.0\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "It states that `f1_score` clamps both precision and recall into `[0.0, 1.0]` before computing F1, so out-of-range grader numbers are normalized rather than propagated raw.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "It shows that `SemanticF1.forward` takes the semantic judge's `scores.precision` and `scores.recall`, passes them to `f1_score`, and returns the resulting numeric `Prediction.score` when `trace` is not passed.",
+   "span_ids": [
+    "s2",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The repro configures `dspy` with `DummyLM` returning a semantic-judge-shaped dict containing `reasoning`, `precision`, and `recall`.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The repro calls `SemanticF1()` with `dspy.Example(question=..., response=...)` and `dspy.Prediction(response=...)`, matching the fields read inside `forward`.",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Using judge outputs `precision=1.7` and `recall=-0.4`, it prints and asserts `result.score == 0.0`, proving the clamp path yields `1.0` and `0.0` before F1 is computed.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/evaluate/auto_evaluation.py",
+   "start_line": 36,
+   "end_line": 39,
+   "excerpt": "0036: def f1_score(precision, recall):\n0037:     \"\"\"Compute the F1 score from precision and recall, clamping both to [0, 1].\"\"\"\n0038:     precision, recall = max(0.0, min(1.0, precision)), max(0.0, min(1.0, recall))\n0039:     return 0.0 if precision + recall == 0 else 2 * (precision * recall) / (precision + recall)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/evaluate/auto_evaluation.py",
+   "start_line": 58,
+   "end_line": 62,
+   "excerpt": "0058:     def forward(self, example, pred, trace=None):\n0059:         scores = self.module(question=example.question, ground_truth=example.response, system_response=pred.response)\n0060:         score = f1_score(scores.precision, scores.recall)\n0061: \n0062:         return Prediction(score=score if trace is None else score >= self.threshold)"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/evaluate/test_auto_evaluation.py",
+   "start_line": 62,
+   "end_line": 74,
+   "excerpt": "0062: def test_semantic_f1_score_value():\n0063:     # Configure with a dummy LM that returns specific precision and recall\n0064:     dspy.configure(\n0065:         lm=DummyLM(\n0066:             [\n0067:                 {\n0068:                     \"reasoning\": \"Comparing the responses\",\n0069:                     \"precision\": 0.8,\n0070:                     \"recall\": 0.6,\n0071:                 }\n0072:             ]\n0073:         )\n0074:     )"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/evaluate/test_auto_evaluation.py",
+   "start_line": 76,
+   "end_line": 82,
+   "excerpt": "0076:     # Create example and prediction\n0077:     example = dspy.Example(question=\"test\", response=\"answer\")\n0078:     pred = dspy.Prediction(response=\"response\")\n0079: \n0080:     # Test SemanticF1\n0081:     metric = SemanticF1()\n0082:     result = metric(example, pred)"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/evaluate/test_auto_evaluation.py",
+   "start_line": 84,
+   "end_line": 86,
+   "excerpt": "0084:     expected_f1 = 2 * (0.8 * 0.6) / (0.8 + 0.6)\n0085:     assert isinstance(result, Prediction)\n0086:     assert abs(result.score - expected_f1) < 0.001"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "",
+ "source_index": 22,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

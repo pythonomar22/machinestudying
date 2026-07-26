@@ -1,0 +1,1065 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_fcdcc02cecc6`
+- Label: `prompt_compilation_customization_and_inspection`
+- Question: `I'm trying to squeeze more cache reuse out of a long-input workflow. The changing document should be the first message and the reusable instructions should come later, but the default chat request layout is the opposite of what I want.
+
+Before I fork anything, I want to know whether a tiny custom adapter is enough for this, and whether `dspy.Predict` will really use my message ordering instead of rebuilding its own prompt internally.
+
+Give me a complete, runnable Python program that defines a custom adapter, runs offline with `DummyLM`, prints the message roles that were actually sent, and asserts that the first non-empty request message is the user content and the second is the system content.`
+- Model answer:
+```python
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+class UserFirstAdapter(dspy.ChatAdapter):
+    def format(self, signature, demos, inputs):
+        messages = super().format(signature, demos, inputs)
+        return [messages[1], messages[0], *messages[2:]]
+
+
+class QA(dspy.Signature):
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField()
+
+
+adapter = UserFirstAdapter()
+lm = DummyLM([{"answer": "Paris"}], adapter=adapter)
+dspy.configure(lm=lm, adapter=adapter)
+
+predict = dspy.Predict(QA)
+result = predict(question="What is the capital of France?")
+roles = [message["role"] for message in lm.history[-1]["messages"]]
+
+print("ROLES:", roles)
+print("MESSAGES:", lm.history[-1]["messages"])
+print("ANSWER:", result.answer)
+
+assert roles[:2] == ["user", "system"]
+assert result.answer == "Paris"
+```
+
+## Gold answer
+```python
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+class UserFirstAdapter(dspy.ChatAdapter):
+    def format(self, signature, demos, inputs):
+        messages = super().format(signature, demos, inputs)
+        return [messages[1], messages[0], *messages[2:]]
+
+
+class QA(dspy.Signature):
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField()
+
+
+adapter = UserFirstAdapter()
+lm = DummyLM([{"answer": "Paris"}], adapter=adapter)
+dspy.configure(lm=lm, adapter=adapter)
+
+predict = dspy.Predict(QA)
+result = predict(question="What is the capital of France?")
+roles = [message["role"] for message in lm.history[-1]["messages"]]
+
+print("ROLES:", roles)
+print("MESSAGES:", lm.history[-1]["messages"])
+print("ANSWER:", result.answer)
+
+assert roles[:2] == ["user", "system"]
+assert result.answer == "Paris"
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 30,
+    "statement": "Defines a small custom chat adapter that overrides `format(signature, demos, inputs)` and reorders the emitted messages so that, in the demonstrated call, the first two request messages are `user` then `system`.",
+    "span_ids": [
+      "s1",
+      "s3"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "Explains that the stock adapter layout is system-first, with demos and optional history between that system message and the current user input, so adapter-level reordering is the minimal customization needed for this cache-friendly layout.",
+    "span_ids": [
+      "s2",
+      "s3"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 30,
+    "statement": "Routes `dspy.Predict` through the custom adapter via DSPy settings (or an equivalent settings override) and states that `Predict.forward` uses `settings.adapter` directly with the selected LM, rather than rebuilding a separate prompt internally.",
+    "span_ids": [
+      "s5",
+      "s6",
+      "s4"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "supporting",
+    "weight": 15,
+    "statement": "Provides a complete offline `DummyLM` example that runs `Predict`, prints or otherwise inspects the actual `messages` sent on the LM call, and asserts that the executed request begins with `user` then `system`.",
+    "span_ids": [
+      "s4",
+      "s5"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/adapters/base.py",
+    "start_line": 222,
+    "end_line": 232,
+    "excerpt": "0222:     def format(\n0223:         self,\n0224:         signature: type[Signature],\n0225:         demos: list[dict[str, Any]],\n0226:         inputs: dict[str, Any],\n0227:     ) -> list[dict[str, Any]]:\n0228:         \"\"\"Format the input messages for the LM call.\n0229: \n0230:         This method converts the DSPy structured input along with few-shot examples and conversation history into\n0231:         multiturn messages as expected by the LM. For custom adapters, this method can be overridden to customize\n0232:         the formatting of the input messages."
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/adapters/base.py",
+    "start_line": 234,
+    "end_line": 256,
+    "excerpt": "0234:         In general we recommend the messages to have the following structure:\n0235:         ```\n0236:         [\n0237:             {\"role\": \"system\", \"content\": system_message},\n0238:             # Begin few-shot examples\n0239:             {\"role\": \"user\", \"content\": few_shot_example_1_input},\n0240:             {\"role\": \"assistant\", \"content\": few_shot_example_1_output},\n0241:             {\"role\": \"user\", \"content\": few_shot_example_2_input},\n0242:             {\"role\": \"assistant\", \"content\": few_shot_example_2_output},\n0243:             ...\n0244:             # End few-shot examples\n0245:             # Begin conversation history\n0246:             {\"role\": \"user\", \"content\": conversation_history_1_input},\n0247:             {\"role\": \"assistant\", \"content\": conversation_history_1_output},\n0248:             {\"role\": \"user\", \"content\": conversation_history_2_input},\n0249:             {\"role\": \"assistant\", \"content\": conversation_history_2_output},\n0250:             ...\n0251:             # End conversation history\n0252:             {\"role\": \"user\", \"content\": current_input},\n0253:         ]\n0254: \n0255:         And system message should contain the field description, field structure, and task description.\n0256:         ```"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/adapters/base.py",
+    "start_line": 281,
+    "end_line": 296,
+    "excerpt": "0281:         messages = []\n0282:         system_message = self.format_system_message(signature)\n0283:         messages.append({\"role\": \"system\", \"content\": system_message})\n0284:         messages.extend(self.format_demos(signature, demos))\n0285:         if history_field_name:\n0286:             # Conversation history and current input\n0287:             content = self.format_user_message_content(signature_without_history, inputs_copy, main_request=True)\n0288:             messages.extend(conversation_history)\n0289:             messages.append({\"role\": \"user\", \"content\": content})\n0290:         else:\n0291:             # Only current input\n0292:             content = self.format_user_message_content(signature, inputs_copy, main_request=True)\n0293:             messages.append({\"role\": \"user\", \"content\": content})\n0294: \n0295:         messages = split_message_content_for_custom_types(messages)\n0296:         return messages"
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/adapters/base.py",
+    "start_line": 202,
+    "end_line": 206,
+    "excerpt": "0202:         processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)\n0203:         inputs = self.format(processed_signature, demos, inputs)\n0204: \n0205:         outputs = lm(messages=inputs, **lm_kwargs)\n0206:         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)"
+  },
+  {
+    "span_id": "s5",
+    "path": "dspy/predict/predict.py",
+    "start_line": 243,
+    "end_line": 255,
+    "excerpt": "0243:     def forward(self, **kwargs):\n0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)\n0245: \n0246:         adapter = settings.adapter or ChatAdapter()\n0247: \n0248:         if self._should_stream():\n0249:             with settings.context(caller_predict=self):\n0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0251:         else:\n0252:             with settings.context(send_stream=None):\n0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0254: \n0255:         return self._forward_postprocess(completions, signature, **kwargs)"
+  },
+  {
+    "span_id": "s6",
+    "path": "dspy/predict/predict.py",
+    "start_line": 141,
+    "end_line": 147,
+    "excerpt": "0141:         signature = ensure_signature(kwargs.pop(\"signature\", self.signature))\n0142:         demos = kwargs.pop(\"demos\", self.demos)\n0143:         config = {**self.config, **kwargs.pop(\"config\", {})}\n0144: \n0145:         # Get the right LM to use.\n0146:         lm = kwargs.pop(\"lm\", self.lm) or settings.lm\n0147: "
+  }
+]
+
+## Whole evidence files
+### dspy/adapters/base.py
+0001: import logging
+0002: from typing import Any, get_origin
+0003: 
+0004: import json_repair
+0005: 
+0006: from dspy.adapters.types import History, Type
+0007: from dspy.adapters.types.base_type import split_message_content_for_custom_types
+0008: from dspy.adapters.types.reasoning import Reasoning
+0009: from dspy.adapters.types.tool import Tool, ToolCalls
+0010: from dspy.clients.base_lm import BaseLM
+0011: from dspy.experimental import Citations
+0012: from dspy.signatures.signature import Signature
+0013: from dspy.utils.callback import BaseCallback, with_callbacks
+0014: from dspy.utils.exceptions import AdapterParseError
+0015: 
+0016: logger = logging.getLogger(__name__)
+0017: 
+0018: _DEFAULT_NATIVE_RESPONSE_TYPES = [Citations, Reasoning]
+0019: 
+0020: 
+0021: class Adapter:
+0022:     """Base Adapter class.
+0023: 
+0024:     The Adapter serves as the interface layer between DSPy module/signature and Language Models (LMs). It handles the
+0025:     complete transformation pipeline from DSPy inputs to LM calls and back to structured outputs.
+0026: 
+0027:     Key responsibilities:
+0028:         - Transform user inputs and signatures into properly formatted LM prompts, which also instructs the LM to format
+0029:             the response in a specific format.
+0030:         - Parse LM outputs into dictionaries matching the signature's output fields.
+0031:         - Enable/disable native LM features (function calling, citations, etc.) based on configuration.
+0032:         - Handle conversation history, few-shot examples, and custom type processing.
+0033: 
+0034:     The adapter pattern allows DSPy to work with different LM interfaces while maintaining a consistent programming
+0035:     model for users.
+0036:     """
+0037: 
+0038:     def __init__(
+0039:         self,
+0040:         callbacks: list[BaseCallback] | None = None,
+0041:         use_native_function_calling: bool = False,
+0042:         native_response_types: list[type[Type]] | None = None,
+0043:     ):
+0044:         """
+0045:         Args:
+0046:             callbacks: List of callback functions to execute during `format()` and `parse()` methods. Callbacks can be
+0047:                 used for logging, monitoring, or custom processing. Defaults to None (empty list).
+0048:             use_native_function_calling: Whether to enable native function calling capabilities when the LM supports it.
+0049:                 If True, the adapter will automatically configure function calling when input fields contain `dspy.Tool`
+0050:                 or `list[dspy.Tool]` types. Defaults to False.
+0051:             native_response_types: List of output field types that should be handled by native LM features rather than
+0052:                 adapter parsing. For example, `dspy.Citations` can be populated directly by citation APIs
+0053:                 (e.g., Anthropic's citation feature). Defaults to `[Citations]`.
+0054:         """
+0055:         self.callbacks = callbacks or []
+0056:         self.use_native_function_calling = use_native_function_calling
+0057:         self.native_response_types = native_response_types or _DEFAULT_NATIVE_RESPONSE_TYPES
+0058: 
+0059:     def __init_subclass__(cls, **kwargs) -> None:
+0060:         super().__init_subclass__(**kwargs)
+0061: 
+0062:         # Decorate format() and parse() method with with_callbacks
+0063:         cls.format = with_callbacks(cls.format)
+0064:         cls.parse = with_callbacks(cls.parse)
+0065: 
+0066:     def _call_preprocess(
+0067:         self,
+0068:         lm: BaseLM,
+0069:         lm_kwargs: dict[str, Any],
+0070:         signature: type[Signature],
+0071:         inputs: dict[str, Any],
+0072:     ) -> type[Signature]:
+0073:         if self.use_native_function_calling:
+0074:             tool_call_input_field_name = self._get_tool_call_input_field_name(signature)
+0075:             tool_call_output_field_name = self._get_tool_call_output_field_name(signature)
+0076: 
+0077:             if tool_call_output_field_name and tool_call_input_field_name is None:
+0078:                 raise ValueError(
+0079:                     f"You provided an output field {tool_call_output_field_name} to receive the tool calls information, "
+0080:                     "but did not provide any tools as the input. Please provide a list of tools as the input by adding an "
+0081:                     "input field with type `list[dspy.Tool]`."
+0082:                 )
+0083: 
+0084:             if tool_call_output_field_name and lm.supports_function_calling:
+0085:                 tools = inputs[tool_call_input_field_name]
+0086:                 tools = tools if isinstance(tools, list) else [tools]
+0087: 
+0088:                 lm_tools = [tool.format_as_litellm_function_call() for tool in tools]
+0089: 
+0090:                 lm_kwargs["tools"] = lm_tools
+0091: 
+0092:                 signature_for_native_function_calling = signature.delete(tool_call_output_field_name)
+0093:                 signature_for_native_function_calling = signature_for_native_function_calling.delete(
+0094:                     tool_call_input_field_name
+0095:                 )
+0096: 
+0097:                 return signature_for_native_function_calling
+0098: 
+0099:         # Handle custom types that use native LM features, e.g., reasoning, citations, etc.
+0100:         for name, field in signature.output_fields.items():
+0101:             if (
+0102:                 isinstance(field.annotation, type)
+0103:                 and field.annotation in self.native_response_types
+0104:                 and issubclass(field.annotation, Type)
+0105:             ):
+0106:                 signature = field.annotation.adapt_to_native_lm_feature(signature, name, lm, lm_kwargs)
+0107: 
+0108:         return signature
+0109: 
+0110:     def _call_postprocess(
+0111:         self,
+0112:         processed_signature: type[Signature],
+0113:         original_signature: type[Signature],
+0114:         outputs: list[dict[str, Any] | str],
+0115:         lm: BaseLM,
+0116:         lm_kwargs: dict[str, Any],
+0117:     ) -> list[dict[str, Any]]:
+0118:         values = []
+0119: 
+0120:         tool_call_output_field_name = self._get_tool_call_output_field_name(original_signature)
+0121: 
+0122:         for output in outputs:
+0123:             output_logprobs = None
+0124:             tool_calls = None
+0125:             text = output
+0126: 
+0127:             if isinstance(output, dict):
+0128:                 text = output["text"]
+0129:                 output_logprobs = output.get("logprobs")
+0130:                 tool_calls = output.get("tool_calls")
+0131: 
+0132:             if text:
+0133:                 value = self.parse(processed_signature, text)
+0134:                 for field_name in original_signature.output_fields.keys():
+0135:                     if field_name not in value:
+0136:                         # We need to set the field not present in the processed signature to None for consistency.
+0137:                         value[field_name] = None
+0138:             elif tool_calls and tool_call_output_field_name:
+0139:                 value = {}
+0140:                 for field_name in original_signature.output_fields.keys():
+0141:                     value[field_name] = None
+0142:             else:
+0143:                 raise AdapterParseError(
+0144:                     adapter_name=type(self).__name__,
+0145:                     signature=original_signature,
+0146:                     lm_response=str(output),
+0147:                     message="The LM returned an empty or null response.",
+0148:                 )
+0149: 
+0150:             if tool_calls and tool_call_output_field_name:
+0151:                 tool_calls = [
+0152:                     {
+0153:                         "name": v["function"]["name"],
+0154:                         "args": json_repair.loads(v["function"]["arguments"]),
+0155:                     }
+0156:                     for v in tool_calls
+0157:                 ]
+0158:                 value[tool_call_output_field_name] = ToolCalls.from_dict_list(tool_calls)
+0159: 
+0160:             # Parse custom types that does not rely on the `Adapter.parse()` method
+0161:             for name, field in original_signature.output_fields.items():
+0162:                 if (
+0163:                     isinstance(field.annotation, type)
+0164:                     and field.annotation in self.native_response_types
+0165:                     and issubclass(field.annotation, Type)
+0166:                 ):
+0167:                     parsed_value = field.annotation.parse_lm_response(output)
+0168:                     if parsed_value is not None:
+0169:                         value[name] = parsed_value
+0170: 
+0171:             if output_logprobs:
+0172:                 value["logprobs"] = output_logprobs
+0173: 
+0174:             values.append(value)
+0175: 
+0176:         return values
+0177: 
+0178:     def __call__(
+0179:         self,
+0180:         lm: BaseLM,
+0181:         lm_kwargs: dict[str, Any],
+0182:         signature: type[Signature],
+0183:         demos: list[dict[str, Any]],
+0184:         inputs: dict[str, Any],
+0185:     ) -> list[dict[str, Any]]:
+0186:         """
+0187:         Execute the adapter pipeline: format inputs, call LM, and parse outputs.
+0188: 
+0189:         Args:
+0190:             lm: The Language Model instance to use for generation. Must be an instance of `dspy.BaseLM`.
+0191:             lm_kwargs: Additional keyword arguments to pass to the LM call (e.g., temperature, max_tokens). These are
+0192:                 passed directly to the LM.
+0193:             signature: The DSPy signature associated with this LM call.
+0194:             demos: List of few-shot examples to include in the prompt. Each dictionary should contain keys matching the
+0195:                 signature's input and output field names. Examples are formatted as user/assistant message pairs.
+0196:             inputs: The current input values for this call. Keys must match the signature's input field names.
+0197: 
+0198:         Returns:
+0199:             List of dictionaries representing parsed LM responses. Each dictionary contains keys matching the
+0200:             signature's output field names. For multiple generations (n > 1), returns multiple dictionaries.
+0201:         """
+0202:         processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
+0203:         inputs = self.format(processed_signature, demos, inputs)
+0204: 
+0205:         outputs = lm(messages=inputs, **lm_kwargs)
+0206:         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
+0207: 
+0208:     async def acall(
+0209:         self,
+0210:         lm: BaseLM,
+0211:         lm_kwargs: dict[str, Any],
+0212:         signature: type[Signature],
+0213:         demos: list[dict[str, Any]],
+0214:         inputs: dict[str, Any],
+0215:     ) -> list[dict[str, Any]]:
+0216:         processed_signature = self._call_preprocess(lm, lm_kwargs, signature, inputs)
+0217:         inputs = self.format(processed_signature, demos, inputs)
+0218: 
+0219:         outputs = await lm.acall(messages=inputs, **lm_kwargs)
+0220:         return self._call_postprocess(processed_signature, signature, outputs, lm, lm_kwargs)
+0221: 
+0222:     def format(
+0223:         self,
+0224:         signature: type[Signature],
+0225:         demos: list[dict[str, Any]],
+0226:         inputs: dict[str, Any],
+0227:     ) -> list[dict[str, Any]]:
+0228:         """Format the input messages for the LM call.
+0229: 
+0230:         This method converts the DSPy structured input along with few-shot examples and conversation history into
+0231:         multiturn messages as expected by the LM. For custom adapters, this method can be overridden to customize
+0232:         the formatting of the input messages.
+0233: 
+0234:         In general we recommend the messages to have the following structure:
+0235:         ```
+0236:         [
+0237:             {"role": "system", "content": system_message},
+0238:             # Begin few-shot examples
+0239:             {"role": "user", "content": few_shot_example_1_input},
+0240:             {"role": "assistant", "content": few_shot_example_1_output},
+0241:             {"role": "user", "content": few_shot_example_2_input},
+0242:             {"role": "assistant", "content": few_shot_example_2_output},
+0243:             ...
+0244:             # End few-shot examples
+0245:             # Begin conversation history
+0246:             {"role": "user", "content": conversation_history_1_input},
+0247:             {"role": "assistant", "content": conversation_history_1_output},
+0248:             {"role": "user", "content": conversation_history_2_input},
+0249:             {"role": "assistant", "content": conversation_history_2_output},
+0250:             ...
+0251:             # End conversation history
+0252:             {"role": "user", "content": current_input},
+0253:         ]
+0254: 
+0255:         And system message should contain the field description, field structure, and task description.
+0256:         ```
+0257: 
+0258: 
+0259:         Args:
+0260:             signature: The DSPy signature for which to format the input messages.
+0261:             demos: A list of few-shot examples.
+0262:             inputs: The input arguments to the DSPy module.
+0263: 
+0264:         Returns:
+0265:             A list of multiturn messages as expected by the LM.
+0266:         """
+0267:         inputs_copy = dict(inputs)
+0268: 
+0269:         # If the signature and inputs have conversation history, we need to format the conversation history and
+0270:         # remove the history field from the signature.
+0271:         history_field_name = self._get_history_field_name(signature)
+0272:         if history_field_name:
+0273:             # In order to format the conversation history, we need to remove the history field from the signature.
+0274:             signature_without_history = signature.delete(history_field_name)
+0275:             conversation_history = self.format_conversation_history(
+0276:                 signature_without_history,
+0277:                 history_field_name,
+0278:                 inputs_copy,
+0279:             )
+0280: 
+0281:         messages = []
+0282:         system_message = self.format_system_message(signature)
+0283:         messages.append({"role": "system", "content": system_message})
+0284:         messages.extend(self.format_demos(signature, demos))
+0285:         if history_field_name:
+0286:             # Conversation history and current input
+0287:             content = self.format_user_message_content(signature_without_history, inputs_copy, main_request=True)
+0288:             messages.extend(conversation_history)
+0289:             messages.append({"role": "user", "content": content})
+0290:         else:
+0291:             # Only current input
+0292:             content = self.format_user_message_content(signature, inputs_copy, main_request=True)
+0293:             messages.append({"role": "user", "content": content})
+0294: 
+0295:         messages = split_message_content_for_custom_types(messages)
+0296:         return messages
+0297: 
+0298:     def format_system_message(self, signature: type[Signature]) -> str:
+0299:         """Format the system message for the LM call.
+0300: 
+0301: 
+0302:         Args:
+0303:             signature: The DSPy signature for which to format the system message.
+0304:         """
+0305:         return (
+0306:             f"{self.format_field_description(signature)}\n"
+0307:             f"{self.format_field_structure(signature)}\n"
+0308:             f"{self.format_task_description(signature)}"
+0309:         )
+0310: 
+0311:     def format_field_description(self, signature: type[Signature]) -> str:
+0312:         """Format the field description for the system message.
+0313: 
+0314:         This method formats the field description for the system message. It should return a string that contains
+0315:         the field description for the input fields and the output fields.
+0316: 
+0317:         Args:
+0318:             signature: The DSPy signature for which to format the field description.
+0319: 
+0320:         Returns:
+0321:             A string that contains the field description for the input fields and the output fields.
+0322:         """
+0323:         raise NotImplementedError
+0324: 
+0325:     def format_field_structure(self, signature: type[Signature]) -> str:
+0326:         """Format the field structure for the system message.
+0327: 
+0328:         This method formats the field structure for the system message. It should return a string that dictates the
+0329:         format the input fields should be provided to the LM, and the format the output fields will be in the response.
+0330:         Refer to the ChatAdapter and JsonAdapter for an example.
+0331: 
+0332:         Args:
+0333:             signature: The DSPy signature for which to format the field structure.
+0334:         """
+0335:         raise NotImplementedError
+0336: 
+0337:     def format_task_description(self, signature: type[Signature]) -> str:
+0338:         """Format the task description for the system message.
+0339: 
+0340:         This method formats the task description for the system message. In most cases this is just a thin wrapper
+0341:         over `signature.instructions`.
+0342: 
+0343:         Args:
+0344:             signature: The DSPy signature of the DSpy module.
+0345: 
+0346:         Returns:
+0347:             A string that describes the task.
+0348:         """
+0349:         raise NotImplementedError
+0350: 
+0351:     def format_user_message_content(
+0352:         self,
+0353:         signature: type[Signature],
+0354:         inputs: dict[str, Any],
+0355:         prefix: str = "",
+0356:         suffix: str = "",
+0357:         main_request: bool = False,
+0358:     ) -> str:
+0359:         """Format the user message content.
+0360: 
+0361:         This method formats the user message content, which can be used in formatting few-shot examples, conversation
+0362:         history, and the current input.
+0363: 
+0364:         Args:
+0365:             signature: The DSPy signature for which to format the user message content.
+0366:             inputs: The input arguments to the DSPy module.
+0367:             prefix: A prefix to the user message content.
+0368:             suffix: A suffix to the user message content.
+0369: 
+0370:         Returns:
+0371:             A string that contains the user message content.
+0372:         """
+0373:         raise NotImplementedError
+0374: 
+0375:     def format_assistant_message_content(
+0376:         self,
+0377:         signature: type[Signature],
+0378:         outputs: dict[str, Any],
+0379:         missing_field_message: str | None = None,
+0380:     ) -> str:
+0381:         """Format the assistant message content.
+0382: 
+0383:         This method formats the assistant message content, which can be used in formatting few-shot examples,
+0384:         conversation history.
+0385: 
+0386:         Args:
+0387:             signature: The DSPy signature for which to format the assistant message content.
+0388:             outputs: The output fields to be formatted.
+0389:             missing_field_message: A message to be used when a field is missing.
+0390: 
+0391:         Returns:
+0392:             A string that contains the assistant message content.
+0393:         """
+0394:         raise NotImplementedError
+0395: 
+0396:     def format_demos(self, signature: type[Signature], demos: list[dict[str, Any]]) -> list[dict[str, Any]]:
+0397:         """Format the few-shot examples.
+0398: 
+0399:         This method formats the few-shot examples as multiturn messages.
+0400: 
+0401:         Args:
+0402:             signature: The DSPy signature for which to format the few-shot examples.
+0403:             demos: A list of few-shot examples, each element is a dictionary with keys of the input and output fields of
+0404:                 the signature.
+0405: 
+0406:         Returns:
+0407:             A list of multiturn messages.
+0408:         """
+0409:         complete_demos = []
+0410:         incomplete_demos = []
+0411: 
+0412:         for demo in demos:
+0413:             # Check if all fields are present and not None
+0414:             is_complete = all(k in demo and demo[k] is not None for k in signature.fields)
+0415: 
+0416:             # Check if demo has at least one input and one output field
+0417:             has_input = any(k in demo for k in signature.input_fields)
+0418:             has_output = any(k in demo for k in signature.output_fields)
+0419: 
+0420:             if is_complete:
+0421:                 complete_demos.append(demo)
+0422:             elif has_input and has_output:
+0423:                 # We only keep incomplete demos that have at least one input and one output field
+0424:                 incomplete_demos.append(demo)
+0425: 
+0426:         messages = []
+0427: 
+0428:         incomplete_demo_prefix = "This is an example of the task, though some input or output fields are not supplied."
+0429:         for demo in incomplete_demos:
+0430:             messages.append(
+0431:                 {
+0432:                     "role": "user",
+0433:                     "content": self.format_user_message_content(signature, demo, prefix=incomplete_demo_prefix),
+0434:                 }
+0435:             )
+0436:             messages.append(
+0437:                 {
+0438:                     "role": "assistant",
+0439:                     "content": self.format_assistant_message_content(
+0440:                         signature, demo, missing_field_message="Not supplied for this particular example. "
+0441:                     ),
+0442:                 }
+0443:             )
+0444: 
+0445:         for demo in complete_demos:
+0446:             messages.append({"role": "user", "content": self.format_user_message_content(signature, demo)})
+0447:             messages.append(
+0448:                 {
+0449:                     "role": "assistant",
+0450:                     "content": self.format_assistant_message_content(
+0451:                         signature, demo, missing_field_message="Not supplied for this conversation history message. "
+0452:                     ),
+0453:                 }
+0454:             )
+0455: 
+0456:         return messages
+0457: 
+0458:     def _get_history_field_name(self, signature: type[Signature]) -> bool:
+0459:         for name, field in signature.input_fields.items():
+0460:             if field.annotation == History:
+0461:                 return name
+0462:         return None
+0463: 
+0464:     def _get_tool_call_input_field_name(self, signature: type[Signature]) -> bool:
+0465:         for name, field in signature.input_fields.items():
+0466:             # Look for annotation `list[dspy.Tool]` or `dspy.Tool`
+0467:             origin = get_origin(field.annotation)
+0468:             if origin is list and field.annotation.__args__[0] == Tool:
+0469:                 return name
+0470:             if field.annotation == Tool:
+0471:                 return name
+0472:         return None
+0473: 
+0474:     def _get_tool_call_output_field_name(self, signature: type[Signature]) -> bool:
+0475:         for name, field in signature.output_fields.items():
+0476:             if field.annotation == ToolCalls:
+0477:                 return name
+0478:         return None
+0479: 
+0480:     def format_conversation_history(
+0481:         self,
+0482:         signature: type[Signature],
+0483:         history_field_name: str,
+0484:         inputs: dict[str, Any],
+0485:     ) -> list[dict[str, Any]]:
+0486:         """Format the conversation history.
+0487: 
+0488:         This method formats the conversation history and the current input as multiturn messages.
+0489: 
+0490:         Args:
+0491:             signature: The DSPy signature for which to format the conversation history.
+0492:             history_field_name: The name of the history field in the signature.
+0493:             inputs: The input arguments to the DSPy module.
+0494: 
+0495:         Returns:
+0496:             A list of multiturn messages.
+0497:         """
+0498:         conversation_history = inputs[history_field_name].messages if history_field_name in inputs else None
+0499: 
+0500:         if conversation_history is None:
+0501:             return []
+0502: 
+0503:         messages = []
+0504:         for message in conversation_history:
+0505:             messages.append(
+0506:                 {
+0507:                     "role": "user",
+0508:                     "content": self.format_user_message_content(signature, message),
+0509:                 }
+0510:             )
+0511:             messages.append(
+0512:                 {
+0513:                     "role": "assistant",
+0514:                     "content": self.format_assistant_message_content(signature, message),
+0515:                 }
+0516:             )
+0517: 
+0518:         # Remove the history field from the inputs
+0519:         del inputs[history_field_name]
+0520: 
+0521:         return messages
+0522: 
+0523:     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
+0524:         """Parse the LM output into a dictionary of the output fields.
+0525: 
+0526:         This method parses the LM output into a dictionary of the output fields.
+0527: 
+0528:         Args:
+0529:             signature: The DSPy signature for which to parse the LM output.
+0530:             completion: The LM output to be parsed.
+0531: 
+0532:         Returns:
+0533:             A dictionary of the output fields.
+0534:         """
+0535:         raise NotImplementedError
+
+### dspy/predict/predict.py
+0001: import logging
+0002: import random
+0003: from typing import Any, Literal, get_args, get_origin
+0004: 
+0005: from pydantic import BaseModel
+0006: from pydantic_core import PydanticUndefined
+0007: from typeguard import TypeCheckError, check_type
+0008: 
+0009: from dspy.adapters.chat_adapter import ChatAdapter
+0010: from dspy.clients.base_lm import BaseLM
+0011: from dspy.clients.lm import LM
+0012: from dspy.dsp.utils.settings import settings
+0013: from dspy.predict.parameter import Parameter
+0014: from dspy.primitives.module import Module
+0015: from dspy.primitives.prediction import Prediction
+0016: from dspy.signatures.signature import Signature, ensure_signature
+0017: from dspy.utils.callback import BaseCallback
+0018: from dspy.utils.constants import IS_TYPE_UNDEFINED
+0019: 
+0020: logger = logging.getLogger(__name__)
+0021: 
+0022: UNSAFE_LM_STATE_KEYS = {"api_base", "base_url", "model_list"}
+0023: 
+0024: 
+0025: def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
+0026:     if allow_unsafe_lm_state:
+0027:         return lm_state
+0028: 
+0029:     unsafe_keys = sorted(UNSAFE_LM_STATE_KEYS.intersection(lm_state))
+0030: 
+0031:     if not unsafe_keys:
+0032:         return lm_state
+0033: 
+0034:     sanitized_lm_state = {k: v for k, v in lm_state.items() if k not in UNSAFE_LM_STATE_KEYS}
+0035:     logger.warning(
+0036:         "Ignoring unsafe LM config key(s) during state load: %s. "
+0037:         "Pass allow_unsafe_lm_state=True to preserve these keys for trusted files.",
+0038:         unsafe_keys,
+0039:     )
+0040:     return sanitized_lm_state
+0041: 
+0042: 
+0043: class Predict(Module, Parameter):
+0044:     """Basic DSPy module that maps inputs to outputs using a language model.
+0045: 
+0046:     Args:
+0047:         signature: The input/output signature describing the task.
+0048:         callbacks: Optional list of callbacks for instrumentation.
+0049:         **config: Default keyword arguments forwarded to the underlying
+0050:             language model. These values can be overridden for a single
+0051:             invocation by passing a ``config`` dictionary when calling the
+0052:             module. For example::
+0053: 
+0054:                 predict = dspy.Predict("q -> a", rollout_id=1, temperature=1.0)
+0055:                 predict(q="What is 1 + 52?", config={"rollout_id": 2, "temperature": 1.0})
+0056:     """
+0057: 
+0058:     def __init__(self, signature: str | type[Signature], callbacks: list[BaseCallback] | None = None, **config):
+0059:         super().__init__(callbacks=callbacks)
+0060:         self.stage = random.randbytes(8).hex()
+0061:         self.signature = ensure_signature(signature)
+0062:         self.config = config
+0063:         self.reset()
+0064: 
+0065:     def reset(self):
+0066:         self.lm = None
+0067:         self.traces = []
+0068:         self.train = []
+0069:         self.demos = []
+0070: 
+0071:     def dump_state(self, json_mode=True):
+0072:         state_keys = ["traces", "train"]
+0073:         state = {k: getattr(self, k) for k in state_keys}
+0074: 
+0075:         state["demos"] = []
+0076:         for demo in self.demos:
+0077:             demo = demo.copy()
+0078: 
+0079:             for field in demo:
+0080:                 # FIXME: Saving BaseModels as strings in examples doesn't matter because you never re-access as an object
+0081:                 demo[field] = serialize_object(demo[field])
+0082: 
+0083:             if isinstance(demo, dict) or not json_mode:
+0084:                 state["demos"].append(demo)
+0085:             else:
+0086:                 state["demos"].append(demo.toDict())
+0087: 
+0088:         state["signature"] = self.signature.dump_state()
+0089:         state["lm"] = self.lm.dump_state() if self.lm else None
+0090:         return state
+0091: 
+0092:     def load_state(self, state: dict, *, allow_unsafe_lm_state: bool = False) -> "Predict":
+0093:         """Load the saved state of a `Predict` object.
+0094: 
+0095:         Args:
+0096:             state: The saved state of a `Predict` object.
+0097:             allow_unsafe_lm_state: If True, preserves `api_base`, `base_url`, and `model_list` from
+0098:                 serialized LM state. Enable only when loading trusted files.
+0099: 
+0100:         Returns:
+0101:             Self to allow method chaining.
+0102:         """
+0103:         excluded_keys = ["signature", "extended_signature", "lm"]
+0104:         for name, value in state.items():
+0105:             # `excluded_keys` are fields that go through special handling.
+0106:             if name not in excluded_keys:
+0107:                 setattr(self, name, value)
+0108: 
+0109:         self.signature = self.signature.load_state(state["signature"])
+0110:         sanitized_lm_state = _sanitize_lm_state(state["lm"], allow_unsafe_lm_state) if state["lm"] else None
+0111:         self.lm = LM(**sanitized_lm_state) if sanitized_lm_state else None
+0112: 
+0113:         if "extended_signature" in state:  # legacy, up to and including 2.5, for CoT.
+0114:             raise NotImplementedError("Loading extended_signature is no longer supported in DSPy 2.6+")
+0115: 
+0116:         return self
+0117: 
+0118:     def _get_positional_args_error_message(self):
+0119:         input_fields = list(self.signature.input_fields.keys())
+0120:         return (
+0121:             "Positional arguments are not allowed when calling `dspy.Predict`, must use keyword arguments "
+0122:             f"that match your signature input fields: '{', '.join(input_fields)}'. For example: "
+0123:             f"`predict({input_fields[0]}=input_value, ...)`."
+0124:         )
+0125: 
+0126:     def __call__(self, *args, **kwargs):
+0127:         if args:
+0128:             raise ValueError(self._get_positional_args_error_message())
+0129: 
+0130:         return super().__call__(**kwargs)
+0131: 
+0132:     async def acall(self, *args, **kwargs):
+0133:         if args:
+0134:             raise ValueError(self._get_positional_args_error_message())
+0135: 
+0136:         return await super().acall(**kwargs)
+0137: 
+0138:     def _forward_preprocess(self, **kwargs):
+0139:         # Extract the three privileged keyword arguments.
+0140:         assert "new_signature" not in kwargs, "new_signature is no longer a valid keyword argument."
+0141:         signature = ensure_signature(kwargs.pop("signature", self.signature))
+0142:         demos = kwargs.pop("demos", self.demos)
+0143:         config = {**self.config, **kwargs.pop("config", {})}
+0144: 
+0145:         # Get the right LM to use.
+0146:         lm = kwargs.pop("lm", self.lm) or settings.lm
+0147: 
+0148:         if lm is None:
+0149:             raise ValueError(
+0150:                 "No LM is loaded. Please configure the LM using `dspy.configure(lm=dspy.LM(...))`. e.g, "
+0151:                 "`dspy.configure(lm=dspy.LM('openai/gpt-4o-mini'))`"
+0152:             )
+0153: 
+0154:         if isinstance(lm, str):
+0155:             # Many users mistakenly use `dspy.configure(lm="openai/gpt-4o-mini")` instead of
+0156:             # `dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))`, so we are providing a specific error message.
+0157:             raise ValueError(
+0158:                 f"LM must be an instance of `dspy.BaseLM`, not a string. Instead of using a string like "
+0159:                 f"'dspy.configure(lm=\"{lm}\")', please configure the LM like 'dspy.configure(lm=dspy.LM(\"{lm}\"))'"
+0160:             )
+0161:         elif not isinstance(lm, BaseLM):
+0162:             raise ValueError(f"LM must be an instance of `dspy.BaseLM`, not {type(lm)}. Received `lm={lm}`.")
+0163: 
+0164:         # If temperature is unset or <=0.15, and n > 1, set temperature to 0.7 to keep randomness.
+0165:         temperature = config.get("temperature") or lm.kwargs.get("temperature")
+0166:         num_generations = config.get("n") or lm.kwargs.get("n") or lm.kwargs.get("num_generations") or 1
+0167: 
+0168:         if (temperature is None or temperature <= 0.15) and num_generations > 1:
+0169:             config["temperature"] = 0.7
+0170: 
+0171:         if "prediction" in kwargs:
+0172:             if (
+0173:                 isinstance(kwargs["prediction"], dict)
+0174:                 and kwargs["prediction"].get("type") == "content"
+0175:                 and "content" in kwargs["prediction"]
+0176:             ):
+0177:                 # If the `prediction` is the standard predicted outputs format
+0178:                 # (https://platform.openai.com/docs/guides/predicted-outputs), we remove it from input kwargs and add it
+0179:                 # to the lm kwargs.
+0180:                 config["prediction"] = kwargs.pop("prediction")
+0181: 
+0182:         # Populate default values for missing input fields.
+0183:         for k, v in signature.input_fields.items():
+0184:             if k not in kwargs and v.default is not PydanticUndefined:
+0185:                 kwargs[k] = v.default
+0186: 
+0187:         # Check and warn for extra fields not in signature
+0188:         extra_fields = [k for k in kwargs if k not in signature.input_fields]
+0189:         if extra_fields:
+0190:             logger.warning(
+0191:                 "Input contains fields not in signature. These fields will be ignored: %s. "
+0192:                 "Expected fields: %s.",
+0193:                 extra_fields,
+0194:                 list(signature.input_fields.keys()),
+0195:             )
+0196: 
+0197:         # Validate input field types match signature
+0198:         if settings.warn_on_type_mismatch:
+0199:             for field_name, field_info in signature.input_fields.items():
+0200:                 if field_name in kwargs:
+0201:                     value = kwargs[field_name]
+0202:                     expected_type: type = field_info.annotation
+0203: 
+0204:                     if value is None or field_info.json_schema_extra.get(IS_TYPE_UNDEFINED, False):
+0205:                         continue
+0206: 
+0207:                     if not _is_value_compatible_with_type(value, expected_type):
+0208:                         logger.warning(
+0209:                             "Type mismatch for field '%s': expected %s based on given Signature, "
+0210:                             "but the provided value is incompatible: %s.",
+0211:                             field_name,
+0212:                             _get_type_name(expected_type),
+0213:                             value,
+0214:                         )
+0215: 
+0216:         if not all(k in kwargs for k in signature.input_fields):
+0217:             present = [k for k in signature.input_fields if k in kwargs]
+0218:             missing = [k for k in signature.input_fields if k not in kwargs]
+0219:             logger.warning(
+0220:                 "Not all input fields were provided to module. Present: %s. Missing: %s.",
+0221:                 present,
+0222:                 missing,
+0223:             )
+0224:         return lm, config, signature, demos, kwargs
+0225: 
+0226:     def _forward_postprocess(self, completions, signature, **kwargs):
+0227:         pred = Prediction.from_completions(completions, signature=signature)
+0228:         if kwargs.pop("_trace", True) and settings.trace is not None and settings.max_trace_size > 0:
+0229:             trace = settings.trace
+0230:             if len(trace) >= settings.max_trace_size:
+0231:                 trace.pop(0)
+0232:             trace.append((self, {**kwargs}, pred))
+0233:         return pred
+0234: 
+0235:     def _should_stream(self):
+0236:         stream_listeners = settings.stream_listeners or []
+0237:         should_stream = settings.send_stream is not None
+0238:         if should_stream and len(stream_listeners) > 0:
+0239:             should_stream = any(stream_listener.predict == self for stream_listener in stream_listeners)
+0240: 
+0241:         return should_stream
+0242: 
+0243:     def forward(self, **kwargs):
+0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+0245: 
+0246:         adapter = settings.adapter or ChatAdapter()
+0247: 
+0248:         if self._should_stream():
+0249:             with settings.context(caller_predict=self):
+0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0251:         else:
+0252:             with settings.context(send_stream=None):
+0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0254: 
+0255:         return self._forward_postprocess(completions, signature, **kwargs)
+0256: 
+0257:     async def aforward(self, **kwargs):
+0258:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+0259: 
+0260:         adapter = settings.adapter or ChatAdapter()
+0261:         if self._should_stream():
+0262:             with settings.context(caller_predict=self):
+0263:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0264:         else:
+0265:             with settings.context(send_stream=None):
+0266:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0267: 
+0268:         return self._forward_postprocess(completions, signature, **kwargs)
+0269: 
+0270:     def update_config(self, **kwargs):
+0271:         self.config = {**self.config, **kwargs}
+0272: 
+0273:     def get_config(self):
+0274:         return self.config
+0275: 
+0276:     def __repr__(self):
+0277:         return f"{self.__class__.__name__}({self.signature})"
+0278: 
+0279: def _get_type_name(type_annotation) -> str:
+0280:     """Helper method to get the name for a type annotation."""
+0281: 
+0282:     origin = get_origin(type_annotation)
+0283:     args = get_args(type_annotation)
+0284: 
+0285:     if origin is None:
+0286:         # Primitives like str, int, etc.
+0287:         if hasattr(type_annotation, "__name__"):
+0288:             return type_annotation.__name__
+0289:         return str(type_annotation)
+0290: 
+0291:     # Handle Literal types
+0292:     if origin is Literal:
+0293:         literal_values = ", ".join(repr(arg) for arg in args)
+0294:         return f"Literal[{literal_values}]"
+0295: 
+0296:     # Types like list[str], dict[str, int], generics, etc.
+0297:     if args:
+0298:         # Handle Ellipsis in tuples (e.g., tuple[int, ...])
+0299:         args_str = ", ".join("..." if arg is ... else _get_type_name(arg) for arg in args)
+0300:         origin_name = getattr(origin, "__name__", str(origin))
+0301:         return f"{origin_name}[{args_str}]"
+0302: 
+0303:     return getattr(origin, "__name__", str(origin))
+0304: 
+0305: def _is_value_compatible_with_type(value: Any, expected: type) -> bool:
+0306:     """Return True if the value matches the expected type hint."""
+0307:     try:
+0308:         # Special handle list[str] because we allow setting input type to str, however, invoking with a list thereof.
+0309:         if expected is str and isinstance(value, list):
+0310:             if all(isinstance(item, str) for item in value):
+0311:                 return True
+0312: 
+0313:         check_type(value, expected)
+0314:         return True
+0315:     except TypeCheckError:
+0316:         return False
+0317: 
+0318: def serialize_object(obj):
+0319:     """
+0320:     Recursively serialize a given object into a JSON-compatible format.
+0321:     Supports Pydantic models, lists, dicts, and primitive types.
+0322:     """
+0323:     if isinstance(obj, BaseModel):
+0324:         # Use model_dump with mode="json" to ensure all fields (including HttpUrl, datetime, etc.)
+0325:         # are converted to JSON-serializable types (strings)
+0326:         return obj.model_dump(mode="json")
+0327:     elif isinstance(obj, list):
+0328:         return [serialize_object(item) for item in obj]
+0329:     elif isinstance(obj, tuple):
+0330:         return tuple(serialize_object(item) for item in obj)
+0331:     elif isinstance(obj, dict):
+0332:         return {key: serialize_object(value) for key, value in obj.items()}
+0333:     else:
+0334:         return obj
+0335: 
+0336: 
+0337: # # TODO: FIXME: Hmm, I guess expected behavior is that contexts can
+0338: # affect execution. Well, we need to determine whether context dominates, __init__ demoninates, or forward dominates.
+0339: # Generally, unless overwritten, we'd see n=None, temperature=None.
+0340: # That will eventually mean we have to learn them.
+
+Return JSON that matches the schema exactly.

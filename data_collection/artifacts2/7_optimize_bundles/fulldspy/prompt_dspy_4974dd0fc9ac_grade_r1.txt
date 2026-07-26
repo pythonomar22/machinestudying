@@ -1,0 +1,1099 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_4974dd0fc9ac`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I'm letting DSPy's few-shot optimizer retry the same training example across multiple rounds because the first attempt can fail. What I need to know is whether later rounds actually use a fresh rollout configuration or just rerun the exact same LM state and hit the same cache.
+
+Don't tell me what the optimizer is supposed to do. Give me a complete, runnable Python program that stays offline with `DummyLM`, forces a first-round failure and a second-round success, and prints/asserts the LM-copy kwargs and per-call LM kwargs for the two rounds.`
+- Model answer:
+```python
+import dspy
+from dspy.teleprompt import BootstrapFewShot
+from dspy.utils.dummies import DummyLM
+
+
+class RecordingDummyLM(DummyLM):
+    def __init__(self, answers, copy_log=None, call_log=None, adapter=None):
+        super().__init__(answers, adapter=adapter)
+        self.copy_log = [] if copy_log is None else copy_log
+        self.call_log = [] if call_log is None else call_log
+
+    def copy(self, **kwargs):
+        self.copy_log.append(kwargs.copy())
+        clone = super().copy(**kwargs)
+        clone.copy_log = self.copy_log
+        clone.call_log = self.call_log
+        return clone
+
+    def forward(self, prompt=None, messages=None, **kwargs):
+        merged_kwargs = {**self.kwargs, **kwargs}
+        self.call_log.append(merged_kwargs.copy())
+        return super().forward(prompt=prompt, messages=messages, **kwargs)
+
+
+class TinyProgram(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.predictor = dspy.Predict("question -> answer")
+
+    def forward(self, question):
+        return self.predictor(question=question)
+
+
+attempt_answers = []
+
+
+def metric(example, prediction, trace=None):
+    attempt_answers.append(prediction.answer)
+    return len(attempt_answers) >= 2
+
+
+lm = RecordingDummyLM({"What is 1+1?": {"answer": "2"}})
+initial_kwargs = lm.kwargs.copy()
+dspy.configure(lm=lm)
+
+trainset = [dspy.Example(question="What is 1+1?", answer="2").with_inputs("question")]
+
+BootstrapFewShot(
+    metric=metric,
+    max_rounds=2,
+    max_bootstrapped_demos=1,
+    max_labeled_demos=0,
+).compile(TinyProgram(), trainset=trainset)
+
+expected_second_round_kwargs = {**initial_kwargs, "rollout_id": 1, "temperature": 1.0}
+
+print("copy_log:", lm.copy_log)
+print("call_log:", lm.call_log)
+
+assert attempt_answers == ["2", "2"]
+assert lm.copy_log == [{"rollout_id": 1, "temperature": 1.0}]
+assert lm.call_log[0] == initial_kwargs
+assert lm.call_log[1] == expected_second_round_kwargs
+```
+
+## Gold answer
+```python
+import dspy
+from dspy.teleprompt import BootstrapFewShot
+from dspy.utils.dummies import DummyLM
+
+
+class RecordingDummyLM(DummyLM):
+    def __init__(self, answers, copy_log=None, call_log=None, adapter=None):
+        super().__init__(answers, adapter=adapter)
+        self.copy_log = [] if copy_log is None else copy_log
+        self.call_log = [] if call_log is None else call_log
+
+    def copy(self, **kwargs):
+        self.copy_log.append(kwargs.copy())
+        clone = super().copy(**kwargs)
+        clone.copy_log = self.copy_log
+        clone.call_log = self.call_log
+        return clone
+
+    def forward(self, prompt=None, messages=None, **kwargs):
+        merged_kwargs = {**self.kwargs, **kwargs}
+        self.call_log.append(merged_kwargs.copy())
+        return super().forward(prompt=prompt, messages=messages, **kwargs)
+
+
+class TinyProgram(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.predictor = dspy.Predict("question -> answer")
+
+    def forward(self, question):
+        return self.predictor(question=question)
+
+
+attempt_answers = []
+
+
+def metric(example, prediction, trace=None):
+    attempt_answers.append(prediction.answer)
+    return len(attempt_answers) >= 2
+
+
+lm = RecordingDummyLM({"What is 1+1?": {"answer": "2"}})
+initial_kwargs = lm.kwargs.copy()
+dspy.configure(lm=lm)
+
+trainset = [dspy.Example(question="What is 1+1?", answer="2").with_inputs("question")]
+
+BootstrapFewShot(
+    metric=metric,
+    max_rounds=2,
+    max_bootstrapped_demos=1,
+    max_labeled_demos=0,
+).compile(TinyProgram(), trainset=trainset)
+
+expected_second_round_kwargs = {**initial_kwargs, "rollout_id": 1, "temperature": 1.0}
+
+print("copy_log:", lm.copy_log)
+print("call_log:", lm.call_log)
+
+assert attempt_answers == ["2", "2"]
+assert lm.copy_log == [{"rollout_id": 1, "temperature": 1.0}]
+assert lm.call_log[0] == initial_kwargs
+assert lm.call_log[1] == expected_second_round_kwargs
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 30,
+    "statement": "The program drives `BootstrapFewShot.compile(...)` through two attempts on the same training example by setting `max_rounds=2` and using a metric that fails the first prediction and succeeds on the second.",
+    "span_ids": [
+      "s1",
+      "s2"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "It demonstrates that round 0 reuses the currently configured LM without `lm.copy(...)` or an inner-context LM override, so the first recorded LM-call kwargs must equal the LM's initial kwargs rather than `{}`.",
+    "span_ids": [
+      "s3",
+      "s4",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 30,
+    "statement": "It demonstrates that round 1 creates a fresh rollout by calling `lm.copy(rollout_id=1, temperature=1.0)` and running that copied LM inside the inner `dspy.context`, which makes the second recorded LM-call kwargs include `rollout_id=1` and `temperature=1.0`.",
+    "span_ids": [
+      "s3",
+      "s5",
+      "s6"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "supporting",
+    "weight": 15,
+    "statement": "It uses `dspy.utils.dummies.DummyLM`, and its logging targets the two relevant observables for this behavior: the kwargs passed to `copy(...)` and the LM kwargs merged into each `DummyLM.forward(...)` call.",
+    "span_ids": [
+      "s5",
+      "s6",
+      "s7"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/teleprompt/bootstrap.py",
+    "start_line": 155,
+    "end_line": 163,
+    "excerpt": "0155:         for example_idx, example in enumerate(tqdm.tqdm(self.trainset)):\n0156:             if len(bootstrapped) >= max_bootstraps:\n0157:                 break\n0158: \n0159:             for round_idx in range(self.max_rounds):\n0160:                 bootstrap_attempts += 1\n0161: \n0162:                 if self._bootstrap_one_example(example, round_idx):\n0163:                     bootstrapped[example_idx] = True"
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/teleprompt/bootstrap.py",
+    "start_line": 205,
+    "end_line": 210,
+    "excerpt": "0205:                 if self.metric:\n0206:                     metric_val = self.metric(example, prediction, trace)\n0207:                     if self.metric_threshold:\n0208:                         success = metric_val >= self.metric_threshold\n0209:                     else:\n0210:                         success = metric_val"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/teleprompt/bootstrap.py",
+    "start_line": 188,
+    "end_line": 194,
+    "excerpt": "0188:             with dspy.context(trace=[], **self.teacher_settings):\n0189:                 lm = dspy.settings.lm\n0190:                 # Use a fresh rollout with temperature=1.0 to bypass caches.\n0191:                 lm = lm.copy(rollout_id=round_idx, temperature=1.0) if round_idx > 0 else lm\n0192:                 new_settings = {\"lm\": lm} if round_idx > 0 else {}\n0193: \n0194:                 with dspy.context(**new_settings):"
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/clients/base_lm.py",
+    "start_line": 63,
+    "end_line": 68,
+    "excerpt": "0063:     def __init__(self, model, model_type=\"chat\", temperature=0.0, max_tokens=1000, cache=True, **kwargs):\n0064:         self.model = model\n0065:         self.model_type = model_type\n0066:         self.cache = cache\n0067:         self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)\n0068:         self.history = []"
+  },
+  {
+    "span_id": "s5",
+    "path": "dspy/utils/dummies.py",
+    "start_line": 122,
+    "end_line": 125,
+    "excerpt": "0122:     def forward(self, prompt=None, messages=None, **kwargs):\n0123:         messages = messages or [{\"role\": \"user\", \"content\": prompt}]\n0124:         kwargs = {**self.kwargs, **kwargs}\n0125: "
+  },
+  {
+    "span_id": "s6",
+    "path": "dspy/clients/base_lm.py",
+    "start_line": 193,
+    "end_line": 217,
+    "excerpt": "0193:     def copy(self, **kwargs):\n0194:         \"\"\"Returns a copy of the language model with possibly updated parameters.\n0195: \n0196:         Any provided keyword arguments update the corresponding attributes or LM kwargs of\n0197:         the copy. For example, ``lm.copy(rollout_id=1, temperature=1.0)`` returns an LM whose\n0198:         requests use a different rollout ID at non-zero temperature to bypass cache collisions.\n0199:         \"\"\"\n0200: \n0201:         import copy\n0202: \n0203:         new_instance = copy.deepcopy(self)\n0204:         new_instance.history = []\n0205: \n0206:         for key, value in kwargs.items():\n0207:             if hasattr(self, key):\n0208:                 setattr(new_instance, key, value)\n0209:             if (key in self.kwargs) or (not hasattr(self, key)):\n0210:                 if value is None:\n0211:                     new_instance.kwargs.pop(key, None)\n0212:                 else:\n0213:                     new_instance.kwargs[key] = value\n0214:         if hasattr(new_instance, \"_warned_zero_temp_rollout\"):\n0215:             new_instance._warned_zero_temp_rollout = False\n0216: \n0217:         return new_instance"
+  },
+  {
+    "span_id": "s7",
+    "path": "dspy/utils/dummies.py",
+    "start_line": 13,
+    "end_line": 16,
+    "excerpt": "0013: class DummyLM(BaseLM):\n0014:     \"\"\"Dummy language model for unit testing purposes.\n0015: \n0016:     Three modes of operation:"
+  }
+]
+
+## Whole evidence files
+### dspy/teleprompt/bootstrap.py
+0001: import logging
+0002: import random
+0003: import threading
+0004: 
+0005: import tqdm
+0006: 
+0007: import dspy
+0008: from dspy.teleprompt.teleprompt import Teleprompter
+0009: 
+0010: from .vanilla import LabeledFewShot
+0011: 
+0012: # TODO: metrics should return an object with __bool__ basically, but fine if they're more complex.
+0013: # They can also be sortable.
+0014: 
+0015: # TODO: Switch here from dspy.dsp.Example to dspy.Example. Right now, it's okay because it's internal only (predictors).
+0016: # NOTE: Notice the places where we don't shuffle examples. I do like that this one doesn't shuffle.
+0017: # Other ones that consider options may want to use both unshuffled and then shuffle a few times, when
+0018: # considering candidates.
+0019: 
+0020: # TODO: the max_rounds via branch_idx to get past the cache, not just temperature.
+0021: # In principle, we can also sample multiple outputs from the final generation step
+0022: # (or even each step, in case the validation function just wants *one* thing that works, but nah)
+0023: # and try them all. Having a pretty solid guess on the "final step" of each example isn't hard by the second round,
+0024: # in the sense that we have the trace from the first round. (Yes it may change but that's an edge case that
+0025: # won't hurt our "best effort" guarantees.)
+0026: 
+0027: # TODO: When this bootstraps for another teleprompter like finetune, we want all demos we gather.
+0028: # But when it's for direct use we may want to sample ONE demo per predictor--example pair.
+0029: # This is important for "multi-use" modules.
+0030: 
+0031: # TODO: Add baselines=[...]
+0032: 
+0033: logger = logging.getLogger(__name__)
+0034: 
+0035: 
+0036: class BootstrapFewShot(Teleprompter):
+0037:     def __init__(
+0038:         self,
+0039:         metric=None,
+0040:         metric_threshold=None,
+0041:         teacher_settings: dict | None = None,
+0042:         max_bootstrapped_demos=4,
+0043:         max_labeled_demos=16,
+0044:         max_rounds=1,
+0045:         max_errors=None,
+0046:     ):
+0047:         """A Teleprompter class that composes a set of demos/examples to go into a predictor's prompt.
+0048:         These demos come from a combination of labeled examples in the training set, and bootstrapped demos.
+0049: 
+0050:         Each bootstrap round copies the LM with a new ``rollout_id`` at ``temperature=1.0`` to
+0051:         bypass caches and gather diverse traces.
+0052: 
+0053:         Args:
+0054:             metric (Callable): A function that compares an expected value and predicted value,
+0055:                 outputting the result of that comparison.
+0056:             metric_threshold (float, optional): If the metric yields a numerical value, then check it
+0057:                 against this threshold when deciding whether or not to accept a bootstrap example.
+0058:                 Defaults to None.
+0059:             teacher_settings (dict, optional): Settings for the `teacher` model.
+0060:                 Defaults to None.
+0061:             max_bootstrapped_demos (int): Maximum number of bootstrapped demonstrations to include.
+0062:                 Defaults to 4.
+0063:             max_labeled_demos (int): Maximum number of labeled demonstrations to include.
+0064:                 Defaults to 16.
+0065:             max_rounds (int): Maximum number of bootstrap attempts per training example.
+0066:                 Each round after the first uses a fresh rollout with ``temperature=1.0``
+0067:                 to bypass caches and gather diverse traces. If a successful bootstrap is
+0068:                 found on any round, the example is accepted and the optimizer moves to the
+0069:                 next one. Defaults to 1.
+0070:             max_errors (Optional[int]): Maximum number of errors until program ends.
+0071:                 If ``None``, inherits from ``dspy.settings.max_errors``.
+0072:         """
+0073:         self.metric = metric
+0074:         self.metric_threshold = metric_threshold
+0075:         self.teacher_settings = {} if teacher_settings is None else teacher_settings
+0076: 
+0077:         self.max_bootstrapped_demos = max_bootstrapped_demos
+0078:         self.max_labeled_demos = max_labeled_demos
+0079:         self.max_rounds = max_rounds
+0080:         self.max_errors = max_errors
+0081:         self.error_count = 0
+0082:         self.error_lock = threading.Lock()
+0083: 
+0084:     def compile(self, student, *, teacher=None, trainset):
+0085:         self.trainset = trainset
+0086: 
+0087:         self._prepare_student_and_teacher(student, teacher)
+0088:         self._prepare_predictor_mappings()
+0089:         self._bootstrap()
+0090: 
+0091:         self.student = self._train()
+0092:         self.student._compiled = True
+0093: 
+0094:         return self.student
+0095: 
+0096:     def _prepare_student_and_teacher(self, student, teacher):
+0097:         self.student = student.reset_copy()
+0098: 
+0099:         # NOTE: behavior change on Oct 28, 2024. Deep copy instead of reset copy for the student-as-teacher.
+0100:         self.teacher = teacher.deepcopy() if teacher is not None else student.deepcopy()
+0101: 
+0102:         assert getattr(self.student, "_compiled", False) is False, "Student must be uncompiled."
+0103: 
+0104:         if self.max_labeled_demos and getattr(self.teacher, "_compiled", False) is False:
+0105:             teleprompter = LabeledFewShot(k=self.max_labeled_demos)
+0106:             self.teacher = teleprompter.compile(self.teacher.reset_copy(), trainset=self.trainset)
+0107: 
+0108:     def _prepare_predictor_mappings(self):
+0109:         name2predictor, predictor2name = {}, {}
+0110:         student, teacher = self.student, self.teacher
+0111: 
+0112:         assert len(student.predictors()) == len(
+0113:             teacher.predictors(),
+0114:         ), "Student and teacher must have the same number of predictors."
+0115: 
+0116:         for (name1, predictor1), (name2, predictor2) in zip(
+0117:             student.named_predictors(), teacher.named_predictors(), strict=False
+0118:         ):
+0119:             assert name1 == name2, "Student and teacher must have the same program structure."
+0120:             if hasattr(predictor1.signature, "equals"):
+0121:                 assert predictor1.signature.equals(
+0122:                     predictor2.signature,
+0123:                 ), (
+0124:                     f"Student and teacher must have the same signatures. "
+0125:                     f"{type(predictor1.signature)} != {type(predictor2.signature)}"
+0126:                 )
+0127:             else:
+0128:                 # fallback in case if .equals is not implemented (e.g. dsp.Prompt)
+0129:                 assert predictor1.signature == predictor2.signature, (
+0130:                     f"Student and teacher must have the same signatures. "
+0131:                     f"{type(predictor1.signature)} != {type(predictor2.signature)}"
+0132:                 )
+0133:             assert id(predictor1) != id(predictor2), "Student and teacher must be different objects."
+0134: 
+0135:             name2predictor[name1] = None  # dict(student=predictor1, teacher=predictor2)
+0136:             predictor2name[id(predictor1)] = name1
+0137: 
+0138:             # FIXME(shangyint): This is an ugly hack to bind traces of
+0139:             # retry.module to retry
+0140:             # if isinstance(predictor1, Retry):
+0141:             #     predictor2name[id(predictor1.module)] = name1
+0142: 
+0143:             predictor2name[id(predictor2)] = name2
+0144: 
+0145:         self.name2predictor = name2predictor
+0146:         self.predictor2name = predictor2name
+0147: 
+0148:     def _bootstrap(self, *, max_bootstraps=None):
+0149:         max_bootstraps = max_bootstraps or self.max_bootstrapped_demos
+0150:         bootstrap_attempts = 0
+0151: 
+0152:         bootstrapped = {}
+0153:         self.name2traces = {name: [] for name in self.name2predictor}
+0154: 
+0155:         for example_idx, example in enumerate(tqdm.tqdm(self.trainset)):
+0156:             if len(bootstrapped) >= max_bootstraps:
+0157:                 break
+0158: 
+0159:             for round_idx in range(self.max_rounds):
+0160:                 bootstrap_attempts += 1
+0161: 
+0162:                 if self._bootstrap_one_example(example, round_idx):
+0163:                     bootstrapped[example_idx] = True
+0164:                     break
+0165: 
+0166:         print(
+0167:             f"Bootstrapped {len(bootstrapped)} full traces after {example_idx} examples "
+0168:             f"for up to {self.max_rounds} rounds, amounting to {bootstrap_attempts} attempts."
+0169:         )
+0170: 
+0171:         # Unbootstrapped training examples
+0172: 
+0173:         self.validation = [x for idx, x in enumerate(self.trainset) if idx not in bootstrapped]
+0174:         random.Random(0).shuffle(self.validation)
+0175: 
+0176:         self.validation = self.validation
+0177: 
+0178:         # NOTE: Can't yet use evaluate because we need to trace *per example*
+0179:         # evaluate = Evaluate(program=self.teacher, metric=self.metric, num_threads=12)
+0180:         # score = evaluate(self.metric, display_table=False, display_progress=True)
+0181: 
+0182:     def _bootstrap_one_example(self, example, round_idx=0):
+0183:         name2traces = {}
+0184:         teacher = self.teacher
+0185:         predictor_cache = {}
+0186: 
+0187:         try:
+0188:             with dspy.context(trace=[], **self.teacher_settings):
+0189:                 lm = dspy.settings.lm
+0190:                 # Use a fresh rollout with temperature=1.0 to bypass caches.
+0191:                 lm = lm.copy(rollout_id=round_idx, temperature=1.0) if round_idx > 0 else lm
+0192:                 new_settings = {"lm": lm} if round_idx > 0 else {}
+0193: 
+0194:                 with dspy.context(**new_settings):
+0195:                     for name, predictor in teacher.named_predictors():
+0196:                         predictor_cache[name] = predictor.demos
+0197:                         predictor.demos = [x for x in predictor.demos if x != example]
+0198: 
+0199:                     prediction = teacher(**example.inputs())
+0200:                     trace = dspy.settings.trace
+0201: 
+0202:                     for name, predictor in teacher.named_predictors():
+0203:                         predictor.demos = predictor_cache[name]
+0204: 
+0205:                 if self.metric:
+0206:                     metric_val = self.metric(example, prediction, trace)
+0207:                     if self.metric_threshold:
+0208:                         success = metric_val >= self.metric_threshold
+0209:                     else:
+0210:                         success = metric_val
+0211:                 else:
+0212:                     success = True
+0213:         except Exception as e:
+0214:             success = False
+0215:             with self.error_lock:
+0216:                 self.error_count += 1
+0217:                 current_error_count = self.error_count
+0218:             effective_max_errors = self.max_errors if self.max_errors is not None else dspy.settings.max_errors
+0219:             if current_error_count >= effective_max_errors:
+0220:                 raise e
+0221:             logger.error(f"Failed to run or to evaluate example {example} with {self.metric} due to {e}.")
+0222: 
+0223:         if success:
+0224:             for step in trace:
+0225:                 predictor, inputs, outputs = step
+0226:                 demo = dspy.Example(augmented=True, **inputs, **outputs)
+0227: 
+0228:                 try:
+0229:                     predictor_name = self.predictor2name[id(predictor)]
+0230:                 except KeyError:
+0231:                     continue  # FIXME: !
+0232: 
+0233:                     # # TODO: Look closer into this. It's a bit tricky to reproduce.
+0234:                     # print(f"Failed to find predictor {predictor} in {self.predictor2name}.")
+0235:                     # print(
+0236:                     #     "Are you doing this in a notebook (Jupyter)? This might be caused by redefining values by rerunning cells.",
+0237:                     # )
+0238:                     # print("Try restarting the notebook, or open an issue.")
+0239:                     # raise KeyError(
+0240:                     #     f"Failed to find predictor {id(predictor)} {predictor} in {self.predictor2name}.",
+0241:                     # ) from e
+0242: 
+0243:                 name2traces[predictor_name] = name2traces.get(predictor_name, [])
+0244:                 name2traces[predictor_name].append(demo)
+0245: 
+0246:             # Update the traces
+0247:             for name, demos in name2traces.items():
+0248:                 # If there are multiple traces for the same predictor in the sample example,
+0249:                 # sample 50/50 from the first N-1 traces or the last trace.
+0250:                 if len(demos) > 1:
+0251:                     from dspy.utils.hasher import Hasher
+0252: 
+0253:                     rng = random.Random(Hasher.hash(tuple(demos)))
+0254:                     demos = [rng.choice(demos[:-1]) if rng.random() < 0.5 else demos[-1]]
+0255:                 self.name2traces[name].extend(demos)
+0256: 
+0257:         return success
+0258: 
+0259:     def _train(self):
+0260:         rng = random.Random(0)
+0261:         raw_demos = self.validation
+0262: 
+0263:         for name, predictor in self.student.named_predictors():
+0264:             augmented_demos = self.name2traces[name][: self.max_bootstrapped_demos]
+0265: 
+0266:             sample_size = min(self.max_labeled_demos - len(augmented_demos), len(raw_demos))
+0267:             sample_size = max(0, sample_size)
+0268: 
+0269:             raw_demos = rng.sample(raw_demos, sample_size)
+0270:             predictor.demos = augmented_demos + raw_demos
+0271: 
+0272:         return self.student
+
+### dspy/clients/base_lm.py
+0001: import datetime
+0002: import uuid
+0003: from typing import Any, TextIO
+0004: 
+0005: from dspy.dsp.utils import settings
+0006: from dspy.utils.callback import with_callbacks
+0007: from dspy.utils.inspect_history import pretty_print_history
+0008: 
+0009: MAX_HISTORY_SIZE = 10_000
+0010: GLOBAL_HISTORY = []
+0011: 
+0012: 
+0013: class BaseLM:
+0014:     """Base class for handling LLM calls.
+0015: 
+0016:     Most users can directly use the `dspy.LM` class, which is a subclass of `BaseLM`. Users can also implement their
+0017:     own subclasses of `BaseLM` to support custom LLM providers and inject custom logic. To do so, simply override the
+0018:     `forward` method and make sure the return format is identical to the
+0019:     [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object).
+0020: 
+0021:     Examples:
+0022: 
+0023:     ```python
+0024:     from openai import OpenAI
+0025: 
+0026:     import dspy
+0027: 
+0028: 
+0029:     class MyLM(dspy.BaseLM):
+0030:         @property
+0031:         def supports_function_calling(self) -> bool:
+0032:             return self.model.startswith("openai/gpt-4o")
+0033: 
+0034:         @property
+0035:         def supports_reasoning(self) -> bool:
+0036:             return self.model.startswith("anthropic/claude-3-7")
+0037: 
+0038:         @property
+0039:         def supports_response_schema(self) -> bool:
+0040:             return self.model.startswith("openai/gpt-4o")
+0041: 
+0042:         @property
+0043:         def supported_params(self) -> set[str]:
+0044:             if self.model.startswith("openai/gpt-4o"):
+0045:                 return {"response_format"}  # accepts response_format=...
+0046:             return set()
+0047: 
+0048:         def forward(self, prompt, messages=None, **kwargs):
+0049:             client = OpenAI()
+0050:             return client.chat.completions.create(
+0051:                 model=self.model,
+0052:                 messages=messages or [{"role": "user", "content": prompt}],
+0053:                 **self.kwargs,
+0054:             )
+0055: 
+0056: 
+0057:     lm = MyLM(model="gpt-4o-mini")
+0058:     dspy.configure(lm=lm)
+0059:     print(dspy.Predict("q->a")(q="Why did the chicken cross the kitchen?"))
+0060:     ```
+0061:     """
+0062: 
+0063:     def __init__(self, model, model_type="chat", temperature=0.0, max_tokens=1000, cache=True, **kwargs):
+0064:         self.model = model
+0065:         self.model_type = model_type
+0066:         self.cache = cache
+0067:         self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)
+0068:         self.history = []
+0069: 
+0070:     @property
+0071:     def supports_function_calling(self) -> bool:
+0072:         """Whether the model supports function calling (tool use)."""
+0073:         return False
+0074: 
+0075:     @property
+0076:     def supports_reasoning(self) -> bool:
+0077:         """Whether the model supports native reasoning (extended thinking)."""
+0078:         return False
+0079: 
+0080:     @property
+0081:     def supports_response_schema(self) -> bool:
+0082:         """Whether the model supports structured output via response schema."""
+0083:         return False
+0084: 
+0085:     @property
+0086:     def supported_params(self) -> set[str]:
+0087:         """Set of supported OpenAI-style parameter names for the model."""
+0088:         return set()
+0089: 
+0090:     def _process_lm_response(self, response, prompt, messages, **kwargs):
+0091:         merged_kwargs = {**self.kwargs, **kwargs}
+0092: 
+0093:         if self.model_type == "responses":
+0094:             outputs = self._process_response(response)
+0095:         else:
+0096:             outputs = self._process_completion(response, merged_kwargs)
+0097: 
+0098:         if settings.disable_history:
+0099:             return outputs
+0100: 
+0101:         # Logging, with removed api key & where `cost` is None on cache hit.
+0102:         kwargs = {k: v for k, v in kwargs.items() if not k.startswith("api_")}
+0103:         entry = {
+0104:             "prompt": prompt,
+0105:             "messages": messages,
+0106:             "kwargs": kwargs,
+0107:             "response": response,
+0108:             "outputs": outputs,
+0109:             "usage": dict(response.usage),
+0110:             "cost": getattr(response, "_hidden_params", {}).get("response_cost"),
+0111:             "timestamp": datetime.datetime.now().isoformat(),
+0112:             "uuid": str(uuid.uuid4()),
+0113:             "model": self.model,
+0114:             "response_model": response.model,
+0115:             "model_type": self.model_type,
+0116:         }
+0117: 
+0118:         self.update_history(entry)
+0119: 
+0120:         return outputs
+0121: 
+0122:     @with_callbacks
+0123:     def __call__(
+0124:         self,
+0125:         prompt: str | None = None,
+0126:         messages: list[dict[str, Any]] | None = None,
+0127:         **kwargs
+0128:     ) -> list[dict[str, Any] | str]:
+0129:         response = self.forward(prompt=prompt, messages=messages, **kwargs)
+0130:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
+0131: 
+0132:         return outputs
+0133: 
+0134:     @with_callbacks
+0135:     async def acall(
+0136:         self,
+0137:         prompt: str | None = None,
+0138:         messages: list[dict[str, Any]] | None = None,
+0139:         **kwargs
+0140:     ) -> list[dict[str, Any] | str]:
+0141:         response = await self.aforward(prompt=prompt, messages=messages, **kwargs)
+0142:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
+0143:         return outputs
+0144: 
+0145:     def forward(
+0146:         self,
+0147:         prompt: str | None = None,
+0148:         messages: list[dict[str, Any]] | None = None,
+0149:         **kwargs
+0150:     ):
+0151:         """Forward pass for the language model.
+0152: 
+0153:         Subclasses must implement this method, and the response should be identical to either of the following formats:
+0154: 
+0155:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+0156:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+0157:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
+0158: 
+0159:         Raises:
+0160:             dspy.ContextWindowExceededError: When the request fails because the
+0161:                 input exceeds the model's context window. DSPy adapters and
+0162:                 modules rely on this error to trigger fallback behavior (e.g.
+0163:                 truncating the prompt and retrying). Each subclass is
+0164:                 responsible for catching its provider's native error and
+0165:                 re-raising it as `dspy.ContextWindowExceededError`.
+0166:         """
+0167:         raise NotImplementedError("Subclasses must implement this method.")
+0168: 
+0169:     async def aforward(
+0170:         self,
+0171:         prompt: str | None = None,
+0172:         messages: list[dict[str, Any]] | None = None,
+0173:         **kwargs
+0174:     ):
+0175:         """Async forward pass for the language model.
+0176: 
+0177:         Subclasses must implement this method, and the response should be identical to either of the following formats:
+0178: 
+0179:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+0180:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+0181:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
+0182: 
+0183:         Raises:
+0184:             dspy.ContextWindowExceededError: When the request fails because the
+0185:                 input exceeds the model's context window. DSPy adapters and
+0186:                 modules rely on this error to trigger fallback behavior (e.g.
+0187:                 truncating the prompt and retrying). Each subclass is
+0188:                 responsible for catching its provider's native error and
+0189:                 re-raising it as `dspy.ContextWindowExceededError`.
+0190:         """
+0191:         raise NotImplementedError("Subclasses must implement this method.")
+0192: 
+0193:     def copy(self, **kwargs):
+0194:         """Returns a copy of the language model with possibly updated parameters.
+0195: 
+0196:         Any provided keyword arguments update the corresponding attributes or LM kwargs of
+0197:         the copy. For example, ``lm.copy(rollout_id=1, temperature=1.0)`` returns an LM whose
+0198:         requests use a different rollout ID at non-zero temperature to bypass cache collisions.
+0199:         """
+0200: 
+0201:         import copy
+0202: 
+0203:         new_instance = copy.deepcopy(self)
+0204:         new_instance.history = []
+0205: 
+0206:         for key, value in kwargs.items():
+0207:             if hasattr(self, key):
+0208:                 setattr(new_instance, key, value)
+0209:             if (key in self.kwargs) or (not hasattr(self, key)):
+0210:                 if value is None:
+0211:                     new_instance.kwargs.pop(key, None)
+0212:                 else:
+0213:                     new_instance.kwargs[key] = value
+0214:         if hasattr(new_instance, "_warned_zero_temp_rollout"):
+0215:             new_instance._warned_zero_temp_rollout = False
+0216: 
+0217:         return new_instance
+0218: 
+0219:     def inspect_history(self, n: int = 1, file: "TextIO | None" = None) -> None:
+0220:         pretty_print_history(self.history, n, file=file)
+0221: 
+0222:     def update_history(self, entry):
+0223:         if settings.disable_history:
+0224:             return
+0225: 
+0226:         # Global LM history
+0227:         if len(GLOBAL_HISTORY) >= MAX_HISTORY_SIZE:
+0228:             GLOBAL_HISTORY.pop(0)
+0229: 
+0230:         GLOBAL_HISTORY.append(entry)
+0231: 
+0232:         if settings.max_history_size == 0:
+0233:             return
+0234: 
+0235:         # dspy.LM.history
+0236:         if len(self.history) >= settings.max_history_size:
+0237:             self.history.pop(0)
+0238: 
+0239:         self.history.append(entry)
+0240: 
+0241:         # Per-module history
+0242:         caller_modules = settings.caller_modules or []
+0243:         for module in caller_modules:
+0244:             if len(module.history) >= settings.max_history_size:
+0245:                 module.history.pop(0)
+0246:             module.history.append(entry)
+0247: 
+0248:     def _process_completion(self, response, merged_kwargs):
+0249:         """Process the response of OpenAI chat completion API and extract outputs.
+0250: 
+0251:         Args:
+0252:             response: The OpenAI chat completion response
+0253:                 https://platform.openai.com/docs/api-reference/chat/object
+0254:             merged_kwargs: Merged kwargs from self.kwargs and method kwargs
+0255: 
+0256:         Returns:
+0257:             List of processed outputs
+0258:         """
+0259:         outputs = []
+0260:         for c in response.choices:
+0261:             output = {}
+0262:             output["text"] = c.message.content if hasattr(c, "message") else c["text"]
+0263: 
+0264:             if hasattr(c, "message") and hasattr(c.message, "reasoning_content") and c.message.reasoning_content:
+0265:                 output["reasoning_content"] = c.message.reasoning_content
+0266: 
+0267:             if merged_kwargs.get("logprobs"):
+0268:                 output["logprobs"] = c.logprobs if hasattr(c, "logprobs") else c["logprobs"]
+0269:             if hasattr(c, "message") and getattr(c.message, "tool_calls", None):
+0270:                 output["tool_calls"] = c.message.tool_calls
+0271: 
+0272:             # Extract citations from LiteLLM response if available
+0273:             citations = self._extract_citations_from_response(c)
+0274:             if citations:
+0275:                 output["citations"] = citations
+0276: 
+0277:             outputs.append(output)
+0278: 
+0279:         if all(len(output) == 1 for output in outputs):
+0280:             # Return a list if every output only has "text" key
+0281:             outputs = [output["text"] for output in outputs]
+0282:         return outputs
+0283: 
+0284:     def _extract_citations_from_response(self, choice):
+0285:         """Extract citations from LiteLLM response if available.
+0286:         Reference: https://docs.litellm.ai/docs/providers/anthropic#beta-citations-api
+0287: 
+0288:         Args:
+0289:             choice: The choice object from response.choices
+0290: 
+0291:         Returns:
+0292:             A list of citation dictionaries or None if no citations found
+0293:         """
+0294:         try:
+0295:             # Check for citations in LiteLLM provider_specific_fields
+0296:             citations_data = choice.message.provider_specific_fields.get("citations")
+0297:             if isinstance(citations_data, list):
+0298:                 return [citation for citations in citations_data for citation in citations]
+0299:         except Exception:
+0300:             return None
+0301: 
+0302:     def _process_response(self, response):
+0303:         """Process the response of OpenAI Response API and extract outputs.
+0304: 
+0305:         Args:
+0306:             response: OpenAI Response API response
+0307:                 https://platform.openai.com/docs/api-reference/responses/object
+0308: 
+0309:         Returns:
+0310:             List of processed outputs, which is always of size 1 because the Response API only supports one output.
+0311:         """
+0312:         text_outputs = []
+0313:         tool_calls = []
+0314:         reasoning_contents = []
+0315: 
+0316:         for output_item in response.output:
+0317:             output_item_type = output_item.type
+0318:             if output_item_type == "message":
+0319:                 for content_item in output_item.content:
+0320:                     text_outputs.append(content_item.text)
+0321:             elif output_item_type == "function_call":
+0322:                 tool_calls.append(output_item.model_dump())
+0323:             elif output_item_type == "reasoning":
+0324:                 if getattr(output_item, "content", None) and len(output_item.content) > 0:
+0325:                     for content_item in output_item.content:
+0326:                         reasoning_contents.append(content_item.text)
+0327:                 elif getattr(output_item, "summary", None) and len(output_item.summary) > 0:
+0328:                     for summary_item in output_item.summary:
+0329:                         reasoning_contents.append(summary_item.text)
+0330: 
+0331:         result = {}
+0332:         if len(text_outputs) > 0:
+0333:             result["text"] = "".join(text_outputs)
+0334:         if len(tool_calls) > 0:
+0335:             result["tool_calls"] = tool_calls
+0336:         if len(reasoning_contents) > 0:
+0337:             result["reasoning_content"] = "".join(reasoning_contents)
+0338:         # All `response.output` items map to one answer, so we return a list of size 1.
+0339:         return [result]
+0340: 
+0341: 
+0342: def inspect_history(n: int = 1, file: "TextIO | None" = None) -> None:
+0343:     """The global history shared across all LMs.
+0344: 
+0345:     Args:
+0346:         n: Number of recent entries to display. Defaults to 1.
+0347:         file: An optional file-like object to write output to. When
+0348:             provided, ANSI color codes are automatically disabled.
+0349:             Defaults to `None` (prints to stdout).
+0350:     """
+0351:     pretty_print_history(GLOBAL_HISTORY, n, file=file)
+
+### dspy/utils/dummies.py
+0001: import random
+0002: from collections import defaultdict
+0003: from typing import Any
+0004: 
+0005: import numpy as np
+0006: 
+0007: from dspy.adapters.chat_adapter import FieldInfoWithName, field_header_pattern
+0008: from dspy.clients.base_lm import BaseLM
+0009: from dspy.dsp.utils.utils import dotdict
+0010: from dspy.signatures.field import OutputField
+0011: 
+0012: 
+0013: class DummyLM(BaseLM):
+0014:     """Dummy language model for unit testing purposes.
+0015: 
+0016:     Three modes of operation:
+0017: 
+0018:     Mode 1: List of dictionaries
+0019: 
+0020:     If a list of dictionaries is provided, the dummy model will return the next dictionary
+0021:     in the list for each request, formatted according to the `format_field_with_value` function.
+0022: 
+0023:     Examples:
+0024: 
+0025:     ```
+0026:     lm = DummyLM([{"answer": "red"}, {"answer": "blue"}])
+0027:     dspy.configure(lm=lm)
+0028:     predictor("What color is the sky?")
+0029:     # Output:
+0030:     # [[## answer ##]]
+0031:     # red
+0032:     predictor("What color is the sky?")
+0033:     # Output:
+0034:     # [[## answer ##]]
+0035:     # blue
+0036:     ```
+0037: 
+0038:     Mode 2: Dictionary of dictionaries
+0039: 
+0040:     If a dictionary of dictionaries is provided, the dummy model will return the value
+0041:     corresponding to the key which is contained with the final message of the prompt,
+0042:     formatted according to the `format_field_with_value` function from the chat adapter.
+0043: 
+0044:     ```
+0045:     lm = DummyLM({"What color is the sky?": {"answer": "blue"}})
+0046:     dspy.configure(lm=lm)
+0047:     predictor("What color is the sky?")
+0048:     # Output:
+0049:     # [[## answer ##]]
+0050:     # blue
+0051:     ```
+0052: 
+0053:     Mode 3: Follow examples
+0054: 
+0055:     If `follow_examples` is set to True, and the prompt contains an example input exactly equal to the prompt,
+0056:     the dummy model will return the output from that example.
+0057: 
+0058:     ```
+0059:     lm = DummyLM([{"answer": "red"}], follow_examples=True)
+0060:     dspy.configure(lm=lm)
+0061:     predictor("What color is the sky?, demos=dspy.Example(input="What color is the sky?", output="blue"))
+0062:     # Output:
+0063:     # [[## answer ##]]
+0064:     # blue
+0065:     ```
+0066: 
+0067:     """
+0068: 
+0069:     def __init__(
+0070:         self,
+0071:         answers: list[dict[str, Any]] | dict[str, dict[str, Any]],
+0072:         follow_examples: bool = False,
+0073:         reasoning: bool = False,
+0074:         adapter=None,
+0075:     ):
+0076:         super().__init__("dummy", "chat", 0.0, 1000, True)
+0077:         self.answers = answers
+0078:         if isinstance(answers, list):
+0079:             self.answers = iter(answers)
+0080:         self.follow_examples = follow_examples
+0081:         self.reasoning = reasoning
+0082: 
+0083:         # Set adapter, defaulting to ChatAdapter
+0084:         if adapter is None:
+0085:             from dspy.adapters.chat_adapter import ChatAdapter
+0086:             adapter = ChatAdapter()
+0087:         self.adapter = adapter
+0088: 
+0089:     def _use_example(self, messages):
+0090:         # find all field names
+0091:         fields = defaultdict(int)
+0092:         for message in messages:
+0093:             if "content" in message:
+0094:                 if ma := field_header_pattern.match(message["content"]):
+0095:                     fields[message["content"][ma.start() : ma.end()]] += 1
+0096:         # find the fields which are missing from the final turns
+0097:         max_count = max(fields.values())
+0098:         output_fields = [field for field, count in fields.items() if count != max_count]
+0099: 
+0100:         # get the output from the last turn that has the output fields as headers
+0101:         final_input = messages[-1]["content"].split("\n\n")[0]
+0102:         for input, output in zip(reversed(messages[:-1]), reversed(messages), strict=False):
+0103:             if any(field in output["content"] for field in output_fields) and final_input in input["content"]:
+0104:                 return output["content"]
+0105: 
+0106:     def _format_answer_fields(self, field_names_and_values: dict[str, Any]):
+0107:         fields_with_values = {
+0108:             FieldInfoWithName(name=field_name, info=OutputField()): value
+0109:             for field_name, value in field_names_and_values.items()
+0110:         }
+0111:         # The reason why DummyLM needs an adapter is because it needs to know which output format to mimic.
+0112:         # Normally LMs should not have any knowledge of an adapter, because the output format is defined in the prompt.
+0113:         adapter = self.adapter
+0114: 
+0115:         # Try to use role="assistant" if the adapter supports it (like JSONAdapter)
+0116:         try:
+0117:             return adapter.format_field_with_value(fields_with_values, role="assistant")
+0118:         except TypeError:
+0119:             # Fallback for adapters that don't support role parameter (like ChatAdapter)
+0120:             return adapter.format_field_with_value(fields_with_values)
+0121: 
+0122:     def forward(self, prompt=None, messages=None, **kwargs):
+0123:         messages = messages or [{"role": "user", "content": prompt}]
+0124:         kwargs = {**self.kwargs, **kwargs}
+0125: 
+0126:         choices = []
+0127:         for _ in range(kwargs.get("n", 1)):
+0128:             if self.follow_examples:
+0129:                 current_output = self._use_example(messages)
+0130:             elif isinstance(self.answers, dict):
+0131:                 current_output = next(
+0132:                     (self._format_answer_fields(v) for k, v in self.answers.items() if k in messages[-1]["content"]),
+0133:                     "No more responses",
+0134:                 )
+0135:             else:
+0136:                 current_output = self._format_answer_fields(next(self.answers, {"answer": "No more responses"}))
+0137: 
+0138:             message = dotdict(content=current_output, tool_calls=None)
+0139:             if self.reasoning:
+0140:                 message.reasoning_content = "Some reasoning"
+0141:             choices.append(dotdict(message=message, finish_reason="stop"))
+0142: 
+0143:         return dotdict(
+0144:             choices=choices,
+0145:             usage=dotdict(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+0146:             model="dummy",
+0147:         )
+0148: 
+0149:     async def aforward(self, prompt=None, messages=None, **kwargs):
+0150:         return self.forward(prompt=prompt, messages=messages, **kwargs)
+0151: 
+0152:     def get_convo(self, index):
+0153:         """Get the prompt + answer from the ith message."""
+0154:         return self.history[index]["messages"], self.history[index]["outputs"]
+0155: 
+0156: 
+0157: def dummy_rm(passages=()) -> callable:
+0158:     if not passages:
+0159: 
+0160:         def inner(query: str, *, k: int, **kwargs):
+0161:             raise ValueError("No passages defined")
+0162: 
+0163:         return inner
+0164:     max_length = max(map(len, passages)) + 100
+0165:     vectorizer = DummyVectorizer(max_length)
+0166:     passage_vecs = vectorizer(passages)
+0167: 
+0168:     def inner(query: str, *, k: int, **kwargs):
+0169:         assert k <= len(passages)
+0170:         query_vec = vectorizer([query])[0]
+0171:         scores = passage_vecs @ query_vec
+0172:         largest_idx = (-scores).argsort()[:k]
+0173: 
+0174:         return [dotdict(long_text=passages[i]) for i in largest_idx]
+0175: 
+0176:     return inner
+0177: 
+0178: 
+0179: class DummyVectorizer:
+0180:     """Simple vectorizer based on n-grams."""
+0181: 
+0182:     def __init__(self, max_length=100, n_gram=2):
+0183:         self.max_length = max_length
+0184:         self.n_gram = n_gram
+0185:         self.P = 10**9 + 7  # A large prime number
+0186:         random.seed(123)
+0187:         self.coeffs = [random.randrange(1, self.P) for _ in range(n_gram)]
+0188: 
+0189:     def _hash(self, gram):
+0190:         """Hashes a string using a polynomial hash function."""
+0191:         h = 1
+0192:         for coeff, c in zip(self.coeffs, gram, strict=False):
+0193:             h = h * coeff + ord(c)
+0194:             h %= self.P
+0195:         return h % self.max_length
+0196: 
+0197:     def __call__(self, texts: list[str]) -> np.ndarray:
+0198:         vecs = []
+0199:         for text in texts:
+0200:             grams = [text[i : i + self.n_gram] for i in range(len(text) - self.n_gram + 1)]
+0201:             vec = [0] * self.max_length
+0202:             for gram in grams:
+0203:                 vec[self._hash(gram)] += 1
+0204:             vecs.append(vec)
+0205: 
+0206:         vecs = np.array(vecs, dtype=np.float32)
+0207:         vecs -= np.mean(vecs, axis=1, keepdims=True)
+0208:         vecs /= np.linalg.norm(vecs, axis=1, keepdims=True) + 1e-10  # Added epsilon to avoid division by zero
+0209:         return vecs
+
+Return JSON that matches the schema exactly.

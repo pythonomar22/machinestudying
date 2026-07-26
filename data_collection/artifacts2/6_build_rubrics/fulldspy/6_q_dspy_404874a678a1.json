@@ -1,0 +1,126 @@
+{
+ "id": "dspy_404874a678a1",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I use one configured `dspy.LM` across several steps, but some steps need tiny outputs and others need the original limits back. I don't want to rebuild the client every time if a per-call override already works.\n\nShow me a complete, runnable Python program that patches DSPy's outbound call, makes one call with a smaller `max_tokens` and different temperature, makes a second call with no override, and prints/asserts both captured requests plus the LM's stored kwargs so it's proven whether the override was temporary or mutated the client.",
+ "gold_answer": "```python\nimport dspy\nfrom types import SimpleNamespace\nfrom unittest import mock\n\nclass FakeChatResponse(dict):\n    def __init__(self, text='ok', finish_reason='stop', model='openai/test-model'):\n        choice = SimpleNamespace(message=SimpleNamespace(content=text), finish_reason=finish_reason)\n        super().__init__(choices=[choice])\n        self.choices = self['choices']\n        self.usage = {'prompt_tokens': 1, 'completion_tokens': 1, 'total_tokens': 2}\n        self.model = model\n\nwith mock.patch('litellm.completion', return_value=FakeChatResponse()) as patched:\n    lm = dspy.LM('openai/test-model', cache=False, temperature=0.7, max_tokens=100)\n    lm('first', temperature=0.1, max_tokens=5)\n    lm('second')\n\nfirst = patched.call_args_list[0].kwargs\nsecond = patched.call_args_list[1].kwargs\nprint([(first['max_tokens'], first['temperature']), (second['max_tokens'], second['temperature'])])\nprint(lm.kwargs)\nassert (first['max_tokens'], first['temperature']) == (5, 0.1)\nassert (second['max_tokens'], second['temperature']) == (100, 0.7)\nassert lm.kwargs['max_tokens'] == 100\nassert lm.kwargs['temperature'] == 0.7\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 10,
+   "statement": "The program creates a default chat `dspy.LM` with `temperature=0.7` and `max_tokens=100`, and those defaults are stored on `lm.kwargs` before any per-call override.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The outbound interception patches `litellm.completion`, which is the function the default chat `LM.forward` path ultimately calls.",
+   "span_ids": [
+    "s1",
+    "s4",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The first LM invocation passes `temperature=0.1` and `max_tokens=5`, and the captured first outbound completion request shows those override values because per-call kwargs are merged over `self.kwargs` for that request.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The second LM invocation passes no override, and the captured second outbound completion request therefore uses the LM's stored defaults `temperature=0.7` and `max_tokens=100`.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "After both invocations, `lm.kwargs` still holds the original default `temperature` and `max_tokens`, demonstrating that the per-call override was temporary and did not mutate the client.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The mocked completion result behaves like a chat response with `results['choices']` entries exposing `finish_reason`, so DSPy's truncation check can execute in the runnable example.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 33,
+   "end_line": 47,
+   "excerpt": "0033:     def __init__(\n0034:         self,\n0035:         model: str,\n0036:         model_type: Literal[\"chat\", \"text\", \"responses\"] = \"chat\",\n0037:         temperature: float | None = None,\n0038:         max_tokens: int | None = None,\n0039:         cache: bool = True,\n0040:         callbacks: list[BaseCallback] | None = None,\n0041:         num_retries: int = 3,\n0042:         provider: Provider | None = None,\n0043:         finetuning_model: str | None = None,\n0044:         launch_kwargs: dict[str, Any] | None = None,\n0045:         train_kwargs: dict[str, Any] | None = None,\n0046:         use_developer_role: bool = False,\n0047:         **kwargs,"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 108,
+   "end_line": 111,
+   "excerpt": "0108:         else:\n0109:             self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)\n0110:             if self.kwargs.get(\"rollout_id\") is None:\n0111:                 self.kwargs.pop(\"rollout_id\", None)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 165,
+   "end_line": 175,
+   "excerpt": "0165:         # Build the request.\n0166:         kwargs = dict(kwargs)\n0167:         cache = kwargs.pop(\"cache\", self.cache)\n0168: \n0169:         messages = messages or [{\"role\": \"user\", \"content\": prompt}]\n0170:         if self.use_developer_role and self.model_type == \"responses\":\n0171:             messages = [{**m, \"role\": \"developer\"} if m.get(\"role\") == \"system\" else m for m in messages]\n0172:         kwargs = {**self.kwargs, **kwargs}\n0173:         self._warn_zero_temp_rollout(kwargs.get(\"temperature\"), kwargs.get(\"rollout_id\"))\n0174:         if kwargs.get(\"rollout_id\") is None:\n0175:             kwargs.pop(\"rollout_id\", None)"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/lm.py",
+   "start_line": 177,
+   "end_line": 190,
+   "excerpt": "0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0184: \n0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,\n0189:                 cache=litellm_cache_args,\n0190:             )"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/lm.py",
+   "start_line": 194,
+   "end_line": 198,
+   "excerpt": "0194:         self._check_truncation(results)\n0195: \n0196:         if not getattr(results, \"cache_hit\", False) and dspy.settings.usage_tracker and hasattr(results, \"usage\"):\n0197:             settings.usage_tracker.add_usage(self.model, dict(results.usage))\n0198:         return results"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/clients/lm.py",
+   "start_line": 326,
+   "end_line": 334,
+   "excerpt": "0326:     def _check_truncation(self, results):\n0327:         if self.model_type != \"responses\" and any(c.finish_reason == \"length\" for c in results[\"choices\"]):\n0328:             logger.warning(\n0329:                 f\"LM response was truncated due to exceeding max_tokens={self.kwargs['max_tokens']}. \"\n0330:                 \"You can inspect the latest LM interactions with `dspy.inspect_history()`. \"\n0331:                 \"To avoid truncation, consider passing a larger max_tokens when setting up dspy.LM. \"\n0332:                 f\"You may also consider increasing the temperature (currently {self.kwargs['temperature']}) \"\n0333:                 \" if the reason for truncation is repetition.\"\n0334:             )"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/clients/lm.py",
+   "start_line": 385,
+   "end_line": 398,
+   "excerpt": "0385: def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0386:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0387:     request = dict(request)\n0388:     request.pop(\"rollout_id\", None)\n0389:     headers = _add_dspy_identifier_to_headers(request.pop(\"headers\", None))\n0390:     stream_completion = _get_stream_completion_fn(request, cache, sync=True, headers=headers)\n0391:     if stream_completion is None:\n0392:         return litellm.completion(\n0393:             cache=cache,\n0394:             num_retries=num_retries,\n0395:             retry_strategy=\"exponential_backoff_retry\",\n0396:             headers=headers,\n0397:             **request,\n0398:         )"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Per-call overrides are temporary and do not mutate the LM.",
+ "source_index": 21,
+ "smalldspy_scope": false
+}

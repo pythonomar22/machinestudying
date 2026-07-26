@@ -1,0 +1,1484 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_a0dc04af9582`
+- Label: `prompt_compilation_customization_and_inspection`
+- Question: `I want hard control over field order because I am trying to stabilize prefix caching and prompt diffs. The important part is not just the schema object in Python; I need proof that changing the signature order changes the actual rendered request in the same order.
+
+I also need to see both directions: adding an input at the front and adding outputs around the original output. If the order only changes metadata and not the prompt text, that would be a bad surprise.
+
+Give me a complete, runnable Python program that constructs a signature by inserting fields around an existing one, prints the rendered system message, and asserts that the input and output fields appear in the exact new order.`
+- Gold answer:
+```python
+import dspy
+
+
+class BaseQA(dspy.Signature):
+    question: str = dspy.InputField(desc="Question")
+    answer: str = dspy.OutputField(desc="Answer")
+
+
+sig = BaseQA.prepend("context", dspy.InputField(desc="Background"), str)
+sig = sig.prepend("reasoning", dspy.OutputField(desc="Scratch work"), str)
+sig = sig.append("confidence", dspy.OutputField(desc="Confidence score"), float)
+
+adapter = dspy.ChatAdapter()
+system_message = adapter.format_system_message(sig)
+
+print(system_message)
+print("INPUT ORDER:", list(sig.input_fields.keys()))
+print("OUTPUT ORDER:", list(sig.output_fields.keys()))
+
+assert list(sig.input_fields.keys()) == ["context", "question"]
+assert list(sig.output_fields.keys()) == ["reasoning", "answer", "confidence"]
+assert system_message.index("1. `context`") < system_message.index("2. `question`")
+assert system_message.index("1. `reasoning`") < system_message.index("2. `answer`") < system_message.index("3. `confidence`")
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/signatures/signature.py",
+    "symbol": "Signature.prepend"
+  },
+  {
+    "file": "tests/signatures/test_signature.py",
+    "symbol": "test_insert_field_at_various_positions"
+  }
+]
+
+## Full evidence files
+### dspy/signatures/signature.py
+0001: """Signature class for DSPy.
+0002: 
+0003: You typically subclass the Signature class, like this:
+0004:     class MySignature(dspy.Signature):
+0005:         input: str = InputField(desc="...")
+0006:         output: int = OutputField(desc="...")
+0007: 
+0008: You can call Signature("input1, input2 -> output1, output2") to create a new signature type.
+0009: You can also include instructions, Signature("input -> output", "This is a test").
+0010: But it's generally better to use the make_signature function.
+0011: 
+0012: If you are not sure if your input is a string representation, (like "input1, input2 -> output1, output2"),
+0013: or a signature, you can use the ensure_signature function.
+0014: 
+0015: For compatibility with the legacy dsp format, you can use the signature_to_template function.
+0016: """
+0017: 
+0018: import ast
+0019: import importlib
+0020: import inspect
+0021: import re
+0022: import sys
+0023: import types
+0024: import typing
+0025: from copy import deepcopy
+0026: from typing import Any, Iterator
+0027: 
+0028: from pydantic import BaseModel, Field, create_model
+0029: from pydantic.fields import FieldInfo
+0030: 
+0031: from dspy.signatures.field import InputField, OutputField
+0032: from dspy.utils.constants import IS_TYPE_UNDEFINED
+0033: 
+0034: 
+0035: def _default_instructions(cls) -> str:
+0036:     inputs_ = ", ".join([f"`{field}`" for field in cls.input_fields])
+0037:     outputs_ = ", ".join([f"`{field}`" for field in cls.output_fields])
+0038:     return f"Given the fields {inputs_}, produce the fields {outputs_}."
+0039: 
+0040: 
+0041: class SignatureMeta(type(BaseModel)):
+0042:     def __call__(cls, *args, **kwargs):
+0043:         if cls is Signature:
+0044:             # We don't create an actual Signature instance, instead, we create a new Signature class.
+0045:             custom_types = kwargs.pop("custom_types", None)
+0046: 
+0047:             if custom_types is None and args and isinstance(args[0], str):
+0048:                 custom_types = cls._detect_custom_types_from_caller(args[0])
+0049: 
+0050:             return make_signature(*args, custom_types=custom_types, **kwargs)
+0051:         return super().__call__(*args, **kwargs)
+0052: 
+0053:     @staticmethod
+0054:     def _detect_custom_types_from_caller(signature_str):
+0055:         """Detect custom types from the caller's frame based on the signature string.
+0056: 
+0057:         Note: This method relies on Python's frame introspection which has some limitations:
+0058:         1. May not work in all Python implementations (e.g., compiled with optimizations)
+0059:         2. Looks up a limited number of frames in the call stack
+0060:         3. Cannot find types that are imported but not in the caller's namespace
+0061: 
+0062:         For more reliable custom type resolution, explicitly provide types using the
+0063:         `custom_types` parameter when creating a Signature.
+0064:         """
+0065: 
+0066:         # Extract potential type names from the signature string, including dotted names
+0067:         # Match both simple types like 'MyType' and dotted names like 'Module.Type'
+0068:         type_pattern = r":\s*([A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*)"
+0069:         type_names = re.findall(type_pattern, signature_str)
+0070:         if not type_names:
+0071:             return None
+0072: 
+0073:         # Get type references from caller frames by walking the stack
+0074:         found_types = {}
+0075: 
+0076:         needed_types = set()
+0077:         dotted_types = {}
+0078: 
+0079:         for type_name in type_names:
+0080:             parts = type_name.split(".")
+0081:             base_name = parts[0]
+0082: 
+0083:             if base_name not in typing.__dict__ and base_name not in __builtins__:
+0084:                 if len(parts) > 1:
+0085:                     dotted_types[type_name] = base_name
+0086:                     needed_types.add(base_name)
+0087:                 else:
+0088:                     needed_types.add(type_name)
+0089: 
+0090:         if not needed_types:
+0091:             return None
+0092: 
+0093:         frame = None
+0094:         try:
+0095:             frame = sys._getframe(1)  # Start one level up (skip this function)
+0096: 
+0097:             max_frames = 100
+0098:             frame_count = 0
+0099: 
+0100:             while frame and needed_types and frame_count < max_frames:
+0101:                 frame_count += 1
+0102: 
+0103:                 for type_name in list(needed_types):
+0104:                     if type_name in frame.f_locals:
+0105:                         found_types[type_name] = frame.f_locals[type_name]
+0106:                         needed_types.remove(type_name)
+0107:                     elif frame.f_globals and type_name in frame.f_globals:
+0108:                         found_types[type_name] = frame.f_globals[type_name]
+0109:                         needed_types.remove(type_name)
+0110: 
+0111:                 # If we found all needed types, stop looking
+0112:                 if not needed_types:
+0113:                     break
+0114: 
+0115:                 frame = frame.f_back
+0116: 
+0117:             if needed_types and frame_count >= max_frames:
+0118:                 import logging
+0119: 
+0120:                 logging.getLogger("dspy").warning(
+0121:                     f"Reached maximum frame search depth ({max_frames}) while looking for types: {needed_types}. "
+0122:                     "Consider providing custom_types explicitly to Signature."
+0123:                 )
+0124:         except (AttributeError, ValueError):
+0125:             # Handle environments where frame introspection is not available
+0126:             import logging
+0127: 
+0128:             logging.getLogger("dspy").debug(
+0129:                 "Frame introspection failed while trying to resolve custom types. "
+0130:                 "Consider providing custom_types explicitly to Signature."
+0131:             )
+0132:         finally:
+0133:             if frame:
+0134:                 del frame
+0135: 
+0136:         return found_types or None
+0137: 
+0138:     def __new__(mcs, signature_name, bases, namespace, **kwargs):
+0139:         # At this point, the orders have been swapped already.
+0140:         field_order = [name for name, value in namespace.items() if isinstance(value, FieldInfo)]
+0141:         # Set `str` as the default type for all fields
+0142:         if sys.version_info >= (3, 14):
+0143:             try:
+0144:                 import annotationlib
+0145:                 # Try to get from explicit __annotations__ first (e.g., from __future__ import annotations)
+0146:                 raw_annotations = namespace.get("__annotations__")
+0147: 
+0148:                 if raw_annotations is None:
+0149:                     # In 3.14 with PEP 649, get the annotate function and call it
+0150:                     annotate_func = annotationlib.get_annotate_from_class_namespace(namespace)
+0151:                     if annotate_func:
+0152:                         raw_annotations = annotationlib.call_annotate_function(
+0153:                             annotate_func,
+0154:                             format=annotationlib.Format.FORWARDREF
+0155:                         )
+0156:                     else:
+0157:                         raw_annotations = {}
+0158:             except ImportError:
+0159:                 raw_annotations = namespace.get("__annotations__", {})
+0160:         else:
+0161:             # Python 3.13 and earlier
+0162:             # Set `str` as the default type for all fields
+0163:             raw_annotations = namespace.get("__annotations__", {})
+0164:         for name, field in namespace.items():
+0165:             if not isinstance(field, FieldInfo):
+0166:                 continue  # Don't add types to non-field attributes
+0167:             if not name.startswith("__") and name not in raw_annotations:
+0168:                 raw_annotations[name] = str
+0169:                 field.json_schema_extra[IS_TYPE_UNDEFINED] = True  # Mark that the type was originally undefined in the signature
+0170:         # Create ordered annotations dictionary that preserves field order
+0171:         ordered_annotations = {name: raw_annotations[name] for name in field_order if name in raw_annotations}
+0172:         # Add any remaining annotations that weren't in field_order
+0173:         ordered_annotations.update({k: v for k, v in raw_annotations.items() if k not in ordered_annotations})
+0174:         namespace["__annotations__"] = ordered_annotations
+0175: 
+0176:         # Let Pydantic do its thing
+0177:         cls = super().__new__(mcs, signature_name, bases, namespace, **kwargs)
+0178: 
+0179:         # If we don't have instructions, it might be because we are a derived generic type.
+0180:         # In that case, we should inherit the instructions from the base class.
+0181:         if cls.__doc__ is None:
+0182:             for base in bases:
+0183:                 if isinstance(base, SignatureMeta):
+0184:                     doc = getattr(base, "__doc__", "")
+0185:                     if doc != "":
+0186:                         cls.__doc__ = doc
+0187: 
+0188:         # The more likely case is that the user has just not given us a type.
+0189:         # In that case, we should default to the input/output format.
+0190:         if cls.__doc__ is None:
+0191:             cls.__doc__ = _default_instructions(cls)
+0192: 
+0193:         # Ensure all fields are declared with InputField or OutputField
+0194:         cls._validate_fields()
+0195: 
+0196:         # Ensure all fields have a prefix
+0197:         for name, field in cls.model_fields.items():
+0198:             if "prefix" not in field.json_schema_extra:
+0199:                 field.json_schema_extra["prefix"] = infer_prefix(name) + ":"
+0200:             if "desc" not in field.json_schema_extra:
+0201:                 field.json_schema_extra["desc"] = f"${{{name}}}"
+0202: 
+0203:         return cls
+0204: 
+0205:     def _validate_fields(cls):
+0206:         for name, field in cls.model_fields.items():
+0207:             extra = field.json_schema_extra or {}
+0208:             field_type = extra.get("__dspy_field_type")
+0209:             if field_type not in ["input", "output"]:
+0210:                 raise TypeError(
+0211:                     f"Field `{name}` in `{cls.__name__}` must be declared with InputField or OutputField, but "
+0212:                     f"field `{name}` has `field.json_schema_extra={field.json_schema_extra}`",
+0213:                 )
+0214: 
+0215:     @property
+0216:     def instructions(cls) -> str:
+0217:         return inspect.cleandoc(getattr(cls, "__doc__", ""))
+0218: 
+0219:     @instructions.setter
+0220:     def instructions(cls, instructions: str) -> None:
+0221:         cls.__doc__ = instructions
+0222: 
+0223:     @property
+0224:     def input_fields(cls) -> dict[str, FieldInfo]:
+0225:         return cls._get_fields_with_type("input")
+0226: 
+0227:     @property
+0228:     def output_fields(cls) -> dict[str, FieldInfo]:
+0229:         return cls._get_fields_with_type("output")
+0230: 
+0231:     @property
+0232:     def fields(cls) -> dict[str, FieldInfo]:
+0233:         # Make sure to give input fields before output fields
+0234:         return {**cls.input_fields, **cls.output_fields}
+0235: 
+0236:     @property
+0237:     def signature(cls) -> str:
+0238:         """The string representation of the signature."""
+0239:         input_fields = ", ".join(cls.input_fields.keys())
+0240:         output_fields = ", ".join(cls.output_fields.keys())
+0241:         return f"{input_fields} -> {output_fields}"
+0242: 
+0243:     def _get_fields_with_type(cls, field_type) -> dict[str, FieldInfo]:
+0244:         return {k: v for k, v in cls.model_fields.items() if v.json_schema_extra["__dspy_field_type"] == field_type}
+0245: 
+0246:     def __repr__(cls):
+0247:         """Output a representation of the signature.
+0248: 
+0249:         Uses the form:
+0250:         Signature(question, context -> answer
+0251:             question: str = InputField(desc="..."),
+0252:             context: list[str] = InputField(desc="..."),
+0253:             answer: int = OutputField(desc="..."),
+0254:         ).
+0255:         """
+0256:         field_reprs = []
+0257:         for name, field in cls.fields.items():
+0258:             field_reprs.append(f"{name} = Field({field})")
+0259:         field_repr = "\n    ".join(field_reprs)
+0260:         return f"{cls.__name__}({cls.signature}\n    instructions={cls.instructions!r}\n    {field_repr}\n)"
+0261: 
+0262: 
+0263: class Signature(BaseModel, metaclass=SignatureMeta):
+0264:     """"""
+0265: 
+0266:     # Note: Don't put a docstring here, as it will become the default instructions
+0267:     # for any signature that doesn't define its own instructions.
+0268: 
+0269:     @classmethod
+0270:     def with_instructions(cls, instructions: str) -> type["Signature"]:
+0271:         """Return a new Signature class with identical fields and new instructions.
+0272: 
+0273:         This method does not mutate `cls`. It constructs a fresh Signature
+0274:         class using the current fields and the provided `instructions`.
+0275: 
+0276:         Args:
+0277:             instructions (str): Instruction text to attach to the new signature.
+0278: 
+0279:         Returns:
+0280:             A new Signature class whose fields match `cls.fields`
+0281:             and whose instructions equal `instructions`.
+0282: 
+0283:         Examples:
+0284:             ```python
+0285:             import dspy
+0286: 
+0287:             class MySig(dspy.Signature):
+0288:                 input_text: str = dspy.InputField(desc="Input text")
+0289:                 output_text: str = dspy.OutputField(desc="Output text")
+0290: 
+0291:             NewSig = MySig.with_instructions("Translate to French.")
+0292:             assert NewSig is not MySig
+0293:             assert NewSig.instructions == "Translate to French."
+0294:             ```
+0295:         """
+0296:         return Signature(cls.fields, instructions)
+0297: 
+0298:     @classmethod
+0299:     def with_updated_fields(cls, name: str, type_: type | None = None, **kwargs: dict[str, Any]) -> type["Signature"]:
+0300:         """Create a new Signature class with the updated field information.
+0301: 
+0302:         Returns a new Signature class with the field, name, updated
+0303:         with fields[name].json_schema_extra[key] = value.
+0304: 
+0305:         Args:
+0306:             name: The name of the field to update.
+0307:             type_: The new type of the field.
+0308:             kwargs: The new values for the field.
+0309: 
+0310:         Returns:
+0311:             A new Signature class (not an instance) with the updated field information.
+0312:         """
+0313:         fields_copy = deepcopy(cls.fields)
+0314:         # Update `fields_copy[name].json_schema_extra` with the new kwargs, on conflicts
+0315:         # we use the new value in kwargs.
+0316:         fields_copy[name].json_schema_extra = {
+0317:             **fields_copy[name].json_schema_extra,
+0318:             **kwargs,
+0319:         }
+0320:         if type_ is not None:
+0321:             fields_copy[name].annotation = type_
+0322:         return Signature(fields_copy, cls.instructions)
+0323: 
+0324:     @classmethod
+0325:     def prepend(cls, name, field, type_=None) -> type["Signature"]:
+0326:         """Insert a field at index 0 of the `inputs` or `outputs` section.
+0327: 
+0328:         Args:
+0329:             name (str): Field name to add.
+0330:             field: `InputField` or `OutputField` instance to insert.
+0331:             type_ (type | None): Optional explicit type annotation. If `type_` is `None`, the effective type is
+0332:                 resolved by `insert`.
+0333: 
+0334:         Returns:
+0335:             A new `Signature` class with the field inserted first.
+0336: 
+0337:         Examples:
+0338:             ```python
+0339:             import dspy
+0340: 
+0341:             class MySig(dspy.Signature):
+0342:                 input_text: str = dspy.InputField(desc="Input sentence")
+0343:                 output_text: str = dspy.OutputField(desc="Translated sentence")
+0344: 
+0345:             NewSig = MySig.prepend("context", dspy.InputField(desc="Context for translation"))
+0346:             print(list(NewSig.fields.keys()))
+0347:             ```
+0348:         """
+0349:         return cls.insert(0, name, field, type_)
+0350: 
+0351:     @classmethod
+0352:     def append(cls, name, field, type_=None) -> type["Signature"]:
+0353:         """Insert a field at the end of the `inputs` or `outputs` section.
+0354: 
+0355:         Args:
+0356:             name (str): Field name to add.
+0357:             field: `InputField` or `OutputField` instance to insert.
+0358:             type_ (type | None): Optional explicit type annotation. If `type_` is `None`, the effective type is
+0359:                 resolved by `insert`.
+0360: 
+0361:         Returns:
+0362:             A new Signature class with the field appended.
+0363: 
+0364:         Examples:
+0365:             ```python
+0366:             import dspy
+0367: 
+0368:             class MySig(dspy.Signature):
+0369:                 input_text: str = dspy.InputField(desc="Input sentence")
+0370:                 output_text: str = dspy.OutputField(desc="Translated sentence")
+0371: 
+0372:             NewSig = MySig.append("confidence", dspy.OutputField(desc="Translation confidence"))
+0373:             print(list(NewSig.fields.keys()))
+0374:             ```
+0375:         """
+0376:         return cls.insert(-1, name, field, type_)
+0377: 
+0378:     @classmethod
+0379:     def delete(cls, name) -> type["Signature"]:
+0380:         """Return a new Signature class without the given field.
+0381: 
+0382:         If `name` is not present, the fields are unchanged (no error raised).
+0383: 
+0384:         Args:
+0385:             name (str): Field name to remove.
+0386: 
+0387:         Returns:
+0388:             A new Signature class with the field removed (or unchanged if the field was absent).
+0389: 
+0390:         Examples:
+0391:             ```python
+0392:             import dspy
+0393: 
+0394:             class MySig(dspy.Signature):
+0395:                 input_text: str = dspy.InputField(desc="Input sentence")
+0396:                 temp_field: str = dspy.InputField(desc="Temporary debug field")
+0397:                 output_text: str = dspy.OutputField(desc="Translated sentence")
+0398: 
+0399:             NewSig = MySig.delete("temp_field")
+0400:             print(list(NewSig.fields.keys()))
+0401: 
+0402:             # No error is raised if the field is not present
+0403:             Unchanged = NewSig.delete("nonexistent")
+0404:             print(list(Unchanged.fields.keys()))
+0405:             ```
+0406:         """
+0407:         fields = dict(cls.fields)
+0408: 
+0409:         fields.pop(name, None)
+0410: 
+0411:         return Signature(fields, cls.instructions)
+0412: 
+0413:     @classmethod
+0414:     def insert(cls, index: int, name: str, field, type_: type | None = None) -> type["Signature"]:
+0415:         """Insert a field at a specific position among inputs or outputs.
+0416: 
+0417:         Negative indices are supported (e.g., `-1` appends). If `type_` is omitted, the field's
+0418:         existing `annotation` is used; if that is missing, `str` is used.
+0419: 
+0420:         Args:
+0421:             index (int): Insertion position within the chosen section; negatives append.
+0422:             name (str): Field name to add.
+0423:             field: InputField or OutputField instance to insert.
+0424:             type_ (type | None): Optional explicit type annotation.
+0425: 
+0426:         Returns:
+0427:             A new Signature class with the field inserted.
+0428: 
+0429:         Raises:
+0430:             ValueError: If `index` falls outside the valid range for the chosen section.
+0431: 
+0432:         Examples:
+0433:             ```python
+0434:             import dspy
+0435: 
+0436:             class MySig(dspy.Signature):
+0437:                 input_text: str = dspy.InputField(desc="Input sentence")
+0438:                 output_text: str = dspy.OutputField(desc="Translated sentence")
+0439: 
+0440:             NewSig = MySig.insert(0, "context", dspy.InputField(desc="Context for translation"))
+0441:             print(list(NewSig.fields.keys()))
+0442: 
+0443:             NewSig2 = NewSig.insert(-1, "confidence", dspy.OutputField(desc="Translation confidence"))
+0444:             print(list(NewSig2.fields.keys()))
+0445:             ```
+0446:         """
+0447:         # It's possible to set the type as annotation=type in pydantic.Field(...)
+0448:         # But this may be annoying for users, so we allow them to pass the type
+0449:         if type_ is None:
+0450:             type_ = field.annotation
+0451:         if type_ is None:
+0452:             type_ = str
+0453: 
+0454:         input_fields = list(cls.input_fields.items())
+0455:         output_fields = list(cls.output_fields.items())
+0456: 
+0457:         # Choose the list to insert into based on the field type
+0458:         lst = input_fields if field.json_schema_extra["__dspy_field_type"] == "input" else output_fields
+0459:         # We support negative insert indices
+0460:         if index < 0:
+0461:             index += len(lst) + 1
+0462:         if index < 0 or index > len(lst):
+0463:             raise ValueError(
+0464:                 f"Invalid index to insert: {index}, index must be in the range of [{len(lst) - 1}, {len(lst)}] for "
+0465:                 f"{field.json_schema_extra['__dspy_field_type']} fields, but received: {index}.",
+0466:             )
+0467:         lst.insert(index, (name, (type_, field)))
+0468: 
+0469:         new_fields = dict(input_fields + output_fields)
+0470:         return Signature(new_fields, cls.instructions)
+0471: 
+0472:     @classmethod
+0473:     def equals(cls, other) -> bool:
+0474:         """Compare the JSON schema of two Signature classes."""
+0475:         if not isinstance(other, type) or not issubclass(other, BaseModel):
+0476:             return False
+0477:         if cls.instructions != other.instructions:
+0478:             return False
+0479:         for name in cls.fields.keys() | other.fields.keys():
+0480:             if name not in other.fields or name not in cls.fields:
+0481:                 return False
+0482:             if cls.fields[name].json_schema_extra != other.fields[name].json_schema_extra:
+0483:                 return False
+0484:         return True
+0485: 
+0486:     @classmethod
+0487:     def dump_state(cls):
+0488:         state = {"instructions": cls.instructions, "fields": []}
+0489:         for field in cls.fields:
+0490:             state["fields"].append(
+0491:                 {
+0492:                     "prefix": cls.fields[field].json_schema_extra["prefix"],
+0493:                     "description": cls.fields[field].json_schema_extra["desc"],
+0494:                 }
+0495:             )
+0496: 
+0497:         return state
+0498: 
+0499:     @classmethod
+0500:     def load_state(cls, state):
+0501:         signature_copy = Signature(deepcopy(cls.fields), cls.instructions)
+0502: 
+0503:         signature_copy.instructions = state["instructions"]
+0504:         for field, saved_field in zip(signature_copy.fields.values(), state["fields"], strict=False):
+0505:             field.json_schema_extra["prefix"] = saved_field["prefix"]
+0506:             field.json_schema_extra["desc"] = saved_field["description"]
+0507: 
+0508:         return signature_copy
+0509: 
+0510: 
+0511: def ensure_signature(signature: str | type[Signature], instructions=None) -> None | type[Signature]:
+0512:     if signature is None:
+0513:         return None
+0514:     if isinstance(signature, str):
+0515:         return Signature(signature, instructions)
+0516:     if instructions is not None:
+0517:         raise ValueError("Don't specify instructions when initializing with a Signature")
+0518:     return signature
+0519: 
+0520: 
+0521: def make_signature(
+0522:     signature: str | dict[str, tuple[type, FieldInfo]],
+0523:     instructions: str | None = None,
+0524:     signature_name: str = "StringSignature",
+0525:     custom_types: dict[str, type] | None = None,
+0526: ) -> type[Signature]:
+0527:     """Create a new Signature subclass with the specified fields and instructions.
+0528: 
+0529:     Args:
+0530:         signature: Either a string in the format "input1, input2 -> output1, output2"
+0531:             or a dictionary mapping field names to tuples of (type, FieldInfo).
+0532:         instructions: Optional string containing instructions/prompt for the signature.
+0533:             If not provided, defaults to a basic description of inputs and outputs.
+0534:         signature_name: Optional string to name the generated Signature subclass.
+0535:             Defaults to "StringSignature".
+0536:         custom_types: Optional dictionary mapping type names to their actual type objects.
+0537:             Useful for resolving custom types that aren't built-ins or in the typing module.
+0538: 
+0539:     Returns:
+0540:         A new signature class with the specified fields and instructions.
+0541: 
+0542:     Examples:
+0543: 
+0544:     ```
+0545:     # Using string format
+0546:     sig1 = make_signature("question, context -> answer")
+0547: 
+0548:     # Using dictionary format
+0549:     sig2 = make_signature({
+0550:         "question": (str, InputField()),
+0551:         "answer": (str, OutputField())
+0552:     })
+0553: 
+0554:     # Using custom types
+0555:     class MyType:
+0556:         pass
+0557: 
+0558:     sig3 = make_signature("input: MyType -> output", custom_types={"MyType": MyType})
+0559:     ```
+0560:     """
+0561:     # Prepare the names dictionary for type resolution
+0562:     names = None
+0563:     if custom_types:
+0564:         names = dict(typing.__dict__)
+0565:         names.update(custom_types)
+0566: 
+0567:     fields = _parse_signature(signature, names) if isinstance(signature, str) else signature
+0568: 
+0569:     # Validate the fields, this is important because we sometimes forget the
+0570:     # slightly unintuitive syntax with tuples of (type, Field)
+0571:     fixed_fields = {}
+0572:     for name, type_field in fields.items():
+0573:         if not isinstance(name, str):
+0574:             raise ValueError(f"Field names must be strings, but received: {name}.")
+0575:         if isinstance(type_field, FieldInfo):
+0576:             type_ = type_field.annotation
+0577:             field = type_field
+0578:         else:
+0579:             if not isinstance(type_field, tuple):
+0580:                 raise ValueError(f"Field values must be tuples, but received: {type_field}.")
+0581:             type_, field = type_field
+0582:         # It might be better to be explicit about the type, but it currently would break
+0583:         # program of thought and teleprompters, so we just silently default to string.
+0584:         if type_ is None:
+0585:             type_ = str
+0586:         if not isinstance(
+0587:             type_, (type, typing._GenericAlias, types.GenericAlias, typing._SpecialForm, types.UnionType)
+0588:         ):
+0589:             raise ValueError(f"Field types must be types, but received: {type_} of type {type(type_)}.")
+0590:         if not isinstance(field, FieldInfo):
+0591:             raise ValueError(f"Field values must be Field instances, but received: {field}.")
+0592:         fixed_fields[name] = (type_, field)
+0593: 
+0594:     # Default prompt when no instructions are provided
+0595:     if instructions is None:
+0596:         sig = Signature(signature, "")  # Simple way to parse input/output fields
+0597:         instructions = _default_instructions(sig)
+0598: 
+0599:     return create_model(
+0600:         signature_name,
+0601:         __base__=Signature,
+0602:         __doc__=instructions,
+0603:         **fixed_fields,
+0604:     )
+0605: 
+0606: 
+0607: def _parse_signature(signature: str, names=None) -> dict[str, tuple[type, Any]]:
+0608:     if signature.count("->") != 1:
+0609:         raise ValueError(f"Invalid signature format: '{signature}', must contain exactly one '->'.")
+0610: 
+0611:     inputs_str, outputs_str = signature.split("->")
+0612: 
+0613:     input_fields = list(_parse_field_string(inputs_str, names))
+0614:     output_fields = list(_parse_field_string(outputs_str, names))
+0615:     duplicate_field_names = sorted({field_name for field_name, *_ in input_fields}.intersection(
+0616:         field_name for field_name, *_ in output_fields
+0617:     ))
+0618:     if duplicate_field_names:
+0619:         raise ValueError(
+0620:             "Input and output fields must have distinct names, but found duplicates: "
+0621:             f"'{', '.join(duplicate_field_names)}'."
+0622:         )
+0623: 
+0624:     fields = {}
+0625:     for field_name, field_type, is_type_undefined in input_fields:
+0626:         fields[field_name] = (field_type, InputField(IS_TYPE_UNDEFINED= is_type_undefined))
+0627:     for field_name, field_type, _ in output_fields:
+0628:         fields[field_name] = (field_type, OutputField())
+0629: 
+0630:     return fields
+0631: 
+0632: 
+0633: def _parse_field_string(field_string: str, names=None) -> Iterator[tuple[str, type, bool]]:
+0634:     """Extract the field name and type from field string in the string-based Signature.
+0635: 
+0636:     It takes a string like "x: int, y: str" and returns a dictionary mapping field names to their types.
+0637:     For example, "x: int, y: str" -> [("x", int), ("y", str)]. This function utilizes the Python AST to parse the
+0638:     fields and types.
+0639:     """
+0640: 
+0641:     args = ast.parse(f"def f({field_string}): pass").body[0].args.args
+0642:     field_names: list[str] = [arg.arg for arg in args]
+0643:     types_list: list[type] = [str if arg.annotation is None else _parse_type_node(arg.annotation, names) for arg in args]
+0644:     is_type_undefined: list[bool] = [True if arg.annotation is None else False for arg in args]
+0645:     return zip(field_names, types_list, is_type_undefined, strict=False)
+0646: 
+0647: 
+0648: def _parse_type_node(node, names=None) -> Any:
+0649:     """Recursively parse an AST node representing a type annotation.
+0650: 
+0651:     This function converts Python's Abstract Syntax Tree (AST) nodes into actual Python types.
+0652:     It's used to parse type annotations in signature strings like "x: list[int] -> y: str".
+0653: 
+0654:     Examples:
+0655:         - For "x: int", the AST node represents 'int' and returns the int type
+0656:         - For "x: list[str]", it processes a subscript node to return typing.list[str]
+0657:         - For "x: Optional[int]", it handles the Union type to return Optional[int]
+0658:         - For "x: MyModule.CustomType", it processes attribute access to return the actual type
+0659: 
+0660:     Args:
+0661:         node: An AST node from Python's ast module, representing a type annotation.
+0662:             Common node types include:
+0663:             - ast.Name: Simple types like 'int', 'str'
+0664:             - ast.Attribute: Nested types like 'typing.List'
+0665:             - ast.Subscript: Generic types like 'list[int]'
+0666:         names: Optional dictionary mapping type names to their actual type objects.
+0667:             Defaults to Python's typing module contents plus NoneType.
+0668: 
+0669:     Returns:
+0670:         The actual Python type represented by the AST node.
+0671: 
+0672:     Raises:
+0673:         ValueError: If the AST node represents an unknown or invalid type annotation.
+0674:     """
+0675: 
+0676:     if names is None:
+0677:         names = dict(typing.__dict__)
+0678:         names["NoneType"] = type(None)
+0679: 
+0680:     def resolve_name(type_name: str):
+0681:         # Check if it's a built-in known type or in the provided names
+0682:         if type_name in names:
+0683:             return names[type_name]
+0684:         # Common built-in types
+0685:         builtin_types = [int, str, float, bool, list, tuple, dict, set, frozenset, complex, bytes, bytearray]
+0686: 
+0687:         # Check if it matches any known built-in type by name
+0688:         for t in builtin_types:
+0689:             if t.__name__ == type_name:
+0690:                 return t
+0691: 
+0692:         # Attempt to import a module with this name dynamically
+0693:         # This allows handling of module-based annotations like `dspy.Image`.
+0694:         try:
+0695:             mod = importlib.import_module(type_name)
+0696:             names[type_name] = mod
+0697:             return mod
+0698:         except ImportError:
+0699:             pass
+0700: 
+0701:         # If we don't know the type or module, raise an error
+0702:         raise ValueError(f"Unknown name: {type_name}")
+0703: 
+0704:     if isinstance(node, ast.Module):
+0705:         if len(node.body) != 1:
+0706:             raise ValueError(f"Code is not syntactically valid: {ast.dump(node)}")
+0707:         return _parse_type_node(node.body[0], names)
+0708: 
+0709:     if isinstance(node, ast.Expr):
+0710:         return _parse_type_node(node.value, names)
+0711: 
+0712:     if isinstance(node, ast.Name):
+0713:         return resolve_name(node.id)
+0714: 
+0715:     if isinstance(node, ast.Attribute):
+0716:         base = _parse_type_node(node.value, names)
+0717:         attr_name = node.attr
+0718: 
+0719:         if hasattr(base, attr_name):
+0720:             return getattr(base, attr_name)
+0721: 
+0722:         if isinstance(node.value, ast.Name):
+0723:             full_name = f"{node.value.id}.{attr_name}"
+0724:             if full_name in names:
+0725:                 return names[full_name]
+0726: 
+0727:         raise ValueError(f"Unknown attribute: {attr_name} on {base}")
+0728: 
+0729:     if isinstance(node, ast.Subscript):
+0730:         base_type = _parse_type_node(node.value, names)
+0731:         slice_node = node.slice
+0732:         if isinstance(slice_node, ast.Index):  # For older Python versions
+0733:             slice_node = slice_node.value
+0734: 
+0735:         if isinstance(slice_node, ast.Tuple):
+0736:             arg_types = tuple(_parse_type_node(elt, names) for elt in slice_node.elts)
+0737:         else:
+0738:             arg_types = (_parse_type_node(slice_node, names),)
+0739: 
+0740:         # Special handling for Union, Optional
+0741:         if base_type is typing.Union:
+0742:             return typing.Union[arg_types]
+0743:         if base_type is typing.Optional:
+0744:             if len(arg_types) != 1:
+0745:                 raise ValueError("Optional must have exactly one type argument")
+0746:             return typing.Optional[arg_types[0]]
+0747: 
+0748:         return base_type[arg_types]
+0749: 
+0750:     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+0751:         # Handle PEP 604: int | None, str | float, etc.
+0752:         left = _parse_type_node(node.left, names)
+0753:         right = _parse_type_node(node.right, names)
+0754: 
+0755:         # Optional[X] is Union[X, NoneType]
+0756:         if right is type(None):
+0757:             return typing.Optional[left]
+0758:         if left is type(None):
+0759:             return typing.Optional[right]
+0760:         return typing.Union[left, right]
+0761: 
+0762:     if isinstance(node, ast.Tuple):
+0763:         return tuple(_parse_type_node(elt, names) for elt in node.elts)
+0764: 
+0765:     if isinstance(node, ast.Constant):
+0766:         return node.value
+0767: 
+0768:     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == "Field":
+0769:         keys = [kw.arg for kw in node.keywords]
+0770:         values = []
+0771:         for kw in node.keywords:
+0772:             if isinstance(kw.value, ast.Constant):
+0773:                 values.append(kw.value.value)
+0774:             else:
+0775:                 values.append(_parse_type_node(kw.value, names))
+0776:         return Field(**dict(zip(keys, values, strict=False)))
+0777: 
+0778:     raise ValueError(
+0779:         f"Failed to parse string-base Signature due to unhandled AST node type in annotation: {ast.dump(node)}. "
+0780:         "Please consider using class-based DSPy Signatures instead."
+0781:     )
+0782: 
+0783: 
+0784: def infer_prefix(attribute_name: str) -> str:
+0785:     """Infer a prefix from an attribute name by converting it to a human-readable format.
+0786: 
+0787:     Examples:
+0788:         "camelCaseText" -> "Camel Case Text"
+0789:         "snake_case_text" -> "Snake Case Text"
+0790:         "text2number" -> "Text 2 Number"
+0791:         "HTMLParser" -> "HTML Parser"
+0792:     """
+0793:     # Step 1: Convert camelCase to snake_case
+0794:     # Example: "camelCase" -> "camel_Case"
+0795:     s1 = re.sub("(.)([A-Z][a-z]+)", r"\1_\2", attribute_name)
+0796: 
+0797:     # Handle consecutive capitals
+0798:     # Example: "camel_Case" -> "camel_case"
+0799:     intermediate_name = re.sub("([a-z0-9])([A-Z])", r"\1_\2", s1)
+0800: 
+0801:     # Step 2: Handle numbers by adding underscores around them
+0802:     # Example: "text2number" -> "text_2_number"
+0803:     with_underscores_around_numbers = re.sub(
+0804:         r"([a-zA-Z])(\d)",  # Match letter followed by number
+0805:         r"\1_\2",  # Add underscore between them
+0806:         intermediate_name,
+0807:     )
+0808:     # Example: "2text" -> "2_text"
+0809:     with_underscores_around_numbers = re.sub(
+0810:         r"(\d)([a-zA-Z])",  # Match number followed by letter
+0811:         r"\1_\2",  # Add underscore between them
+0812:         with_underscores_around_numbers,
+0813:     )
+0814: 
+0815:     # Step 3: Convert to Title Case while preserving acronyms
+0816:     words = with_underscores_around_numbers.split("_")
+0817:     title_cased_words = []
+0818:     for word in words:
+0819:         if word.isupper():
+0820:             # Preserve acronyms like 'HTML', 'API' as-is
+0821:             title_cased_words.append(word)
+0822:         else:
+0823:             # Capitalize first letter: 'text' -> 'Text'
+0824:             title_cased_words.append(word.capitalize())
+0825: 
+0826:     # Join words with spaces
+0827:     # Example: ["Text", "2", "Number"] -> "Text 2 Number"
+0828:     return " ".join(title_cased_words)
+
+### tests/signatures/test_signature.py
+0001: from types import UnionType
+0002: from typing import Any, Optional, Union
+0003: 
+0004: import pydantic
+0005: import pytest
+0006: 
+0007: import dspy
+0008: from dspy import InputField, OutputField, Signature, infer_prefix
+0009: from dspy.utils.dummies import DummyLM
+0010: 
+0011: 
+0012: def test_field_types_and_custom_attributes():
+0013:     class TestSignature(Signature):
+0014:         """Instructions"""
+0015: 
+0016:         input1: str = InputField()
+0017:         input2: int = InputField()
+0018:         output1: list[str] = OutputField()
+0019:         output2 = OutputField()
+0020: 
+0021:     assert TestSignature.instructions == "Instructions"
+0022:     assert TestSignature.input_fields["input1"].annotation == str
+0023:     assert TestSignature.input_fields["input2"].annotation == int
+0024:     assert TestSignature.output_fields["output1"].annotation == list[str]
+0025:     assert TestSignature.output_fields["output2"].annotation == str
+0026: 
+0027: 
+0028: def test_no_input_output():
+0029:     with pytest.raises(TypeError):
+0030: 
+0031:         class TestSignature(Signature):
+0032:             input1: str
+0033: 
+0034: 
+0035: def test_no_input_output2():
+0036:     with pytest.raises(TypeError):
+0037: 
+0038:         class TestSignature(Signature):
+0039:             input1: str = pydantic.Field()
+0040: 
+0041: 
+0042: def test_all_fields_have_prefix():
+0043:     class TestSignature(Signature):
+0044:         input = InputField(prefix="Modified:")
+0045:         output = OutputField()
+0046: 
+0047:     assert TestSignature.input_fields["input"].json_schema_extra["prefix"] == "Modified:"
+0048:     assert TestSignature.output_fields["output"].json_schema_extra["prefix"] == "Output:"
+0049: 
+0050: 
+0051: def test_signature_parsing():
+0052:     signature = Signature("input1, input2 -> output")
+0053:     assert "input1" in signature.input_fields
+0054:     assert "input2" in signature.input_fields
+0055:     assert "output" in signature.output_fields
+0056: 
+0057: 
+0058: def test_duplicate_input_output_field_names_raise():
+0059:     with pytest.raises(ValueError, match="distinct names"):
+0060:         Signature("value -> value")
+0061: 
+0062: 
+0063: def test_with_signature():
+0064:     signature1 = Signature("input1, input2 -> output")
+0065:     signature2 = signature1.with_instructions("This is a test")
+0066:     assert signature2.instructions == "This is a test"
+0067:     assert signature1 is not signature2, "The type should be immutable"
+0068: 
+0069: 
+0070: def test_with_updated_field():
+0071:     signature1 = Signature("input1, input2 -> output")
+0072:     signature2 = signature1.with_updated_fields("input1", prefix="Modified:")
+0073:     assert signature2.input_fields["input1"].json_schema_extra["prefix"] == "Modified:"
+0074:     assert signature1.input_fields["input1"].json_schema_extra["prefix"] == "Input 1:"
+0075:     assert signature1 is not signature2, "The type should be immutable"
+0076:     for key in signature1.fields.keys():
+0077:         if key != "input1":
+0078:             assert signature1.fields[key].json_schema_extra == signature2.fields[key].json_schema_extra
+0079:     assert signature1.instructions == signature2.instructions
+0080: 
+0081: 
+0082: def test_empty_signature():
+0083:     with pytest.raises(ValueError):
+0084:         Signature("")
+0085: 
+0086: 
+0087: def test_instructions_signature():
+0088:     with pytest.raises(ValueError):
+0089:         Signature("")
+0090: 
+0091: 
+0092: def test_signature_instructions():
+0093:     sig1 = Signature("input1 -> output1", instructions="This is a test")
+0094:     assert sig1.instructions == "This is a test"
+0095:     sig2 = Signature("input1 -> output1", "This is a test")
+0096:     assert sig2.instructions == "This is a test"
+0097: 
+0098: 
+0099: def test_signature_instructions_none():
+0100:     sig1 = Signature("a, b -> c")
+0101:     assert sig1.instructions == "Given the fields `a`, `b`, produce the fields `c`."
+0102: 
+0103: 
+0104: def test_signature_from_dict():
+0105:     signature = Signature(
+0106:         {"input1": InputField(), "input2": InputField(), "output": OutputField()})
+0107:     for k in ["input1", "input2", "output"]:
+0108:         assert k in signature.fields
+0109:         assert signature.fields[k].annotation == str
+0110: 
+0111: 
+0112: def test_signature_equality():
+0113:     sig1 = Signature("input1 -> output1")
+0114:     sig2 = Signature("input1 -> output1")
+0115:     assert sig1.equals(sig2)
+0116: 
+0117: 
+0118: def test_signature_inequality():
+0119:     sig1 = Signature("input1 -> output1")
+0120:     sig2 = Signature("input2 -> output2")
+0121:     assert not sig1.equals(sig2)
+0122: 
+0123: 
+0124: def test_equality_format():
+0125:     class TestSignature(Signature):
+0126:         input = InputField(format=lambda x: x)
+0127:         output = OutputField()
+0128: 
+0129:     assert TestSignature.equals(TestSignature)
+0130: 
+0131: 
+0132: def test_signature_reverse():
+0133:     sig = Signature("input1 -> output1")
+0134:     assert sig.signature == "input1 -> output1"
+0135: 
+0136: 
+0137: def test_insert_field_at_various_positions():
+0138:     class InitialSignature(Signature):
+0139:         input1: str = InputField()
+0140:         output1: int = OutputField()
+0141: 
+0142:     s1 = InitialSignature.prepend("new_input_start", InputField(), str)
+0143:     s2 = InitialSignature.append("new_input_end", InputField(), str)
+0144:     assert "new_input_start" == list(s1.input_fields.keys())[0]  # noqa: RUF015
+0145:     assert "new_input_end" == list(s2.input_fields.keys())[-1]
+0146: 
+0147:     s3 = InitialSignature.prepend("new_output_start", OutputField(), str)
+0148:     s4 = InitialSignature.append("new_output_end", OutputField(), str)
+0149:     assert "new_output_start" == list(s3.output_fields.keys())[0]  # noqa: RUF015
+0150:     assert "new_output_end" == list(s4.output_fields.keys())[-1]
+0151: 
+0152: 
+0153: def test_order_preserved_with_mixed_annotations():
+0154:     class ExampleSignature(dspy.Signature):
+0155:         text: str = dspy.InputField()
+0156:         output = dspy.OutputField()
+0157:         pass_evaluation: bool = dspy.OutputField()
+0158: 
+0159:     expected_order = ["text", "output", "pass_evaluation"]
+0160:     actual_order = list(ExampleSignature.fields.keys())
+0161:     assert actual_order == expected_order
+0162: 
+0163: 
+0164: def test_infer_prefix():
+0165:     assert infer_prefix(
+0166:         "someAttributeName42IsCool") == "Some Attribute Name 42 Is Cool"
+0167:     assert infer_prefix("version2Update") == "Version 2 Update"
+0168:     assert infer_prefix("modelT45Enhanced") == "Model T 45 Enhanced"
+0169:     assert infer_prefix("someAttributeName") == "Some Attribute Name"
+0170:     assert infer_prefix("some_attribute_name") == "Some Attribute Name"
+0171:     assert infer_prefix("URLAddress") == "URL Address"
+0172:     assert infer_prefix("isHTTPSecure") == "Is HTTP Secure"
+0173:     assert infer_prefix("isHTTPSSecure123") == "Is HTTPS Secure 123"
+0174: 
+0175: 
+0176: def test_insantiating():
+0177:     sig = Signature("input -> output")
+0178:     assert issubclass(sig, Signature)
+0179:     assert sig.__name__ == "StringSignature"
+0180:     value = sig(input="test", output="test")
+0181:     assert isinstance(value, sig)
+0182: 
+0183: 
+0184: def test_insantiating2():
+0185:     class SubSignature(Signature):
+0186:         input = InputField()
+0187:         output = OutputField()
+0188: 
+0189:     assert issubclass(SubSignature, Signature)
+0190:     assert SubSignature.__name__ == "SubSignature"
+0191:     value = SubSignature(input="test", output="test")
+0192:     assert isinstance(value, SubSignature)
+0193: 
+0194: 
+0195: def test_multiline_instructions():
+0196:     lm = DummyLM([{"output": "short answer"}])
+0197:     dspy.configure(lm=lm)
+0198: 
+0199:     class MySignature(Signature):
+0200:         """First line
+0201:         Second line
+0202:             Third line"""
+0203: 
+0204:         output = OutputField()
+0205: 
+0206:     predictor = dspy.Predict(MySignature)
+0207:     assert predictor().output == "short answer"
+0208: 
+0209: 
+0210: def test_dump_and_load_state():
+0211:     class CustomSignature(dspy.Signature):
+0212:         """I am just an instruction."""
+0213: 
+0214:         sentence = dspy.InputField(desc="I am an innocent input!")
+0215:         sentiment = dspy.OutputField()
+0216: 
+0217:     state = CustomSignature.dump_state()
+0218:     expected = {
+0219:         "instructions": "I am just an instruction.",
+0220:         "fields": [
+0221:             {
+0222:                 "prefix": "Sentence:",
+0223:                 "description": "I am an innocent input!",
+0224:             },
+0225:             {
+0226:                 "prefix": "Sentiment:",
+0227:                 "description": "${sentiment}",
+0228:             },
+0229:         ],
+0230:     }
+0231:     assert state == expected
+0232: 
+0233:     class CustomSignature2(dspy.Signature):
+0234:         """I am a malicious instruction."""
+0235: 
+0236:         sentence = dspy.InputField(desc="I am an malicious input!")
+0237:         sentiment = dspy.OutputField()
+0238: 
+0239:     assert CustomSignature2.dump_state() != expected
+0240:     # Overwrite the state with the state of CustomSignature.
+0241:     loaded_signature = CustomSignature2.load_state(state)
+0242:     assert loaded_signature.instructions == "I am just an instruction."
+0243:     # After `load_state`, the state should be the same as CustomSignature.
+0244:     assert loaded_signature.dump_state() == expected
+0245:     # CustomSignature2 should not have been modified.
+0246:     assert CustomSignature2.instructions == "I am a malicious instruction."
+0247:     assert CustomSignature2.fields["sentence"].json_schema_extra["desc"] == "I am an malicious input!"
+0248:     assert CustomSignature2.fields["sentiment"].json_schema_extra["prefix"] == "Sentiment:"
+0249: 
+0250: 
+0251: def test_typed_signatures_basic_types():
+0252:     sig = Signature("input1: int, input2: str -> output: float")
+0253:     assert "input1" in sig.input_fields
+0254:     assert sig.input_fields["input1"].annotation == int
+0255:     assert "input2" in sig.input_fields
+0256:     assert sig.input_fields["input2"].annotation == str
+0257:     assert "output" in sig.output_fields
+0258:     assert sig.output_fields["output"].annotation == float
+0259: 
+0260: 
+0261: def test_typed_signatures_generics():
+0262:     sig = Signature(
+0263:         "input_list: list[int], input_dict: dict[str, float] -> output_tuple: tuple[str, int]")
+0264:     assert "input_list" in sig.input_fields
+0265:     assert sig.input_fields["input_list"].annotation == list[int]
+0266:     assert "input_dict" in sig.input_fields
+0267:     assert sig.input_fields["input_dict"].annotation == dict[str, float]
+0268:     assert "output_tuple" in sig.output_fields
+0269:     assert sig.output_fields["output_tuple"].annotation == tuple[str, int]
+0270: 
+0271: 
+0272: def test_typed_signatures_unions_and_optionals():
+0273:     sig = Signature(
+0274:         "input_opt: Optional[str], input_union: Union[int, None] -> output_union: Union[int, str]")
+0275:     assert "input_opt" in sig.input_fields
+0276:     # Optional[str] is actually Union[str, None]
+0277:     # Depending on the environment, it might resolve to Union[str, None] or Optional[str], either is correct.
+0278:     # We'll just check for a Union containing str and NoneType:
+0279:     input_opt_annotation = sig.input_fields["input_opt"].annotation
+0280:     assert input_opt_annotation == Optional[str] or (
+0281:         getattr(input_opt_annotation, "__origin__", None) is Union
+0282:         and str in input_opt_annotation.__args__
+0283:         and type(None) in input_opt_annotation.__args__
+0284:     )
+0285: 
+0286:     assert "input_union" in sig.input_fields
+0287:     input_union_annotation = sig.input_fields["input_union"].annotation
+0288:     assert (
+0289:         getattr(input_union_annotation, "__origin__", None) is Union
+0290:         and int in input_union_annotation.__args__
+0291:         and type(None) in input_union_annotation.__args__
+0292:     )
+0293: 
+0294:     assert "output_union" in sig.output_fields
+0295:     output_union_annotation = sig.output_fields["output_union"].annotation
+0296:     assert (
+0297:         getattr(output_union_annotation, "__origin__", None) is Union
+0298:         and int in output_union_annotation.__args__
+0299:         and str in output_union_annotation.__args__
+0300:     )
+0301: 
+0302: 
+0303: def test_typed_signatures_any():
+0304:     sig = Signature("input_any: Any -> output_any: Any")
+0305:     assert "input_any" in sig.input_fields
+0306:     assert sig.input_fields["input_any"].annotation == Any
+0307:     assert "output_any" in sig.output_fields
+0308:     assert sig.output_fields["output_any"].annotation == Any
+0309: 
+0310: 
+0311: def test_typed_signatures_nested():
+0312:     sig = Signature(
+0313:         "input_nested: list[Union[str, int]] -> output_nested: Tuple[int, Optional[float], list[str]]")
+0314:     input_nested_ann = sig.input_fields["input_nested"].annotation
+0315:     assert getattr(input_nested_ann, "__origin__", None) is list
+0316:     assert len(input_nested_ann.__args__) == 1
+0317:     union_arg = input_nested_ann.__args__[0]
+0318:     assert getattr(union_arg, "__origin__", None) is Union
+0319:     assert str in union_arg.__args__ and int in union_arg.__args__
+0320: 
+0321:     output_nested_ann = sig.output_fields["output_nested"].annotation
+0322:     assert getattr(output_nested_ann, "__origin__", None) is tuple
+0323:     assert output_nested_ann.__args__[0] == int
+0324:     # The second arg is Optional[float], which is Union[float, None]
+0325:     second_arg = output_nested_ann.__args__[1]
+0326:     assert getattr(second_arg, "__origin__", None) is Union
+0327:     assert float in second_arg.__args__ and type(None) in second_arg.__args__
+0328:     # The third arg is list[str]
+0329:     third_arg = output_nested_ann.__args__[2]
+0330:     assert getattr(third_arg, "__origin__", None) is list
+0331:     assert third_arg.__args__[0] == str
+0332: 
+0333: 
+0334: def test_typed_signatures_from_dict():
+0335:     fields = {
+0336:         "input_str_list": (list[str], InputField()),
+0337:         "input_dict_int": (dict[str, int], InputField()),
+0338:         "output_tup": (tuple[int, float], OutputField()),
+0339:     }
+0340:     sig = Signature(fields)
+0341:     assert "input_str_list" in sig.input_fields
+0342:     assert sig.input_fields["input_str_list"].annotation == list[str]
+0343:     assert "input_dict_int" in sig.input_fields
+0344:     assert sig.input_fields["input_dict_int"].annotation == dict[str, int]
+0345:     assert "output_tup" in sig.output_fields
+0346:     assert sig.output_fields["output_tup"].annotation == tuple[int, float]
+0347: 
+0348: 
+0349: def test_typed_signatures_complex_combinations():
+0350:     sig = Signature(
+0351:         "input_complex: dict[str, list[Optional[Tuple[int, str]]]] -> output_complex: Union[list[str], dict[str, Any]]"
+0352:     )
+0353:     input_complex_ann = sig.input_fields["input_complex"].annotation
+0354:     assert getattr(input_complex_ann, "__origin__", None) is dict
+0355:     key_arg, value_arg = input_complex_ann.__args__
+0356:     assert key_arg == str
+0357:     # value_arg: list[Optional[Tuple[int, str]]]
+0358:     assert getattr(value_arg, "__origin__", None) is list
+0359:     inner_union = value_arg.__args__[0]
+0360:     # inner_union should be Optional[Tuple[int, str]]
+0361:     # which is Union[Tuple[int, str], None]
+0362:     assert getattr(inner_union, "__origin__", None) is Union
+0363:     tuple_type = [t for t in inner_union.__args__ if t != type(None)][0]  # noqa: RUF015
+0364:     assert getattr(tuple_type, "__origin__", None) is tuple
+0365:     assert tuple_type.__args__ == (int, str)
+0366: 
+0367:     output_complex_ann = sig.output_fields["output_complex"].annotation
+0368:     assert getattr(output_complex_ann, "__origin__", None) is Union
+0369:     assert len(output_complex_ann.__args__) == 2
+0370:     possible_args = set(output_complex_ann.__args__)
+0371:     # Expecting list[str] and dict[str, Any]
+0372:     # Because sets don't preserve order, just check membership.
+0373:     # Find the list[str] arg
+0374:     list_arg = next(a for a in possible_args if getattr(
+0375:         a, "__origin__", None) is list)
+0376:     dict_arg = next(a for a in possible_args if getattr(
+0377:         a, "__origin__", None) is dict)
+0378:     assert list_arg.__args__ == (str,)
+0379:     k, v = dict_arg.__args__
+0380:     assert k == str and v == Any
+0381: 
+0382: 
+0383: def test_make_signature_from_string():
+0384:     sig = Signature(
+0385:         "input1: int, input2: dict[str, int] -> output1: list[str], output2: Union[int, str]")
+0386:     assert "input1" in sig.input_fields
+0387:     assert sig.input_fields["input1"].annotation == int
+0388:     assert "input2" in sig.input_fields
+0389:     assert sig.input_fields["input2"].annotation == dict[str, int]
+0390:     assert "output1" in sig.output_fields
+0391:     assert sig.output_fields["output1"].annotation == list[str]
+0392:     assert "output2" in sig.output_fields
+0393:     assert sig.output_fields["output2"].annotation == Union[int, str]
+0394: 
+0395: 
+0396: def test_signature_field_with_constraints():
+0397:     class MySignature(Signature):
+0398:         inputs: str = InputField()
+0399:         outputs1: str = OutputField(min_length=5, max_length=10)
+0400:         outputs2: int = OutputField(ge=5, le=10)
+0401: 
+0402:     assert "outputs1" in MySignature.output_fields
+0403:     output1_constraints = MySignature.output_fields["outputs1"].json_schema_extra["constraints"]
+0404: 
+0405:     assert "minimum length: 5" in output1_constraints
+0406:     assert "maximum length: 10" in output1_constraints
+0407: 
+0408:     assert "outputs2" in MySignature.output_fields
+0409:     output2_constraints = MySignature.output_fields["outputs2"].json_schema_extra["constraints"]
+0410:     assert "greater than or equal to: 5" in output2_constraints
+0411:     assert "less than or equal to: 10" in output2_constraints
+0412: 
+0413: 
+0414: def test_basic_custom_type():
+0415:     class CustomType(pydantic.BaseModel):
+0416:         value: str
+0417: 
+0418:     test_signature = dspy.Signature(
+0419:         "input: CustomType -> output: str",
+0420:         custom_types={"CustomType": CustomType}
+0421:     )
+0422: 
+0423:     assert test_signature.input_fields["input"].annotation == CustomType
+0424: 
+0425:     lm = DummyLM([{"output": "processed"}])
+0426:     dspy.configure(lm=lm)
+0427: 
+0428:     custom_obj = CustomType(value="test")
+0429:     pred = dspy.Predict(test_signature)(input=custom_obj)
+0430:     assert pred.output == "processed"
+0431: 
+0432: 
+0433: def test_custom_type_from_different_module():
+0434:     from pathlib import Path
+0435: 
+0436:     test_signature = dspy.Signature("input: Path -> output: str")
+0437:     assert test_signature.input_fields["input"].annotation == Path
+0438: 
+0439:     lm = DummyLM([{"output": "/test/path"}])
+0440:     dspy.configure(lm=lm)
+0441: 
+0442:     path_obj = Path("/test/path")
+0443:     pred = dspy.Predict(test_signature)(input=path_obj)
+0444:     assert pred.output == "/test/path"
+0445: 
+0446: def test_pep604_union_type_inline():
+0447:     sig = Signature(
+0448:         "input1: str | None, input2: None | int -> output_union: int | str"
+0449:     )
+0450: 
+0451:     # input1 and input2 test that both 'T | None' and 'None | T' are interpreted as Optional types,
+0452:     # regardless of the order of None in the union expression.
+0453: 
+0454:     assert "input1" in sig.input_fields
+0455:     input1_annotation = sig.input_fields["input1"].annotation
+0456:     assert input1_annotation == Optional[str] or (
+0457:         getattr(input1_annotation, "__origin__", None) is Union
+0458:         and str in input1_annotation.__args__
+0459:         and type(None) in input1_annotation.__args__
+0460:     )
+0461: 
+0462:     assert "input2" in sig.input_fields
+0463:     input2_annotation = sig.input_fields["input2"].annotation
+0464:     assert input2_annotation == Optional[int] or (
+0465:         getattr(input2_annotation, "__origin__", None) is Union
+0466:         and int in input2_annotation.__args__
+0467:         and type(None) in input2_annotation.__args__
+0468:     )
+0469: 
+0470:     assert "output_union" in sig.output_fields
+0471:     output_union_annotation = sig.output_fields["output_union"].annotation
+0472:     assert (
+0473:         getattr(output_union_annotation, "__origin__", None) is Union
+0474:         and int in output_union_annotation.__args__
+0475:         and str in output_union_annotation.__args__
+0476:     )
+0477: 
+0478: 
+0479: def test_pep604_union_type_inline_equivalence():
+0480:     sig1 = Signature("input: str | None -> output: int | str")
+0481:     sig2 = Signature("input: Optional[str] -> output: Union[int, str]")
+0482: 
+0483:     # PEP 604 union types in inline signatures should be equivalent to Optional and Union types
+0484:     assert sig1.equals(sig2)
+0485: 
+0486:     # Check that the annotations are equivalent
+0487:     assert sig1.input_fields["input"].annotation == sig2.input_fields["input"].annotation
+0488:     assert sig1.output_fields["output"].annotation == sig2.output_fields["output"].annotation
+0489: 
+0490: 
+0491: def test_pep604_union_type_inline_nested():
+0492:     sig = Signature(
+0493:         "input: str | (int | float) | None -> output: str"
+0494:     )
+0495:     assert "input" in sig.input_fields
+0496:     input_annotation = sig.input_fields["input"].annotation
+0497: 
+0498:     # Check for the correct union: Union[str, int, float, NoneType]
+0499:     assert getattr(input_annotation, "__origin__", None) is Union
+0500:     assert set(input_annotation.__args__) == {str, int, float, type(None)}
+0501: 
+0502: 
+0503: def test_pep604_union_type_class_nested():
+0504:     class Sig1(Signature):
+0505:         input: str | (int | float) | None = InputField()
+0506:         output: str = OutputField()
+0507: 
+0508:     assert "input" in Sig1.input_fields
+0509:     input_annotation = Sig1.input_fields["input"].annotation
+0510: 
+0511:     # Check for the correct union: UnionType[str, int, float, NoneType]
+0512:     assert isinstance(input_annotation, UnionType)
+0513:     assert set(input_annotation.__args__) == {str, int, float, type(None)}
+0514: 
+0515: 
+0516: def test_pep604_union_type_class_equivalence():
+0517:     class Sig1(Signature):
+0518:         input: str | None = InputField()
+0519:         output: int | str = OutputField()
+0520: 
+0521:     class Sig2(Signature):
+0522:         input: str | None = InputField()
+0523:         output: Union[int, str] = OutputField()  # noqa: UP007
+0524: 
+0525:     # PEP 604 union types in class signatures should be equivalent to Optional and Union types
+0526:     assert Sig1.equals(Sig2)
+0527: 
+0528:     # Check that the annotations are equivalent
+0529:     assert Sig1.input_fields["input"].annotation == Sig2.input_fields["input"].annotation
+0530:     assert Sig1.output_fields["output"].annotation == Sig2.output_fields["output"].annotation
+0531: 
+0532:     # Check that the pep604 annotations are of type UnionType
+0533:     assert isinstance(Sig1.input_fields["input"].annotation, UnionType)
+0534:     assert isinstance(Sig1.output_fields["output"].annotation, UnionType)
+0535: 
+0536: 
+0537: def test_pep604_union_type_insert():
+0538:     class PEP604Signature(Signature):
+0539:         input: str | None = InputField()
+0540:         output: int | str = OutputField()
+0541: 
+0542:     # This test ensures that inserting a field into a signature with a PEP 604 UnionType works
+0543: 
+0544:     # Insert a new input field at the start
+0545:     NewSig = PEP604Signature.prepend("new_input", InputField(), float | int)
+0546:     assert "new_input" in NewSig.input_fields
+0547: 
+0548:     new_input_annotation = NewSig.input_fields["new_input"].annotation
+0549:     assert isinstance(new_input_annotation, UnionType)
+0550:     assert set(new_input_annotation.__args__) == {float, int}
+0551: 
+0552:     # The original union type field should still be present and correct
+0553:     input_annotation = NewSig.input_fields["input"].annotation
+0554:     output_annotation = NewSig.output_fields["output"].annotation
+0555: 
+0556:     assert isinstance(input_annotation, UnionType)
+0557:     assert str in input_annotation.__args__ and type(None) in input_annotation.__args__
+0558: 
+0559:     assert isinstance(output_annotation, UnionType)
+0560:     assert set(output_annotation.__args__) == {int, str}
+0561: 
+0562: 
+0563: def test_pep604_union_type_with_custom_types():
+0564:     class CustomType(pydantic.BaseModel):
+0565:         value: str
+0566: 
+0567:     sig = Signature(
+0568:         "input: CustomType | None -> output: int | str",
+0569:         custom_types={"CustomType": CustomType}
+0570:     )
+0571: 
+0572:     assert sig.input_fields["input"].annotation == Union[CustomType, None]
+0573:     assert sig.output_fields["output"].annotation == Union[int, str]
+0574: 
+0575:     lm = DummyLM([{"output": "processed"}])
+0576:     dspy.configure(lm=lm)
+0577: 
+0578:     custom_obj = CustomType(value="test")
+0579:     pred = dspy.Predict(sig)(input=custom_obj)
+0580:     assert pred.output == "processed"
+
+Return JSON that matches the schema exactly.

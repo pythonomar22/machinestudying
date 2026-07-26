@@ -1,0 +1,121 @@
+{
+ "id": "dspy_f8dbf24dd1b1",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I'm wiring Azure AD auth into an OpenAI-compatible deployment. My concern is that DSPy might serialize or eagerly call the token-provider callback instead of handing the callable through unchanged to the underlying client.\n\nGive me a complete, runnable Python program that patches the outbound chat request, passes a token-provider callable into `dspy.LM`, and proves with prints/assertions that DSPy forwards the same Python function object without invoking it first.",
+ "gold_answer": "```python\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n    usage = {}\n\n    def __init__(self):\n        super().__init__({\"choices\": []})\n        self.model = \"offline\"\n\n\ncaptured = []\ncallback_calls = []\n\n\ndef azure_ad_token_provider(*args, **kwargs):\n    callback_calls.append((args, kwargs))\n    return \"token\"\n\n\ndef fake_chat(*, cache, num_retries, retry_strategy, headers=None, **request):\n    captured.append({\"headers\": headers, **request})\n    return FakeResp()\n\n\nwith patch(\"litellm.completion\", side_effect=fake_chat):\n    lm = dspy.LM(\n        \"openai/demo\",\n        api_base=\"http://localhost:8000/v1\",\n        api_key=\"fake-key\",\n        azure_ad_token_provider=azure_ad_token_provider,\n        cache=False,\n    )\n    lm.forward(prompt=\"hello\")\n\nassert len(captured) == 1\nassert captured[0][\"azure_ad_token_provider\"] is azure_ad_token_provider\nassert callback_calls == []\n\nprint(\"callable_identity_preserved=\", captured[0][\"azure_ad_token_provider\"] is azure_ad_token_provider)\nprint(\"callback_invoked_early=\", bool(callback_calls))\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The answer passes `azure_ad_token_provider` into `dspy.LM` as an ordinary keyword argument, relying on `LM.__init__` to accept arbitrary `**kwargs` and preserve them in `self.kwargs`.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The answer identifies the chat forwarding path correctly: `LM.forward` merges `self.kwargs` into the outgoing request, and `litellm_completion` forwards that request to `litellm.completion` with `**request`.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The program patches `litellm.completion`, constructs an LM with `azure_ad_token_provider=<function>` and `cache=False`, and triggers exactly one LM call so the outbound kwargs can be inspected.",
+   "span_ids": [
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The proof checks Python object identity on the outbound request, asserting that the intercepted `azure_ad_token_provider` value is the very same function object (`is`), not merely an equivalent value.",
+   "span_ids": [
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The program separately records token-provider invocations and asserts that record stays empty after the LM call, proving DSPy forwarded the callable without eagerly calling it.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The patched completion returns a fake response object or dict with at least a `choices` entry, and optionally `cache_hit` or `usage` fields matching what `LM.forward` inspects, so the demo can run offline.",
+   "span_ids": [
+    "s6",
+    "s7"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 33,
+   "end_line": 48,
+   "excerpt": "0033:     def __init__(\n0034:         self,\n0035:         model: str,\n0036:         model_type: Literal[\"chat\", \"text\", \"responses\"] = \"chat\",\n0037:         temperature: float | None = None,\n0038:         max_tokens: int | None = None,\n0039:         cache: bool = True,\n0040:         callbacks: list[BaseCallback] | None = None,\n0041:         num_retries: int = 3,\n0042:         provider: Provider | None = None,\n0043:         finetuning_model: str | None = None,\n0044:         launch_kwargs: dict[str, Any] | None = None,\n0045:         train_kwargs: dict[str, Any] | None = None,\n0046:         use_developer_role: bool = False,\n0047:         **kwargs,\n0048:     ):"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 105,
+   "end_line": 113,
+   "excerpt": "0105:             self.kwargs = dict(temperature=temperature, max_completion_tokens=max_tokens, **kwargs)\n0106:             if self.kwargs.get(\"rollout_id\") is None:\n0107:                 self.kwargs.pop(\"rollout_id\", None)\n0108:         else:\n0109:             self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)\n0110:             if self.kwargs.get(\"rollout_id\") is None:\n0111:                 self.kwargs.pop(\"rollout_id\", None)\n0112: \n0113:         self._warn_zero_temp_rollout(self.kwargs.get(\"temperature\"), self.kwargs.get(\"rollout_id\"))"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 165,
+   "end_line": 190,
+   "excerpt": "0165:         # Build the request.\n0166:         kwargs = dict(kwargs)\n0167:         cache = kwargs.pop(\"cache\", self.cache)\n0168: \n0169:         messages = messages or [{\"role\": \"user\", \"content\": prompt}]\n0170:         if self.use_developer_role and self.model_type == \"responses\":\n0171:             messages = [{**m, \"role\": \"developer\"} if m.get(\"role\") == \"system\" else m for m in messages]\n0172:         kwargs = {**self.kwargs, **kwargs}\n0173:         self._warn_zero_temp_rollout(kwargs.get(\"temperature\"), kwargs.get(\"rollout_id\"))\n0174:         if kwargs.get(\"rollout_id\") is None:\n0175:             kwargs.pop(\"rollout_id\", None)\n0176: \n0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0184: \n0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,\n0189:                 cache=litellm_cache_args,\n0190:             )"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/lm.py",
+   "start_line": 385,
+   "end_line": 398,
+   "excerpt": "0385: def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0386:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0387:     request = dict(request)\n0388:     request.pop(\"rollout_id\", None)\n0389:     headers = _add_dspy_identifier_to_headers(request.pop(\"headers\", None))\n0390:     stream_completion = _get_stream_completion_fn(request, cache, sync=True, headers=headers)\n0391:     if stream_completion is None:\n0392:         return litellm.completion(\n0393:             cache=cache,\n0394:             num_retries=num_retries,\n0395:             retry_strategy=\"exponential_backoff_retry\",\n0396:             headers=headers,\n0397:             **request,\n0398:         )"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 238,
+   "end_line": 262,
+   "excerpt": "0238: def test_lm_calls_support_callables(litellm_test_server):\n0239:     api_base, _ = litellm_test_server\n0240: \n0241:     with mock.patch(\"litellm.completion\", autospec=True, wraps=litellm.completion) as spy_completion:\n0242: \n0243:         def azure_ad_token_provider(*args, **kwargs):\n0244:             return None\n0245: \n0246:         lm_with_callable = dspy.LM(\n0247:             model=\"openai/dspy-test-model\",\n0248:             api_base=api_base,\n0249:             api_key=\"fakekey\",\n0250:             azure_ad_token_provider=azure_ad_token_provider,\n0251:             cache=False,\n0252:         )\n0253: \n0254:         lm_with_callable(\"Query\")\n0255: \n0256:         spy_completion.assert_called_once()\n0257:         call_args = spy_completion.call_args.kwargs\n0258:         assert call_args[\"model\"] == \"openai/dspy-test-model\"\n0259:         assert call_args[\"api_base\"] == api_base\n0260:         assert call_args[\"api_key\"] == \"fakekey\"\n0261:         assert call_args[\"azure_ad_token_provider\"] is azure_ad_token_provider\n0262: "
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/clients/lm.py",
+   "start_line": 194,
+   "end_line": 198,
+   "excerpt": "0194:         self._check_truncation(results)\n0195: \n0196:         if not getattr(results, \"cache_hit\", False) and dspy.settings.usage_tracker and hasattr(results, \"usage\"):\n0197:             settings.usage_tracker.add_usage(self.model, dict(results.usage))\n0198:         return results"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/clients/lm.py",
+   "start_line": 326,
+   "end_line": 334,
+   "excerpt": "0326:     def _check_truncation(self, results):\n0327:         if self.model_type != \"responses\" and any(c.finish_reason == \"length\" for c in results[\"choices\"]):\n0328:             logger.warning(\n0329:                 f\"LM response was truncated due to exceeding max_tokens={self.kwargs['max_tokens']}. \"\n0330:                 \"You can inspect the latest LM interactions with `dspy.inspect_history()`. \"\n0331:                 \"To avoid truncation, consider passing a larger max_tokens when setting up dspy.LM. \"\n0332:                 f\"You may also consider increasing the temperature (currently {self.kwargs['temperature']}) \"\n0333:                 \" if the reason for truncation is repetition.\"\n0334:             )"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Callable auth kwargs pass through unchanged.",
+ "source_index": 2,
+ "smalldspy_scope": false
+}

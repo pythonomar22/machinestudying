@@ -1,0 +1,767 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_437a6d715342`
+- Label: `lm_provider_integration_and_configuration`
+- Question: `I'm wrapping my own gateway in a custom `dspy.BaseLM`. Typed JSON outputs only seem to work when DSPy believes the backend can accept a schema, and I need to know the minimum capability contract I have to advertise from the LM object.
+
+Give me a complete, runnable Python program that defines tiny offline `dspy.BaseLM` wrappers with different capability flags, runs the same `dspy.Predict` + `dspy.JSONAdapter` call through each one, and prints/asserts whether DSPy sent a structured schema, plain `json_object`, or no response-format hint at all.`
+- Gold answer:
+```python
+from types import SimpleNamespace
+
+import dspy
+import pydantic
+
+
+class FakeResp(dict):
+    cache_hit = False
+
+    def __init__(self, text):
+        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason="stop")
+        super().__init__({"choices": [choice]})
+        self.choices = [choice]
+        self.usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        self.model = "custom/offline"
+
+
+class CaptureLM(dspy.BaseLM):
+    def __init__(self, support_response_format, support_schema):
+        super().__init__("custom/offline", "chat", 0.0, 1000, False)
+        self._support_response_format = support_response_format
+        self._support_schema = support_schema
+        self.calls = []
+
+    @property
+    def supported_params(self):
+        return {"response_format"} if self._support_response_format else set()
+
+    @property
+    def supports_response_schema(self):
+        return self._support_schema
+
+    def forward(self, prompt=None, messages=None, **kwargs):
+        self.calls.append({"prompt": prompt, "messages": messages, **kwargs})
+        return FakeResp('{"answer": "Paris"}')
+
+    async def aforward(self, prompt=None, messages=None, **kwargs):
+        return self.forward(prompt=prompt, messages=messages, **kwargs)
+
+
+class QASignature(dspy.Signature):
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField()
+
+
+program = dspy.Predict(QASignature)
+adapter = dspy.JSONAdapter()
+structured_lm = CaptureLM(True, True)
+json_mode_lm = CaptureLM(True, False)
+plain_lm = CaptureLM(False, False)
+
+with dspy.context(lm=structured_lm, adapter=adapter):
+    assert program(question="What is the capital of France?").answer == "Paris"
+
+with dspy.context(lm=json_mode_lm, adapter=adapter):
+    assert program(question="What is the capital of France?").answer == "Paris"
+
+with dspy.context(lm=plain_lm, adapter=adapter):
+    assert program(question="What is the capital of France?").answer == "Paris"
+
+structured_rf = structured_lm.calls[0]["response_format"]
+json_mode_rf = json_mode_lm.calls[0]["response_format"]
+plain_has_rf = "response_format" in plain_lm.calls[0]
+
+assert issubclass(structured_rf, pydantic.BaseModel)
+assert json_mode_rf == {"type": "json_object"}
+assert not plain_has_rf
+
+print(
+    {
+        "structured_response_format_type": structured_rf.__name__,
+        "json_mode_response_format": json_mode_rf,
+        "plain_has_response_format": plain_has_rf,
+    }
+)
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/adapters/json_adapter.py",
+    "symbol": "JSONAdapter._json_adapter_call_common"
+  },
+  {
+    "file": "dspy/clients/base_lm.py",
+    "symbol": "BaseLM.supports_response_schema"
+  }
+]
+
+## Full evidence files
+### dspy/adapters/json_adapter.py
+0001: import json
+0002: import logging
+0003: from typing import Any, get_origin
+0004: 
+0005: import json_repair
+0006: import pydantic
+0007: import regex
+0008: from pydantic.fields import FieldInfo
+0009: 
+0010: from dspy.adapters.chat_adapter import ChatAdapter, FieldInfoWithName
+0011: from dspy.adapters.types.tool import ToolCalls
+0012: from dspy.adapters.utils import (
+0013:     format_field_value,
+0014:     get_annotation_name,
+0015:     parse_value,
+0016:     serialize_for_json,
+0017:     translate_field_type,
+0018: )
+0019: from dspy.clients.base_lm import BaseLM
+0020: from dspy.signatures.signature import Signature, SignatureMeta
+0021: from dspy.utils.callback import BaseCallback
+0022: from dspy.utils.exceptions import AdapterParseError
+0023: 
+0024: logger = logging.getLogger(__name__)
+0025: 
+0026: 
+0027: def _has_open_ended_mapping(signature: SignatureMeta) -> bool:
+0028:     """
+0029:     Check whether any output field in the signature has an open-ended mapping type,
+0030:     such as dict[str, Any]. Structured Outputs require explicit properties, so such fields
+0031:     are incompatible.
+0032:     """
+0033:     for field in signature.output_fields.values():
+0034:         annotation = field.annotation
+0035:         if get_origin(annotation) is dict:
+0036:             return True
+0037:     return False
+0038: 
+0039: 
+0040: class JSONAdapter(ChatAdapter):
+0041:     def __init__(self, callbacks: list[BaseCallback] | None = None, use_native_function_calling: bool = True):
+0042:         # JSONAdapter uses native function calling by default.
+0043:         super().__init__(callbacks=callbacks, use_native_function_calling=use_native_function_calling)
+0044: 
+0045:     def _json_adapter_call_common(self, lm, lm_kwargs, signature, demos, inputs, call_fn):
+0046:         """Common call logic to be used for both sync and async calls."""
+0047:         if "response_format" not in lm.supported_params:
+0048:             return call_fn(lm, lm_kwargs, signature, demos, inputs)
+0049: 
+0050:         has_tool_calls = any(field.annotation == ToolCalls for field in signature.output_fields.values())
+0051: 
+0052:         if _has_open_ended_mapping(signature) or (not self.use_native_function_calling and has_tool_calls) or not lm.supports_response_schema:
+0053:             # We found that structured output mode doesn't work well with dspy.ToolCalls as output field.
+0054:             # So we fall back to json mode if native function calling is disabled and ToolCalls is present.
+0055:             lm_kwargs["response_format"] = {"type": "json_object"}
+0056:             return call_fn(lm, lm_kwargs, signature, demos, inputs)
+0057: 
+0058:     def __call__(
+0059:         self,
+0060:         lm: BaseLM,
+0061:         lm_kwargs: dict[str, Any],
+0062:         signature: type[Signature],
+0063:         demos: list[dict[str, Any]],
+0064:         inputs: dict[str, Any],
+0065:     ) -> list[dict[str, Any]]:
+0066:         result = self._json_adapter_call_common(lm, lm_kwargs, signature, demos, inputs, super().__call__)
+0067:         if result:
+0068:             return result
+0069: 
+0070:         try:
+0071:             structured_output_model = _get_structured_outputs_response_format(
+0072:                 signature, self.use_native_function_calling
+0073:             )
+0074:             lm_kwargs["response_format"] = structured_output_model
+0075:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)
+0076:         except Exception:
+0077:             logger.warning("Failed to use structured output format, falling back to JSON mode.")
+0078:             lm_kwargs["response_format"] = {"type": "json_object"}
+0079:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)
+0080: 
+0081:     async def acall(
+0082:         self,
+0083:         lm: BaseLM,
+0084:         lm_kwargs: dict[str, Any],
+0085:         signature: type[Signature],
+0086:         demos: list[dict[str, Any]],
+0087:         inputs: dict[str, Any],
+0088:     ) -> list[dict[str, Any]]:
+0089:         result = self._json_adapter_call_common(lm, lm_kwargs, signature, demos, inputs, super().acall)
+0090:         if result:
+0091:             return await result
+0092: 
+0093:         try:
+0094:             structured_output_model = _get_structured_outputs_response_format(
+0095:                 signature, self.use_native_function_calling
+0096:             )
+0097:             lm_kwargs["response_format"] = structured_output_model
+0098:             return await super().acall(lm, lm_kwargs, signature, demos, inputs)
+0099:         except Exception:
+0100:             logger.warning("Failed to use structured output format, falling back to JSON mode.")
+0101:             lm_kwargs["response_format"] = {"type": "json_object"}
+0102:             return await super().acall(lm, lm_kwargs, signature, demos, inputs)
+0103: 
+0104:     def format_field_structure(self, signature: type[Signature]) -> str:
+0105:         parts = []
+0106:         parts.append("All interactions will be structured in the following way, with the appropriate values filled in.")
+0107: 
+0108:         def format_signature_fields_for_instructions(fields: dict[str, FieldInfo], role: str):
+0109:             return self.format_field_with_value(
+0110:                 fields_with_values={
+0111:                     FieldInfoWithName(name=field_name, info=field_info): translate_field_type(field_name, field_info)
+0112:                     for field_name, field_info in fields.items()
+0113:                 },
+0114:                 role=role,
+0115:             )
+0116: 
+0117:         parts.append("Inputs will have the following structure:")
+0118:         parts.append(format_signature_fields_for_instructions(signature.input_fields, role="user"))
+0119:         parts.append("Outputs will be a JSON object with the following fields.")
+0120:         parts.append(format_signature_fields_for_instructions(signature.output_fields, role="assistant"))
+0121:         return "\n\n".join(parts).strip()
+0122: 
+0123:     def user_message_output_requirements(self, signature: type[Signature]) -> str:
+0124:         def type_info(v):
+0125:             return (
+0126:                 f" (must be formatted as a valid Python {get_annotation_name(v.annotation)})"
+0127:                 if v.annotation is not str
+0128:                 else ""
+0129:             )
+0130: 
+0131:         message = "Respond with a JSON object in the following order of fields: "
+0132:         message += ", then ".join(f"`{f}`{type_info(v)}" for f, v in signature.output_fields.items())
+0133:         message += "."
+0134:         return message
+0135: 
+0136:     def format_assistant_message_content(
+0137:         self,
+0138:         signature: type[Signature],
+0139:         outputs: dict[str, Any],
+0140:         missing_field_message=None,
+0141:     ) -> str:
+0142:         fields_with_values = {
+0143:             FieldInfoWithName(name=k, info=v): outputs.get(k, missing_field_message)
+0144:             for k, v in signature.output_fields.items()
+0145:         }
+0146:         return self.format_field_with_value(fields_with_values, role="assistant")
+0147: 
+0148:     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
+0149:         fields = json_repair.loads(completion)
+0150: 
+0151:         if not isinstance(fields, dict):
+0152:             pattern = r"\{(?:[^{}]|(?R))*\}"
+0153:             match = regex.search(pattern, completion, regex.DOTALL)
+0154:             if match:
+0155:                 completion = match.group(0)
+0156:                 fields = json_repair.loads(completion)
+0157: 
+0158:         if not isinstance(fields, dict):
+0159:             raise AdapterParseError(
+0160:                 adapter_name="JSONAdapter",
+0161:                 signature=signature,
+0162:                 lm_response=completion,
+0163:                 message="LM response cannot be serialized to a JSON object.",
+0164:             )
+0165: 
+0166:         fields = {k: v for k, v in fields.items() if k in signature.output_fields}
+0167: 
+0168:         # Attempt to cast each value to type signature.output_fields[k].annotation.
+0169:         for k, v in fields.items():
+0170:             if k in signature.output_fields:
+0171:                 fields[k] = parse_value(v, signature.output_fields[k].annotation)
+0172: 
+0173:         if fields.keys() != signature.output_fields.keys():
+0174:             raise AdapterParseError(
+0175:                 adapter_name="JSONAdapter",
+0176:                 signature=signature,
+0177:                 lm_response=completion,
+0178:                 parsed_result=fields,
+0179:             )
+0180: 
+0181:         return fields
+0182: 
+0183:     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any], role: str = "user") -> str:
+0184:         """
+0185:         Formats the values of the specified fields according to the field's DSPy type (input or output),
+0186:         annotation (e.g. str, int, etc.), and the type of the value itself. Joins the formatted values
+0187:         into a single string, which is a multiline string if there are multiple fields.
+0188: 
+0189:         Args:
+0190:             fields_with_values: A dictionary mapping information about a field to its corresponding value.
+0191:         Returns:
+0192:             The joined formatted values of the fields, represented as a string.
+0193:         """
+0194:         if role == "user":
+0195:             output = []
+0196:             for field, field_value in fields_with_values.items():
+0197:                 formatted_field_value = format_field_value(field_info=field.info, value=field_value)
+0198:                 output.append(f"[[ ## {field.name} ## ]]\n{formatted_field_value}")
+0199:             return "\n\n".join(output).strip()
+0200:         else:
+0201:             d = fields_with_values.items()
+0202:             d = {k.name: v for k, v in d}
+0203:             return json.dumps(serialize_for_json(d), indent=2, ensure_ascii=False)
+0204: 
+0205:     def format_finetune_data(
+0206:         self, signature: type[Signature], demos: list[dict[str, Any]], inputs: dict[str, Any], outputs: dict[str, Any]
+0207:     ) -> dict[str, list[Any]]:
+0208:         # TODO: implement format_finetune_data method in JSONAdapter
+0209:         raise NotImplementedError
+0210: 
+0211: 
+0212: def _get_structured_outputs_response_format(
+0213:     signature: SignatureMeta,
+0214:     use_native_function_calling: bool = True,
+0215: ) -> type[pydantic.BaseModel]:
+0216:     """
+0217:     Builds a Pydantic model from a DSPy signature's output_fields and ensures the generated JSON schema
+0218:     is compatible with OpenAI Structured Outputs (all objects have a "required" key listing every property,
+0219:     and additionalProperties is always false).
+0220: 
+0221:     IMPORTANT: If any field's annotation is an open-ended mapping (e.g. dict[str, Any]), then a structured
+0222:     schema cannot be generated since all properties must be explicitly declared. In that case, an exception
+0223:     is raised so that the caller can fall back to using a plain "json_object" response_format.
+0224:     """
+0225:     # Although we've already performed an early check, we keep this here as a final guard.
+0226:     for name, field in signature.output_fields.items():
+0227:         annotation = field.annotation
+0228:         if get_origin(annotation) is dict:
+0229:             raise ValueError(
+0230:                 f"Field '{name}' has an open-ended mapping type which is not supported by Structured Outputs."
+0231:             )
+0232: 
+0233:     fields = {}
+0234:     for name, field in signature.output_fields.items():
+0235:         annotation = field.annotation
+0236:         if use_native_function_calling and annotation == ToolCalls:
+0237:             # Skip ToolCalls field if native function calling is enabled.
+0238:             continue
+0239:         default = field.default if hasattr(field, "default") else ...
+0240:         fields[name] = (annotation, default)
+0241: 
+0242:     # Build the model with extra fields forbidden.
+0243:     pydantic_model = pydantic.create_model(
+0244:         "DSPyProgramOutputs",
+0245:         __config__=pydantic.ConfigDict(extra="forbid"),
+0246:         **fields,
+0247:     )
+0248: 
+0249:     # Generate the initial schema.
+0250:     schema = pydantic_model.model_json_schema()
+0251: 
+0252:     # Remove any DSPy-specific metadata.
+0253:     for prop in schema.get("properties", {}).values():
+0254:         prop.pop("json_schema_extra", None)
+0255: 
+0256:     def enforce_required(schema_part: dict):
+0257:         """
+0258:         Recursively ensure that:
+0259:             - for any object schema, a "required" key is added with all property names (or [] if no properties)
+0260:             - additionalProperties is set to False regardless of the previous value.
+0261:             - the same enforcement is run for nested arrays and definitions.
+0262:         """
+0263:         if schema_part.get("type") == "object":
+0264:             props = schema_part.get("properties")
+0265:             if props is not None:
+0266:                 # For objects with explicitly declared properties:
+0267:                 schema_part["required"] = list(props.keys())
+0268:                 schema_part["additionalProperties"] = False
+0269:                 for sub_schema in props.values():
+0270:                     if isinstance(sub_schema, dict):
+0271:                         enforce_required(sub_schema)
+0272:             else:
+0273:                 # For objects with no properties (should not happen normally but a fallback).
+0274:                 schema_part["properties"] = {}
+0275:                 schema_part["required"] = []
+0276:                 schema_part["additionalProperties"] = False
+0277:         if schema_part.get("type") == "array" and isinstance(schema_part.get("items"), dict):
+0278:             enforce_required(schema_part["items"])
+0279:         # Also enforce in any nested definitions / $defs.
+0280:         for key in ("$defs", "definitions"):
+0281:             if key in schema_part:
+0282:                 for def_schema in schema_part[key].values():
+0283:                     enforce_required(def_schema)
+0284: 
+0285:     enforce_required(schema)
+0286: 
+0287:     # Override the model's JSON schema generation to return our precomputed schema.
+0288:     pydantic_model.model_json_schema = lambda *args, **kwargs: schema
+0289: 
+0290:     return pydantic_model
+
+### dspy/clients/base_lm.py
+0001: import datetime
+0002: import uuid
+0003: from typing import Any, TextIO
+0004: 
+0005: from dspy.dsp.utils import settings
+0006: from dspy.utils.callback import with_callbacks
+0007: from dspy.utils.inspect_history import pretty_print_history
+0008: 
+0009: MAX_HISTORY_SIZE = 10_000
+0010: GLOBAL_HISTORY = []
+0011: 
+0012: 
+0013: class BaseLM:
+0014:     """Base class for handling LLM calls.
+0015: 
+0016:     Most users can directly use the `dspy.LM` class, which is a subclass of `BaseLM`. Users can also implement their
+0017:     own subclasses of `BaseLM` to support custom LLM providers and inject custom logic. To do so, simply override the
+0018:     `forward` method and make sure the return format is identical to the
+0019:     [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object).
+0020: 
+0021:     Examples:
+0022: 
+0023:     ```python
+0024:     from openai import OpenAI
+0025: 
+0026:     import dspy
+0027: 
+0028: 
+0029:     class MyLM(dspy.BaseLM):
+0030:         @property
+0031:         def supports_function_calling(self) -> bool:
+0032:             return self.model.startswith("openai/gpt-4o")
+0033: 
+0034:         @property
+0035:         def supports_reasoning(self) -> bool:
+0036:             return self.model.startswith("anthropic/claude-3-7")
+0037: 
+0038:         @property
+0039:         def supports_response_schema(self) -> bool:
+0040:             return self.model.startswith("openai/gpt-4o")
+0041: 
+0042:         @property
+0043:         def supported_params(self) -> set[str]:
+0044:             if self.model.startswith("openai/gpt-4o"):
+0045:                 return {"response_format"}  # accepts response_format=...
+0046:             return set()
+0047: 
+0048:         def forward(self, prompt, messages=None, **kwargs):
+0049:             client = OpenAI()
+0050:             return client.chat.completions.create(
+0051:                 model=self.model,
+0052:                 messages=messages or [{"role": "user", "content": prompt}],
+0053:                 **self.kwargs,
+0054:             )
+0055: 
+0056: 
+0057:     lm = MyLM(model="gpt-4o-mini")
+0058:     dspy.configure(lm=lm)
+0059:     print(dspy.Predict("q->a")(q="Why did the chicken cross the kitchen?"))
+0060:     ```
+0061:     """
+0062: 
+0063:     def __init__(self, model, model_type="chat", temperature=0.0, max_tokens=1000, cache=True, **kwargs):
+0064:         self.model = model
+0065:         self.model_type = model_type
+0066:         self.cache = cache
+0067:         self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)
+0068:         self.history = []
+0069: 
+0070:     @property
+0071:     def supports_function_calling(self) -> bool:
+0072:         """Whether the model supports function calling (tool use)."""
+0073:         return False
+0074: 
+0075:     @property
+0076:     def supports_reasoning(self) -> bool:
+0077:         """Whether the model supports native reasoning (extended thinking)."""
+0078:         return False
+0079: 
+0080:     @property
+0081:     def supports_response_schema(self) -> bool:
+0082:         """Whether the model supports structured output via response schema."""
+0083:         return False
+0084: 
+0085:     @property
+0086:     def supported_params(self) -> set[str]:
+0087:         """Set of supported OpenAI-style parameter names for the model."""
+0088:         return set()
+0089: 
+0090:     def _process_lm_response(self, response, prompt, messages, **kwargs):
+0091:         merged_kwargs = {**self.kwargs, **kwargs}
+0092: 
+0093:         if self.model_type == "responses":
+0094:             outputs = self._process_response(response)
+0095:         else:
+0096:             outputs = self._process_completion(response, merged_kwargs)
+0097: 
+0098:         if settings.disable_history:
+0099:             return outputs
+0100: 
+0101:         # Logging, with removed api key & where `cost` is None on cache hit.
+0102:         kwargs = {k: v for k, v in kwargs.items() if not k.startswith("api_")}
+0103:         entry = {
+0104:             "prompt": prompt,
+0105:             "messages": messages,
+0106:             "kwargs": kwargs,
+0107:             "response": response,
+0108:             "outputs": outputs,
+0109:             "usage": dict(response.usage),
+0110:             "cost": getattr(response, "_hidden_params", {}).get("response_cost"),
+0111:             "timestamp": datetime.datetime.now().isoformat(),
+0112:             "uuid": str(uuid.uuid4()),
+0113:             "model": self.model,
+0114:             "response_model": response.model,
+0115:             "model_type": self.model_type,
+0116:         }
+0117: 
+0118:         self.update_history(entry)
+0119: 
+0120:         return outputs
+0121: 
+0122:     @with_callbacks
+0123:     def __call__(
+0124:         self,
+0125:         prompt: str | None = None,
+0126:         messages: list[dict[str, Any]] | None = None,
+0127:         **kwargs
+0128:     ) -> list[dict[str, Any] | str]:
+0129:         response = self.forward(prompt=prompt, messages=messages, **kwargs)
+0130:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
+0131: 
+0132:         return outputs
+0133: 
+0134:     @with_callbacks
+0135:     async def acall(
+0136:         self,
+0137:         prompt: str | None = None,
+0138:         messages: list[dict[str, Any]] | None = None,
+0139:         **kwargs
+0140:     ) -> list[dict[str, Any] | str]:
+0141:         response = await self.aforward(prompt=prompt, messages=messages, **kwargs)
+0142:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
+0143:         return outputs
+0144: 
+0145:     def forward(
+0146:         self,
+0147:         prompt: str | None = None,
+0148:         messages: list[dict[str, Any]] | None = None,
+0149:         **kwargs
+0150:     ):
+0151:         """Forward pass for the language model.
+0152: 
+0153:         Subclasses must implement this method, and the response should be identical to either of the following formats:
+0154: 
+0155:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+0156:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+0157:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
+0158: 
+0159:         Raises:
+0160:             dspy.ContextWindowExceededError: When the request fails because the
+0161:                 input exceeds the model's context window. DSPy adapters and
+0162:                 modules rely on this error to trigger fallback behavior (e.g.
+0163:                 truncating the prompt and retrying). Each subclass is
+0164:                 responsible for catching its provider's native error and
+0165:                 re-raising it as `dspy.ContextWindowExceededError`.
+0166:         """
+0167:         raise NotImplementedError("Subclasses must implement this method.")
+0168: 
+0169:     async def aforward(
+0170:         self,
+0171:         prompt: str | None = None,
+0172:         messages: list[dict[str, Any]] | None = None,
+0173:         **kwargs
+0174:     ):
+0175:         """Async forward pass for the language model.
+0176: 
+0177:         Subclasses must implement this method, and the response should be identical to either of the following formats:
+0178: 
+0179:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+0180:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+0181:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
+0182: 
+0183:         Raises:
+0184:             dspy.ContextWindowExceededError: When the request fails because the
+0185:                 input exceeds the model's context window. DSPy adapters and
+0186:                 modules rely on this error to trigger fallback behavior (e.g.
+0187:                 truncating the prompt and retrying). Each subclass is
+0188:                 responsible for catching its provider's native error and
+0189:                 re-raising it as `dspy.ContextWindowExceededError`.
+0190:         """
+0191:         raise NotImplementedError("Subclasses must implement this method.")
+0192: 
+0193:     def copy(self, **kwargs):
+0194:         """Returns a copy of the language model with possibly updated parameters.
+0195: 
+0196:         Any provided keyword arguments update the corresponding attributes or LM kwargs of
+0197:         the copy. For example, ``lm.copy(rollout_id=1, temperature=1.0)`` returns an LM whose
+0198:         requests use a different rollout ID at non-zero temperature to bypass cache collisions.
+0199:         """
+0200: 
+0201:         import copy
+0202: 
+0203:         new_instance = copy.deepcopy(self)
+0204:         new_instance.history = []
+0205: 
+0206:         for key, value in kwargs.items():
+0207:             if hasattr(self, key):
+0208:                 setattr(new_instance, key, value)
+0209:             if (key in self.kwargs) or (not hasattr(self, key)):
+0210:                 if value is None:
+0211:                     new_instance.kwargs.pop(key, None)
+0212:                 else:
+0213:                     new_instance.kwargs[key] = value
+0214:         if hasattr(new_instance, "_warned_zero_temp_rollout"):
+0215:             new_instance._warned_zero_temp_rollout = False
+0216: 
+0217:         return new_instance
+0218: 
+0219:     def inspect_history(self, n: int = 1, file: "TextIO | None" = None) -> None:
+0220:         pretty_print_history(self.history, n, file=file)
+0221: 
+0222:     def update_history(self, entry):
+0223:         if settings.disable_history:
+0224:             return
+0225: 
+0226:         # Global LM history
+0227:         if len(GLOBAL_HISTORY) >= MAX_HISTORY_SIZE:
+0228:             GLOBAL_HISTORY.pop(0)
+0229: 
+0230:         GLOBAL_HISTORY.append(entry)
+0231: 
+0232:         if settings.max_history_size == 0:
+0233:             return
+0234: 
+0235:         # dspy.LM.history
+0236:         if len(self.history) >= settings.max_history_size:
+0237:             self.history.pop(0)
+0238: 
+0239:         self.history.append(entry)
+0240: 
+0241:         # Per-module history
+0242:         caller_modules = settings.caller_modules or []
+0243:         for module in caller_modules:
+0244:             if len(module.history) >= settings.max_history_size:
+0245:                 module.history.pop(0)
+0246:             module.history.append(entry)
+0247: 
+0248:     def _process_completion(self, response, merged_kwargs):
+0249:         """Process the response of OpenAI chat completion API and extract outputs.
+0250: 
+0251:         Args:
+0252:             response: The OpenAI chat completion response
+0253:                 https://platform.openai.com/docs/api-reference/chat/object
+0254:             merged_kwargs: Merged kwargs from self.kwargs and method kwargs
+0255: 
+0256:         Returns:
+0257:             List of processed outputs
+0258:         """
+0259:         outputs = []
+0260:         for c in response.choices:
+0261:             output = {}
+0262:             output["text"] = c.message.content if hasattr(c, "message") else c["text"]
+0263: 
+0264:             if hasattr(c, "message") and hasattr(c.message, "reasoning_content") and c.message.reasoning_content:
+0265:                 output["reasoning_content"] = c.message.reasoning_content
+0266: 
+0267:             if merged_kwargs.get("logprobs"):
+0268:                 output["logprobs"] = c.logprobs if hasattr(c, "logprobs") else c["logprobs"]
+0269:             if hasattr(c, "message") and getattr(c.message, "tool_calls", None):
+0270:                 output["tool_calls"] = c.message.tool_calls
+0271: 
+0272:             # Extract citations from LiteLLM response if available
+0273:             citations = self._extract_citations_from_response(c)
+0274:             if citations:
+0275:                 output["citations"] = citations
+0276: 
+0277:             outputs.append(output)
+0278: 
+0279:         if all(len(output) == 1 for output in outputs):
+0280:             # Return a list if every output only has "text" key
+0281:             outputs = [output["text"] for output in outputs]
+0282:         return outputs
+0283: 
+0284:     def _extract_citations_from_response(self, choice):
+0285:         """Extract citations from LiteLLM response if available.
+0286:         Reference: https://docs.litellm.ai/docs/providers/anthropic#beta-citations-api
+0287: 
+0288:         Args:
+0289:             choice: The choice object from response.choices
+0290: 
+0291:         Returns:
+0292:             A list of citation dictionaries or None if no citations found
+0293:         """
+0294:         try:
+0295:             # Check for citations in LiteLLM provider_specific_fields
+0296:             citations_data = choice.message.provider_specific_fields.get("citations")
+0297:             if isinstance(citations_data, list):
+0298:                 return [citation for citations in citations_data for citation in citations]
+0299:         except Exception:
+0300:             return None
+0301: 
+0302:     def _process_response(self, response):
+0303:         """Process the response of OpenAI Response API and extract outputs.
+0304: 
+0305:         Args:
+0306:             response: OpenAI Response API response
+0307:                 https://platform.openai.com/docs/api-reference/responses/object
+0308: 
+0309:         Returns:
+0310:             List of processed outputs, which is always of size 1 because the Response API only supports one output.
+0311:         """
+0312:         text_outputs = []
+0313:         tool_calls = []
+0314:         reasoning_contents = []
+0315: 
+0316:         for output_item in response.output:
+0317:             output_item_type = output_item.type
+0318:             if output_item_type == "message":
+0319:                 for content_item in output_item.content:
+0320:                     text_outputs.append(content_item.text)
+0321:             elif output_item_type == "function_call":
+0322:                 tool_calls.append(output_item.model_dump())
+0323:             elif output_item_type == "reasoning":
+0324:                 if getattr(output_item, "content", None) and len(output_item.content) > 0:
+0325:                     for content_item in output_item.content:
+0326:                         reasoning_contents.append(content_item.text)
+0327:                 elif getattr(output_item, "summary", None) and len(output_item.summary) > 0:
+0328:                     for summary_item in output_item.summary:
+0329:                         reasoning_contents.append(summary_item.text)
+0330: 
+0331:         result = {}
+0332:         if len(text_outputs) > 0:
+0333:             result["text"] = "".join(text_outputs)
+0334:         if len(tool_calls) > 0:
+0335:             result["tool_calls"] = tool_calls
+0336:         if len(reasoning_contents) > 0:
+0337:             result["reasoning_content"] = "".join(reasoning_contents)
+0338:         # All `response.output` items map to one answer, so we return a list of size 1.
+0339:         return [result]
+0340: 
+0341: 
+0342: def inspect_history(n: int = 1, file: "TextIO | None" = None) -> None:
+0343:     """The global history shared across all LMs.
+0344: 
+0345:     Args:
+0346:         n: Number of recent entries to display. Defaults to 1.
+0347:         file: An optional file-like object to write output to. When
+0348:             provided, ANSI color codes are automatically disabled.
+0349:             Defaults to `None` (prints to stdout).
+0350:     """
+0351:     pretty_print_history(GLOBAL_HISTORY, n, file=file)
+
+Return JSON that matches the schema exactly.

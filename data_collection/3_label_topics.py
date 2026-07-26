@@ -1,0 +1,511 @@
+# /// script
+# requires-python = ">=3.12"
+# dependencies = [
+#     "numpy<2.3",
+#     "pandas==2.2.3",
+#     "scikit-learn<1.6",
+#     "umap-learn==0.5.7",
+#     "hdbscan==0.8.40",
+#     "matplotlib==3.10.3",
+#     "openai>=1.90",
+# ]
+# ///
+"""Stage 2 (paper): embed seed sessions, cluster them, GPT-label the topics.
+
+Paper, verbatim: "Each session is represented by its first substantive user
+question, embedded using Qwen3-Embedding-8B with a domain-aware prefix
+prompt. Embeddings are projected to ten dimensions with UMAP
+(n_neighbors=15) and clustered using HDBSCAN (min_cluster_size=30,
+min_samples=5). GPT-5.4 assigns a behavioral label to each cluster after
+reviewing 30 representative sessions."
+
+Their HDBSCAN/UMAP numbers were tuned to their session pool; ours is a
+different source and size (302 issues), so the clustering parameters are
+re-tuned here from first principles via a reproducible sweep (see
+FIDELITY.md, Stage 2). The paper's values stay in the sweep grid so the
+comparison is on record. Their 30-representative cap is likewise dropped:
+our clusters hold 218 sessions in total, so GPT-5.4 reads EVERY member of
+a cluster before naming it - no representative-selection approximation.
+
+Before clustering, every session is screened for CORPUS-GROUNDABILITY (a
+general, corpus-conditioned prior; see FIDELITY.md): the study corpus is
+the library's source + tests, so a session whose friction cannot be
+resolved by reading them (docs-site content, packaging/installation, CI,
+repo process, third-party internals) cannot anchor study questions.
+Clustering and labeling run on the groundable subset only.
+
+Phases (embedding needs the vLLM env + one GPU; the rest run under uv):
+  srun --overlap --jobid=<JOBID> .venv-vllm/bin/python data_collection/3_label_topics.py embed
+  uv run data_collection/3_label_topics.py screen
+  uv run data_collection/3_label_topics.py sweep
+  uv run data_collection/3_label_topics.py label [--min-cluster-size N] [--min-samples M] [--n-neighbors K]
+
+Artifacts: 3_embeddings.npy, 3_embeddings_index.json, 3_groundability.json,
+3_cluster_sweep.json, 3_umap10.npy, 3_clusters.png, and the labeled clone
+3_seed_sessions_topic.json.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import time
+from pathlib import Path
+
+DC = Path(__file__).resolve().parent
+ROOT = DC.parent
+ARTIFACTS = DC / "artifacts" / "3_label_topics"
+INPUT = DC / "artifacts" / "2_filter_sessions" / "2_seed_sessions.json"
+
+EMBED_MODEL = "Qwen/Qwen3-Embedding-8B"          # paper
+# Inference: the paper says only "a domain-aware prefix prompt". Ours encodes
+# a general prior (see FIDELITY.md): represent a question by the library
+# capability it concerns, not the genre of the report (bug/feature/docs).
+INSTRUCT = (
+    "Instruct: Represent this user question about the DSPy language-model "
+    "programming library by the library capability or mechanism it concerns "
+    "and what the user is trying to accomplish, not by the kind of report "
+    "it is.\nQuery: "
+)
+EMBED_MAX_CHARS = 4_000                           # inference
+UMAP_DIMS = 10                                    # paper
+UMAP_SEED = 20260716                              # inference (paper: unseeded)
+DEFAULT_N_NEIGHBORS = 15                          # paper
+
+# Sweep grid; the paper's (30, 5) is included so its collapse is on record.
+SWEEP_N_NEIGHBORS = (10, 15, 25)
+SWEEP_MIN_CLUSTER_SIZE = (8, 10, 12, 15, 20, 25, 30)
+SWEEP_MIN_SAMPLES = (3, 5, 8, 10)
+# First-principles constraints (rationale in FIDELITY.md):
+MIN_KEPT_CLUSTER = 15      # a topic must (nearly) support the 20-seed sample
+MAX_NOISE_FRACTION = 0.45  # noise must not eat the pool
+MIN_CLUSTERS = 4           # enough topical diversity to be worth labeling
+
+OPENAI_MODEL, REASONING_EFFORT = "gpt-5.4", "xhigh"
+SCREEN_EFFORT = "low"        # binary screening; 302 mechanical judgments
+SCREEN_WORKERS = 8
+SCREEN_QUESTION_CHARS = 2_000
+LABEL_QUESTION_CHARS = 1_200
+
+SCREEN_TEMPLATE = """You are screening one real user question about DSPy, an open-source library for programming language models, as potential study material. The study corpus available to the studier is the library's SOURCE CODE and TESTS only.
+
+Judge whether this question is groundable in that corpus: could the friction it describes be resolved by reading the library's source code and tests? Answer false if it primarily concerns artifacts outside the source corpus, such as documentation-website or tutorial/notebook content, installation/packaging/releases, CI or repository process, hosted third-party services, or the internal behavior of other libraries.
+
+## Question
+{question}
+
+Return JSON that matches the schema exactly."""
+
+SCREEN_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "groundability",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "groundable": {"type": "boolean"},
+                "reason": {"type": "string"},
+            },
+            "required": ["groundable", "reason"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+LABEL_TEMPLATE = """You are naming one cluster of real user questions about DSPy, an open-source library for programming language models. The {num_sessions} questions below are ALL the members of a single behavioral cluster discovered by embedding and clustering a large pool of user questions about the library.
+
+Assign the cluster a behavioral label describing what its users are trying to accomplish with the library. Anchor the label in the library capability or mechanism the questions exercise, never in the medium or genre of the reports: "bug reports", "feature requests", or "documentation chores" are not behaviors — the capability the user was exercising when they hit friction is. Format the label like these examples from unrelated software domains: `request_routing_and_middleware`, `database_migrations_and_schema_state`, `background_jobs_and_scheduling`.
+
+Return JSON with:
+- `label`: a short snake_case behavioral label
+- `description`: 1-2 sentences describing what users in this cluster are trying to do
+- `coherent`: false if the cluster has no single dominant capability (for example, it is united only by all being bug reports or all being feature requests about unrelated capabilities), true otherwise
+- `corpus_groundable`: whether resolving this cluster's typical friction requires reading the library's source code and tests (true), or instead concerns artifacts outside the code corpus, such as the documentation website, tutorials and notebooks, packaging and releases, CI, or repository process (false). The study corpus is the library's source and tests only, so only groundable clusters can anchor study questions.
+
+## Cluster members
+{sessions_json}
+
+Return JSON that matches the schema exactly."""
+
+LABEL_SCHEMA = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "cluster_label",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "label": {"type": "string"},
+                "description": {"type": "string"},
+                "coherent": {"type": "boolean"},
+                "corpus_groundable": {"type": "boolean"},
+            },
+            "required": ["label", "description", "coherent", "corpus_groundable"],
+            "additionalProperties": False,
+        },
+    },
+}
+
+# dataviz reference categorical palette, fixed order; muted gray = noise.
+PALETTE = ["#2a78d6", "#008300", "#e87ba4", "#eda100",
+           "#1baf7a", "#eb6834", "#4a3aa7", "#e34948"]
+NOISE_COLOR = "#b8bcc2"
+
+
+def load_sessions() -> list[dict]:
+    return json.loads(INPUT.read_text(encoding="utf-8"))["sessions"]
+
+
+def load_embeddings():
+    import numpy as np
+
+    index = json.loads((ARTIFACTS / "3_embeddings_index.json").read_text(encoding="utf-8"))
+    matrix = np.load(ARTIFACTS / "3_embeddings.npy")
+    matrix /= np.linalg.norm(matrix, axis=1, keepdims=True)
+    return matrix, index
+
+
+def openai_key() -> str:
+    import os
+
+    for line in (ROOT / ".env").read_text(encoding="utf-8").splitlines():
+        key, _, value = line.strip().partition("=")
+        if key == "OPENAI_API_KEY" and value:
+            return value.strip().strip("'\"")
+    return os.environ["OPENAI_API_KEY"]
+
+
+def project(matrix, n_neighbors: int, dims: int):
+    import umap
+
+    return umap.UMAP(
+        n_components=dims, n_neighbors=n_neighbors,
+        metric="cosine", random_state=UMAP_SEED,
+    ).fit_transform(matrix)
+
+
+def cluster(projected, min_cluster_size: int, min_samples: int):
+    import hdbscan
+
+    model = hdbscan.HDBSCAN(
+        min_cluster_size=min_cluster_size, min_samples=min_samples,
+        gen_min_span_tree=True,
+    )
+    labels = model.fit_predict(projected)
+    return labels, float(model.relative_validity_)
+
+
+def summarize(labels) -> dict:
+    import numpy as np
+
+    unique, counts = np.unique(labels[labels >= 0], return_counts=True)
+    return {
+        "clusters": int(len(unique)),
+        "noise_fraction": round(float((labels < 0).mean()), 3),
+        "sizes": [int(count) for count in sorted(counts, reverse=True)],
+    }
+
+
+def embed() -> None:
+    import numpy as np
+    from vllm import LLM
+
+    sessions = load_sessions()
+    llm = LLM(model=EMBED_MODEL, runner="pooling", max_model_len=8192,
+              gpu_memory_utilization=0.85, enforce_eager=True)
+    outputs = llm.embed([
+        INSTRUCT + row["question_text"][:EMBED_MAX_CHARS] for row in sessions
+    ])
+    matrix = np.array([out.outputs.embedding for out in outputs], dtype=np.float32)
+    if matrix.shape[0] != len(sessions):
+        raise RuntimeError(f"embedded {matrix.shape[0]} of {len(sessions)} sessions")
+    norms = np.linalg.norm(matrix, axis=1)
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    np.save(ARTIFACTS / "3_embeddings.npy", matrix)
+    (ARTIFACTS / "3_embeddings_index.json").write_text(
+        json.dumps({
+            "model": EMBED_MODEL,
+            "instruct": INSTRUCT,
+            "max_chars": EMBED_MAX_CHARS,
+            "dimensions": int(matrix.shape[1]),
+            "normalized": bool(np.allclose(norms, 1.0, atol=1e-3)),
+            "numbers": [row["number"] for row in sessions],
+        }, indent=1) + "\n",
+        encoding="utf-8",
+    )
+    print(f"embedded {matrix.shape[0]} sessions, dim={matrix.shape[1]}, "
+          f"norm range [{norms.min():.4f}, {norms.max():.4f}]")
+
+
+def screen() -> None:
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from openai import OpenAI
+
+    sessions = load_sessions()
+    client = OpenAI(api_key=openai_key(), timeout=300, max_retries=2)
+    log_path = ARTIFACTS / "3_screening_log.jsonl"
+
+    def judge(row: dict) -> tuple[int, dict]:
+        request = {
+            "model": OPENAI_MODEL,
+            "reasoning_effort": SCREEN_EFFORT,
+            "messages": [{"role": "user", "content": SCREEN_TEMPLATE.format(
+                question=row["question_text"][:SCREEN_QUESTION_CHARS])}],
+            "response_format": SCREEN_SCHEMA,
+        }
+        response = client.chat.completions.create(**request)
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "timestamp": time.time(), "number": row["number"],
+                "request": request,
+                "response": response.model_dump(exclude_none=True),
+            }, ensure_ascii=False) + "\n")
+        return row["number"], json.loads(response.choices[0].message.content)
+
+    with ThreadPoolExecutor(max_workers=SCREEN_WORKERS) as pool:
+        verdicts = dict(pool.map(judge, sessions))
+    groundable = [n for n, v in verdicts.items() if v["groundable"]]
+    ARTIFACTS.mkdir(parents=True, exist_ok=True)
+    (ARTIFACTS / "3_groundability.json").write_text(
+        json.dumps({
+            "model": OPENAI_MODEL,
+            "reasoning_effort": SCREEN_EFFORT,
+            "screened": len(sessions),
+            "groundable": len(groundable),
+            "verdicts": {str(n): verdicts[n] for n in sorted(verdicts)},
+        }, ensure_ascii=False, indent=1) + "\n",
+        encoding="utf-8",
+    )
+    print(f"groundable: {len(groundable)}/{len(sessions)} "
+          f"({len(sessions) - len(groundable)} screened out)")
+
+
+def groundable_subset(sessions: list[dict]) -> list[int]:
+    verdicts = json.loads(
+        (ARTIFACTS / "3_groundability.json").read_text(encoding="utf-8")
+    )["verdicts"]
+    return [
+        position for position, row in enumerate(sessions)
+        if verdicts[str(row["number"])]["groundable"]
+    ]
+
+
+def sweep() -> None:
+    matrix, index = load_embeddings()
+    sessions = load_sessions()
+    if index["numbers"] != [row["number"] for row in sessions]:
+        raise RuntimeError("embeddings and seed sessions disagree; rerun embed")
+    keep = groundable_subset(sessions)
+    matrix = matrix[keep]
+    print(f"clustering the groundable subset: {len(keep)} of {len(sessions)}")
+    rows = []
+    for n_neighbors in SWEEP_N_NEIGHBORS:
+        projected = project(matrix, n_neighbors, UMAP_DIMS)
+        for min_cluster_size in SWEEP_MIN_CLUSTER_SIZE:
+            for min_samples in SWEEP_MIN_SAMPLES:
+                if min_samples > min_cluster_size:
+                    continue
+                labels, dbcv = cluster(projected, min_cluster_size, min_samples)
+                summary = summarize(labels)
+                rows.append({
+                    "n_neighbors": n_neighbors,
+                    "min_cluster_size": min_cluster_size,
+                    "min_samples": min_samples,
+                    "dbcv": round(dbcv, 4),
+                    **summary,
+                })
+
+    def admissible(row: dict) -> bool:
+        return (
+            row["clusters"] >= MIN_CLUSTERS
+            and row["noise_fraction"] <= MAX_NOISE_FRACTION
+            and (row["sizes"] and min(row["sizes"]) >= MIN_KEPT_CLUSTER)
+        )
+
+    candidates = [row for row in rows if admissible(row)]
+    recommendation = max(candidates, key=lambda row: row["dbcv"]) if candidates else None
+    (ARTIFACTS / "3_cluster_sweep.json").write_text(
+        json.dumps({
+            "constraints": {
+                "min_kept_cluster": MIN_KEPT_CLUSTER,
+                "max_noise_fraction": MAX_NOISE_FRACTION,
+                "min_clusters": MIN_CLUSTERS,
+            },
+            "grid": rows,
+            "recommendation": recommendation,
+        }, indent=1) + "\n",
+        encoding="utf-8",
+    )
+    header = f"{'nn':>3} {'mcs':>4} {'ms':>3} {'dbcv':>7} {'k':>3} {'noise':>6}  sizes"
+    print(header)
+    for row in sorted(rows, key=lambda r: -r["dbcv"]):
+        flag = " *" if admissible(row) else ""
+        print(f"{row['n_neighbors']:>3} {row['min_cluster_size']:>4} "
+              f"{row['min_samples']:>3} {row['dbcv']:>7.4f} {row['clusters']:>3} "
+              f"{row['noise_fraction']:>6.3f}  {row['sizes']}{flag}")
+    print(f"\nadmissible configs: {len(candidates)} (marked *)")
+    print(f"recommendation: {recommendation}")
+
+
+def label(min_cluster_size: int | None, min_samples: int | None,
+          n_neighbors: int | None) -> None:
+    import numpy as np
+    from openai import OpenAI
+
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    sweep_data = json.loads((ARTIFACTS / "3_cluster_sweep.json").read_text(encoding="utf-8"))
+    chosen = dict(sweep_data["recommendation"] or {})
+    if min_cluster_size:
+        chosen["min_cluster_size"] = min_cluster_size
+    if min_samples:
+        chosen["min_samples"] = min_samples
+    if n_neighbors:
+        chosen["n_neighbors"] = n_neighbors
+    if not all(chosen.get(k) for k in ("min_cluster_size", "min_samples", "n_neighbors")):
+        raise SystemExit("no sweep recommendation; pass --min-cluster-size/--min-samples/--n-neighbors")
+
+    all_sessions = load_sessions()
+    matrix, index = load_embeddings()
+    if index["numbers"] != [row["number"] for row in all_sessions]:
+        raise RuntimeError("embeddings and seed sessions disagree; rerun embed")
+    keep = groundable_subset(all_sessions)
+    sessions = [all_sessions[i] for i in keep]
+    matrix = matrix[keep]
+    print(f"labeling the groundable subset: {len(sessions)} of {len(all_sessions)}")
+    projected = project(matrix, chosen["n_neighbors"], UMAP_DIMS)
+    np.save(ARTIFACTS / "3_umap10.npy", projected)
+    labels, dbcv = cluster(projected, chosen["min_cluster_size"], chosen["min_samples"])
+    print(f"final clustering {chosen['n_neighbors']}/{chosen['min_cluster_size']}/"
+          f"{chosen['min_samples']}: {summarize(labels)} dbcv={dbcv:.4f}")
+
+    client = OpenAI(api_key=openai_key(), timeout=600, max_retries=2)
+    log_path = ARTIFACTS / "3_labeling_log.jsonl"
+    clusters = []
+    for cluster_id in sorted(set(int(value) for value in labels if value >= 0)):
+        members = [int(i) for i in np.flatnonzero(labels == cluster_id)]
+        payload = [
+            {
+                "number": sessions[i]["number"],
+                "question": sessions[i]["question_text"][:LABEL_QUESTION_CHARS],
+            }
+            for i in members
+        ]
+        prompt = LABEL_TEMPLATE.format(
+            num_sessions=len(payload),
+            sessions_json=json.dumps(payload, ensure_ascii=False, indent=2),
+        )
+        request = {
+            "model": OPENAI_MODEL,
+            "reasoning_effort": REASONING_EFFORT,
+            "messages": [{"role": "user", "content": prompt}],
+            "response_format": LABEL_SCHEMA,
+        }
+        response = client.chat.completions.create(**request)
+        with open(log_path, "a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "timestamp": time.time(),
+                "request": request,
+                "response": response.model_dump(exclude_none=True),
+            }, ensure_ascii=False) + "\n")
+        verdict = json.loads(response.choices[0].message.content)
+        clusters.append({
+            "cluster_id": cluster_id,
+            "size": int(len(members)),
+            **verdict,
+            "member_numbers": [sessions[i]["number"] for i in members],
+        })
+        print(f"cluster {cluster_id} (n={len(members)}): {verdict['label']} "
+              f"(coherent={verdict['coherent']}, "
+              f"groundable={verdict['corpus_groundable']})")
+
+    by_id = {cluster["cluster_id"]: cluster["label"] for cluster in clusters}
+    assignment = {  # session number -> cluster id (groundable subset only)
+        row["number"]: int(value)
+        for row, value in zip(sessions, labels) if value >= 0
+    }
+    groundable_numbers = {row["number"] for row in sessions}
+    labeled_sessions = [
+        {
+            **row,
+            "groundable": row["number"] in groundable_numbers,
+            "cluster_id": assignment.get(row["number"]),
+            "topic": by_id.get(assignment.get(row["number"])),
+        }
+        for row in all_sessions
+    ]
+    (ARTIFACTS / "3_seed_sessions_topic.json").write_text(
+        json.dumps({
+            "source": INPUT.name,
+            "groundability_screen": {
+                "screened": len(all_sessions),
+                "groundable": len(sessions),
+                "reasoning_effort": SCREEN_EFFORT,
+            },
+            "embedding": {k: index[k] for k in ("model", "instruct", "max_chars", "dimensions")},
+            "umap": {"n_components": UMAP_DIMS, "n_neighbors": chosen["n_neighbors"],
+                     "metric": "cosine", "random_state": UMAP_SEED},
+            "hdbscan": {"min_cluster_size": chosen["min_cluster_size"],
+                        "min_samples": chosen["min_samples"], "dbcv": round(dbcv, 4)},
+            "paper_reference": {"n_neighbors": 15, "min_cluster_size": 30,
+                                "min_samples": 5, "representatives": 30},
+            "label_input": "all cluster members "
+                           f"(question_text, {LABEL_QUESTION_CHARS} chars each)",
+            "labeling_model": OPENAI_MODEL,
+            "clusters": clusters,
+            "noise_count": int((labels < 0).sum()),
+            "sessions": labeled_sessions,
+        }, ensure_ascii=False, indent=1) + "\n",
+        encoding="utf-8",
+    )
+
+    plane = project(matrix, chosen["n_neighbors"], 2)
+    figure, axis = plt.subplots(figsize=(11, 8))
+    noise = labels < 0
+    axis.scatter(plane[noise, 0], plane[noise, 1], s=14, color=NOISE_COLOR,
+                 label=f"noise (n={int(noise.sum())})")
+    for position, entry in enumerate(clusters):
+        mask = labels == entry["cluster_id"]
+        axis.scatter(plane[mask, 0], plane[mask, 1], s=26,
+                     color=PALETTE[position % len(PALETTE)],
+                     marker="o" if position < len(PALETTE) else "^",
+                     label=f"{entry['label']} (n={entry['size']})")
+        center = plane[mask].mean(axis=0)
+        axis.annotate(entry["label"], center, fontsize=8, color="#333333", ha="center")
+    axis.set_title("DSPy seed sessions - UMAP(2) of Qwen3-Embedding-8B, "
+                   f"HDBSCAN({chosen['min_cluster_size']},{chosen['min_samples']}), "
+                   f"n_neighbors={chosen['n_neighbors']}")
+    axis.set_xticks([]), axis.set_yticks([])
+    for side in axis.spines.values():
+        side.set_color("#d0d0d0")
+    axis.legend(loc="best", fontsize=8, framealpha=0.9)
+    figure.tight_layout()
+    figure.savefig(ARTIFACTS / "3_clusters.png", dpi=150)
+    print(f"wrote 3_seed_sessions_topic.json ({len(clusters)} topics, "
+          f"{int(noise.sum())} noise) and 3_clusters.png")
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("phase", choices=["embed", "screen", "sweep", "label"])
+    parser.add_argument("--min-cluster-size", type=int)
+    parser.add_argument("--min-samples", type=int)
+    parser.add_argument("--n-neighbors", type=int)
+    args = parser.parse_args()
+    if args.phase == "embed":
+        embed()
+    elif args.phase == "screen":
+        screen()
+    elif args.phase == "sweep":
+        sweep()
+    else:
+        label(args.min_cluster_size, args.min_samples, args.n_neighbors)
+
+
+if __name__ == "__main__":
+    main()

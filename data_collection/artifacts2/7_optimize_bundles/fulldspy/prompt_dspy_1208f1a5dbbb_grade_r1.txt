@@ -1,0 +1,1566 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_1208f1a5dbbb`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `My acceptance logic needs the execution trace, not just gold and prediction. The confusing part is that it seems fine during prompt compilation, then fails when I try to run a plain evaluation pass over the same program.
+
+I want a small repro that demonstrates both sides of that mismatch in one place. Give me a complete, runnable Python program that uses `DummyLM` offline, shows a trace-requiring metric failing under plain evaluation, then shows the same metric working during few-shot bootstrapping, with prints/assertions proving both outcomes.`
+- Model answer:
+```python
+import dspy
+from dspy.evaluate import Evaluate
+from dspy.teleprompt import BootstrapFewShot
+from dspy.utils.dummies import DummyLM
+
+
+class SimpleModule(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.predictor = dspy.Predict("question -> answer")
+
+    def forward(self, question):
+        return self.predictor(question=question)
+
+
+metric_trace_lengths = []
+
+
+def trace_required_metric(example, prediction, trace):
+    metric_trace_lengths.append(len(trace))
+    return prediction.answer == example.answer and len(trace) == 1
+
+
+dspy.configure(lm=DummyLM({"math": {"answer": "4"}}))
+trainset = [dspy.Example(question="math", answer="4").with_inputs("question")]
+program = SimpleModule()
+
+# Plain evaluation never passes `trace` into the metric, so DSPy records a failed item.
+eval_result = Evaluate(
+    devset=trainset,
+    metric=trace_required_metric,
+    num_threads=1,
+    display_progress=False,
+)(program)
+
+failed_prediction = eval_result.results[0][1]
+
+print("plain_eval_score", eval_result.score)
+print("plain_eval_prediction", failed_prediction.toDict())
+print("metric_trace_lengths_after_evaluate", metric_trace_lengths)
+
+assert eval_result.score == 0.0
+assert eval_result.results[0][2] == 0.0
+assert failed_prediction.toDict() == {}
+assert metric_trace_lengths == []
+
+# BootstrapFewShot collects a per-example trace and passes it to the same metric.
+compiled = BootstrapFewShot(
+    metric=trace_required_metric,
+    max_bootstrapped_demos=1,
+    max_labeled_demos=0,
+).compile(program, trainset=trainset)
+
+demo = compiled.predictor.demos[0]
+
+print("metric_trace_lengths_after_bootstrap", metric_trace_lengths)
+print("compiled_flag", compiled._compiled)
+print("compiled_demo", demo.toDict())
+
+assert metric_trace_lengths == [1]
+assert compiled._compiled is True
+assert len(compiled.predictor.demos) == 1
+assert demo.augmented is True
+assert demo.question == "math"
+assert demo.answer == "4"
+```
+
+## Gold answer
+```python
+import dspy
+from dspy.evaluate import Evaluate
+from dspy.teleprompt import BootstrapFewShot
+from dspy.utils.dummies import DummyLM
+
+
+class SimpleModule(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.predictor = dspy.Predict("question -> answer")
+
+    def forward(self, question):
+        return self.predictor(question=question)
+
+
+metric_trace_lengths = []
+
+
+def trace_required_metric(example, prediction, trace):
+    metric_trace_lengths.append(len(trace))
+    return prediction.answer == example.answer and len(trace) == 1
+
+
+dspy.configure(lm=DummyLM({"math": {"answer": "4"}}))
+trainset = [dspy.Example(question="math", answer="4").with_inputs("question")]
+program = SimpleModule()
+
+# Plain evaluation never passes `trace` into the metric, so DSPy records a failed item.
+eval_result = Evaluate(
+    devset=trainset,
+    metric=trace_required_metric,
+    num_threads=1,
+    display_progress=False,
+)(program)
+
+failed_prediction = eval_result.results[0][1]
+
+print("plain_eval_score", eval_result.score)
+print("plain_eval_prediction", failed_prediction.toDict())
+print("metric_trace_lengths_after_evaluate", metric_trace_lengths)
+
+assert eval_result.score == 0.0
+assert eval_result.results[0][2] == 0.0
+assert failed_prediction.toDict() == {}
+assert metric_trace_lengths == []
+
+# BootstrapFewShot collects a per-example trace and passes it to the same metric.
+compiled = BootstrapFewShot(
+    metric=trace_required_metric,
+    max_bootstrapped_demos=1,
+    max_labeled_demos=0,
+).compile(program, trainset=trainset)
+
+demo = compiled.predictor.demos[0]
+
+print("metric_trace_lengths_after_bootstrap", metric_trace_lengths)
+print("compiled_flag", compiled._compiled)
+print("compiled_demo", demo.toDict())
+
+assert metric_trace_lengths == [1]
+assert compiled._compiled is True
+assert len(compiled.predictor.demos) == 1
+assert demo.augmented is True
+assert demo.question == "math"
+assert demo.answer == "4"
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "Plain evaluation does not supply traces to metrics: `Evaluate.__call__` runs the program on `example.inputs()` and then calls the metric as `metric(example, prediction)` with only two arguments, so a metric whose third positional parameter is required cannot run successfully there.",
+    "span_ids": [
+      "s2"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "When that metric call fails, `ParallelExecutor` catches the exception instead of re-raising it directly, records the item as failed, and `Evaluate` substitutes `(dspy.Prediction(), failure_score)` for the missing result; because `failure_score` defaults to `0.0`, a one-example repro can complete with overall score `0.0` and an empty prediction.",
+    "span_ids": [
+      "s1",
+      "s3",
+      "s4"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 30,
+    "statement": "Few-shot bootstrapping explicitly uses per-example traces instead of plain evaluation: the bootstrap code notes that it cannot use `Evaluate` because it needs traces per example, then `_bootstrap_one_example` runs the teacher inside `dspy.context(trace=[])`, reads `dspy.settings.trace`, and calls the metric as `self.metric(example, prediction, trace)`.",
+    "span_ids": [
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "supporting",
+    "weight": 10,
+    "statement": "Each predictor call appends one `(predictor, inputs, prediction)` tuple to `settings.trace`, so a one-predictor repro can legitimately assert that the bootstrap metric observed a trace of length 1.",
+    "span_ids": [
+      "s6"
+    ]
+  },
+  {
+    "claim_id": "c5",
+    "claim_type": "supporting",
+    "weight": 15,
+    "statement": "On a successful bootstrap, each trace step is converted into an `augmented=True` demo, `_train()` assigns up to `max_bootstrapped_demos` of those demos to each predictor, and `compile()` marks the returned student `_compiled = True`; in the minimal one-predictor setup with `max_bootstrapped_demos=1` and `max_labeled_demos=0`, asserting one demo plus `_compiled is True` is supported.",
+    "span_ids": [
+      "s7",
+      "s8",
+      "s9"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/evaluate/evaluate.py",
+    "start_line": 71,
+    "end_line": 81,
+    "excerpt": "0071:     def __init__(\n0072:         self,\n0073:         *,\n0074:         devset: list[\"dspy.Example\"],\n0075:         metric: Callable | None = None,\n0076:         num_threads: int | None = None,\n0077:         display_progress: bool = False,\n0078:         display_table: bool | int = False,\n0079:         max_errors: int | None = None,\n0080:         provide_traceback: bool | None = None,\n0081:         failure_score: float = 0.0,"
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/evaluate/evaluate.py",
+    "start_line": 170,
+    "end_line": 175,
+    "excerpt": "0170:         def process_item(example):\n0171:             prediction = program(**example.inputs())\n0172:             score = metric(example, prediction)\n0173:             return prediction, score\n0174: \n0175:         results = executor.execute(process_item, devset)"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/utils/parallelizer.py",
+    "start_line": 54,
+    "end_line": 69,
+    "excerpt": "0054:     def _wrap_function(self, user_function):\n0055:         def safe_func(item):\n0056:             if self.cancel_jobs.is_set():\n0057:                 return None\n0058:             try:\n0059:                 return user_function(item)\n0060:             except Exception as e:\n0061:                 with self.error_lock:\n0062:                     self.error_count += 1\n0063:                     if self.error_count >= self.max_errors:\n0064:                         self.cancel_jobs.set()\n0065:                 if self.provide_traceback:\n0066:                     logger.error(f\"Error for {item}: {e}\\n{traceback.format_exc()}\")\n0067:                 else:\n0068:                     logger.error(f\"Error for {item}: {e}. Set `provide_traceback=True` for traceback.\")\n0069:                 return e"
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/evaluate/evaluate.py",
+    "start_line": 178,
+    "end_line": 179,
+    "excerpt": "0178:         results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]\n0179:         results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results, strict=False)]"
+  },
+  {
+    "span_id": "s5",
+    "path": "dspy/teleprompt/bootstrap.py",
+    "start_line": 178,
+    "end_line": 206,
+    "excerpt": "0178:         # NOTE: Can't yet use evaluate because we need to trace *per example*\n0179:         # evaluate = Evaluate(program=self.teacher, metric=self.metric, num_threads=12)\n0180:         # score = evaluate(self.metric, display_table=False, display_progress=True)\n0181: \n0182:     def _bootstrap_one_example(self, example, round_idx=0):\n0183:         name2traces = {}\n0184:         teacher = self.teacher\n0185:         predictor_cache = {}\n0186: \n0187:         try:\n0188:             with dspy.context(trace=[], **self.teacher_settings):\n0189:                 lm = dspy.settings.lm\n0190:                 # Use a fresh rollout with temperature=1.0 to bypass caches.\n0191:                 lm = lm.copy(rollout_id=round_idx, temperature=1.0) if round_idx > 0 else lm\n0192:                 new_settings = {\"lm\": lm} if round_idx > 0 else {}\n0193: \n0194:                 with dspy.context(**new_settings):\n0195:                     for name, predictor in teacher.named_predictors():\n0196:                         predictor_cache[name] = predictor.demos\n0197:                         predictor.demos = [x for x in predictor.demos if x != example]\n0198: \n0199:                     prediction = teacher(**example.inputs())\n0200:                     trace = dspy.settings.trace\n0201: \n0202:                     for name, predictor in teacher.named_predictors():\n0203:                         predictor.demos = predictor_cache[name]\n0204: \n0205:                 if self.metric:\n0206:                     metric_val = self.metric(example, prediction, trace)"
+  },
+  {
+    "span_id": "s6",
+    "path": "dspy/predict/predict.py",
+    "start_line": 226,
+    "end_line": 233,
+    "excerpt": "0226:     def _forward_postprocess(self, completions, signature, **kwargs):\n0227:         pred = Prediction.from_completions(completions, signature=signature)\n0228:         if kwargs.pop(\"_trace\", True) and settings.trace is not None and settings.max_trace_size > 0:\n0229:             trace = settings.trace\n0230:             if len(trace) >= settings.max_trace_size:\n0231:                 trace.pop(0)\n0232:             trace.append((self, {**kwargs}, pred))\n0233:         return pred"
+  },
+  {
+    "span_id": "s7",
+    "path": "dspy/teleprompt/bootstrap.py",
+    "start_line": 223,
+    "end_line": 255,
+    "excerpt": "0223:         if success:\n0224:             for step in trace:\n0225:                 predictor, inputs, outputs = step\n0226:                 demo = dspy.Example(augmented=True, **inputs, **outputs)\n0227: \n0228:                 try:\n0229:                     predictor_name = self.predictor2name[id(predictor)]\n0230:                 except KeyError:\n0231:                     continue  # FIXME: !\n0232: \n0233:                     # # TODO: Look closer into this. It's a bit tricky to reproduce.\n0234:                     # print(f\"Failed to find predictor {predictor} in {self.predictor2name}.\")\n0235:                     # print(\n0236:                     #     \"Are you doing this in a notebook (Jupyter)? This might be caused by redefining values by rerunning cells.\",\n0237:                     # )\n0238:                     # print(\"Try restarting the notebook, or open an issue.\")\n0239:                     # raise KeyError(\n0240:                     #     f\"Failed to find predictor {id(predictor)} {predictor} in {self.predictor2name}.\",\n0241:                     # ) from e\n0242: \n0243:                 name2traces[predictor_name] = name2traces.get(predictor_name, [])\n0244:                 name2traces[predictor_name].append(demo)\n0245: \n0246:             # Update the traces\n0247:             for name, demos in name2traces.items():\n0248:                 # If there are multiple traces for the same predictor in the sample example,\n0249:                 # sample 50/50 from the first N-1 traces or the last trace.\n0250:                 if len(demos) > 1:\n0251:                     from dspy.utils.hasher import Hasher\n0252: \n0253:                     rng = random.Random(Hasher.hash(tuple(demos)))\n0254:                     demos = [rng.choice(demos[:-1]) if rng.random() < 0.5 else demos[-1]]\n0255:                 self.name2traces[name].extend(demos)"
+  },
+  {
+    "span_id": "s8",
+    "path": "dspy/teleprompt/bootstrap.py",
+    "start_line": 259,
+    "end_line": 270,
+    "excerpt": "0259:     def _train(self):\n0260:         rng = random.Random(0)\n0261:         raw_demos = self.validation\n0262: \n0263:         for name, predictor in self.student.named_predictors():\n0264:             augmented_demos = self.name2traces[name][: self.max_bootstrapped_demos]\n0265: \n0266:             sample_size = min(self.max_labeled_demos - len(augmented_demos), len(raw_demos))\n0267:             sample_size = max(0, sample_size)\n0268: \n0269:             raw_demos = rng.sample(raw_demos, sample_size)\n0270:             predictor.demos = augmented_demos + raw_demos"
+  },
+  {
+    "span_id": "s9",
+    "path": "dspy/teleprompt/bootstrap.py",
+    "start_line": 84,
+    "end_line": 94,
+    "excerpt": "0084:     def compile(self, student, *, teacher=None, trainset):\n0085:         self.trainset = trainset\n0086: \n0087:         self._prepare_student_and_teacher(student, teacher)\n0088:         self._prepare_predictor_mappings()\n0089:         self._bootstrap()\n0090: \n0091:         self.student = self._train()\n0092:         self.student._compiled = True\n0093: \n0094:         return self.student"
+  }
+]
+
+## Whole evidence files
+### dspy/evaluate/evaluate.py
+0001: import csv
+0002: import importlib
+0003: import json
+0004: import logging
+0005: import types
+0006: from typing import TYPE_CHECKING, Any, Callable
+0007: 
+0008: if TYPE_CHECKING:
+0009:     import pandas as pd
+0010: 
+0011: import tqdm
+0012: 
+0013: import dspy
+0014: from dspy.primitives.prediction import Prediction
+0015: from dspy.utils.callback import with_callbacks
+0016: from dspy.utils.parallelizer import ParallelExecutor
+0017: 
+0018: try:
+0019:     from IPython.display import HTML
+0020:     from IPython.display import display as display
+0021: 
+0022: except ImportError:
+0023: 
+0024:     def display(obj: Any):
+0025:         """
+0026:         Display the specified Python object in the console.
+0027: 
+0028:         :param obj: The Python object to display.
+0029:         """
+0030:         print(obj)
+0031: 
+0032:     def HTML(x: str) -> str:  # noqa: N802
+0033:         """
+0034:         Obtain the HTML representation of the specified string.
+0035:         """
+0036:         # NB: This method exists purely for code compatibility with the IPython HTML() function in
+0037:         # environments where IPython is not available. In such environments where IPython is not
+0038:         # available, this method will simply return the input string.
+0039:         return x
+0040: 
+0041: 
+0042: # TODO: Counting failures and having a max_failure count. When that is exceeded (also just at the end),
+0043: # we print the number of failures, the first N examples that failed, and the first N exceptions raised.
+0044: 
+0045: logger = logging.getLogger(__name__)
+0046: 
+0047: 
+0048: class EvaluationResult(Prediction):
+0049:     """
+0050:     A class that represents the result of an evaluation.
+0051:     It is a subclass of `dspy.Prediction` that contains the following fields
+0052: 
+0053:     - score: An float value (e.g., 67.30) representing the overall performance
+0054:     - results: a list of (example, prediction, score) tuples for each example in devset
+0055:     """
+0056: 
+0057:     def __init__(self, score: float, results: list[tuple["dspy.Example", "dspy.Example", Any]]):
+0058:         super().__init__(score=score, results=results)
+0059: 
+0060:     def __repr__(self):
+0061:         return f"EvaluationResult(score={self.score}, results=<list of {len(self.results)} results>)"
+0062: 
+0063: 
+0064: class Evaluate:
+0065:     """DSPy Evaluate class.
+0066: 
+0067:     This class is used to evaluate the performance of a DSPy program. Users need to provide a evaluation dataset and
+0068:     a metric function in order to use this class. This class supports parallel evaluation on the provided dataset.
+0069:     """
+0070: 
+0071:     def __init__(
+0072:         self,
+0073:         *,
+0074:         devset: list["dspy.Example"],
+0075:         metric: Callable | None = None,
+0076:         num_threads: int | None = None,
+0077:         display_progress: bool = False,
+0078:         display_table: bool | int = False,
+0079:         max_errors: int | None = None,
+0080:         provide_traceback: bool | None = None,
+0081:         failure_score: float = 0.0,
+0082:         save_as_csv: str | None = None,
+0083:         save_as_json: str | None = None,
+0084:         **kwargs,
+0085:     ):
+0086:         """
+0087:         Args:
+0088:             devset (list[dspy.Example]): the evaluation dataset.
+0089:             metric (Callable): The metric function to use for evaluation.
+0090:             num_threads (Optional[int]): The number of threads to use for parallel evaluation.
+0091:             display_progress (bool): Whether to display progress during evaluation.
+0092:             display_table (Union[bool, int]): Whether to display the evaluation results in a table.
+0093:                 If a number is passed, the evaluation results will be truncated to that number before displayed.
+0094:             max_errors (Optional[int]): The maximum number of errors to allow before
+0095:                 stopping evaluation. If ``None``, inherits from ``dspy.settings.max_errors``.
+0096:             provide_traceback (Optional[bool]): Whether to provide traceback information during evaluation.
+0097:             failure_score (float): The default score to use if evaluation fails due to an exception.
+0098:             save_as_csv (Optional[str]): The file name where the csv will be saved.
+0099:             save_as_json (Optional[str]): The file name where the json will be saved.
+0100: 
+0101:         """
+0102:         self.devset = devset
+0103:         self.metric = metric
+0104:         self.num_threads = num_threads
+0105:         self.display_progress = display_progress
+0106:         self.display_table = display_table
+0107:         self.max_errors = max_errors
+0108:         self.provide_traceback = provide_traceback
+0109:         self.failure_score = failure_score
+0110:         self.save_as_csv = save_as_csv
+0111:         self.save_as_json = save_as_json
+0112: 
+0113:         if "return_outputs" in kwargs:
+0114:             raise ValueError("`return_outputs` is no longer supported. Results are always returned inside the `results` field of the `EvaluationResult` object.")
+0115: 
+0116:     @with_callbacks
+0117:     def __call__(
+0118:         self,
+0119:         program: "dspy.Module",
+0120:         metric: Callable | None = None,
+0121:         devset: list["dspy.Example"] | None = None,
+0122:         num_threads: int | None = None,
+0123:         display_progress: bool | None = None,
+0124:         display_table: bool | int | None = None,
+0125:         callback_metadata: dict[str, Any] | None = None,
+0126:         save_as_csv: str | None = None,
+0127:         save_as_json: str | None = None,
+0128:     ) -> EvaluationResult:
+0129:         """
+0130:         Args:
+0131:             program (dspy.Module): The DSPy program to evaluate.
+0132:             metric (Callable): The metric function to use for evaluation. if not provided, use `self.metric`.
+0133:             devset (list[dspy.Example]): the evaluation dataset. if not provided, use `self.devset`.
+0134:             num_threads (Optional[int]): The number of threads to use for parallel evaluation. if not provided, use
+0135:                 `self.num_threads`.
+0136:             display_progress (bool): Whether to display progress during evaluation. if not provided, use
+0137:                 `self.display_progress`.
+0138:             display_table (Union[bool, int]): Whether to display the evaluation results in a table. if not provided, use
+0139:                 `self.display_table`. If a number is passed, the evaluation results will be truncated to that number before displayed.
+0140:             callback_metadata (dict): Metadata to be used for evaluate callback handlers.
+0141: 
+0142:         Returns:
+0143:             The evaluation results are returned as a dspy.EvaluationResult object containing the following attributes:
+0144: 
+0145:             - score: A float percentage score (e.g., 67.30) representing overall performance
+0146: 
+0147:             - results: a list of (example, prediction, score) tuples for each example in devset
+0148:         """
+0149:         metric = metric if metric is not None else self.metric
+0150:         devset = devset if devset is not None else self.devset
+0151:         num_threads = num_threads if num_threads is not None else self.num_threads
+0152:         display_progress = display_progress if display_progress is not None else self.display_progress
+0153:         display_table = display_table if display_table is not None else self.display_table
+0154:         save_as_csv = save_as_csv if save_as_csv is not None else self.save_as_csv
+0155:         save_as_json = save_as_json if save_as_json is not None else self.save_as_json
+0156: 
+0157:         if callback_metadata:
+0158:             logger.debug(f"Evaluate is called with callback metadata: {callback_metadata}")
+0159: 
+0160:         tqdm.tqdm._instances.clear()
+0161: 
+0162:         executor = ParallelExecutor(
+0163:             num_threads=num_threads,
+0164:             disable_progress_bar=not display_progress,
+0165:             max_errors=(self.max_errors if self.max_errors is not None else dspy.settings.max_errors),
+0166:             provide_traceback=self.provide_traceback,
+0167:             compare_results=True,
+0168:         )
+0169: 
+0170:         def process_item(example):
+0171:             prediction = program(**example.inputs())
+0172:             score = metric(example, prediction)
+0173:             return prediction, score
+0174: 
+0175:         results = executor.execute(process_item, devset)
+0176:         assert len(devset) == len(results)
+0177: 
+0178:         results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]
+0179:         results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results, strict=False)]
+0180:         ncorrect, ntotal = sum(score for *_, score in results), len(devset)
+0181: 
+0182:         logger.info(f"Average Metric: {ncorrect} / {ntotal} ({round(100 * ncorrect / ntotal, 1)}%)")
+0183: 
+0184:         if display_table:
+0185:             if importlib.util.find_spec("pandas") is not None:
+0186:                 # Rename the 'correct' column to the name of the metric object
+0187:                 metric_name = metric.__name__ if isinstance(metric, types.FunctionType) else metric.__class__.__name__
+0188:                 # Construct a pandas DataFrame from the results
+0189:                 result_df = self._construct_result_table(results, metric_name)
+0190: 
+0191:                 self._display_result_table(result_df, display_table, metric_name)
+0192:             else:
+0193:                 logger.warning("Skipping table display since `pandas` is not installed.")
+0194: 
+0195:         if save_as_csv:
+0196:             metric_name = (
+0197:                 metric.__name__
+0198:                 if isinstance(metric, types.FunctionType)
+0199:                 else metric.__class__.__name__
+0200:             )
+0201:             data = self._prepare_results_output(results, metric_name)
+0202: 
+0203:             with open(save_as_csv, "w", newline="") as csvfile:
+0204:                 fieldnames = data[0].keys()
+0205:                 writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+0206: 
+0207:                 writer.writeheader()
+0208:                 for row in data:
+0209:                     writer.writerow(row)
+0210:         if save_as_json:
+0211:             metric_name = (
+0212:                 metric.__name__
+0213:                 if isinstance(metric, types.FunctionType)
+0214:                 else metric.__class__.__name__
+0215:             )
+0216:             data = self._prepare_results_output(results, metric_name)
+0217:             with open(
+0218:                     save_as_json,
+0219:                     "w",
+0220:             ) as f:
+0221:                 json.dump(data, f)
+0222: 
+0223:         return EvaluationResult(
+0224:             score=round(100 * ncorrect / ntotal, 2),
+0225:             results=results,
+0226:         )
+0227: 
+0228:     @staticmethod
+0229:     def _prepare_results_output(
+0230:             results: list[tuple["dspy.Example", "dspy.Example", Any]], metric_name: str
+0231:     ):
+0232:         return [
+0233:             (
+0234:                 merge_dicts(example, prediction) | {metric_name: score}
+0235:                 if prediction_is_dictlike(prediction)
+0236:                 else example.toDict() | {"prediction": prediction, metric_name: score}
+0237:             )
+0238:             for example, prediction, score in results
+0239:         ]
+0240: 
+0241:     def _construct_result_table(
+0242:         self, results: list[tuple["dspy.Example", "dspy.Example", Any]], metric_name: str
+0243:     ) -> "pd.DataFrame":
+0244:         """
+0245:         Construct a pandas DataFrame from the specified result list.
+0246:         Let's not try to change the name of this method as it may be patched by external tracing tools.
+0247: 
+0248:         Args:
+0249:             results: The list of results to construct the result DataFrame from.
+0250:             metric_name: The name of the metric used for evaluation.
+0251: 
+0252:         Returns:
+0253:             The constructed pandas DataFrame.
+0254:         """
+0255:         import pandas as pd
+0256: 
+0257:         data = self._prepare_results_output(results, metric_name)
+0258: 
+0259:         # Truncate every cell in the DataFrame (DataFrame.applymap was renamed to DataFrame.map in Pandas 2.1.0)
+0260:         result_df = pd.DataFrame(data)
+0261:         result_df = result_df.map(truncate_cell) if hasattr(result_df, "map") else result_df.applymap(truncate_cell)
+0262: 
+0263:         return result_df.rename(columns={"correct": metric_name})
+0264: 
+0265:     def _display_result_table(self, result_df: "pd.DataFrame", display_table: bool | int, metric_name: str):
+0266:         """
+0267:         Display the specified result DataFrame in a table format.
+0268: 
+0269:         Args:
+0270:             result_df: The result DataFrame to display.
+0271:             display_table: Whether to display the evaluation results in a table.
+0272:                 If a number is passed, the evaluation results will be truncated to that number before displayed.
+0273:             metric_name: The name of the metric used for evaluation.
+0274:         """
+0275:         if isinstance(display_table, bool):
+0276:             df_to_display = result_df.copy()
+0277:             truncated_rows = 0
+0278:         else:
+0279:             df_to_display = result_df.head(display_table).copy()
+0280:             truncated_rows = len(result_df) - display_table
+0281: 
+0282:         df_to_display = stylize_metric_name(df_to_display, metric_name)
+0283: 
+0284:         display_dataframe(df_to_display)
+0285: 
+0286:         if truncated_rows > 0:
+0287:             # Simplified message about the truncated rows
+0288:             message = f"""
+0289:             <div style='
+0290:                 text-align: center;
+0291:                 font-size: 16px;
+0292:                 font-weight: bold;
+0293:                 color: #555;
+0294:                 margin: 10px 0;'>
+0295:                 ... {truncated_rows} more rows not displayed ...
+0296:             </div>
+0297:             """
+0298:             display(HTML(message))
+0299: 
+0300: 
+0301: def prediction_is_dictlike(prediction):
+0302:     # Downstream logic for displaying dictionary-like predictions depends solely on the predictions
+0303:     # having a method called `items()` for iterating through key/value pairs
+0304:     return hasattr(prediction, "items") and callable(prediction.items)
+0305: 
+0306: 
+0307: def merge_dicts(d1, d2) -> dict:
+0308:     # Convert to dict if objects have toDict method (e.g., Example objects)
+0309:     if hasattr(d1, "toDict"):
+0310:         d1 = d1.toDict()
+0311:     if hasattr(d2, "toDict"):
+0312:         d2 = d2.toDict()
+0313: 
+0314:     merged = {}
+0315:     for k, v in d1.items():
+0316:         if k in d2:
+0317:             merged[f"example_{k}"] = v
+0318:         else:
+0319:             merged[k] = v
+0320: 
+0321:     for k, v in d2.items():
+0322:         if k in d1:
+0323:             merged[f"pred_{k}"] = v
+0324:         else:
+0325:             merged[k] = v
+0326: 
+0327:     return merged
+0328: 
+0329: 
+0330: def truncate_cell(content) -> str:
+0331:     """Truncate content of a cell to 25 words."""
+0332:     words = str(content).split()
+0333:     if len(words) > 25:
+0334:         return " ".join(words[:25]) + "..."
+0335:     return content
+0336: 
+0337: 
+0338: def stylize_metric_name(df: "pd.DataFrame", metric_name: str) -> "pd.DataFrame":
+0339:     """
+0340:     Stylize the cell contents of a pandas DataFrame corresponding to the specified metric name.
+0341: 
+0342:     :param df: The pandas DataFrame for which to stylize cell contents.
+0343:     :param metric_name: The name of the metric for which to stylize DataFrame cell contents.
+0344:     """
+0345:     def format_metric(x):
+0346:         if isinstance(x, float):
+0347:             return f"✔️ [{x:.3f}]"
+0348:         elif x is not None:
+0349:             return f"✔️ [{x}]"
+0350:         else:
+0351:             return ""
+0352:     df[metric_name] = df[metric_name].apply(format_metric)
+0353:     return df
+0354: 
+0355: 
+0356: def display_dataframe(df: "pd.DataFrame"):
+0357:     """
+0358:     Display the specified Pandas DataFrame in the console.
+0359: 
+0360:     :param df: The Pandas DataFrame to display.
+0361:     """
+0362:     import pandas as pd
+0363: 
+0364:     if is_in_ipython_notebook_environment():
+0365:         display(configure_dataframe_for_ipython_notebook_display(df))
+0366:     else:
+0367:         # Pretty print the DataFrame to the console
+0368:         with pd.option_context(
+0369:             "display.max_rows", None, "display.max_columns", None
+0370:         ):  # more options can be specified also
+0371:             print(df)
+0372: 
+0373: 
+0374: def configure_dataframe_for_ipython_notebook_display(df: "pd.DataFrame") -> "pd.DataFrame":
+0375:     """Set various pandas display options for DataFrame in an IPython notebook environment."""
+0376:     import pandas as pd
+0377: 
+0378:     pd.options.display.max_colwidth = 70
+0379:     return df
+0380: 
+0381: 
+0382: def is_in_ipython_notebook_environment():
+0383:     """
+0384:     Check if the current environment is an IPython notebook environment.
+0385: 
+0386:     :return: True if the current environment is an IPython notebook environment, False otherwise.
+0387:     """
+0388:     try:
+0389:         from IPython import get_ipython
+0390: 
+0391:         # This is a best-effort check to see if we are in an IPython notebook environment
+0392:         return "IPKernelApp" in getattr(get_ipython(), "config", {})
+0393:     except ImportError:
+0394:         return False
+0395: 
+0396: 
+0397: # FIXME: TODO: The merge_dicts stuff above is way too quick and dirty.
+0398: # TODO: the display_table can't handle False but can handle 0!
+0399: # Not sure how it works with True exactly, probably fails too.
+
+### dspy/utils/parallelizer.py
+0001: import contextlib
+0002: import copy
+0003: import logging
+0004: import signal
+0005: import sys
+0006: import threading
+0007: import time
+0008: import traceback
+0009: from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+0010: 
+0011: import tqdm
+0012: 
+0013: logger = logging.getLogger(__name__)
+0014: 
+0015: 
+0016: class ParallelExecutor:
+0017:     def __init__(
+0018:         self,
+0019:         num_threads=None,
+0020:         max_errors=None,
+0021:         disable_progress_bar=False,
+0022:         provide_traceback=None,
+0023:         compare_results=False,
+0024:         timeout=120,
+0025:         straggler_limit=3,
+0026:     ):
+0027:         """
+0028:         Offers isolation between the tasks (dspy.settings) irrespective of whether num_threads == 1 or > 1.
+0029:         Handles also straggler timeouts.
+0030:         """
+0031:         from dspy.dsp.utils.settings import settings
+0032: 
+0033:         self.num_threads = num_threads or settings.num_threads
+0034:         self.max_errors = settings.max_errors if max_errors is None else max_errors
+0035:         self.disable_progress_bar = disable_progress_bar
+0036:         self.provide_traceback = provide_traceback if provide_traceback is not None else settings.provide_traceback
+0037:         self.compare_results = compare_results
+0038:         self.timeout = timeout
+0039:         self.straggler_limit = straggler_limit
+0040: 
+0041:         self.error_count = 0
+0042:         self.error_lock = threading.Lock()
+0043:         self.cancel_jobs = threading.Event()
+0044:         self.failed_indices = []
+0045:         self.exceptions_map = {}
+0046: 
+0047:     def execute(self, function, data):
+0048:         tqdm.tqdm._instances.clear()
+0049:         wrapped = self._wrap_function(function)
+0050:         if self.num_threads == 1:
+0051:             return self._execute_sequential(wrapped, data)
+0052:         return self._execute_parallel(wrapped, data)
+0053: 
+0054:     def _wrap_function(self, user_function):
+0055:         def safe_func(item):
+0056:             if self.cancel_jobs.is_set():
+0057:                 return None
+0058:             try:
+0059:                 return user_function(item)
+0060:             except Exception as e:
+0061:                 with self.error_lock:
+0062:                     self.error_count += 1
+0063:                     if self.error_count >= self.max_errors:
+0064:                         self.cancel_jobs.set()
+0065:                 if self.provide_traceback:
+0066:                     logger.error(f"Error for {item}: {e}\n{traceback.format_exc()}")
+0067:                 else:
+0068:                     logger.error(f"Error for {item}: {e}. Set `provide_traceback=True` for traceback.")
+0069:                 return e
+0070: 
+0071:         return safe_func
+0072: 
+0073:     def _execute_sequential(self, function, data):
+0074:         """Execute items sequentially on the main thread."""
+0075:         results = [None] * len(data)
+0076: 
+0077:         pbar = tqdm.tqdm(
+0078:             total=len(data),
+0079:             dynamic_ncols=True,
+0080:             disable=self.disable_progress_bar,
+0081:             file=sys.stdout,
+0082:         )
+0083: 
+0084:         try:
+0085:             for idx, item in enumerate(data):
+0086:                 if self.cancel_jobs.is_set():
+0087:                     break
+0088: 
+0089:                 outcome = function(item)
+0090:                 self._process_outcome(results, idx, outcome)
+0091:                 self._report_progress(pbar, results, len(data))
+0092:         except KeyboardInterrupt:
+0093:             self.cancel_jobs.set()
+0094:             logger.warning("SIGINT received. Cancelling.")
+0095:             raise
+0096:         finally:
+0097:             pbar.close()
+0098: 
+0099:         if self.cancel_jobs.is_set():
+0100:             logger.warning("Execution cancelled due to errors or interruption.")
+0101:             raise Exception("Execution cancelled due to errors or interruption.")
+0102: 
+0103:         return results
+0104: 
+0105:     def _execute_parallel(self, function, data):
+0106:         results = [None] * len(data)
+0107:         job_cancelled = "cancelled"
+0108: 
+0109:         # We resubmit at most once per item.
+0110:         start_time_map = {}
+0111:         start_time_lock = threading.Lock()
+0112:         resubmitted = set()
+0113: 
+0114:         # This is the worker function each thread will run.
+0115:         def worker(parent_overrides, submission_id, index, item):
+0116:             if self.cancel_jobs.is_set():
+0117:                 return index, job_cancelled
+0118:             # Record actual start time
+0119:             with start_time_lock:
+0120:                 start_time_map[submission_id] = time.time()
+0121: 
+0122:             # Apply parent's thread-local overrides
+0123:             from dspy.dsp.utils.settings import thread_local_overrides
+0124: 
+0125:             original = thread_local_overrides.get()
+0126:             new_overrides = {**original, **parent_overrides.copy()}
+0127:             if new_overrides.get("usage_tracker"):
+0128:                 # Usage tracker needs to be deep copied across threads so that each thread tracks its own usage
+0129:                 new_overrides["usage_tracker"] = copy.deepcopy(new_overrides["usage_tracker"])
+0130:             token = thread_local_overrides.set(new_overrides)
+0131: 
+0132:             try:
+0133:                 return index, function(item)
+0134:             finally:
+0135:                 thread_local_overrides.reset(token)
+0136: 
+0137:         # Handle Ctrl-C in the main thread
+0138:         @contextlib.contextmanager
+0139:         def interrupt_manager():
+0140:             if threading.current_thread() is threading.main_thread():
+0141:                 orig_handler = signal.getsignal(signal.SIGINT)
+0142: 
+0143:                 def handler(sig, frame):
+0144:                     self.cancel_jobs.set()
+0145:                     logger.warning("SIGINT received. Cancelling.")
+0146:                     orig_handler(sig, frame)
+0147: 
+0148:                 signal.signal(signal.SIGINT, handler)
+0149:                 try:
+0150:                     yield
+0151:                 finally:
+0152:                     signal.signal(signal.SIGINT, orig_handler)
+0153:             else:
+0154:                 yield
+0155: 
+0156:         executor = ThreadPoolExecutor(max_workers=self.num_threads)
+0157:         try:
+0158:             with interrupt_manager():
+0159:                 from dspy.dsp.utils.settings import thread_local_overrides
+0160: 
+0161:                 parent_overrides = thread_local_overrides.get().copy()
+0162: 
+0163:                 futures_map = {}
+0164:                 futures_set = set()
+0165:                 submission_counter = 0
+0166: 
+0167:                 for idx, item in enumerate(data):
+0168:                     f = executor.submit(worker, parent_overrides, submission_counter, idx, item)
+0169:                     futures_map[f] = (submission_counter, idx, item)
+0170:                     futures_set.add(f)
+0171:                     submission_counter += 1
+0172: 
+0173:                 pbar = tqdm.tqdm(
+0174:                     total=len(data),
+0175:                     dynamic_ncols=True,
+0176:                     disable=self.disable_progress_bar,
+0177:                     file=sys.stdout,
+0178:                 )
+0179: 
+0180:                 def all_done():
+0181:                     return all(r is not None for r in results)
+0182: 
+0183:                 while futures_set and not self.cancel_jobs.is_set():
+0184:                     if all_done():
+0185:                         break
+0186:                     done, not_done = wait(futures_set, timeout=1, return_when=FIRST_COMPLETED)
+0187:                     for f in done:
+0188:                         futures_set.remove(f)
+0189:                         try:
+0190:                             index, outcome = f.result()
+0191:                         except Exception:
+0192:                             pass
+0193:                         else:
+0194:                             if outcome != job_cancelled and results[index] is None:
+0195:                                 self._process_outcome(results, index, outcome)
+0196: 
+0197:                             self._report_progress(pbar, results, len(data))
+0198: 
+0199:                     if all_done():
+0200:                         break
+0201: 
+0202:                     # Check stragglers if few remain
+0203:                     if 0 < self.timeout and len(not_done) <= self.straggler_limit:
+0204:                         now = time.time()
+0205:                         for f in list(not_done):
+0206:                             if f not in resubmitted:
+0207:                                 sid, idx, item = futures_map[f]
+0208:                                 with start_time_lock:
+0209:                                     st = start_time_map.get(sid, None)
+0210:                                 if st and (now - st) >= self.timeout:
+0211:                                     resubmitted.add(f)
+0212:                                     nf = executor.submit(
+0213:                                         worker,
+0214:                                         parent_overrides,
+0215:                                         submission_counter,
+0216:                                         idx,
+0217:                                         item,
+0218:                                     )
+0219:                                     futures_map[nf] = (submission_counter, idx, item)
+0220:                                     futures_set.add(nf)
+0221:                                     submission_counter += 1
+0222: 
+0223:                 pbar.close()
+0224: 
+0225:         finally:
+0226:             # Avoid waiting on leftover tasks that no longer matter
+0227:             executor.shutdown(wait=False)
+0228: 
+0229:         if self.cancel_jobs.is_set():
+0230:             logger.warning("Execution cancelled due to errors or interruption.")
+0231:             raise Exception("Execution cancelled due to errors or interruption.")
+0232: 
+0233:         return results
+0234: 
+0235:     def _process_outcome(self, results, idx, outcome):
+0236:         """Store a single outcome and track errors."""
+0237:         if isinstance(outcome, Exception):
+0238:             with self.error_lock:
+0239:                 self.failed_indices.append(idx)
+0240:                 self.exceptions_map[idx] = outcome
+0241:         else:
+0242:             results[idx] = outcome
+0243: 
+0244:     def _report_progress(self, pbar, results, total):
+0245:         """Compute metrics and update the progress bar."""
+0246:         if self.compare_results:
+0247:             vals = [r[-1] for r in results if r is not None]
+0248:             self._update_progress(pbar, sum(vals), len(vals))
+0249:         else:
+0250:             self._update_progress(
+0251:                 pbar,
+0252:                 len([r for r in results if r is not None]),
+0253:                 total,
+0254:             )
+0255: 
+0256:     def _update_progress(self, pbar, nresults, ntotal):
+0257:         if self.compare_results:
+0258:             pct = round(100 * nresults / ntotal, 1) if ntotal else 0
+0259:             pbar.set_description(f"Average Metric: {nresults:.2f} / {ntotal} ({pct}%)")
+0260:         else:
+0261:             pbar.set_description(f"Processed {nresults} / {ntotal} examples")
+0262:         pbar.update()
+
+### dspy/teleprompt/bootstrap.py
+0001: import logging
+0002: import random
+0003: import threading
+0004: 
+0005: import tqdm
+0006: 
+0007: import dspy
+0008: from dspy.teleprompt.teleprompt import Teleprompter
+0009: 
+0010: from .vanilla import LabeledFewShot
+0011: 
+0012: # TODO: metrics should return an object with __bool__ basically, but fine if they're more complex.
+0013: # They can also be sortable.
+0014: 
+0015: # TODO: Switch here from dspy.dsp.Example to dspy.Example. Right now, it's okay because it's internal only (predictors).
+0016: # NOTE: Notice the places where we don't shuffle examples. I do like that this one doesn't shuffle.
+0017: # Other ones that consider options may want to use both unshuffled and then shuffle a few times, when
+0018: # considering candidates.
+0019: 
+0020: # TODO: the max_rounds via branch_idx to get past the cache, not just temperature.
+0021: # In principle, we can also sample multiple outputs from the final generation step
+0022: # (or even each step, in case the validation function just wants *one* thing that works, but nah)
+0023: # and try them all. Having a pretty solid guess on the "final step" of each example isn't hard by the second round,
+0024: # in the sense that we have the trace from the first round. (Yes it may change but that's an edge case that
+0025: # won't hurt our "best effort" guarantees.)
+0026: 
+0027: # TODO: When this bootstraps for another teleprompter like finetune, we want all demos we gather.
+0028: # But when it's for direct use we may want to sample ONE demo per predictor--example pair.
+0029: # This is important for "multi-use" modules.
+0030: 
+0031: # TODO: Add baselines=[...]
+0032: 
+0033: logger = logging.getLogger(__name__)
+0034: 
+0035: 
+0036: class BootstrapFewShot(Teleprompter):
+0037:     def __init__(
+0038:         self,
+0039:         metric=None,
+0040:         metric_threshold=None,
+0041:         teacher_settings: dict | None = None,
+0042:         max_bootstrapped_demos=4,
+0043:         max_labeled_demos=16,
+0044:         max_rounds=1,
+0045:         max_errors=None,
+0046:     ):
+0047:         """A Teleprompter class that composes a set of demos/examples to go into a predictor's prompt.
+0048:         These demos come from a combination of labeled examples in the training set, and bootstrapped demos.
+0049: 
+0050:         Each bootstrap round copies the LM with a new ``rollout_id`` at ``temperature=1.0`` to
+0051:         bypass caches and gather diverse traces.
+0052: 
+0053:         Args:
+0054:             metric (Callable): A function that compares an expected value and predicted value,
+0055:                 outputting the result of that comparison.
+0056:             metric_threshold (float, optional): If the metric yields a numerical value, then check it
+0057:                 against this threshold when deciding whether or not to accept a bootstrap example.
+0058:                 Defaults to None.
+0059:             teacher_settings (dict, optional): Settings for the `teacher` model.
+0060:                 Defaults to None.
+0061:             max_bootstrapped_demos (int): Maximum number of bootstrapped demonstrations to include.
+0062:                 Defaults to 4.
+0063:             max_labeled_demos (int): Maximum number of labeled demonstrations to include.
+0064:                 Defaults to 16.
+0065:             max_rounds (int): Maximum number of bootstrap attempts per training example.
+0066:                 Each round after the first uses a fresh rollout with ``temperature=1.0``
+0067:                 to bypass caches and gather diverse traces. If a successful bootstrap is
+0068:                 found on any round, the example is accepted and the optimizer moves to the
+0069:                 next one. Defaults to 1.
+0070:             max_errors (Optional[int]): Maximum number of errors until program ends.
+0071:                 If ``None``, inherits from ``dspy.settings.max_errors``.
+0072:         """
+0073:         self.metric = metric
+0074:         self.metric_threshold = metric_threshold
+0075:         self.teacher_settings = {} if teacher_settings is None else teacher_settings
+0076: 
+0077:         self.max_bootstrapped_demos = max_bootstrapped_demos
+0078:         self.max_labeled_demos = max_labeled_demos
+0079:         self.max_rounds = max_rounds
+0080:         self.max_errors = max_errors
+0081:         self.error_count = 0
+0082:         self.error_lock = threading.Lock()
+0083: 
+0084:     def compile(self, student, *, teacher=None, trainset):
+0085:         self.trainset = trainset
+0086: 
+0087:         self._prepare_student_and_teacher(student, teacher)
+0088:         self._prepare_predictor_mappings()
+0089:         self._bootstrap()
+0090: 
+0091:         self.student = self._train()
+0092:         self.student._compiled = True
+0093: 
+0094:         return self.student
+0095: 
+0096:     def _prepare_student_and_teacher(self, student, teacher):
+0097:         self.student = student.reset_copy()
+0098: 
+0099:         # NOTE: behavior change on Oct 28, 2024. Deep copy instead of reset copy for the student-as-teacher.
+0100:         self.teacher = teacher.deepcopy() if teacher is not None else student.deepcopy()
+0101: 
+0102:         assert getattr(self.student, "_compiled", False) is False, "Student must be uncompiled."
+0103: 
+0104:         if self.max_labeled_demos and getattr(self.teacher, "_compiled", False) is False:
+0105:             teleprompter = LabeledFewShot(k=self.max_labeled_demos)
+0106:             self.teacher = teleprompter.compile(self.teacher.reset_copy(), trainset=self.trainset)
+0107: 
+0108:     def _prepare_predictor_mappings(self):
+0109:         name2predictor, predictor2name = {}, {}
+0110:         student, teacher = self.student, self.teacher
+0111: 
+0112:         assert len(student.predictors()) == len(
+0113:             teacher.predictors(),
+0114:         ), "Student and teacher must have the same number of predictors."
+0115: 
+0116:         for (name1, predictor1), (name2, predictor2) in zip(
+0117:             student.named_predictors(), teacher.named_predictors(), strict=False
+0118:         ):
+0119:             assert name1 == name2, "Student and teacher must have the same program structure."
+0120:             if hasattr(predictor1.signature, "equals"):
+0121:                 assert predictor1.signature.equals(
+0122:                     predictor2.signature,
+0123:                 ), (
+0124:                     f"Student and teacher must have the same signatures. "
+0125:                     f"{type(predictor1.signature)} != {type(predictor2.signature)}"
+0126:                 )
+0127:             else:
+0128:                 # fallback in case if .equals is not implemented (e.g. dsp.Prompt)
+0129:                 assert predictor1.signature == predictor2.signature, (
+0130:                     f"Student and teacher must have the same signatures. "
+0131:                     f"{type(predictor1.signature)} != {type(predictor2.signature)}"
+0132:                 )
+0133:             assert id(predictor1) != id(predictor2), "Student and teacher must be different objects."
+0134: 
+0135:             name2predictor[name1] = None  # dict(student=predictor1, teacher=predictor2)
+0136:             predictor2name[id(predictor1)] = name1
+0137: 
+0138:             # FIXME(shangyint): This is an ugly hack to bind traces of
+0139:             # retry.module to retry
+0140:             # if isinstance(predictor1, Retry):
+0141:             #     predictor2name[id(predictor1.module)] = name1
+0142: 
+0143:             predictor2name[id(predictor2)] = name2
+0144: 
+0145:         self.name2predictor = name2predictor
+0146:         self.predictor2name = predictor2name
+0147: 
+0148:     def _bootstrap(self, *, max_bootstraps=None):
+0149:         max_bootstraps = max_bootstraps or self.max_bootstrapped_demos
+0150:         bootstrap_attempts = 0
+0151: 
+0152:         bootstrapped = {}
+0153:         self.name2traces = {name: [] for name in self.name2predictor}
+0154: 
+0155:         for example_idx, example in enumerate(tqdm.tqdm(self.trainset)):
+0156:             if len(bootstrapped) >= max_bootstraps:
+0157:                 break
+0158: 
+0159:             for round_idx in range(self.max_rounds):
+0160:                 bootstrap_attempts += 1
+0161: 
+0162:                 if self._bootstrap_one_example(example, round_idx):
+0163:                     bootstrapped[example_idx] = True
+0164:                     break
+0165: 
+0166:         print(
+0167:             f"Bootstrapped {len(bootstrapped)} full traces after {example_idx} examples "
+0168:             f"for up to {self.max_rounds} rounds, amounting to {bootstrap_attempts} attempts."
+0169:         )
+0170: 
+0171:         # Unbootstrapped training examples
+0172: 
+0173:         self.validation = [x for idx, x in enumerate(self.trainset) if idx not in bootstrapped]
+0174:         random.Random(0).shuffle(self.validation)
+0175: 
+0176:         self.validation = self.validation
+0177: 
+0178:         # NOTE: Can't yet use evaluate because we need to trace *per example*
+0179:         # evaluate = Evaluate(program=self.teacher, metric=self.metric, num_threads=12)
+0180:         # score = evaluate(self.metric, display_table=False, display_progress=True)
+0181: 
+0182:     def _bootstrap_one_example(self, example, round_idx=0):
+0183:         name2traces = {}
+0184:         teacher = self.teacher
+0185:         predictor_cache = {}
+0186: 
+0187:         try:
+0188:             with dspy.context(trace=[], **self.teacher_settings):
+0189:                 lm = dspy.settings.lm
+0190:                 # Use a fresh rollout with temperature=1.0 to bypass caches.
+0191:                 lm = lm.copy(rollout_id=round_idx, temperature=1.0) if round_idx > 0 else lm
+0192:                 new_settings = {"lm": lm} if round_idx > 0 else {}
+0193: 
+0194:                 with dspy.context(**new_settings):
+0195:                     for name, predictor in teacher.named_predictors():
+0196:                         predictor_cache[name] = predictor.demos
+0197:                         predictor.demos = [x for x in predictor.demos if x != example]
+0198: 
+0199:                     prediction = teacher(**example.inputs())
+0200:                     trace = dspy.settings.trace
+0201: 
+0202:                     for name, predictor in teacher.named_predictors():
+0203:                         predictor.demos = predictor_cache[name]
+0204: 
+0205:                 if self.metric:
+0206:                     metric_val = self.metric(example, prediction, trace)
+0207:                     if self.metric_threshold:
+0208:                         success = metric_val >= self.metric_threshold
+0209:                     else:
+0210:                         success = metric_val
+0211:                 else:
+0212:                     success = True
+0213:         except Exception as e:
+0214:             success = False
+0215:             with self.error_lock:
+0216:                 self.error_count += 1
+0217:                 current_error_count = self.error_count
+0218:             effective_max_errors = self.max_errors if self.max_errors is not None else dspy.settings.max_errors
+0219:             if current_error_count >= effective_max_errors:
+0220:                 raise e
+0221:             logger.error(f"Failed to run or to evaluate example {example} with {self.metric} due to {e}.")
+0222: 
+0223:         if success:
+0224:             for step in trace:
+0225:                 predictor, inputs, outputs = step
+0226:                 demo = dspy.Example(augmented=True, **inputs, **outputs)
+0227: 
+0228:                 try:
+0229:                     predictor_name = self.predictor2name[id(predictor)]
+0230:                 except KeyError:
+0231:                     continue  # FIXME: !
+0232: 
+0233:                     # # TODO: Look closer into this. It's a bit tricky to reproduce.
+0234:                     # print(f"Failed to find predictor {predictor} in {self.predictor2name}.")
+0235:                     # print(
+0236:                     #     "Are you doing this in a notebook (Jupyter)? This might be caused by redefining values by rerunning cells.",
+0237:                     # )
+0238:                     # print("Try restarting the notebook, or open an issue.")
+0239:                     # raise KeyError(
+0240:                     #     f"Failed to find predictor {id(predictor)} {predictor} in {self.predictor2name}.",
+0241:                     # ) from e
+0242: 
+0243:                 name2traces[predictor_name] = name2traces.get(predictor_name, [])
+0244:                 name2traces[predictor_name].append(demo)
+0245: 
+0246:             # Update the traces
+0247:             for name, demos in name2traces.items():
+0248:                 # If there are multiple traces for the same predictor in the sample example,
+0249:                 # sample 50/50 from the first N-1 traces or the last trace.
+0250:                 if len(demos) > 1:
+0251:                     from dspy.utils.hasher import Hasher
+0252: 
+0253:                     rng = random.Random(Hasher.hash(tuple(demos)))
+0254:                     demos = [rng.choice(demos[:-1]) if rng.random() < 0.5 else demos[-1]]
+0255:                 self.name2traces[name].extend(demos)
+0256: 
+0257:         return success
+0258: 
+0259:     def _train(self):
+0260:         rng = random.Random(0)
+0261:         raw_demos = self.validation
+0262: 
+0263:         for name, predictor in self.student.named_predictors():
+0264:             augmented_demos = self.name2traces[name][: self.max_bootstrapped_demos]
+0265: 
+0266:             sample_size = min(self.max_labeled_demos - len(augmented_demos), len(raw_demos))
+0267:             sample_size = max(0, sample_size)
+0268: 
+0269:             raw_demos = rng.sample(raw_demos, sample_size)
+0270:             predictor.demos = augmented_demos + raw_demos
+0271: 
+0272:         return self.student
+
+### dspy/predict/predict.py
+0001: import logging
+0002: import random
+0003: from typing import Any, Literal, get_args, get_origin
+0004: 
+0005: from pydantic import BaseModel
+0006: from pydantic_core import PydanticUndefined
+0007: from typeguard import TypeCheckError, check_type
+0008: 
+0009: from dspy.adapters.chat_adapter import ChatAdapter
+0010: from dspy.clients.base_lm import BaseLM
+0011: from dspy.clients.lm import LM
+0012: from dspy.dsp.utils.settings import settings
+0013: from dspy.predict.parameter import Parameter
+0014: from dspy.primitives.module import Module
+0015: from dspy.primitives.prediction import Prediction
+0016: from dspy.signatures.signature import Signature, ensure_signature
+0017: from dspy.utils.callback import BaseCallback
+0018: from dspy.utils.constants import IS_TYPE_UNDEFINED
+0019: 
+0020: logger = logging.getLogger(__name__)
+0021: 
+0022: UNSAFE_LM_STATE_KEYS = {"api_base", "base_url", "model_list"}
+0023: 
+0024: 
+0025: def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
+0026:     if allow_unsafe_lm_state:
+0027:         return lm_state
+0028: 
+0029:     unsafe_keys = sorted(UNSAFE_LM_STATE_KEYS.intersection(lm_state))
+0030: 
+0031:     if not unsafe_keys:
+0032:         return lm_state
+0033: 
+0034:     sanitized_lm_state = {k: v for k, v in lm_state.items() if k not in UNSAFE_LM_STATE_KEYS}
+0035:     logger.warning(
+0036:         "Ignoring unsafe LM config key(s) during state load: %s. "
+0037:         "Pass allow_unsafe_lm_state=True to preserve these keys for trusted files.",
+0038:         unsafe_keys,
+0039:     )
+0040:     return sanitized_lm_state
+0041: 
+0042: 
+0043: class Predict(Module, Parameter):
+0044:     """Basic DSPy module that maps inputs to outputs using a language model.
+0045: 
+0046:     Args:
+0047:         signature: The input/output signature describing the task.
+0048:         callbacks: Optional list of callbacks for instrumentation.
+0049:         **config: Default keyword arguments forwarded to the underlying
+0050:             language model. These values can be overridden for a single
+0051:             invocation by passing a ``config`` dictionary when calling the
+0052:             module. For example::
+0053: 
+0054:                 predict = dspy.Predict("q -> a", rollout_id=1, temperature=1.0)
+0055:                 predict(q="What is 1 + 52?", config={"rollout_id": 2, "temperature": 1.0})
+0056:     """
+0057: 
+0058:     def __init__(self, signature: str | type[Signature], callbacks: list[BaseCallback] | None = None, **config):
+0059:         super().__init__(callbacks=callbacks)
+0060:         self.stage = random.randbytes(8).hex()
+0061:         self.signature = ensure_signature(signature)
+0062:         self.config = config
+0063:         self.reset()
+0064: 
+0065:     def reset(self):
+0066:         self.lm = None
+0067:         self.traces = []
+0068:         self.train = []
+0069:         self.demos = []
+0070: 
+0071:     def dump_state(self, json_mode=True):
+0072:         state_keys = ["traces", "train"]
+0073:         state = {k: getattr(self, k) for k in state_keys}
+0074: 
+0075:         state["demos"] = []
+0076:         for demo in self.demos:
+0077:             demo = demo.copy()
+0078: 
+0079:             for field in demo:
+0080:                 # FIXME: Saving BaseModels as strings in examples doesn't matter because you never re-access as an object
+0081:                 demo[field] = serialize_object(demo[field])
+0082: 
+0083:             if isinstance(demo, dict) or not json_mode:
+0084:                 state["demos"].append(demo)
+0085:             else:
+0086:                 state["demos"].append(demo.toDict())
+0087: 
+0088:         state["signature"] = self.signature.dump_state()
+0089:         state["lm"] = self.lm.dump_state() if self.lm else None
+0090:         return state
+0091: 
+0092:     def load_state(self, state: dict, *, allow_unsafe_lm_state: bool = False) -> "Predict":
+0093:         """Load the saved state of a `Predict` object.
+0094: 
+0095:         Args:
+0096:             state: The saved state of a `Predict` object.
+0097:             allow_unsafe_lm_state: If True, preserves `api_base`, `base_url`, and `model_list` from
+0098:                 serialized LM state. Enable only when loading trusted files.
+0099: 
+0100:         Returns:
+0101:             Self to allow method chaining.
+0102:         """
+0103:         excluded_keys = ["signature", "extended_signature", "lm"]
+0104:         for name, value in state.items():
+0105:             # `excluded_keys` are fields that go through special handling.
+0106:             if name not in excluded_keys:
+0107:                 setattr(self, name, value)
+0108: 
+0109:         self.signature = self.signature.load_state(state["signature"])
+0110:         sanitized_lm_state = _sanitize_lm_state(state["lm"], allow_unsafe_lm_state) if state["lm"] else None
+0111:         self.lm = LM(**sanitized_lm_state) if sanitized_lm_state else None
+0112: 
+0113:         if "extended_signature" in state:  # legacy, up to and including 2.5, for CoT.
+0114:             raise NotImplementedError("Loading extended_signature is no longer supported in DSPy 2.6+")
+0115: 
+0116:         return self
+0117: 
+0118:     def _get_positional_args_error_message(self):
+0119:         input_fields = list(self.signature.input_fields.keys())
+0120:         return (
+0121:             "Positional arguments are not allowed when calling `dspy.Predict`, must use keyword arguments "
+0122:             f"that match your signature input fields: '{', '.join(input_fields)}'. For example: "
+0123:             f"`predict({input_fields[0]}=input_value, ...)`."
+0124:         )
+0125: 
+0126:     def __call__(self, *args, **kwargs):
+0127:         if args:
+0128:             raise ValueError(self._get_positional_args_error_message())
+0129: 
+0130:         return super().__call__(**kwargs)
+0131: 
+0132:     async def acall(self, *args, **kwargs):
+0133:         if args:
+0134:             raise ValueError(self._get_positional_args_error_message())
+0135: 
+0136:         return await super().acall(**kwargs)
+0137: 
+0138:     def _forward_preprocess(self, **kwargs):
+0139:         # Extract the three privileged keyword arguments.
+0140:         assert "new_signature" not in kwargs, "new_signature is no longer a valid keyword argument."
+0141:         signature = ensure_signature(kwargs.pop("signature", self.signature))
+0142:         demos = kwargs.pop("demos", self.demos)
+0143:         config = {**self.config, **kwargs.pop("config", {})}
+0144: 
+0145:         # Get the right LM to use.
+0146:         lm = kwargs.pop("lm", self.lm) or settings.lm
+0147: 
+0148:         if lm is None:
+0149:             raise ValueError(
+0150:                 "No LM is loaded. Please configure the LM using `dspy.configure(lm=dspy.LM(...))`. e.g, "
+0151:                 "`dspy.configure(lm=dspy.LM('openai/gpt-4o-mini'))`"
+0152:             )
+0153: 
+0154:         if isinstance(lm, str):
+0155:             # Many users mistakenly use `dspy.configure(lm="openai/gpt-4o-mini")` instead of
+0156:             # `dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))`, so we are providing a specific error message.
+0157:             raise ValueError(
+0158:                 f"LM must be an instance of `dspy.BaseLM`, not a string. Instead of using a string like "
+0159:                 f"'dspy.configure(lm=\"{lm}\")', please configure the LM like 'dspy.configure(lm=dspy.LM(\"{lm}\"))'"
+0160:             )
+0161:         elif not isinstance(lm, BaseLM):
+0162:             raise ValueError(f"LM must be an instance of `dspy.BaseLM`, not {type(lm)}. Received `lm={lm}`.")
+0163: 
+0164:         # If temperature is unset or <=0.15, and n > 1, set temperature to 0.7 to keep randomness.
+0165:         temperature = config.get("temperature") or lm.kwargs.get("temperature")
+0166:         num_generations = config.get("n") or lm.kwargs.get("n") or lm.kwargs.get("num_generations") or 1
+0167: 
+0168:         if (temperature is None or temperature <= 0.15) and num_generations > 1:
+0169:             config["temperature"] = 0.7
+0170: 
+0171:         if "prediction" in kwargs:
+0172:             if (
+0173:                 isinstance(kwargs["prediction"], dict)
+0174:                 and kwargs["prediction"].get("type") == "content"
+0175:                 and "content" in kwargs["prediction"]
+0176:             ):
+0177:                 # If the `prediction` is the standard predicted outputs format
+0178:                 # (https://platform.openai.com/docs/guides/predicted-outputs), we remove it from input kwargs and add it
+0179:                 # to the lm kwargs.
+0180:                 config["prediction"] = kwargs.pop("prediction")
+0181: 
+0182:         # Populate default values for missing input fields.
+0183:         for k, v in signature.input_fields.items():
+0184:             if k not in kwargs and v.default is not PydanticUndefined:
+0185:                 kwargs[k] = v.default
+0186: 
+0187:         # Check and warn for extra fields not in signature
+0188:         extra_fields = [k for k in kwargs if k not in signature.input_fields]
+0189:         if extra_fields:
+0190:             logger.warning(
+0191:                 "Input contains fields not in signature. These fields will be ignored: %s. "
+0192:                 "Expected fields: %s.",
+0193:                 extra_fields,
+0194:                 list(signature.input_fields.keys()),
+0195:             )
+0196: 
+0197:         # Validate input field types match signature
+0198:         if settings.warn_on_type_mismatch:
+0199:             for field_name, field_info in signature.input_fields.items():
+0200:                 if field_name in kwargs:
+0201:                     value = kwargs[field_name]
+0202:                     expected_type: type = field_info.annotation
+0203: 
+0204:                     if value is None or field_info.json_schema_extra.get(IS_TYPE_UNDEFINED, False):
+0205:                         continue
+0206: 
+0207:                     if not _is_value_compatible_with_type(value, expected_type):
+0208:                         logger.warning(
+0209:                             "Type mismatch for field '%s': expected %s based on given Signature, "
+0210:                             "but the provided value is incompatible: %s.",
+0211:                             field_name,
+0212:                             _get_type_name(expected_type),
+0213:                             value,
+0214:                         )
+0215: 
+0216:         if not all(k in kwargs for k in signature.input_fields):
+0217:             present = [k for k in signature.input_fields if k in kwargs]
+0218:             missing = [k for k in signature.input_fields if k not in kwargs]
+0219:             logger.warning(
+0220:                 "Not all input fields were provided to module. Present: %s. Missing: %s.",
+0221:                 present,
+0222:                 missing,
+0223:             )
+0224:         return lm, config, signature, demos, kwargs
+0225: 
+0226:     def _forward_postprocess(self, completions, signature, **kwargs):
+0227:         pred = Prediction.from_completions(completions, signature=signature)
+0228:         if kwargs.pop("_trace", True) and settings.trace is not None and settings.max_trace_size > 0:
+0229:             trace = settings.trace
+0230:             if len(trace) >= settings.max_trace_size:
+0231:                 trace.pop(0)
+0232:             trace.append((self, {**kwargs}, pred))
+0233:         return pred
+0234: 
+0235:     def _should_stream(self):
+0236:         stream_listeners = settings.stream_listeners or []
+0237:         should_stream = settings.send_stream is not None
+0238:         if should_stream and len(stream_listeners) > 0:
+0239:             should_stream = any(stream_listener.predict == self for stream_listener in stream_listeners)
+0240: 
+0241:         return should_stream
+0242: 
+0243:     def forward(self, **kwargs):
+0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+0245: 
+0246:         adapter = settings.adapter or ChatAdapter()
+0247: 
+0248:         if self._should_stream():
+0249:             with settings.context(caller_predict=self):
+0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0251:         else:
+0252:             with settings.context(send_stream=None):
+0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0254: 
+0255:         return self._forward_postprocess(completions, signature, **kwargs)
+0256: 
+0257:     async def aforward(self, **kwargs):
+0258:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+0259: 
+0260:         adapter = settings.adapter or ChatAdapter()
+0261:         if self._should_stream():
+0262:             with settings.context(caller_predict=self):
+0263:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0264:         else:
+0265:             with settings.context(send_stream=None):
+0266:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0267: 
+0268:         return self._forward_postprocess(completions, signature, **kwargs)
+0269: 
+0270:     def update_config(self, **kwargs):
+0271:         self.config = {**self.config, **kwargs}
+0272: 
+0273:     def get_config(self):
+0274:         return self.config
+0275: 
+0276:     def __repr__(self):
+0277:         return f"{self.__class__.__name__}({self.signature})"
+0278: 
+0279: def _get_type_name(type_annotation) -> str:
+0280:     """Helper method to get the name for a type annotation."""
+0281: 
+0282:     origin = get_origin(type_annotation)
+0283:     args = get_args(type_annotation)
+0284: 
+0285:     if origin is None:
+0286:         # Primitives like str, int, etc.
+0287:         if hasattr(type_annotation, "__name__"):
+0288:             return type_annotation.__name__
+0289:         return str(type_annotation)
+0290: 
+0291:     # Handle Literal types
+0292:     if origin is Literal:
+0293:         literal_values = ", ".join(repr(arg) for arg in args)
+0294:         return f"Literal[{literal_values}]"
+0295: 
+0296:     # Types like list[str], dict[str, int], generics, etc.
+0297:     if args:
+0298:         # Handle Ellipsis in tuples (e.g., tuple[int, ...])
+0299:         args_str = ", ".join("..." if arg is ... else _get_type_name(arg) for arg in args)
+0300:         origin_name = getattr(origin, "__name__", str(origin))
+0301:         return f"{origin_name}[{args_str}]"
+0302: 
+0303:     return getattr(origin, "__name__", str(origin))
+0304: 
+0305: def _is_value_compatible_with_type(value: Any, expected: type) -> bool:
+0306:     """Return True if the value matches the expected type hint."""
+0307:     try:
+0308:         # Special handle list[str] because we allow setting input type to str, however, invoking with a list thereof.
+0309:         if expected is str and isinstance(value, list):
+0310:             if all(isinstance(item, str) for item in value):
+0311:                 return True
+0312: 
+0313:         check_type(value, expected)
+0314:         return True
+0315:     except TypeCheckError:
+0316:         return False
+0317: 
+0318: def serialize_object(obj):
+0319:     """
+0320:     Recursively serialize a given object into a JSON-compatible format.
+0321:     Supports Pydantic models, lists, dicts, and primitive types.
+0322:     """
+0323:     if isinstance(obj, BaseModel):
+0324:         # Use model_dump with mode="json" to ensure all fields (including HttpUrl, datetime, etc.)
+0325:         # are converted to JSON-serializable types (strings)
+0326:         return obj.model_dump(mode="json")
+0327:     elif isinstance(obj, list):
+0328:         return [serialize_object(item) for item in obj]
+0329:     elif isinstance(obj, tuple):
+0330:         return tuple(serialize_object(item) for item in obj)
+0331:     elif isinstance(obj, dict):
+0332:         return {key: serialize_object(value) for key, value in obj.items()}
+0333:     else:
+0334:         return obj
+0335: 
+0336: 
+0337: # # TODO: FIXME: Hmm, I guess expected behavior is that contexts can
+0338: # affect execution. Well, we need to determine whether context dominates, __init__ demoninates, or forward dominates.
+0339: # Generally, unless overwritten, we'd see n=None, temperature=None.
+0340: # That will eventually mean we have to learn them.
+
+Return JSON that matches the schema exactly.

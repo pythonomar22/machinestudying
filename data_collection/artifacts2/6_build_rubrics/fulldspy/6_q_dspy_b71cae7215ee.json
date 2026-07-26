@@ -1,0 +1,121 @@
+{
+ "id": "dspy_b71cae7215ee",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I also have async code that fans out several DSPy tasks at once. I need to know whether sibling async tasks are allowed to change DSPy's global defaults, or whether the only safe pattern there is temporary task-local overrides.\n\nThis matters because I do per-task model overrides in async evaluation and judge pipelines, and one task must not leak its LM or trace state into another. I want a repro that shows the restriction and also proves the temporary overrides stay isolated across concurrent tasks.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, establishes the global settings inside one async entry task, then tries to reconfigure them from a sibling task, uses temporary overrides in two concurrent tasks, and prints/asserts the per-task values plus the unchanged global state afterward.",
+ "gold_answer": "```python\nimport asyncio\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nasync def forbidden_configure():\n    try:\n        bad_lm = DummyLM([{\"answer\": \"bad\"}])\n        bad_lm.tag = \"bad\"\n        dspy.configure(lm=bad_lm)\n    except RuntimeError as e:\n        return str(e)\n    raise AssertionError(\"Expected dspy.configure to fail in a sibling async task\")\n\n\nasync def allowed_context(tag):\n    local_lm = DummyLM([{\"answer\": tag}])\n    local_lm.tag = tag\n    with dspy.context(lm=local_lm, trace=[tag]):\n        await asyncio.sleep(0)\n        return dspy.settings.lm.tag, list(dspy.settings.trace)\n\n\nasync def main():\n    base_lm = DummyLM([{\"answer\": \"base\"}])\n    base_lm.tag = \"base\"\n    dspy.configure(lm=base_lm, trace=[])\n\n    error_text, first, second = await asyncio.gather(\n        forbidden_configure(),\n        allowed_context(\"task-one\"),\n        allowed_context(\"task-two\"),\n    )\n    return error_text, first, second, dspy.settings.lm.tag, list(dspy.settings.trace)\n\n\nerror_text, first, second, global_tag, global_trace = asyncio.run(main())\nprint(\"configure_error:\", error_text)\nprint(\"task_one:\", first)\nprint(\"task_two:\", second)\nprint(\"global_after:\", global_tag, global_trace)\nassert \"same async task\" in error_text\nassert first == (\"task-one\", [\"task-one\"])\nassert second == (\"task-two\", [\"task-two\"])\nassert global_tag == \"base\"\nassert global_trace == []\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The program initializes DSPy's global defaults with `dspy.configure(...)` inside the async entry task before launching sibling tasks, because the first async task to configure becomes the owner for later `configure` calls.",
+   "span_ids": [
+    "s1",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program demonstrates that a sibling async task cannot change DSPy's global defaults with `dspy.configure(...)` and must receive a `RuntimeError` saying only the same async task may call `configure` and that other tasks should use `dspy.context(...)`.",
+   "span_ids": [
+    "s2",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Per-task async overrides are done with `dspy.context(...)`, not `configure`, and those overrides are temporary: they are layered onto the current settings for the `with` block and then restored on exit.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The repro runs concurrent async tasks under separate `dspy.context(...)` blocks and verifies inside those tasks that each one sees its own overridden LM together with task-local trace state, rather than a sibling task's settings.",
+   "span_ids": [
+    "s7",
+    "s8"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "After the concurrent tasks finish, the program verifies that the outer/global settings still match the entry task's configured defaults, including the base LM and unchanged outer trace state.",
+   "span_ids": [
+    "s4",
+    "s8"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/dsp/utils/settings.py",
+   "start_line": 121,
+   "end_line": 145,
+   "excerpt": "0121:         if config_owner_thread_id is None:\n0122:             # First `configure` call assigns the owner thread id.\n0123:             config_owner_thread_id = current_thread_id\n0124: \n0125:         if config_owner_thread_id != current_thread_id:\n0126:             # Disallow a second `configure` calls from other threads.\n0127:             raise RuntimeError(\"dspy.settings can only be changed by the thread that initially configured it.\")\n0128: \n0129:         # Async task doesn't allow a second `configure` call, must use dspy.context(...) instead.\n0130:         is_async_task = False\n0131:         try:\n0132:             if asyncio.current_task() is not None:\n0133:                 is_async_task = True\n0134:         except RuntimeError:\n0135:             # This exception (e.g., \"no current task\") means we are not in an async loop/task,\n0136:             # or asyncio module itself is not fully functional in this specific sub-thread context.\n0137:             is_async_task = False\n0138: \n0139:         if not is_async_task:\n0140:             return\n0141: \n0142:         if config_owner_async_task is None:\n0143:             # First `configure` call assigns the owner async task.\n0144:             config_owner_async_task = asyncio.current_task()\n0145:             return"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/dsp/utils/settings.py",
+   "start_line": 159,
+   "end_line": 163,
+   "excerpt": "0159:         if not in_ipython and config_owner_async_task != asyncio.current_task():\n0160:             raise RuntimeError(\n0161:                 \"dspy.configure(...) can only be called from the same async task that called it first. Please \"\n0162:                 \"use `dspy.context(...)` in other async tasks instead.\"\n0163:             )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/dsp/utils/settings.py",
+   "start_line": 219,
+   "end_line": 225,
+   "excerpt": "0219:         Use `dspy.context(...)` when you need temporary settings—a different\n0220:         LM, adapter, or flag—without changing the process-wide defaults from\n0221:         `dspy.configure(...)`. The block inherits every current setting,\n0222:         overrides only the keys you pass, and restores the originals on exit.\n0223: \n0224:         Unlike `dspy.configure(...)`, you can call `dspy.context(...)` from\n0225:         any thread or async task."
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/dsp/utils/settings.py",
+   "start_line": 250,
+   "end_line": 257,
+   "excerpt": "0250:         original_overrides = thread_local_overrides.get().copy()\n0251:         new_overrides = dotdict({**main_thread_config, **original_overrides, **kwargs})\n0252:         token = thread_local_overrides.set(new_overrides)\n0253: \n0254:         try:\n0255:             yield\n0256:         finally:\n0257:             thread_local_overrides.reset(token)"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/utils/test_settings.py",
+   "start_line": 159,
+   "end_line": 180,
+   "excerpt": "0159:     def bar1():\n0160:         # `dspy.configure` is disallowed in different async tasks from the initial one.\n0161:         # In this case, foo1 (async) calls bar1 (sync), and bar1 uses the async task from foo1.\n0162:         with pytest.raises(RuntimeError) as e:\n0163:             dspy.configure(lm=dspy.LM(\"openai/gpt-4o\"))\n0164:         assert \"dspy.configure(...) can only be called from the same async\" in str(e.value)\n0165: \n0166:     async def foo1():\n0167:         bar1()\n0168:         await asyncio.sleep(0.1)\n0169: \n0170:     async def foo2():\n0171:         # `dspy.configure` is disallowed in different async tasks from the initial one.\n0172:         with pytest.raises(RuntimeError) as e:\n0173:             dspy.configure(lm=dspy.LM(\"openai/gpt-4o\"))\n0174:         assert \"dspy.configure(...) can only be called from the same async\" in str(e.value)\n0175:         await asyncio.sleep(0.1)\n0176: \n0177:     async def foo3():\n0178:         # `dspy.context` is allowed in different async tasks from the initial one.\n0179:         with dspy.context(lm=dspy.LM(\"openai/gpt-4o\")):\n0180:             await asyncio.sleep(0.1)"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/utils/test_settings.py",
+   "start_line": 187,
+   "end_line": 193,
+   "excerpt": "0187:     # `dspy.configure` is allowed to be called multiple times in the same async task.\n0188:     dspy.configure(lm=dspy.LM(\"openai/gpt-4o-mini\"))\n0189:     dspy.configure(lm=dspy.LM(\"openai/gpt-4o\"))\n0190:     dspy.configure(adapter=dspy.JSONAdapter())\n0191: \n0192:     await asyncio.gather(foo1(), foo2(), foo3())\n0193: "
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/utils/test_settings.py",
+   "start_line": 105,
+   "end_line": 116,
+   "excerpt": "0105:         async def aforward(self, question: str) -> str:\n0106:             lm = (\n0107:                 dspy.LM(\"openai/gpt-4o-mini\", cache=False)\n0108:                 if \"France\" in question\n0109:                 else dspy.LM(\"openai/gpt-4o\", cache=False)\n0110:             )\n0111:             with dspy.context(lm=lm, trace=[]):\n0112:                 await asyncio.sleep(1)\n0113:                 assert dspy.settings.lm.model == lm.model\n0114:                 result = await self.predict.acall(question=question)\n0115:                 assert len(dspy.settings.trace) == 1\n0116:                 return result"
+  },
+  {
+   "span_id": "s8",
+   "path": "tests/utils/test_settings.py",
+   "start_line": 127,
+   "end_line": 154,
+   "excerpt": "0127:             # Define the coroutines to be run\n0128:             coroutines = [\n0129:                 module.acall(question=\"What is the capital of France?\"),\n0130:                 module.acall(question=\"What is the capital of France?\"),\n0131:                 module.acall(question=\"What is the capital of Germany?\"),\n0132:                 module.acall(question=\"What is the capital of Germany?\"),\n0133:             ]\n0134: \n0135:             # Run them concurrently and gather results\n0136:             results = await asyncio.gather(*coroutines)\n0137: \n0138:         assert results[0].answer == \"Paris\"\n0139:         assert results[1].answer == \"Paris\"\n0140:         assert results[2].answer == \"Paris\"\n0141:         assert results[3].answer == \"Paris\"\n0142: \n0143:         # Verify mock was called correctly\n0144:         assert mock_completion.call_count == 4\n0145:         # France question uses gpt-4o-mini\n0146:         assert mock_completion.call_args_list[0].kwargs[\"model\"] == \"openai/gpt-4o-mini\"\n0147:         assert mock_completion.call_args_list[1].kwargs[\"model\"] == \"openai/gpt-4o-mini\"\n0148:         # Germany question uses gpt-4o\n0149:         assert mock_completion.call_args_list[2].kwargs[\"model\"] == \"openai/gpt-4o\"\n0150:         assert mock_completion.call_args_list[3].kwargs[\"model\"] == \"openai/gpt-4o\"\n0151: \n0152:         # The main thread is not affected by the context\n0153:         assert dspy.settings.lm.model == \"openai/gpt-4.1\"\n0154:         assert dspy.settings.trace == []"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "",
+ "source_index": 25,
+ "smalldspy_scope": false
+}

@@ -1,0 +1,100 @@
+{
+ "id": "dspy_60ee19b8e77b",
+ "topic": "module_composition_and_runtime_interoperability",
+ "question": "I have a long-running `dspy.ReAct` agent where the only real problem is that the trajectory gets too large. What I care about is the exact fallback behavior once the context window is exceeded: does it abandon the run, or does it drop the oldest tool step and retry?\n\nI don't want a high-level explanation. I want a tiny deterministic harness where the agent gets through a couple of tool steps, hits a forced context-window exception, retries, and proves that the oldest four trajectory entries were discarded before continuing.\n\nGive me a complete, runnable Python program that stubs the agent internals, forces the truncation path, and ends with prints/assertions that prove the old step was removed and the run still completed.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.exceptions import ContextWindowExceededError\n\n\ndef echo(text: str) -> str:\n    return f\"Echoed: {text}\"\n\n\nreact = dspy.ReAct(\"input_text -> output_text\", tools=[echo])\n\n\ndef fake_react(**kwargs):\n    step = fake_react.state\n    fake_react.state += 1\n    if step < 2:\n        idx = step + 1\n        return dspy.Prediction(\n            next_thought=f\"Thought {idx}\",\n            next_tool_name=\"echo\",\n            next_tool_args={\"text\": f\"Text {idx}\"},\n        )\n    if step == 2:\n        raise ContextWindowExceededError()\n    return dspy.Prediction(next_thought=\"Final thought\", next_tool_name=\"finish\", next_tool_args={})\n\n\nfake_react.state = 0\nreact.react = fake_react\nreact.extract = lambda **kwargs: dspy.Prediction(output_text=\"Final output\")\n\nresult = react(input_text=\"test input\")\n\nassert result.output_text == \"Final output\"\nassert \"thought_0\" not in result.trajectory\nassert \"tool_name_0\" not in result.trajectory\nassert \"tool_args_0\" not in result.trajectory\nassert \"observation_0\" not in result.trajectory\nassert \"thought_1\" in result.trajectory\nassert \"thought_2\" in result.trajectory\nprint(\"trajectory_keys:\", sorted(result.trajectory.keys()))\nprint(\"final_output:\", result.output_text)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The answer constructs a self-contained `dspy.ReAct` harness with a simple tool and replaces both `react.react` and `react.extract` with local stubs so the behavior is deterministic and does not depend on an LM.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The stubbed `react.react` logic must produce two normal tool-call predictions, then raise `ContextWindowExceededError`, and then return a `finish` prediction on the retry so the truncation path is exercised explicitly.",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "A correct answer must reflect that each completed tool step adds exactly four trajectory entries (`thought_i`, `tool_name_i`, `tool_args_i`, `observation_i`) and that overflow handling truncates the trajectory by deleting the oldest four keys, i.e. one full oldest tool step.",
+   "span_ids": [
+    "s1",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The harness must demonstrate that a context-window overflow does not immediately abandon the run: after truncation, execution continues and extraction still returns the final output/prediction.",
+   "span_ids": [
+    "s2",
+    "s1",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The final proof should check that the first step's four entries are gone from `result.trajectory` while later-step data remains, showing that the oldest step was the one discarded.",
+   "span_ids": [
+    "s1",
+    "s3",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/react.py",
+   "start_line": 95,
+   "end_line": 118,
+   "excerpt": "0095:     def forward(self, **input_args):\n0096:         trajectory = {}\n0097:         max_iters = input_args.pop(\"max_iters\", self.max_iters)\n0098:         for idx in range(max_iters):\n0099:             try:\n0100:                 pred = self._call_with_potential_trajectory_truncation(self.react, trajectory, **input_args)\n0101:             except ValueError as err:\n0102:                 logger.warning(f\"Ending the trajectory: Agent failed to select a valid tool: {_fmt_exc(err)}\")\n0103:                 break\n0104: \n0105:             trajectory[f\"thought_{idx}\"] = pred.next_thought\n0106:             trajectory[f\"tool_name_{idx}\"] = pred.next_tool_name\n0107:             trajectory[f\"tool_args_{idx}\"] = pred.next_tool_args\n0108: \n0109:             try:\n0110:                 trajectory[f\"observation_{idx}\"] = self.tools[pred.next_tool_name](**pred.next_tool_args)\n0111:             except Exception as err:\n0112:                 trajectory[f\"observation_{idx}\"] = f\"Execution error in {pred.next_tool_name}: {_fmt_exc(err)}\"\n0113: \n0114:             if pred.next_tool_name == \"finish\":\n0115:                 break\n0116: \n0117:         extract = self._call_with_potential_trajectory_truncation(self.extract, trajectory, **input_args)\n0118:         return dspy.Prediction(trajectory=trajectory, **extract)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/react.py",
+   "start_line": 145,
+   "end_line": 155,
+   "excerpt": "0145:     def _call_with_potential_trajectory_truncation(self, module, trajectory, **input_args):\n0146:         for _ in range(3):\n0147:             try:\n0148:                 return module(\n0149:                     **input_args,\n0150:                     trajectory=self._format_trajectory(trajectory),\n0151:                 )\n0152:             except ContextWindowExceededError:\n0153:                 logger.warning(\"Trajectory exceeded the context window, truncating the oldest tool call information.\")\n0154:                 trajectory = self.truncate_trajectory(trajectory)\n0155:         raise ValueError(\"The context window was exceeded even after 3 attempts to truncate the trajectory.\")"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/predict/react.py",
+   "start_line": 169,
+   "end_line": 185,
+   "excerpt": "0169:     def truncate_trajectory(self, trajectory):\n0170:         \"\"\"Truncates the trajectory so that it fits in the context window.\n0171: \n0172:         Users can override this method to implement their own truncation logic.\n0173:         \"\"\"\n0174:         keys = list(trajectory.keys())\n0175:         if len(keys) < 4:\n0176:             # Every tool call has 4 keys: thought, tool_name, tool_args, and observation.\n0177:             raise ValueError(\n0178:                 \"The trajectory is too long so your prompt exceeded the context window, but the trajectory cannot be \"\n0179:                 \"truncated because it only has one tool call.\"\n0180:             )\n0181: \n0182:         for key in keys[:4]:\n0183:             trajectory.pop(key)\n0184: \n0185:         return trajectory"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/predict/test_react.py",
+   "start_line": 214,
+   "end_line": 245,
+   "excerpt": "0214: def test_trajectory_truncation():\n0215:     # Create a simple tool for testing\n0216:     def echo(text: str) -> str:\n0217:         return f\"Echoed: {text}\"\n0218: \n0219:     # Create ReAct instance with our echo tool\n0220:     react = dspy.ReAct(\"input_text -> output_text\", tools=[echo])\n0221: \n0222:     # Mock react.react to simulate multiple tool calls\n0223:     call_count = 0\n0224: \n0225:     def mock_react(**kwargs):\n0226:         nonlocal call_count\n0227:         call_count += 1\n0228: \n0229:         if call_count < 3:\n0230:             # First 2 calls use the echo tool\n0231:             return dspy.Prediction(\n0232:                 next_thought=f\"Thought {call_count}\",\n0233:                 next_tool_name=\"echo\",\n0234:                 next_tool_args={\"text\": f\"Text {call_count}\"},\n0235:             )\n0236:         elif call_count == 3:\n0237:             # The 3rd call raises context window exceeded error\n0238:             raise ContextWindowExceededError()\n0239:         else:\n0240:             # The 4th call finishes\n0241:             return dspy.Prediction(next_thought=\"Final thought\", next_tool_name=\"finish\", next_tool_args={})\n0242: \n0243:     react.react = mock_react\n0244:     react.extract = lambda **kwargs: dspy.Prediction(output_text=\"Final output\")\n0245: "
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/predict/test_react.py",
+   "start_line": 246,
+   "end_line": 252,
+   "excerpt": "0246:     # Call forward and get the result\n0247:     result = react(input_text=\"test input\")\n0248: \n0249:     # Verify that older entries in the trajectory were truncated\n0250:     assert \"thought_0\" not in result.trajectory\n0251:     assert \"thought_2\" in result.trajectory\n0252:     assert result.output_text == \"Final output\""
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Pins down the retry/truncation semantics by proving the oldest four keys are dropped and the run continues.",
+ "source_index": 3,
+ "smalldspy_scope": true
+}

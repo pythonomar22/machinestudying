@@ -1,0 +1,940 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_ba7672567747`
+- Label: `module_composition_and_runtime_interoperability`
+- Question: `My signature takes a Pydantic model that itself contains an image plus an optional list of more images. I do not want to assume this survives a predictor-state round-trip just because plain `dspy.Image` fields do.
+
+The failure mode I care about is nested multimodal loss: if the inner model gets flattened incorrectly, the prompt will stop carrying the right number of image blocks even though the Python object still looks valid.
+
+Give me a complete, runnable Python program that uses `DummyLM`, round-trips a predictor with a demo built from a Pydantic model containing nested images, and proves the next LM call still contains all four expected image blocks.`
+- Gold answer:
+```python
+import pydantic
+import dspy
+from dspy.utils.dummies import DummyLM
+
+def count_blocks(messages, kind):
+    total = 0
+    for m in messages:
+        c = m.get('content')
+        if isinstance(c, list):
+            total += sum(1 for b in c if isinstance(b, dict) and b.get('type') == kind)
+    return total
+
+class ImageModel(pydantic.BaseModel):
+    image: dspy.Image
+    image_list: list[dspy.Image] | None = None
+    output: str
+
+class Sig(dspy.Signature):
+    model_input: ImageModel = dspy.InputField()
+    output: str = dspy.OutputField()
+
+model_input = ImageModel(
+    image=dspy.Image('https://example.com/dog.jpg'),
+    image_list=[dspy.Image('https://example.com/cat.jpg')],
+    output='Multiple photos',
+)
+p = dspy.Predict(Sig)
+p.demos = [dspy.Example(model_input=model_input, output='Multiple photos')]
+state = p.dump_state()
+q = dspy.Predict(Sig)
+q.load_state(state)
+
+dspy.configure(lm=DummyLM([{'output': 'Multiple photos'}]))
+out = q(model_input=model_input)
+msgs = dspy.settings.lm.history[-1]['messages']
+assert out.output == 'Multiple photos'
+assert count_blocks(msgs, 'image_url') == 4
+assert '<DSPY_IMAGE_START>' not in str(msgs)
+print(count_blocks(msgs, 'image_url'))
+print(str(msgs))
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/predict/predict.py",
+    "symbol": "serialize_object"
+  },
+  {
+    "file": "dspy/predict/predict.py",
+    "symbol": "Predict.dump_state"
+  },
+  {
+    "file": "tests/signatures/test_adapter_image.py",
+    "symbol": "test_save_load_pydantic_model"
+  }
+]
+
+## Full evidence files
+### dspy/predict/predict.py
+0001: import logging
+0002: import random
+0003: from typing import Any, Literal, get_args, get_origin
+0004: 
+0005: from pydantic import BaseModel
+0006: from pydantic_core import PydanticUndefined
+0007: from typeguard import TypeCheckError, check_type
+0008: 
+0009: from dspy.adapters.chat_adapter import ChatAdapter
+0010: from dspy.clients.base_lm import BaseLM
+0011: from dspy.clients.lm import LM
+0012: from dspy.dsp.utils.settings import settings
+0013: from dspy.predict.parameter import Parameter
+0014: from dspy.primitives.module import Module
+0015: from dspy.primitives.prediction import Prediction
+0016: from dspy.signatures.signature import Signature, ensure_signature
+0017: from dspy.utils.callback import BaseCallback
+0018: from dspy.utils.constants import IS_TYPE_UNDEFINED
+0019: 
+0020: logger = logging.getLogger(__name__)
+0021: 
+0022: UNSAFE_LM_STATE_KEYS = {"api_base", "base_url", "model_list"}
+0023: 
+0024: 
+0025: def _sanitize_lm_state(lm_state: dict, allow_unsafe_lm_state: bool) -> dict:
+0026:     if allow_unsafe_lm_state:
+0027:         return lm_state
+0028: 
+0029:     unsafe_keys = sorted(UNSAFE_LM_STATE_KEYS.intersection(lm_state))
+0030: 
+0031:     if not unsafe_keys:
+0032:         return lm_state
+0033: 
+0034:     sanitized_lm_state = {k: v for k, v in lm_state.items() if k not in UNSAFE_LM_STATE_KEYS}
+0035:     logger.warning(
+0036:         "Ignoring unsafe LM config key(s) during state load: %s. "
+0037:         "Pass allow_unsafe_lm_state=True to preserve these keys for trusted files.",
+0038:         unsafe_keys,
+0039:     )
+0040:     return sanitized_lm_state
+0041: 
+0042: 
+0043: class Predict(Module, Parameter):
+0044:     """Basic DSPy module that maps inputs to outputs using a language model.
+0045: 
+0046:     Args:
+0047:         signature: The input/output signature describing the task.
+0048:         callbacks: Optional list of callbacks for instrumentation.
+0049:         **config: Default keyword arguments forwarded to the underlying
+0050:             language model. These values can be overridden for a single
+0051:             invocation by passing a ``config`` dictionary when calling the
+0052:             module. For example::
+0053: 
+0054:                 predict = dspy.Predict("q -> a", rollout_id=1, temperature=1.0)
+0055:                 predict(q="What is 1 + 52?", config={"rollout_id": 2, "temperature": 1.0})
+0056:     """
+0057: 
+0058:     def __init__(self, signature: str | type[Signature], callbacks: list[BaseCallback] | None = None, **config):
+0059:         super().__init__(callbacks=callbacks)
+0060:         self.stage = random.randbytes(8).hex()
+0061:         self.signature = ensure_signature(signature)
+0062:         self.config = config
+0063:         self.reset()
+0064: 
+0065:     def reset(self):
+0066:         self.lm = None
+0067:         self.traces = []
+0068:         self.train = []
+0069:         self.demos = []
+0070: 
+0071:     def dump_state(self, json_mode=True):
+0072:         state_keys = ["traces", "train"]
+0073:         state = {k: getattr(self, k) for k in state_keys}
+0074: 
+0075:         state["demos"] = []
+0076:         for demo in self.demos:
+0077:             demo = demo.copy()
+0078: 
+0079:             for field in demo:
+0080:                 # FIXME: Saving BaseModels as strings in examples doesn't matter because you never re-access as an object
+0081:                 demo[field] = serialize_object(demo[field])
+0082: 
+0083:             if isinstance(demo, dict) or not json_mode:
+0084:                 state["demos"].append(demo)
+0085:             else:
+0086:                 state["demos"].append(demo.toDict())
+0087: 
+0088:         state["signature"] = self.signature.dump_state()
+0089:         state["lm"] = self.lm.dump_state() if self.lm else None
+0090:         return state
+0091: 
+0092:     def load_state(self, state: dict, *, allow_unsafe_lm_state: bool = False) -> "Predict":
+0093:         """Load the saved state of a `Predict` object.
+0094: 
+0095:         Args:
+0096:             state: The saved state of a `Predict` object.
+0097:             allow_unsafe_lm_state: If True, preserves `api_base`, `base_url`, and `model_list` from
+0098:                 serialized LM state. Enable only when loading trusted files.
+0099: 
+0100:         Returns:
+0101:             Self to allow method chaining.
+0102:         """
+0103:         excluded_keys = ["signature", "extended_signature", "lm"]
+0104:         for name, value in state.items():
+0105:             # `excluded_keys` are fields that go through special handling.
+0106:             if name not in excluded_keys:
+0107:                 setattr(self, name, value)
+0108: 
+0109:         self.signature = self.signature.load_state(state["signature"])
+0110:         sanitized_lm_state = _sanitize_lm_state(state["lm"], allow_unsafe_lm_state) if state["lm"] else None
+0111:         self.lm = LM(**sanitized_lm_state) if sanitized_lm_state else None
+0112: 
+0113:         if "extended_signature" in state:  # legacy, up to and including 2.5, for CoT.
+0114:             raise NotImplementedError("Loading extended_signature is no longer supported in DSPy 2.6+")
+0115: 
+0116:         return self
+0117: 
+0118:     def _get_positional_args_error_message(self):
+0119:         input_fields = list(self.signature.input_fields.keys())
+0120:         return (
+0121:             "Positional arguments are not allowed when calling `dspy.Predict`, must use keyword arguments "
+0122:             f"that match your signature input fields: '{', '.join(input_fields)}'. For example: "
+0123:             f"`predict({input_fields[0]}=input_value, ...)`."
+0124:         )
+0125: 
+0126:     def __call__(self, *args, **kwargs):
+0127:         if args:
+0128:             raise ValueError(self._get_positional_args_error_message())
+0129: 
+0130:         return super().__call__(**kwargs)
+0131: 
+0132:     async def acall(self, *args, **kwargs):
+0133:         if args:
+0134:             raise ValueError(self._get_positional_args_error_message())
+0135: 
+0136:         return await super().acall(**kwargs)
+0137: 
+0138:     def _forward_preprocess(self, **kwargs):
+0139:         # Extract the three privileged keyword arguments.
+0140:         assert "new_signature" not in kwargs, "new_signature is no longer a valid keyword argument."
+0141:         signature = ensure_signature(kwargs.pop("signature", self.signature))
+0142:         demos = kwargs.pop("demos", self.demos)
+0143:         config = {**self.config, **kwargs.pop("config", {})}
+0144: 
+0145:         # Get the right LM to use.
+0146:         lm = kwargs.pop("lm", self.lm) or settings.lm
+0147: 
+0148:         if lm is None:
+0149:             raise ValueError(
+0150:                 "No LM is loaded. Please configure the LM using `dspy.configure(lm=dspy.LM(...))`. e.g, "
+0151:                 "`dspy.configure(lm=dspy.LM('openai/gpt-4o-mini'))`"
+0152:             )
+0153: 
+0154:         if isinstance(lm, str):
+0155:             # Many users mistakenly use `dspy.configure(lm="openai/gpt-4o-mini")` instead of
+0156:             # `dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))`, so we are providing a specific error message.
+0157:             raise ValueError(
+0158:                 f"LM must be an instance of `dspy.BaseLM`, not a string. Instead of using a string like "
+0159:                 f"'dspy.configure(lm=\"{lm}\")', please configure the LM like 'dspy.configure(lm=dspy.LM(\"{lm}\"))'"
+0160:             )
+0161:         elif not isinstance(lm, BaseLM):
+0162:             raise ValueError(f"LM must be an instance of `dspy.BaseLM`, not {type(lm)}. Received `lm={lm}`.")
+0163: 
+0164:         # If temperature is unset or <=0.15, and n > 1, set temperature to 0.7 to keep randomness.
+0165:         temperature = config.get("temperature") or lm.kwargs.get("temperature")
+0166:         num_generations = config.get("n") or lm.kwargs.get("n") or lm.kwargs.get("num_generations") or 1
+0167: 
+0168:         if (temperature is None or temperature <= 0.15) and num_generations > 1:
+0169:             config["temperature"] = 0.7
+0170: 
+0171:         if "prediction" in kwargs:
+0172:             if (
+0173:                 isinstance(kwargs["prediction"], dict)
+0174:                 and kwargs["prediction"].get("type") == "content"
+0175:                 and "content" in kwargs["prediction"]
+0176:             ):
+0177:                 # If the `prediction` is the standard predicted outputs format
+0178:                 # (https://platform.openai.com/docs/guides/predicted-outputs), we remove it from input kwargs and add it
+0179:                 # to the lm kwargs.
+0180:                 config["prediction"] = kwargs.pop("prediction")
+0181: 
+0182:         # Populate default values for missing input fields.
+0183:         for k, v in signature.input_fields.items():
+0184:             if k not in kwargs and v.default is not PydanticUndefined:
+0185:                 kwargs[k] = v.default
+0186: 
+0187:         # Check and warn for extra fields not in signature
+0188:         extra_fields = [k for k in kwargs if k not in signature.input_fields]
+0189:         if extra_fields:
+0190:             logger.warning(
+0191:                 "Input contains fields not in signature. These fields will be ignored: %s. "
+0192:                 "Expected fields: %s.",
+0193:                 extra_fields,
+0194:                 list(signature.input_fields.keys()),
+0195:             )
+0196: 
+0197:         # Validate input field types match signature
+0198:         if settings.warn_on_type_mismatch:
+0199:             for field_name, field_info in signature.input_fields.items():
+0200:                 if field_name in kwargs:
+0201:                     value = kwargs[field_name]
+0202:                     expected_type: type = field_info.annotation
+0203: 
+0204:                     if value is None or field_info.json_schema_extra.get(IS_TYPE_UNDEFINED, False):
+0205:                         continue
+0206: 
+0207:                     if not _is_value_compatible_with_type(value, expected_type):
+0208:                         logger.warning(
+0209:                             "Type mismatch for field '%s': expected %s based on given Signature, "
+0210:                             "but the provided value is incompatible: %s.",
+0211:                             field_name,
+0212:                             _get_type_name(expected_type),
+0213:                             value,
+0214:                         )
+0215: 
+0216:         if not all(k in kwargs for k in signature.input_fields):
+0217:             present = [k for k in signature.input_fields if k in kwargs]
+0218:             missing = [k for k in signature.input_fields if k not in kwargs]
+0219:             logger.warning(
+0220:                 "Not all input fields were provided to module. Present: %s. Missing: %s.",
+0221:                 present,
+0222:                 missing,
+0223:             )
+0224:         return lm, config, signature, demos, kwargs
+0225: 
+0226:     def _forward_postprocess(self, completions, signature, **kwargs):
+0227:         pred = Prediction.from_completions(completions, signature=signature)
+0228:         if kwargs.pop("_trace", True) and settings.trace is not None and settings.max_trace_size > 0:
+0229:             trace = settings.trace
+0230:             if len(trace) >= settings.max_trace_size:
+0231:                 trace.pop(0)
+0232:             trace.append((self, {**kwargs}, pred))
+0233:         return pred
+0234: 
+0235:     def _should_stream(self):
+0236:         stream_listeners = settings.stream_listeners or []
+0237:         should_stream = settings.send_stream is not None
+0238:         if should_stream and len(stream_listeners) > 0:
+0239:             should_stream = any(stream_listener.predict == self for stream_listener in stream_listeners)
+0240: 
+0241:         return should_stream
+0242: 
+0243:     def forward(self, **kwargs):
+0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+0245: 
+0246:         adapter = settings.adapter or ChatAdapter()
+0247: 
+0248:         if self._should_stream():
+0249:             with settings.context(caller_predict=self):
+0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0251:         else:
+0252:             with settings.context(send_stream=None):
+0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0254: 
+0255:         return self._forward_postprocess(completions, signature, **kwargs)
+0256: 
+0257:     async def aforward(self, **kwargs):
+0258:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)
+0259: 
+0260:         adapter = settings.adapter or ChatAdapter()
+0261:         if self._should_stream():
+0262:             with settings.context(caller_predict=self):
+0263:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0264:         else:
+0265:             with settings.context(send_stream=None):
+0266:                 completions = await adapter.acall(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)
+0267: 
+0268:         return self._forward_postprocess(completions, signature, **kwargs)
+0269: 
+0270:     def update_config(self, **kwargs):
+0271:         self.config = {**self.config, **kwargs}
+0272: 
+0273:     def get_config(self):
+0274:         return self.config
+0275: 
+0276:     def __repr__(self):
+0277:         return f"{self.__class__.__name__}({self.signature})"
+0278: 
+0279: def _get_type_name(type_annotation) -> str:
+0280:     """Helper method to get the name for a type annotation."""
+0281: 
+0282:     origin = get_origin(type_annotation)
+0283:     args = get_args(type_annotation)
+0284: 
+0285:     if origin is None:
+0286:         # Primitives like str, int, etc.
+0287:         if hasattr(type_annotation, "__name__"):
+0288:             return type_annotation.__name__
+0289:         return str(type_annotation)
+0290: 
+0291:     # Handle Literal types
+0292:     if origin is Literal:
+0293:         literal_values = ", ".join(repr(arg) for arg in args)
+0294:         return f"Literal[{literal_values}]"
+0295: 
+0296:     # Types like list[str], dict[str, int], generics, etc.
+0297:     if args:
+0298:         # Handle Ellipsis in tuples (e.g., tuple[int, ...])
+0299:         args_str = ", ".join("..." if arg is ... else _get_type_name(arg) for arg in args)
+0300:         origin_name = getattr(origin, "__name__", str(origin))
+0301:         return f"{origin_name}[{args_str}]"
+0302: 
+0303:     return getattr(origin, "__name__", str(origin))
+0304: 
+0305: def _is_value_compatible_with_type(value: Any, expected: type) -> bool:
+0306:     """Return True if the value matches the expected type hint."""
+0307:     try:
+0308:         # Special handle list[str] because we allow setting input type to str, however, invoking with a list thereof.
+0309:         if expected is str and isinstance(value, list):
+0310:             if all(isinstance(item, str) for item in value):
+0311:                 return True
+0312: 
+0313:         check_type(value, expected)
+0314:         return True
+0315:     except TypeCheckError:
+0316:         return False
+0317: 
+0318: def serialize_object(obj):
+0319:     """
+0320:     Recursively serialize a given object into a JSON-compatible format.
+0321:     Supports Pydantic models, lists, dicts, and primitive types.
+0322:     """
+0323:     if isinstance(obj, BaseModel):
+0324:         # Use model_dump with mode="json" to ensure all fields (including HttpUrl, datetime, etc.)
+0325:         # are converted to JSON-serializable types (strings)
+0326:         return obj.model_dump(mode="json")
+0327:     elif isinstance(obj, list):
+0328:         return [serialize_object(item) for item in obj]
+0329:     elif isinstance(obj, tuple):
+0330:         return tuple(serialize_object(item) for item in obj)
+0331:     elif isinstance(obj, dict):
+0332:         return {key: serialize_object(value) for key, value in obj.items()}
+0333:     else:
+0334:         return obj
+0335: 
+0336: 
+0337: # # TODO: FIXME: Hmm, I guess expected behavior is that contexts can
+0338: # affect execution. Well, we need to determine whether context dominates, __init__ demoninates, or forward dominates.
+0339: # Generally, unless overwritten, we'd see n=None, temperature=None.
+0340: # That will eventually mean we have to learn them.
+
+### tests/signatures/test_adapter_image.py
+0001: import os
+0002: import tempfile
+0003: from io import BytesIO
+0004: 
+0005: import pydantic
+0006: import pytest
+0007: import requests
+0008: from PIL import Image as PILImage
+0009: 
+0010: import dspy
+0011: from dspy.adapters.types.image import encode_image
+0012: from dspy.utils.dummies import DummyLM
+0013: 
+0014: 
+0015: @pytest.fixture
+0016: def sample_pil_image():
+0017:     """Fixture to provide a sample image for testing"""
+0018:     url = "https://images.dog.ceo/breeds/dane-great/n02109047_8912.jpg"
+0019:     response = requests.get(url)
+0020:     response.raise_for_status()
+0021:     return PILImage.open(BytesIO(response.content))
+0022: 
+0023: 
+0024: @pytest.fixture
+0025: def sample_dspy_image_download():
+0026:     url = "https://images.dog.ceo/breeds/dane-great/n02109047_8912.jpg"
+0027:     return dspy.Image(url, download=True)
+0028: 
+0029: 
+0030: @pytest.fixture
+0031: def sample_url():
+0032:     return "https://images.dog.ceo/breeds/dane-great/n02109047_8912.jpg"
+0033: 
+0034: 
+0035: @pytest.fixture
+0036: def sample_dspy_image_no_download():
+0037:     return dspy.Image("https://images.dog.ceo/breeds/dane-great/n02109047_8912.jpg")
+0038: 
+0039: 
+0040: def count_messages_with_image_url_pattern(messages):
+0041:     pattern = {"type": "image_url", "image_url": {"url": lambda x: isinstance(x, str)}}
+0042: 
+0043:     try:
+0044: 
+0045:         def check_pattern(obj, pattern):
+0046:             if isinstance(pattern, dict):
+0047:                 if not isinstance(obj, dict):
+0048:                     return False
+0049:                 return all(k in obj and check_pattern(obj[k], v) for k, v in pattern.items())
+0050:             if callable(pattern):
+0051:                 return pattern(obj)
+0052:             return obj == pattern
+0053: 
+0054:         def count_patterns(obj, pattern):
+0055:             count = 0
+0056:             if check_pattern(obj, pattern):
+0057:                 count += 1
+0058:             if isinstance(obj, dict):
+0059:                 count += sum(count_patterns(v, pattern) for v in obj.values())
+0060:             if isinstance(obj, (list, tuple)):
+0061:                 count += sum(count_patterns(v, pattern) for v in obj)
+0062:             return count
+0063: 
+0064:         return count_patterns(messages, pattern)
+0065:     except Exception:
+0066:         return 0
+0067: 
+0068: 
+0069: def setup_predictor(signature, expected_output):
+0070:     """Helper to set up a predictor with DummyLM"""
+0071:     lm = DummyLM([expected_output])
+0072:     dspy.configure(lm=lm)
+0073:     return dspy.Predict(signature), lm
+0074: 
+0075: 
+0076: @pytest.mark.parametrize(
+0077:     "test_case",
+0078:     [
+0079:         {
+0080:             "name": "probabilistic_classification",
+0081:             "signature": "image: dspy.Image, class_labels: list[str] -> probabilities: dict[str, float]",
+0082:             "inputs": {"image": "https://example.com/dog.jpg", "class_labels": ["dog", "cat", "bird"]},
+0083:             "key_output": "probabilities",
+0084:             "expected": {"probabilities": {"dog": 0.8, "cat": 0.1, "bird": 0.1}},
+0085:         },
+0086:         {
+0087:             "name": "image_to_code",
+0088:             "signature": "ui_image: dspy.Image, target_language: str -> generated_code: str",
+0089:             "inputs": {"ui_image": "https://example.com/button.png", "target_language": "HTML"},
+0090:             "key_output": "generated_code",
+0091:             "expected": {"generated_code": "<button>Click me</button>"},
+0092:         },
+0093:         {
+0094:             "name": "bbox_detection",
+0095:             "signature": "image: dspy.Image -> bboxes: list[Tuple[int, int, int, int]]",
+0096:             "inputs": {"image": "https://example.com/image.jpg"},
+0097:             "key_output": "bboxes",
+0098:             "expected": {"bboxes": [(10, 20, 30, 40), (50, 60, 70, 80)]},
+0099:         },
+0100:         {
+0101:             "name": "multilingual_caption",
+0102:             "signature": "image: dspy.Image, languages: list[str] -> captions: dict[str, str]",
+0103:             "inputs": {"image": "https://example.com/dog.jpg", "languages": ["en", "es", "fr"]},
+0104:             "key_output": "captions",
+0105:             "expected": {
+0106:                 "captions": {"en": "A golden retriever", "es": "Un golden retriever", "fr": "Un golden retriever"}
+0107:             },
+0108:         },
+0109:     ],
+0110: )
+0111: def test_basic_image_operations(test_case):
+0112:     """Consolidated test for basic image operations"""
+0113:     predictor, lm = setup_predictor(test_case["signature"], test_case["expected"])
+0114: 
+0115:     # Convert string URLs to dspy.Image objects
+0116:     inputs = {
+0117:         k: dspy.Image(v) if isinstance(v, str) and k in ["image", "ui_image"] else v
+0118:         for k, v in test_case["inputs"].items()
+0119:     }
+0120: 
+0121:     result = predictor(**inputs)
+0122: 
+0123:     # Check result based on output field name
+0124:     output_field = next(f for f in ["probabilities", "generated_code", "bboxes", "captions"] if hasattr(result, f))
+0125:     assert getattr(result, output_field) == test_case["expected"][test_case["key_output"]]
+0126:     assert count_messages_with_image_url_pattern(lm.history[-1]["messages"]) == 1
+0127: 
+0128: 
+0129: @pytest.mark.parametrize(
+0130:     "image_input,description",
+0131:     [
+0132:         ("pil_image", "PIL Image"),
+0133:         ("encoded_pil_image", "encoded PIL image string"),
+0134:         ("dspy_image_download", "dspy.Image with download=True"),
+0135:         ("dspy_image_no_download", "dspy.Image without download"),
+0136:     ],
+0137: )
+0138: def test_image_input_formats(
+0139:     request, sample_pil_image, sample_dspy_image_download, sample_dspy_image_no_download, image_input, description
+0140: ):
+0141:     """Test different input formats for image fields"""
+0142:     signature = "image: dspy.Image, class_labels: list[str] -> probabilities: dict[str, float]"
+0143:     expected = {"probabilities": {"dog": 0.8, "cat": 0.1, "bird": 0.1}}
+0144:     predictor, lm = setup_predictor(signature, expected)
+0145: 
+0146:     input_map = {
+0147:         "pil_image": sample_pil_image,
+0148:         "encoded_pil_image": encode_image(sample_pil_image),
+0149:         "dspy_image_download": sample_dspy_image_download,
+0150:         "dspy_image_no_download": sample_dspy_image_no_download,
+0151:     }
+0152: 
+0153:     actual_input = input_map[image_input]
+0154:     # TODO(isaacbmiller): Support the cases without direct dspy.Image coercion
+0155:     if image_input in ["pil_image", "encoded_pil_image"]:
+0156:         pytest.xfail(f"{description} not fully supported without dspy.Image coercion")
+0157: 
+0158:     result = predictor(image=actual_input, class_labels=["dog", "cat", "bird"])
+0159:     assert result.probabilities == expected["probabilities"]
+0160:     assert count_messages_with_image_url_pattern(lm.history[-1]["messages"]) == 1
+0161: 
+0162: 
+0163: def test_predictor_save_load(sample_url, sample_pil_image):
+0164:     """Test saving and loading predictors with image fields"""
+0165:     signature = "image: dspy.Image -> caption: str"
+0166:     examples = [
+0167:         dspy.Example(image=dspy.Image(sample_url), caption="Example 1"),
+0168:         dspy.Example(image=sample_pil_image, caption="Example 2"),
+0169:     ]
+0170: 
+0171:     predictor, lm = setup_predictor(signature, {"caption": "A golden retriever"})
+0172:     optimizer = dspy.teleprompt.LabeledFewShot(k=1)
+0173:     compiled_predictor = optimizer.compile(student=predictor, trainset=examples, sample=False)
+0174: 
+0175:     with tempfile.NamedTemporaryFile(mode="w+", delete=True, suffix=".json") as temp_file:
+0176:         compiled_predictor.save(temp_file.name)
+0177:         loaded_predictor = dspy.Predict(signature)
+0178:         loaded_predictor.load(temp_file.name)
+0179: 
+0180:     loaded_predictor(image=dspy.Image("https://example.com/dog.jpg"))
+0181:     assert count_messages_with_image_url_pattern(lm.history[-1]["messages"]) == 2
+0182:     assert "<DSPY_IMAGE_START>" not in str(lm.history[-1]["messages"])
+0183: 
+0184: 
+0185: def test_save_load_complex_default_types():
+0186:     """Test saving and loading predictors with complex default types (lists of images)"""
+0187:     examples = [
+0188:         dspy.Example(
+0189:             image_list=[
+0190:                 dspy.Image("https://example.com/dog.jpg"),
+0191:                 dspy.Image("https://example.com/cat.jpg"),
+0192:             ],
+0193:             caption="Example 1",
+0194:         ).with_inputs("image_list"),
+0195:     ]
+0196: 
+0197:     class ComplexTypeSignature(dspy.Signature):
+0198:         image_list: list[dspy.Image] = dspy.InputField(desc="A list of images")
+0199:         caption: str = dspy.OutputField(desc="A caption for the image list")
+0200: 
+0201:     predictor, lm = setup_predictor(ComplexTypeSignature, {"caption": "A list of images"})
+0202:     optimizer = dspy.teleprompt.LabeledFewShot(k=1)
+0203:     compiled_predictor = optimizer.compile(student=predictor, trainset=examples, sample=False)
+0204: 
+0205:     with tempfile.NamedTemporaryFile(mode="w+", delete=True, suffix=".json") as temp_file:
+0206:         compiled_predictor.save(temp_file.name)
+0207:         loaded_predictor = dspy.Predict(ComplexTypeSignature)
+0208:         loaded_predictor.load(temp_file.name)
+0209: 
+0210:     result = loaded_predictor(**examples[0].inputs())
+0211:     assert result.caption == "A list of images"
+0212:     assert str(lm.history[-1]["messages"]).count("'url'") == 4
+0213:     assert "<DSPY_IMAGE_START>" not in str(lm.history[-1]["messages"])
+0214: 
+0215: 
+0216: class BasicImageSignature(dspy.Signature):
+0217:     """Basic signature with a single image input"""
+0218: 
+0219:     image: dspy.Image = dspy.InputField()
+0220:     output: str = dspy.OutputField()
+0221: 
+0222: 
+0223: class ImageListSignature(dspy.Signature):
+0224:     """Signature with a list of images input"""
+0225: 
+0226:     image_list: list[dspy.Image] = dspy.InputField()
+0227:     output: str = dspy.OutputField()
+0228: 
+0229: 
+0230: @pytest.mark.parametrize(
+0231:     "test_case",
+0232:     [
+0233:         {
+0234:             "name": "basic_dspy_signature",
+0235:             "signature_class": BasicImageSignature,
+0236:             "inputs": {"image": "https://example.com/dog.jpg"},
+0237:             "expected": {"output": "A dog photo"},
+0238:             "expected_image_urls": 2,
+0239:         },
+0240:         {
+0241:             "name": "list_dspy_signature",
+0242:             "signature_class": ImageListSignature,
+0243:             "inputs": {"image_list": ["https://example.com/dog.jpg", "https://example.com/cat.jpg"]},
+0244:             "expected": {"output": "Multiple photos"},
+0245:             "expected_image_urls": 4,
+0246:         },
+0247:     ],
+0248: )
+0249: def test_save_load_complex_types(test_case):
+0250:     """Test saving and loading predictors with complex types"""
+0251:     signature_cls = test_case["signature_class"]
+0252: 
+0253:     # Convert string URLs to dspy.Image objects in input
+0254:     processed_input = {}
+0255:     for key, value in test_case["inputs"].items():
+0256:         if isinstance(value, str) and "http" in value:
+0257:             processed_input[key] = dspy.Image(value)
+0258:         elif isinstance(value, list) and value and isinstance(value[0], str):
+0259:             processed_input[key] = [dspy.Image(url) for url in value]
+0260:         else:
+0261:             processed_input[key] = value
+0262: 
+0263:     # Create example and predictor
+0264:     examples = [dspy.Example(**processed_input, **test_case["expected"]).with_inputs(*processed_input.keys())]
+0265: 
+0266:     predictor, lm = setup_predictor(signature_cls, test_case["expected"])
+0267:     optimizer = dspy.teleprompt.LabeledFewShot(k=1)
+0268:     compiled_predictor = optimizer.compile(student=predictor, trainset=examples, sample=False)
+0269: 
+0270:     # Test save and load
+0271:     with tempfile.NamedTemporaryFile(mode="w+", delete=True, suffix=".json") as temp_file:
+0272:         compiled_predictor.save(temp_file.name)
+0273:         loaded_predictor = dspy.Predict(signature_cls)
+0274:         loaded_predictor.load(temp_file.name)
+0275: 
+0276:     # Run prediction
+0277:     result = loaded_predictor(**processed_input)
+0278: 
+0279:     # Verify output matches expected
+0280:     for key, value in test_case["expected"].items():
+0281:         assert getattr(result, key) == value
+0282: 
+0283:     # Verify correct number of image URLs in messages
+0284:     assert count_messages_with_image_url_pattern(lm.history[-1]["messages"]) == test_case["expected_image_urls"]
+0285:     assert "<DSPY_IMAGE_START>" not in str(lm.history[-1]["messages"])
+0286: 
+0287: 
+0288: def test_save_load_pydantic_model():
+0289:     """Test saving and loading predictors with pydantic models"""
+0290: 
+0291:     class ImageModel(pydantic.BaseModel):
+0292:         image: dspy.Image
+0293:         image_list: list[dspy.Image] | None = None
+0294:         output: str
+0295: 
+0296:     class PydanticSignature(dspy.Signature):
+0297:         model_input: ImageModel = dspy.InputField()
+0298:         output: str = dspy.OutputField()
+0299: 
+0300:     # Create model instance
+0301:     model_input = ImageModel(
+0302:         image=dspy.Image("https://example.com/dog.jpg"),
+0303:         image_list=[dspy.Image("https://example.com/cat.jpg")],
+0304:         output="Multiple photos",
+0305:     )
+0306: 
+0307:     # Create example and predictor
+0308:     examples = [dspy.Example(model_input=model_input, output="Multiple photos").with_inputs("model_input")]
+0309: 
+0310:     predictor, lm = setup_predictor(PydanticSignature, {"output": "Multiple photos"})
+0311:     optimizer = dspy.teleprompt.LabeledFewShot(k=1)
+0312:     compiled_predictor = optimizer.compile(student=predictor, trainset=examples, sample=False)
+0313: 
+0314:     # Test save and load
+0315:     with tempfile.NamedTemporaryFile(mode="w+", delete=True, suffix=".json") as temp_file:
+0316:         compiled_predictor.save(temp_file.name)
+0317:         loaded_predictor = dspy.Predict(PydanticSignature)
+0318:         loaded_predictor.load(temp_file.name)
+0319: 
+0320:     # Run prediction
+0321:     result = loaded_predictor(model_input=model_input)
+0322: 
+0323:     # Verify output matches expected
+0324:     assert result.output == "Multiple photos"
+0325:     assert count_messages_with_image_url_pattern(lm.history[-1]["messages"]) == 4
+0326:     assert "<DSPY_IMAGE_START>" not in str(lm.history[-1]["messages"])
+0327: 
+0328: 
+0329: def test_optional_image_field():
+0330:     """Test that optional image fields are not required"""
+0331: 
+0332:     class OptionalImageSignature(dspy.Signature):
+0333:         image: dspy.Image | None = dspy.InputField()
+0334:         output: str = dspy.OutputField()
+0335: 
+0336:     predictor, lm = setup_predictor(OptionalImageSignature, {"output": "Hello"})
+0337:     result = predictor(image=None)
+0338:     assert result.output == "Hello"
+0339:     assert count_messages_with_image_url_pattern(lm.history[-1]["messages"]) == 0
+0340: 
+0341: 
+0342: def test_pdf_url_support():
+0343:     """Test support for PDF files from URLs"""
+0344:     pdf_url = "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+0345: 
+0346:     # Create a dspy.Image object from the PDF URL with download=True
+0347:     pdf_image = dspy.Image(pdf_url, download=True)
+0348: 
+0349:     # The data URI should contain application/pdf in the MIME type
+0350:     assert "data:application/pdf" in pdf_image.url
+0351:     assert ";base64," in pdf_image.url
+0352: 
+0353:     # Test using it in a predictor
+0354:     class PDFSignature(dspy.Signature):
+0355:         document: dspy.Image = dspy.InputField(desc="A PDF document")
+0356:         summary: str = dspy.OutputField(desc="A summary of the PDF")
+0357: 
+0358:     predictor, lm = setup_predictor(PDFSignature, {"summary": "This is a dummy PDF"})
+0359:     result = predictor(document=pdf_image)
+0360: 
+0361:     assert result.summary == "This is a dummy PDF"
+0362:     assert count_messages_with_image_url_pattern(lm.history[-1]["messages"]) == 1
+0363: 
+0364:     # Ensure the URL was properly expanded in messages
+0365:     messages_str = str(lm.history[-1]["messages"])
+0366:     assert "application/pdf" in messages_str
+0367: 
+0368: 
+0369: def test_different_mime_types():
+0370:     """Test support for different file types and MIME type detection"""
+0371:     # Test with various file types
+0372:     file_urls = {
+0373:         "pdf": "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf",
+0374:         "image": "https://images.dog.ceo/breeds/dane-great/n02109047_8912.jpg",
+0375:     }
+0376: 
+0377:     expected_mime_types = {
+0378:         "pdf": "application/pdf",
+0379:         "image": "image/jpeg",
+0380:     }
+0381: 
+0382:     for file_type, url in file_urls.items():
+0383:         # Download and encode
+0384:         encoded = encode_image(url, download_images=True)
+0385: 
+0386:         # Check for correct MIME type in the encoded data - using 'in' instead of startswith
+0387:         # to account for possible parameters in the MIME type
+0388:         assert f"data:{expected_mime_types[file_type]}" in encoded
+0389:         assert ";base64," in encoded
+0390: 
+0391: 
+0392: def test_mime_type_from_response_headers():
+0393:     """Test that MIME types from response headers are correctly used"""
+0394:     # This URL returns proper Content-Type header
+0395:     pdf_url = "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+0396: 
+0397:     # Make an actual request to get the content type from headers
+0398:     response = requests.get(pdf_url)
+0399:     expected_mime_type = response.headers.get("Content-Type", "")
+0400: 
+0401:     # Should be application/pdf or similar
+0402:     assert "pdf" in expected_mime_type.lower()
+0403: 
+0404:     # Encode with download to test MIME type from headers
+0405:     encoded = encode_image(pdf_url, download_images=True)
+0406: 
+0407:     # The encoded data should contain the correct MIME type
+0408:     assert "application/pdf" in encoded
+0409:     assert ";base64," in encoded
+0410: 
+0411: 
+0412: def test_pdf_from_file():
+0413:     """Test handling a PDF file from disk"""
+0414:     # Download a PDF to a temporary file
+0415:     pdf_url = "https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf"
+0416:     response = requests.get(pdf_url)
+0417:     response.raise_for_status()
+0418: 
+0419:     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as tmp_file:
+0420:         tmp_file.write(response.content)
+0421:         tmp_file_path = tmp_file.name
+0422: 
+0423:     try:
+0424:         # Create a dspy.Image from the file
+0425:         pdf_image = dspy.Image(tmp_file_path)
+0426: 
+0427:         # The constructor encodes the file into a data URI we can inspect directly
+0428:         assert "data:application/pdf" in pdf_image.url
+0429:         assert ";base64," in pdf_image.url
+0430: 
+0431:         # Test the image in a predictor
+0432:         class FilePDFSignature(dspy.Signature):
+0433:             document: dspy.Image = dspy.InputField(desc="A PDF document from file")
+0434:             summary: str = dspy.OutputField(desc="A summary of the PDF")
+0435: 
+0436:         predictor, lm = setup_predictor(FilePDFSignature, {"summary": "This is a PDF from file"})
+0437:         result = predictor(document=pdf_image)
+0438: 
+0439:         assert result.summary == "This is a PDF from file"
+0440:         assert count_messages_with_image_url_pattern(lm.history[-1]["messages"]) == 1
+0441:     finally:
+0442:         # Clean up the temporary file
+0443:         try:
+0444:             os.unlink(tmp_file_path)
+0445:         except Exception:
+0446:             pass
+0447: 
+0448: 
+0449: def test_image_repr():
+0450:     """Test string representation of Image objects"""
+0451:     url_image = dspy.Image("https://example.com/dog.jpg")
+0452:     assert str(url_image) == (
+0453:         "<<CUSTOM-TYPE-START-IDENTIFIER>>"
+0454:         '[{"type": "image_url", "image_url": {"url": "https://example.com/dog.jpg"}}]'
+0455:         "<<CUSTOM-TYPE-END-IDENTIFIER>>"
+0456:     )
+0457:     assert repr(url_image) == "Image(url='https://example.com/dog.jpg')"
+0458: 
+0459:     sample_pil = PILImage.new("RGB", (60, 30), color="red")
+0460:     pil_image = dspy.Image(sample_pil)
+0461:     assert str(pil_image).startswith('<<CUSTOM-TYPE-START-IDENTIFIER>>[{"type": "image_url",')
+0462:     assert str(pil_image).endswith("<<CUSTOM-TYPE-END-IDENTIFIER>>")
+0463:     assert "base64" in str(pil_image)
+0464: 
+0465: 
+0466: def test_from_methods_warn(tmp_path):
+0467:     """Deprecated from_* methods emit warnings"""
+0468:     tmp_file = tmp_path / "test.png"
+0469:     tmp_file.write_bytes(b"pngdata")
+0470: 
+0471:     with pytest.warns(DeprecationWarning):
+0472:         dspy.Image.from_url("https://example.com/dog.jpg")
+0473:     with pytest.warns(DeprecationWarning):
+0474:         dspy.Image.from_file(str(tmp_file))
+0475:     sample_pil = PILImage.new("RGB", (10, 10), color="blue")
+0476:     with pytest.warns(DeprecationWarning):
+0477:         dspy.Image.from_PIL(sample_pil)
+0478: 
+0479: 
+0480: def test_invalid_string_format():
+0481:     """Test that invalid string formats raise a ValueError"""
+0482:     invalid_string = "this_is_not_a_url_or_file"
+0483: 
+0484:     # Should raise a ValueError and not pass the string through
+0485:     with pytest.raises(ValueError, match="Unrecognized") as warning_info:
+0486:         image = dspy.Image(invalid_string)
+0487: 
+0488: def test_pil_image_with_download_parameter():
+0489:     """Test behavior when PIL image is passed with download=True"""
+0490:     sample_pil = PILImage.new("RGB", (60, 30), color="red")
+0491: 
+0492:     # PIL image should be encoded regardless of download parameter
+0493:     image_no_download = dspy.Image(sample_pil)
+0494:     image_with_download = dspy.Image(sample_pil, download=True)
+0495: 
+0496:     # Both should result in base64 encoded data URIs
+0497:     assert image_no_download.url.startswith("data:")
+0498:     assert image_with_download.url.startswith("data:")
+0499:     assert "base64," in image_no_download.url
+0500:     assert "base64," in image_with_download.url
+0501: 
+0502:     # They should be identical since PIL images are always encoded
+0503:     assert image_no_download.url == image_with_download.url
+
+Return JSON that matches the schema exactly.

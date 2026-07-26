@@ -1,0 +1,94 @@
+{
+ "id": "dspy_5106a8c9a3b2",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "A bare model ID like `gpt-4o-mini` behaves enough like OpenAI that my structured-output call path seems to work, but the moment I try a provider-dependent workflow DSPy tells me the LM has no fine-tuning provider.\n\nThat makes me think DSPy may be treating the same bare model as OpenAI in one subsystem and as an unknown provider in another. I want one tiny repro that captures both sides.\n\nGive me a complete, runnable Python program that uses a bare model ID with `dspy.JSONAdapter`, patches the capability checks and the outbound call, then attempts fine-tuning and prints/asserts the evidence showing what provider name DSPy used for capability probing and why fine-tuning still refuses to run.",
+ "gold_answer": "```python\nfrom unittest import mock\n\nimport dspy\nfrom litellm.utils import Choices, Message, ModelResponse\n\n\nfake_response = ModelResponse(\n    choices=[Choices(message=Message(content='{\"answer\": \"ok\"}'))],\n    usage={\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2},\n    model=\"gpt-4o-mini\",\n)\n\nlm = dspy.LM(model=\"gpt-4o-mini\", cache=False)\npredict = dspy.Predict(\"question -> answer\")\n\nwith (\n    mock.patch(\"litellm.get_supported_openai_params\", return_value=[\"response_format\"]) as params_mock,\n    mock.patch(\"litellm.supports_response_schema\", return_value=True) as schema_mock,\n    mock.patch(\"litellm.completion\", return_value=fake_response),\n):\n    with dspy.context(lm=lm, adapter=dspy.JSONAdapter()):\n        prediction = predict(question=\"hi\")\n\nerror = None\ntry:\n    lm.finetune(train_data=[], train_data_format=None)\nexcept ValueError as e:\n    error = e\n\nprint(\"prediction.answer:\", prediction.answer)\nprint(\"provider_type:\", type(lm.provider).__name__)\nprint(\"supported_params_call:\", params_mock.call_args.kwargs)\nprint(\"supports_response_schema_call:\", schema_mock.call_args.kwargs)\nprint(\"finetune_error:\", error)\n\nassert prediction.answer == \"ok\"\nassert params_mock.call_args.kwargs[\"custom_llm_provider\"] == \"openai\"\nassert schema_mock.call_args.kwargs[\"custom_llm_provider\"] == \"openai\"\nassert type(lm.provider).__name__ == \"Provider\"\nassert error is not None\nassert \"does not support fine-tuning\" in str(error)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The program builds an LM from a bare model ID such as `gpt-4o-mini`, patches `litellm.get_supported_openai_params` and `litellm.supports_response_schema`, and asserts both mocks were called with `custom_llm_provider == \"openai\"`, demonstrating that DSPy treats slashless model names as OpenAI for capability probing.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 20,
+   "statement": "The program patches `litellm.completion` and shows the mocked JSON payload can pass through the structured-output call path under `dspy.JSONAdapter`, for example by asserting `prediction.answer == \"ok\"`.",
+   "span_ids": [
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program prints or asserts that `lm.provider` is the base `Provider` rather than `OpenAIProvider`, showing that LM construction used the generic fallback from `infer_provider()` instead of binding the bare model to an OpenAI provider object.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The program calls `lm.finetune(train_data=[], train_data_format=None)` and asserts it raises `ValueError` with the unsupported-fine-tuning message (for example containing `does not support fine-tuning`), proving fine-tuning is blocked even though capability probing used `openai`.",
+   "span_ids": [
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 115,
+   "end_line": 137,
+   "excerpt": "0115:     @property\n0116:     def _provider_name(self) -> str:\n0117:         \"\"\"Extract the provider name from the model string (e.g., 'openai' from 'openai/gpt-4o').\"\"\"\n0118:         if \"/\" in self.model:\n0119:             return self.model.split(\"/\", 1)[0]\n0120:         return \"openai\"\n0121: \n0122:     @property\n0123:     def supports_function_calling(self) -> bool:\n0124:         return litellm.supports_function_calling(model=self.model)\n0125: \n0126:     @property\n0127:     def supports_reasoning(self) -> bool:\n0128:         return litellm.supports_reasoning(self.model)\n0129: \n0130:     @property\n0131:     def supports_response_schema(self) -> bool:\n0132:         return litellm.supports_response_schema(model=self.model, custom_llm_provider=self._provider_name)\n0133: \n0134:     @property\n0135:     def supported_params(self) -> set[str]:\n0136:         params = litellm.get_supported_openai_params(model=self.model, custom_llm_provider=self._provider_name)\n0137:         return set(params) if params else set()"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 74,
+   "end_line": 78,
+   "excerpt": "0074:         self.model = model\n0075:         self.model_type = model_type\n0076:         self.cache = cache\n0077:         self.provider = provider or self.infer_provider()\n0078:         self.callbacks = callbacks or []"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 307,
+   "end_line": 310,
+   "excerpt": "0307:     def infer_provider(self) -> Provider:\n0308:         if OpenAIProvider.is_provider_model(self.model):\n0309:             return OpenAIProvider()\n0310:         return Provider()"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/lm.py",
+   "start_line": 159,
+   "end_line": 198,
+   "excerpt": "0159:     def forward(\n0160:         self,\n0161:         prompt: str | None = None,\n0162:         messages: list[dict[str, Any]] | None = None,\n0163:         **kwargs\n0164:     ):\n0165:         # Build the request.\n0166:         kwargs = dict(kwargs)\n0167:         cache = kwargs.pop(\"cache\", self.cache)\n0168: \n0169:         messages = messages or [{\"role\": \"user\", \"content\": prompt}]\n0170:         if self.use_developer_role and self.model_type == \"responses\":\n0171:             messages = [{**m, \"role\": \"developer\"} if m.get(\"role\") == \"system\" else m for m in messages]\n0172:         kwargs = {**self.kwargs, **kwargs}\n0173:         self._warn_zero_temp_rollout(kwargs.get(\"temperature\"), kwargs.get(\"rollout_id\"))\n0174:         if kwargs.get(\"rollout_id\") is None:\n0175:             kwargs.pop(\"rollout_id\", None)\n0176: \n0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0184: \n0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,\n0189:                 cache=litellm_cache_args,\n0190:             )\n0191:         except LitellmContextWindowExceededError as e:\n0192:             raise ContextWindowExceededError(model=self.model) from e\n0193: \n0194:         self._check_truncation(results)\n0195: \n0196:         if not getattr(results, \"cache_hit\", False) and dspy.settings.usage_tracker and hasattr(results, \"usage\"):\n0197:             settings.usage_tracker.add_usage(self.model, dict(results.usage))\n0198:         return results"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/lm.py",
+   "start_line": 385,
+   "end_line": 398,
+   "excerpt": "0385: def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0386:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0387:     request = dict(request)\n0388:     request.pop(\"rollout_id\", None)\n0389:     headers = _add_dspy_identifier_to_headers(request.pop(\"headers\", None))\n0390:     stream_completion = _get_stream_completion_fn(request, cache, sync=True, headers=headers)\n0391:     if stream_completion is None:\n0392:         return litellm.completion(\n0393:             cache=cache,\n0394:             num_retries=num_retries,\n0395:             retry_strategy=\"exponential_backoff_retry\",\n0396:             headers=headers,\n0397:             **request,\n0398:         )"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/clients/lm.py",
+   "start_line": 247,
+   "end_line": 260,
+   "excerpt": "0247:     def finetune(\n0248:         self,\n0249:         train_data: list[dict[str, Any]],\n0250:         train_data_format: TrainDataFormat | None,\n0251:         train_kwargs: dict[str, Any] | None = None,\n0252:     ) -> TrainingJob:\n0253:         from dspy import settings as settings\n0254: \n0255:         if not self.provider.finetunable:\n0256:             raise ValueError(\n0257:                 f\"Provider {self.provider} does not support fine-tuning, please specify your provider by explicitly \"\n0258:                 \"setting `provider` when creating the `dspy.LM` instance. For example, \"\n0259:                 \"`dspy.LM('openai/gpt-4.1-mini-2025-04-14', provider=dspy.OpenAIProvider())`.\"\n0260:             )"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Bare model IDs probe as openai for capabilities but still infer the generic provider.",
+ "source_index": 45,
+ "smalldspy_scope": false
+}

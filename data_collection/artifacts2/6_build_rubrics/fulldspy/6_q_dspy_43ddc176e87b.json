@@ -1,0 +1,72 @@
+{
+ "id": "dspy_43ddc176e87b",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm trying to reuse an async evaluator because my judge already lives in async code. Passing it into a normal DSPy evaluation run doesn't seem to get awaited, and the failure mode is confusing enough that I'd rather have a minimal repro than keep guessing.\n\nPlease give me a complete, runnable Python program that uses `DummyLM` offline, passes an async metric into a normal evaluation run, and prints/asserts the exact kind of failure you get when DSPy treats that metric synchronously.",
+ "gold_answer": "```python\nimport asyncio\nimport warnings\n\nimport dspy\nfrom dspy.evaluate import Evaluate\nfrom dspy.utils.dummies import DummyLM\n\n\nwarnings.filterwarnings(\"ignore\", category=RuntimeWarning)\ndspy.configure(lm=DummyLM({\"q\": {\"answer\": \"2\"}}))\nprogram = dspy.Predict(\"question -> answer\")\ndevset = [dspy.Example(question=\"q\", answer=\"2\").with_inputs(\"question\")]\n\n\nasync def async_metric(example, prediction):\n    await asyncio.sleep(0)\n    return 1.0\n\n\nprobe = async_metric(devset[0], dspy.Prediction(answer=\"2\"))\nassert asyncio.iscoroutine(probe)\nprobe.close()\n\nwith warnings.catch_warnings():\n    warnings.simplefilter(\"ignore\", category=RuntimeWarning)\n    try:\n        Evaluate(devset=devset, metric=async_metric, display_progress=False)(program)\n    except TypeError as e:\n        print(type(e).__name__)\n        print(str(e))\n        assert isinstance(e, TypeError)\n    else:\n        raise AssertionError(\"Expected Evaluate to fail when given an async metric.\")\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The repro drives the ordinary `Evaluate(...)(program)` path with an `async def` metric passed directly as `metric=...`, rather than routing evaluation through any async-aware adapter.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The answer identifies the bug source: `Evaluate.__call__` computes `score = metric(example, prediction)` inside its worker function and returns that raw value as the score, with no `await`, so an async metric contributes a coroutine object.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "It catches/asserts and reports the resulting `TypeError` from `Evaluate`'s score reduction, where `sum(score for *_, score in results)` tries to aggregate coroutine-valued scores as numbers.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The surrounding DSPy setup is a minimal offline deterministic program/devset so `program(**example.inputs())` succeeds and the failure is isolated to the metric path; a `DummyLM`-backed trivial predictor is sufficient.",
+   "span_ids": [
+    "s2"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 162,
+   "end_line": 168,
+   "excerpt": "0162:         executor = ParallelExecutor(\n0163:             num_threads=num_threads,\n0164:             disable_progress_bar=not display_progress,\n0165:             max_errors=(self.max_errors if self.max_errors is not None else dspy.settings.max_errors),\n0166:             provide_traceback=self.provide_traceback,\n0167:             compare_results=True,\n0168:         )"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 170,
+   "end_line": 173,
+   "excerpt": "0170:         def process_item(example):\n0171:             prediction = program(**example.inputs())\n0172:             score = metric(example, prediction)\n0173:             return prediction, score"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/evaluate/evaluate.py",
+   "start_line": 178,
+   "end_line": 183,
+   "excerpt": "0178:         results = [((dspy.Prediction(), self.failure_score) if r is None else r) for r in results]\n0179:         results = [(example, prediction, score) for example, (prediction, score) in zip(devset, results, strict=False)]\n0180:         ncorrect, ntotal = sum(score for *_, score in results), len(devset)\n0181: \n0182:         logger.info(f\"Average Metric: {ncorrect} / {ntotal} ({round(100 * ncorrect / ntotal, 1)}%)\")\n0183: "
+  }
+ ],
+ "difficulty": "hard",
+ "note": "",
+ "source_index": 3,
+ "smalldspy_scope": false
+}

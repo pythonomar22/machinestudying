@@ -1,0 +1,122 @@
+{
+ "id": "dspy_d0bb5c6dc3d4",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "For a responses-style backend, I pass `reasoning_effort=\"low\"` and need to know whether DSPy forwards that raw field or rewrites it to the newer nested shape before it leaves the process. I don't want docs; I want a capture of the exact request DSPy emits.\n\nGive me a complete, runnable Python program that patches the outbound responses call, sends one prompt through a `dspy.LM` configured for the responses API, and prints/asserts the exact request fields so it's obvious whether `reasoning_effort` survived or became a nested `reasoning` object.",
+ "gold_answer": "```python\nimport json\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResponsesResp:\n    cache_hit = False\n\n    def __init__(self):\n        self.output = []\n        self.usage = {\"input_tokens\": 1, \"output_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"openai/gpt-5\"\n\n\ncaptured = []\n\n\ndef fake_responses(*, cache, num_retries, retry_strategy, headers=None, **request):\n    captured.append({\"headers\": headers, **request})\n    return FakeResponsesResp()\n\n\nwith patch(\"litellm.responses\", side_effect=fake_responses):\n    lm = dspy.LM(\n        \"openai/gpt-5\",\n        model_type=\"responses\",\n        reasoning_effort=\"low\",\n        temperature=1.0,\n        max_tokens=16000,\n        cache=False,\n    )\n    lm.forward(prompt=\"hello\")\n\ncall = captured[0]\nassert \"reasoning_effort\" not in call\nassert call[\"reasoning\"] == {\"effort\": \"low\", \"summary\": \"auto\"}\n\nprint(json.dumps({\"input\": call[\"input\"], \"reasoning\": call[\"reasoning\"]}, indent=2))\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The answer intercepts `litellm.responses` and drives a real `dspy.LM(..., model_type=\"responses\")` request through DSPy so the inspected payload is the exact post-conversion outbound request, not just the helper's internal input.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The LM is configured as an OpenAI reasoning-model Responses API call with `reasoning_effort=\"low\"` and the required reasoning-model settings `temperature=1.0` and `max_tokens=16000` before sending the prompt.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The captured outbound kwargs are checked to confirm DSPy removes the top-level `reasoning_effort` field and emits `reasoning == {\"effort\": \"low\", \"summary\": \"auto\"}` instead.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The captured request surfaces the Responses API `input` payload, showing that plain text content is converted into `input_text` blocks rather than leaving a chat-style `messages` payload.",
+   "span_ids": [
+    "s7",
+    "s8"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 177,
+   "end_line": 190,
+   "excerpt": "0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0184: \n0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,\n0189:                 cache=litellm_cache_args,\n0190:             )"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 479,
+   "end_line": 492,
+   "excerpt": "0479: def litellm_responses_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0480:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0481:     request = dict(request)\n0482:     request.pop(\"rollout_id\", None)\n0483:     headers = request.pop(\"headers\", None)\n0484:     request = _convert_chat_request_to_responses_request(request)\n0485: \n0486:     return litellm.responses(\n0487:         cache=cache,\n0488:         num_retries=num_retries,\n0489:         retry_strategy=\"exponential_backoff_retry\",\n0490:         headers=_add_dspy_identifier_to_headers(headers),\n0491:         **request,\n0492:     )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 90,
+   "end_line": 105,
+   "excerpt": "0090:         # Recognize OpenAI reasoning models (o1, o3, o4, gpt-5 family)\n0091:         # Exclude non-reasoning variants like gpt-5-chat this is in azure ai foundry\n0092:         # Allow date suffixes like -2023-01-01 after model name or mini/nano/pro\n0093:         # For gpt-5, use negative lookahead to exclude -chat and allow other suffixes\n0094:         model_pattern = re.match(\n0095:             r\"^(?:o[1345](?:-(?:mini|nano|pro))?(?:-\\d{4}-\\d{2}-\\d{2})?|gpt-5(?!-chat)(?:-.*)?)$\",\n0096:             model_family,\n0097:         )\n0098: \n0099:         if model_pattern:\n0100:             if (temperature and temperature != 1.0) or (max_tokens and max_tokens < 16000):\n0101:                 raise ValueError(\n0102:                     \"OpenAI's reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None to \"\n0103:                     \"`dspy.LM(...)`, e.g., dspy.LM('openai/gpt-5', temperature=1.0, max_tokens=16000)\"\n0104:                 )\n0105:             self.kwargs = dict(temperature=temperature, max_completion_tokens=max_tokens, **kwargs)"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 643,
+   "end_line": 648,
+   "excerpt": "0643:     with mock.patch(\"litellm.responses\") as mock_responses:\n0644:         # OpenAI model with Responses API - should normalize\n0645:         lm = dspy.LM(\n0646:             model=\"openai/gpt-5\", model_type=\"responses\", reasoning_effort=\"low\", max_tokens=16000, temperature=1.0\n0647:         )\n0648:         lm(\"openai query\")"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/lm.py",
+   "start_line": 529,
+   "end_line": 533,
+   "excerpt": "0529:     # Convert `reasoning_effort` to reasoning format supported by the Responses API\n0530:     if \"reasoning_effort\" in request:\n0531:         effort = request.pop(\"reasoning_effort\")\n0532:         request[\"reasoning\"] = {\"effort\": effort, \"summary\": \"auto\"}\n0533: "
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 649,
+   "end_line": 651,
+   "excerpt": "0649:         call_kwargs = mock_responses.call_args.kwargs\n0650:         assert \"reasoning_effort\" not in call_kwargs\n0651:         assert call_kwargs[\"reasoning\"] == {\"effort\": \"low\", \"summary\": \"auto\"}"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/clients/lm.py",
+   "start_line": 169,
+   "end_line": 170,
+   "excerpt": "0169:         messages = messages or [{\"role\": \"user\", \"content\": prompt}]\n0170:         if self.use_developer_role and self.model_type == \"responses\":"
+  },
+  {
+   "span_id": "s8",
+   "path": "dspy/clients/lm.py",
+   "start_line": 518,
+   "end_line": 528,
+   "excerpt": "0518:     if \"messages\" in request:\n0519:         content_blocks = []\n0520:         for msg in request.pop(\"messages\"):\n0521:             c = msg.get(\"content\")\n0522:             if isinstance(c, str):\n0523:                 content_blocks.append({\"type\": \"input_text\", \"text\": c})\n0524:             elif isinstance(c, list):\n0525:                 # Convert each content item from Chat API format to Responses API format\n0526:                 for item in c:\n0527:                     content_blocks.append(_convert_content_item_to_responses_format(item))\n0528:         request[\"input\"] = [{\"role\": msg.get(\"role\", \"user\"), \"content\": content_blocks}]"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Responses API rewrites `reasoning_effort`.",
+ "source_index": 7,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

@@ -1,0 +1,762 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_8d0bef8ff001`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I have a small multi-step program and I'm trying to finetune it offline. Even with just one local LM, the compile step can complain that `num_threads` is too small, which makes me think the job count might be based on predictors rather than models in some cases.
+
+Give me a complete, runnable Python program that uses `DummyLM` offline, builds a two-predictor module, compiles with the finetune optimizer in a configuration that triggers that thread-count check, and prints/asserts the error so the job-count rule is obvious.`
+- Gold answer:
+```python
+import dspy
+from dspy.teleprompt import BootstrapFinetune
+from dspy.utils.dummies import DummyLM
+
+
+class TwoPredictorModule(dspy.Module):
+    def __init__(self, lm):
+        super().__init__()
+        self.first = dspy.Predict("input -> mid")
+        self.second = dspy.Predict("mid -> output")
+        self.first.lm = lm
+        self.second.lm = lm
+
+    def forward(self, input):
+        mid = self.first(input=input).mid
+        return self.second(mid=mid)
+
+
+lm = DummyLM([{"mid": "intermediate"}, {"output": "final"}])
+student = TwoPredictorModule(lm)
+trainset = [dspy.Example(input="x", output="final").with_inputs("input")]
+optimizer = BootstrapFinetune(
+    metric=lambda example, prediction, trace=None: True,
+    multitask=False,
+    num_threads=1,
+)
+
+try:
+    optimizer.compile(student, trainset=trainset)
+except ValueError as e:
+    message = str(e)
+    print(message)
+    assert "num_threads" in message
+    assert "fine-tuning jobs" in message
+else:
+    raise AssertionError("Expected BootstrapFinetune to reject too few threads.")
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/teleprompt/bootstrap_finetune.py",
+    "symbol": "BootstrapFinetune.compile"
+  },
+  {
+    "file": "dspy/primitives/module.py",
+    "symbol": "Module.predictors"
+  }
+]
+
+## Full evidence files
+### dspy/teleprompt/bootstrap_finetune.py
+0001: import logging
+0002: from collections import defaultdict
+0003: from typing import Any, Callable
+0004: 
+0005: import dspy
+0006: from dspy.adapters.base import Adapter
+0007: from dspy.adapters.chat_adapter import ChatAdapter
+0008: from dspy.clients.lm import LM
+0009: from dspy.clients.utils_finetune import infer_data_format
+0010: from dspy.dsp.utils.settings import settings
+0011: from dspy.predict.predict import Predict
+0012: from dspy.primitives.example import Example
+0013: from dspy.primitives.module import Module
+0014: from dspy.teleprompt.bootstrap_trace import bootstrap_trace_data
+0015: from dspy.teleprompt.teleprompt import Teleprompter
+0016: 
+0017: logger = logging.getLogger(__name__)
+0018: 
+0019: 
+0020: class FinetuneTeleprompter(Teleprompter):
+0021:     def __init__(
+0022:         self,
+0023:         train_kwargs: dict[str, Any] | dict[LM, dict[str, Any]] | None = None,
+0024:     ):
+0025:         self.train_kwargs: dict[LM, Any] = self.convert_to_lm_dict(train_kwargs or {})
+0026: 
+0027:     @staticmethod
+0028:     def convert_to_lm_dict(arg) -> dict[LM, Any]:
+0029:         non_empty_dict = arg and isinstance(arg, dict)
+0030:         if non_empty_dict and all(isinstance(k, LM) for k in arg.keys()):
+0031:             return arg
+0032:         # Default to using the same value for all LMs
+0033:         return defaultdict(lambda: arg)
+0034: 
+0035: 
+0036: class BootstrapFinetune(FinetuneTeleprompter):
+0037:     def __init__(
+0038:         self,
+0039:         metric: Callable | None = None,
+0040:         multitask: bool = True,
+0041:         train_kwargs: dict[str, Any] | dict[LM, dict[str, Any]] | None = None,
+0042:         adapter: Adapter | dict[LM, Adapter] | None = None,
+0043:         exclude_demos: bool = False,
+0044:         num_threads: int | None = None,
+0045:     ):
+0046:         # TODO(feature): Inputs train_kwargs (a dict with string keys) and
+0047:         # adapter (Adapter) can depend on the LM they are used with. We are
+0048:         # takingthese as parameters for the time being. However, they can be
+0049:         # attached to LMs themselves -- an LM could know which adapter it should
+0050:         # be used with along with the train_kwargs. This will lead the only
+0051:         # required argument for LM.finetune() to be the train dataset.
+0052: 
+0053:         super().__init__(train_kwargs=train_kwargs)
+0054:         self.metric = metric
+0055:         self.multitask = multitask
+0056:         self.adapter: dict[LM, Adapter] = self.convert_to_lm_dict(adapter)
+0057:         self.exclude_demos = exclude_demos
+0058:         self.num_threads = num_threads
+0059: 
+0060:     def compile(
+0061:         self, student: Module, trainset: list[Example], teacher: Module | list[Module] | None = None
+0062:     ) -> Module:
+0063:         # TODO: Print statements can be converted to logger.info if we ensure
+0064:         # that the default DSPy logger logs info level messages in notebook
+0065:         # environments.
+0066:         logger.info("Preparing the student and teacher programs...")
+0067:         all_predictors_have_lms(student)
+0068: 
+0069:         logger.info("Bootstrapping data...")
+0070:         trace_data = []
+0071: 
+0072:         teachers = teacher if isinstance(teacher, list) else [teacher]
+0073:         teachers = [prepare_teacher(student, t) for t in teachers]
+0074:         num_threads = self.num_threads or dspy.settings.num_threads
+0075:         for t in teachers:
+0076:             trace_data += bootstrap_trace_data(program=t, dataset=trainset, metric=self.metric, num_threads=num_threads)
+0077: 
+0078:         logger.info("Preparing the train data...")
+0079:         key_to_data = {}
+0080:         for pred_ind, pred in enumerate(student.predictors()):
+0081:             data_pred_ind = None if self.multitask else pred_ind
+0082:             if pred.lm is None:
+0083:                 raise ValueError(
+0084:                     f"Predictor {pred_ind} does not have an LM assigned. "
+0085:                     f"Please ensure the module's predictors have their LM set before fine-tuning. "
+0086:                     f"You can set it using: your_module.set_lm(your_lm)"
+0087:                 )
+0088:             training_key = (pred.lm, data_pred_ind)
+0089: 
+0090:             if training_key not in key_to_data:
+0091:                 train_data, data_format = self._prepare_finetune_data(
+0092:                     trace_data=trace_data, lm=pred.lm, pred_ind=data_pred_ind
+0093:                 )
+0094:                 logger.info(f"Using {len(train_data)} data points for fine-tuning the model: {pred.lm.model}")
+0095:                 finetune_kwargs = {
+0096:                     "lm": pred.lm,
+0097:                     "train_data": train_data,
+0098:                     "train_data_format": data_format,
+0099:                     "train_kwargs": self.train_kwargs[pred.lm],
+0100:                 }
+0101:                 key_to_data[training_key] = finetune_kwargs
+0102: 
+0103:         logger.info("Starting LM fine-tuning...")
+0104:         # TODO(feature): We could run batches of fine-tuning jobs in sequence
+0105:         # to avoid exceeding the number of threads.
+0106:         if len(key_to_data) > num_threads:
+0107:             raise ValueError(
+0108:                 "BootstrapFinetune requires `num_threads` to be bigger than or equal to the number of fine-tuning "
+0109:                 f"jobs. There are {len(key_to_data)} fine-tuning jobs to start, but the number of threads is: "
+0110:                 f"{num_threads}! If the `multitask` flag is set to False, the number of fine-tuning jobs will "
+0111:                 "be equal to the number of predictors in the student program. If the `multitask` flag is set to True, "
+0112:                 "the number of fine-tuning jobs will be equal to: 1 if there is only a context LM, or the number of "
+0113:                 "unique LMs attached to the predictors in the student program. In any case, the number of fine-tuning "
+0114:                 "jobs will be less than or equal to the number of predictors."
+0115:             )
+0116:         logger.info(f"{len(key_to_data)} fine-tuning job(s) to start")
+0117:         key_to_lm = self.finetune_lms(key_to_data)
+0118: 
+0119:         logger.info("Updating the student program with the fine-tuned LMs...")
+0120:         for pred_ind, pred in enumerate(student.predictors()):
+0121:             data_pred_ind = None if self.multitask else pred_ind
+0122:             training_key = (pred.lm, data_pred_ind)
+0123:             finetuned_lm = key_to_lm[training_key]
+0124:             if isinstance(finetuned_lm, Exception):
+0125:                 raise RuntimeError(f"Finetuned LM for predictor {pred_ind} failed.") from finetuned_lm
+0126:             pred.lm = finetuned_lm
+0127:             # TODO: What should the correct behavior be here? Should
+0128:             # BootstrapFinetune modify the prompt demos according to the
+0129:             # train data?
+0130:             pred.demos = [] if self.exclude_demos else pred.demos
+0131: 
+0132:         logger.info("BootstrapFinetune has finished compiling the student program")
+0133:         student._compiled = True
+0134:         return student
+0135: 
+0136:     @staticmethod
+0137:     def finetune_lms(finetune_dict) -> dict[Any, LM]:
+0138:         num_jobs = len(finetune_dict)
+0139:         logger.info(f"Starting {num_jobs} fine-tuning job(s)...")
+0140:         # TODO(nit) Pass an identifier to the job so that we can tell the logs
+0141:         # coming from different fine-tune threads.
+0142: 
+0143:         key_to_job = {}
+0144:         for key, finetune_kwargs in finetune_dict.items():
+0145:             lm: LM = finetune_kwargs.pop("lm")
+0146:             # TODO: The following line is a hack. We should re-think how to free
+0147:             # up resources for fine-tuning. This might mean introducing a new
+0148:             # provider method (e.g. prepare_for_finetune) that can be called
+0149:             # before fine-tuning is started.
+0150:             logger.info(
+0151:                 "Calling lm.kill() on the LM to be fine-tuned to free up resources. This won't have any effect if the "
+0152:                 "LM is not running."
+0153:             )
+0154:             lm.kill()
+0155:             key_to_job[key] = lm.finetune(**finetune_kwargs)
+0156: 
+0157:         key_to_lm = {}
+0158:         for ind, (key, job) in enumerate(key_to_job.items()):
+0159:             result = job.result()
+0160:             if isinstance(result, Exception):
+0161:                 raise result
+0162:             key_to_lm[key] = result
+0163:             job.thread.join()
+0164:             logger.info(f"Job {ind + 1}/{num_jobs} is done")
+0165: 
+0166:         return key_to_lm
+0167: 
+0168:     def _prepare_finetune_data(self, trace_data: list[dict[str, Any]], lm: LM, pred_ind: int | None = None):
+0169:         # TODO(nit) Log dataset details/size; make logs nicer
+0170:         if self.metric:
+0171:             logger.info(f"Collected data for {len(trace_data)} examples")
+0172:             trace_data = [d for d in trace_data if d["score"]]
+0173:             logger.info(f"After filtering with the metric, {len(trace_data)} examples remain")
+0174: 
+0175:         data = []
+0176:         adapter = self.adapter[lm] or settings.adapter or ChatAdapter()
+0177:         data_format = infer_data_format(adapter)
+0178:         for item in trace_data:
+0179:             for pred_ind, _ in enumerate(item["trace"]):
+0180:                 include_data = pred_ind is None or pred_ind == pred_ind
+0181:                 if include_data:
+0182:                     call_data = build_call_data_from_trace(
+0183:                         trace=item["trace"], pred_ind=pred_ind, adapter=adapter, exclude_demos=self.exclude_demos
+0184:                     )
+0185:                     data.append(call_data)
+0186: 
+0187:         import random
+0188: 
+0189:         random.Random(0).shuffle(data)
+0190: 
+0191:         return data, data_format
+0192: 
+0193: 
+0194: # Note: Shared below are useful functions for preparing student/teacher programs
+0195: # Similar methods are implemented separately and used by other DSPy
+0196: # teleprompters. These can be moved to shared locations.
+0197: def build_call_data_from_trace(
+0198:     trace: list[dict],
+0199:     pred_ind: int,
+0200:     adapter: Adapter,
+0201:     exclude_demos: bool = False,
+0202: ) -> dict[str, list[dict[str, Any]]]:
+0203:     # Find data that's relevant to the predictor
+0204:     pred, inputs, outputs = trace[pred_ind]  # assuming that the order is kept
+0205: 
+0206:     demos = [] if exclude_demos else pred.demos
+0207:     call_data = adapter.format_finetune_data(
+0208:         signature=pred.signature,
+0209:         demos=demos,
+0210:         inputs=inputs,
+0211:         outputs=outputs,
+0212:     )
+0213:     return call_data
+0214: 
+0215: 
+0216: # # TODO(PR) check with team
+0217: # def bootstrap_trace_data_one_example(
+0218: #     example: Example,
+0219: #     program: Program,
+0220: #     metric: Optional[Callable] = None
+0221: # ) -> dict[str, Any]:
+0222: #     # Return a dict with the following keys:
+0223: #     #     example, prediction, trace, and score (if metric != None)
+0224: #     with dspy.context(trace=[]):
+0225: #         prediction = program(**example.inputs())
+0226: #         trace = dspy.settings.trace
+0227: #         score = metric(example, prediction, trace) if metric else None
+0228: 
+0229: #     data_dict = dict(
+0230: #         example=example,
+0231: #         prediction=prediction,
+0232: #         trace=trace,
+0233: #     )
+0234: #     if metric:
+0235: #         data_dict["score"] = score
+0236: 
+0237: #     return data_dict
+0238: 
+0239: 
+0240: # Note: Shared below are useful functions for preparing student/teacher programs
+0241: # Similar methods are implemented separately and used by other DSPy
+0242: # teleprompters. These can be moved to shared locations.
+0243: def all_predictors_have_lms(program: Module) -> bool:
+0244:     """Return True if all predictors in the program have an LM set."""
+0245:     return all(pred.lm for pred in program.predictors())
+0246: 
+0247: 
+0248: def copy_program_with_lms(program: Module) -> Module:
+0249:     pred_lms = [pred.lm for pred in program.predictors()]
+0250:     program = program.deepcopy()
+0251:     for ind, pred in enumerate(program.predictors()):
+0252:         pred.lm = pred_lms[ind]
+0253:     return program
+0254: 
+0255: 
+0256: def prepare_student(student: Module) -> Module:
+0257:     if getattr(student, "_compiled", False):
+0258:         raise ValueError("The student program should not be compiled.")
+0259: 
+0260:     # TODO: Should we use reset_copy here? How would it affect the student
+0261:     # program's predictor LMs, if they are set?
+0262: 
+0263:     # TODO: Should there be a deepcopy here?
+0264:     # student = student.deepcopy()
+0265:     return student
+0266: 
+0267: 
+0268: def prepare_teacher(student: Module, teacher: Module | None = None) -> Module:
+0269:     if teacher is None:
+0270:         return student
+0271: 
+0272:     # Ensuring that the student and teacher are are structurally equivalent
+0273:     assert_structural_equivalency(student, teacher)
+0274: 
+0275:     # Ensuring that the student and teacher programs do not share predictors
+0276:     assert_no_shared_predictor(student, teacher)
+0277: 
+0278:     return teacher
+0279: 
+0280: 
+0281: def assert_structural_equivalency(program1: object, program2: object):
+0282:     assert isinstance(program1, Module)
+0283:     assert isinstance(program2, Module)
+0284: 
+0285:     num1 = len(program1.predictors())
+0286:     num2 = len(program2.predictors())
+0287:     err = f"Structurally equivalent programs must have the the number of predictors. The number of predictors for the two modules do not match: {num1} != {num2}"
+0288:     assert num1 == num2, err
+0289: 
+0290:     pzip = zip(program1.named_predictors(), program2.named_predictors(), strict=False)
+0291:     for ind, ((name1, pred1), (name2, pred2)) in enumerate(pzip):
+0292:         err = f"Program predictor names must match at  corresponding indices for structural equivalency. The predictor names for the programs do not match at index {ind}: '{name1}' != '{name2}'"
+0293:         assert name1 == name2, err
+0294:         assert isinstance(pred1, Predict)
+0295:         assert isinstance(pred2, Predict)
+0296: 
+0297: 
+0298: def assert_no_shared_predictor(program1: Module, program2: Module):
+0299:     id_to_name1 = {id(p): n for n, p in program1.named_predictors()}
+0300:     id_to_name2 = {id(p): n for n, p in program2.named_predictors()}
+0301:     shared_ids = set(id_to_name1.keys()) & set(id_to_name2.keys())
+0302: 
+0303:     pred_names = ", ".join(id_to_name1[id] for id in shared_ids)
+0304:     err = f"The programs share the following predictor(s) with each other: {pred_names}"
+0305:     assert not shared_ids, err
+0306: 
+0307: 
+0308: def get_unique_lms(program: Module) -> list[LM]:
+0309:     lms = [pred.lm for pred in program.predictors()]
+0310:     return list(set(lms))
+0311: 
+0312: 
+0313: def launch_lms(program: Module):
+0314:     lms = get_unique_lms(program)
+0315:     for lm in lms:
+0316:         lm.launch()
+0317: 
+0318: 
+0319: def kill_lms(program: Module):
+0320:     lms = get_unique_lms(program)
+0321:     for lm in lms:
+0322:         lm.kill()
+
+### dspy/primitives/module.py
+0001: import inspect
+0002: import logging
+0003: from typing import Any, TextIO
+0004: 
+0005: from dspy.dsp.utils.settings import settings
+0006: from dspy.predict.parallel import Parallel
+0007: from dspy.primitives.base_module import BaseModule
+0008: from dspy.primitives.example import Example
+0009: from dspy.primitives.prediction import Prediction
+0010: from dspy.utils import magicattr
+0011: from dspy.utils.callback import with_callbacks
+0012: from dspy.utils.inspect_history import pretty_print_history
+0013: from dspy.utils.usage_tracker import track_usage
+0014: 
+0015: logger = logging.getLogger(__name__)
+0016: 
+0017: 
+0018: class ProgramMeta(type):
+0019:     """Metaclass ensuring every ``dspy.Module`` instance is properly initialised."""
+0020: 
+0021:     def __call__(cls, *args, **kwargs):
+0022:         # Create the instance without invoking ``__init__`` so we can inject
+0023:         # the base initialization beforehand.
+0024:         obj = cls.__new__(cls, *args, **kwargs)
+0025:         if isinstance(obj, cls):
+0026:             # ``_base_init`` sets attributes that should exist on all modules
+0027:             # even when a subclass forgets to call ``super().__init__``.
+0028:             Module._base_init(obj)
+0029:             cls.__init__(obj, *args, **kwargs)
+0030: 
+0031:             # Guarantee existence of critical attributes if ``__init__`` didn't
+0032:             # create them.
+0033:             if not hasattr(obj, "callbacks"):
+0034:                 obj.callbacks = []
+0035:             if not hasattr(obj, "history"):
+0036:                 obj.history = []
+0037:         return obj
+0038: 
+0039: 
+0040: class Module(BaseModule, metaclass=ProgramMeta):
+0041:     """Base class for all DSPy modules (programs).
+0042: 
+0043:     A Module is a building block for DSPy programs that can contain predictors,
+0044:     sub-modules, and custom logic. Modules can be composed together to create
+0045:     complex pipelines and can be optimized using DSPy's teleprompters.
+0046: 
+0047:     All DSPy programs should inherit from this class and implement a ``forward``
+0048:     method that defines the program's logic.
+0049: 
+0050:     Args:
+0051:         callbacks: Optional list of callback handlers for instrumentation
+0052:             and monitoring.
+0053: 
+0054:     Attributes:
+0055:         callbacks: List of registered callback handlers.
+0056:         history: List of LM call history for this module.
+0057: 
+0058:     Examples:
+0059:         >>> import dspy
+0060:         >>> class MyProgram(dspy.Module):
+0061:         ...     def __init__(self):
+0062:         ...         super().__init__()
+0063:         ...         self.predictor = dspy.Predict("question -> answer")
+0064:         ...
+0065:         ...     def forward(self, question):
+0066:         ...         return self.predictor(question=question)
+0067:     """
+0068: 
+0069:     def _base_init(self):
+0070:         self._compiled = False
+0071:         self.callbacks = []
+0072:         self.history = []
+0073: 
+0074:     def __init__(self, callbacks=None):
+0075:         self.callbacks = callbacks or []
+0076:         self._compiled = False
+0077:         # LM calling history of the module.
+0078:         self.history = []
+0079: 
+0080:     def __getstate__(self):
+0081:         state = self.__dict__.copy()
+0082:         state.pop("history", None)
+0083:         state.pop("callbacks", None)
+0084:         return state
+0085: 
+0086:     def __setstate__(self, state):
+0087:         self.__dict__.update(state)
+0088:         if not hasattr(self, "history"):
+0089:             self.history = []
+0090:         if not hasattr(self, "callbacks"):
+0091:             self.callbacks = []
+0092: 
+0093:     @with_callbacks
+0094:     def __call__(self, *args, **kwargs) -> Prediction:
+0095:         from dspy.dsp.utils.settings import thread_local_overrides
+0096: 
+0097:         caller_modules = settings.caller_modules or []
+0098:         caller_modules = list(caller_modules)
+0099:         caller_modules.append(self)
+0100: 
+0101:         with settings.context(caller_modules=caller_modules):
+0102:             if settings.track_usage and thread_local_overrides.get().get("usage_tracker") is None:
+0103:                 with track_usage() as usage_tracker:
+0104:                     output = self.forward(*args, **kwargs)
+0105:                 tokens = usage_tracker.get_total_tokens()
+0106:                 self._set_lm_usage(tokens, output)
+0107: 
+0108:                 return output
+0109: 
+0110:             return self.forward(*args, **kwargs)
+0111: 
+0112:     @with_callbacks
+0113:     async def acall(self, *args, **kwargs) -> Prediction:
+0114:         from dspy.dsp.utils.settings import thread_local_overrides
+0115: 
+0116:         caller_modules = settings.caller_modules or []
+0117:         caller_modules = list(caller_modules)
+0118:         caller_modules.append(self)
+0119: 
+0120:         with settings.context(caller_modules=caller_modules):
+0121:             if settings.track_usage and thread_local_overrides.get().get("usage_tracker") is None:
+0122:                 with track_usage() as usage_tracker:
+0123:                     output = await self.aforward(*args, **kwargs)
+0124:                     tokens = usage_tracker.get_total_tokens()
+0125:                     self._set_lm_usage(tokens, output)
+0126: 
+0127:                     return output
+0128: 
+0129:             return await self.aforward(*args, **kwargs)
+0130: 
+0131:     def named_predictors(self):
+0132:         """Return all named Predict modules in this module.
+0133: 
+0134:         Iterates through all parameters and returns those that are instances
+0135:         of ``dspy.Predict``, along with their names.
+0136: 
+0137:         Returns:
+0138:             list[tuple[str, Predict]]: A list of (name, predictor) tuples
+0139:                 where name is the attribute path and predictor is the
+0140:                 Predict instance.
+0141: 
+0142:         Examples:
+0143:             >>> import dspy
+0144:             >>> class MyProgram(dspy.Module):
+0145:             ...     def __init__(self):
+0146:             ...         super().__init__()
+0147:             ...         self.qa = dspy.Predict("question -> answer")
+0148:             ...         self.summarize = dspy.Predict("text -> summary")
+0149:             ...
+0150:             >>> program = MyProgram()
+0151:             >>> for name, p in program.named_predictors():
+0152:             ...     print(name)
+0153:             qa
+0154:             summarize
+0155:         """
+0156:         from dspy.predict.predict import Predict
+0157: 
+0158:         return [(name, param) for name, param in self.named_parameters() if isinstance(param, Predict)]
+0159: 
+0160:     def predictors(self):
+0161:         """Return all Predict modules in this module.
+0162: 
+0163:         Returns:
+0164:             list[Predict]: A list of all Predict instances in this module.
+0165: 
+0166:         Examples:
+0167:             >>> import dspy
+0168:             >>> class MyProgram(dspy.Module):
+0169:             ...     def __init__(self):
+0170:             ...         super().__init__()
+0171:             ...         self.qa = dspy.Predict("question -> answer")
+0172:             ...
+0173:             >>> program = MyProgram()
+0174:             >>> len(program.predictors())
+0175:             1
+0176:         """
+0177:         return [param for _, param in self.named_predictors()]
+0178: 
+0179:     def set_lm(self, lm):
+0180:         """Set the language model for all predictors in this module.
+0181: 
+0182:         This method recursively sets the language model for all Predict
+0183:         instances contained within this module.
+0184: 
+0185:         Args:
+0186:             lm: The language model instance to use for all predictors.
+0187: 
+0188:         Examples:
+0189:             >>> import dspy
+0190:             >>> lm = dspy.LM("openai/gpt-4o-mini")
+0191:             >>> program = dspy.Predict("question -> answer")
+0192:             >>> program.set_lm(lm)
+0193:         """
+0194:         for _, param in self.named_predictors():
+0195:             param.lm = lm
+0196: 
+0197:     def get_lm(self):
+0198:         """Get the language model used by this module's predictors.
+0199: 
+0200:         Returns the language model if all predictors use the same LM.
+0201:         Raises an error if multiple different LMs are in use.
+0202: 
+0203:         Returns:
+0204:             The language model instance used by this module's predictors.
+0205: 
+0206:         Raises:
+0207:             ValueError: If multiple different language models are being
+0208:                 used by the predictors in this module.
+0209:         """
+0210:         all_used_lms = [param.lm for _, param in self.named_predictors()]
+0211: 
+0212:         if len(set(all_used_lms)) == 1:
+0213:             return all_used_lms[0]
+0214: 
+0215:         raise ValueError("Multiple LMs are being used in the module. There's no unique LM to return.")
+0216: 
+0217:     def __repr__(self):
+0218:         s = []
+0219: 
+0220:         for name, param in self.named_predictors():
+0221:             s.append(f"{name} = {param}")
+0222: 
+0223:         return "\n".join(s)
+0224: 
+0225:     def map_named_predictors(self, func):
+0226:         """Apply a function to all named predictors in this module.
+0227: 
+0228:         This method iterates through all Predict instances in the module
+0229:         and applies the given function to each, replacing the original
+0230:         predictor with the function's return value.
+0231: 
+0232:         Args:
+0233:             func: A callable that takes a Predict instance and returns
+0234:                 a new Predict instance (or compatible object).
+0235: 
+0236:         Returns:
+0237:             Module: Returns self for method chaining.
+0238: 
+0239:         Examples:
+0240:             >>> import dspy
+0241:             >>> class MyProgram(dspy.Module):
+0242:             ...     def __init__(self):
+0243:             ...         super().__init__()
+0244:             ...         self.qa = dspy.Predict("question -> answer")
+0245:             ...
+0246:             >>> program = MyProgram()
+0247:             >>> program.map_named_predictors(lambda p: p)
+0248:         """
+0249:         for name, predictor in self.named_predictors():
+0250:             set_attribute_by_name(self, name, func(predictor))
+0251:         return self
+0252: 
+0253:     def inspect_history(self, n: int = 1, file: "TextIO | None" = None) -> None:
+0254:         """Display the LM call history for this module.
+0255: 
+0256:         Prints a formatted view of the most recent language model calls
+0257:         made by this module, useful for debugging and understanding
+0258:         the module's behavior.
+0259: 
+0260:         Args:
+0261:             n: The number of recent history entries to display.
+0262:                 Defaults to 1.
+0263:             file: An optional file-like object to write output to. When
+0264:                 provided, ANSI color codes are automatically disabled.
+0265:                 Defaults to `None` (prints to stdout).
+0266:         """
+0267:         pretty_print_history(self.history, n, file=file)
+0268: 
+0269:     def batch(
+0270:         self,
+0271:         examples: list[Example],
+0272:         num_threads: int | None = None,
+0273:         max_errors: int | None = None,
+0274:         return_failed_examples: bool = False,
+0275:         provide_traceback: bool | None = None,
+0276:         disable_progress_bar: bool = False,
+0277:         timeout: int = 120,
+0278:         straggler_limit: int = 3,
+0279:     ) -> list[Example] | tuple[list[Example], list[Example], list[Exception]]:
+0280:         """
+0281:         Processes a list of dspy.Example instances in parallel using the Parallel module.
+0282: 
+0283:         Args:
+0284:             examples: List of dspy.Example instances to process.
+0285:             num_threads: Number of threads to use for parallel processing.
+0286:             max_errors: Maximum number of errors allowed before stopping execution.
+0287:                 If ``None``, inherits from ``dspy.settings.max_errors``.
+0288:             return_failed_examples: Whether to return failed examples and exceptions.
+0289:             provide_traceback: Whether to include traceback information in error logs.
+0290:             disable_progress_bar: Whether to display the progress bar.
+0291:             timeout: Seconds before a straggler task is resubmitted. Set to 0 to disable.
+0292:             straggler_limit: Only check for stragglers when this many or fewer tasks remain.
+0293: 
+0294:         Returns:
+0295:             List of results, and optionally failed examples and exceptions.
+0296:         """
+0297:         # Create a list of execution pairs (self, example)
+0298:         exec_pairs = [(self, example.inputs()) for example in examples]
+0299: 
+0300:         # Create an instance of Parallel
+0301:         parallel_executor = Parallel(
+0302:             num_threads=num_threads,
+0303:             max_errors=max_errors,
+0304:             return_failed_examples=return_failed_examples,
+0305:             provide_traceback=provide_traceback,
+0306:             disable_progress_bar=disable_progress_bar,
+0307:             timeout=timeout,
+0308:             straggler_limit=straggler_limit,
+0309:         )
+0310: 
+0311:         # Execute the forward method of Parallel
+0312:         if return_failed_examples:
+0313:             results, failed_examples, exceptions = parallel_executor.forward(exec_pairs)
+0314:             return results, failed_examples, exceptions
+0315:         else:
+0316:             results = parallel_executor.forward(exec_pairs)
+0317:             return results
+0318: 
+0319:     def _set_lm_usage(self, tokens: dict[str, Any], output: Any):
+0320:         # Some optimizers (e.g., GEPA bootstrap tracing) temporarily patch
+0321:         # module.forward to return a tuple: (prediction, trace).
+0322:         # When usage tracking is enabled, ensure we attach usage to the
+0323:         # prediction object if present.
+0324:         prediction_in_output = None
+0325:         if isinstance(output, Prediction):
+0326:             prediction_in_output = output
+0327:         elif isinstance(output, tuple) and len(output) > 0 and isinstance(output[0], Prediction):
+0328:             prediction_in_output = output[0]
+0329:         if prediction_in_output:
+0330:             prediction_in_output.set_lm_usage(tokens)
+0331:         else:
+0332:             logger.warning("Failed to set LM usage. Please return `dspy.Prediction` object from dspy.Module to enable usage tracking.")
+0333: 
+0334: 
+0335:     def __getattribute__(self, name):
+0336:         attr = super().__getattribute__(name)
+0337: 
+0338:         if name == "forward" and callable(attr):
+0339:             # Check if forward is called through __call__ or directly
+0340:             stack = inspect.stack()
+0341:             forward_called_directly = len(stack) <= 1 or stack[1].function != "__call__"
+0342: 
+0343:             if forward_called_directly:
+0344:                 logger.warning(
+0345:                     f"Calling module.forward(...) on {self.__class__.__name__} directly is discouraged. "
+0346:                     f"Please use module(...) instead."
+0347:                 )
+0348: 
+0349:         return attr
+0350: 
+0351: 
+0352: def set_attribute_by_name(obj, name, value):
+0353:     magicattr.set(obj, name, value)
+
+Return JSON that matches the schema exactly.

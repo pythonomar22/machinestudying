@@ -1,0 +1,313 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_4bf6d24b1327`
+- Label: `lm_provider_integration_and_configuration`
+- Question: `I'm using an OpenAI-branded model name for inference, but the remote fine-tuning API usually wants the bare model ID without the provider prefix. I want proof that DSPy strips the prefix before it starts the remote training job instead of sending the fully qualified inference string.
+
+Give me a complete, runnable Python program that patches the OpenAI fine-tuning path offline and prints/asserts the exact model string DSPy hands to the remote training call.`
+- Gold answer:
+```python
+from unittest import mock
+
+from dspy.clients.openai import OpenAIProvider, TrainingJobOpenAI
+from dspy.clients.utils_finetune import TrainDataFormat
+
+captured = {}
+
+def fake_start(train_file_id, model, train_kwargs=None):
+    captured['train_file_id'] = train_file_id
+    captured['model'] = model
+    captured['train_kwargs'] = train_kwargs
+    return 'job_123'
+
+job = TrainingJobOpenAI(
+    model='openai/gpt-4o-mini',
+    train_data=[{'messages': []}],
+    train_data_format=TrainDataFormat.CHAT,
+    train_kwargs={'n_epochs': 2},
+)
+
+with mock.patch.object(OpenAIProvider, 'validate_data_format'), \
+     mock.patch.object(OpenAIProvider, 'upload_data', return_value='file_123'), \
+     mock.patch.object(OpenAIProvider, '_start_remote_training', side_effect=fake_start), \
+     mock.patch.object(OpenAIProvider, 'wait_for_job'), \
+     mock.patch.object(OpenAIProvider, 'get_trained_model', return_value='ft:gpt-4o-mini:demo'):
+    result = OpenAIProvider.finetune(
+        job=job,
+        model='openai/gpt-4o-mini',
+        train_data=[{'messages': []}],
+        train_data_format=TrainDataFormat.CHAT,
+        train_kwargs={'n_epochs': 2},
+    )
+
+print(captured['model'])
+print(result)
+assert captured['model'] == 'gpt-4o-mini'
+assert result == 'ft:gpt-4o-mini:demo'
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/clients/openai.py",
+    "symbol": "OpenAIProvider.finetune"
+  },
+  {
+    "file": "dspy/clients/openai.py",
+    "symbol": "OpenAIProvider._remove_provider_prefix"
+  }
+]
+
+## Full evidence files
+### dspy/clients/openai.py
+0001: import time
+0002: from datetime import datetime
+0003: from typing import Any
+0004: 
+0005: import openai
+0006: 
+0007: from dspy.clients.provider import Provider, TrainingJob
+0008: from dspy.clients.utils_finetune import TrainDataFormat, TrainingStatus, save_data
+0009: 
+0010: 
+0011: class TrainingJobOpenAI(TrainingJob):
+0012:     def __init__(self, *args, **kwargs):
+0013:         super().__init__(*args, **kwargs)
+0014:         self.provider_file_id = None
+0015:         self.provider_job_id = None
+0016: 
+0017:     def cancel(self):
+0018:         # Cancel the provider job
+0019:         if OpenAIProvider.does_job_exist(self.provider_job_id):
+0020:             status = self.status()
+0021:             if OpenAIProvider.is_terminal_training_status(status):
+0022:                 err_msg = "Jobs that are complete cannot be canceled."
+0023:                 err_msg += f" Job with ID {self.provider_job_id} is done."
+0024:                 raise Exception(err_msg)
+0025:             openai.fine_tuning.jobs.cancel(self.provider_job_id)
+0026:             self.provider_job_id = None
+0027: 
+0028:         # Delete the provider file
+0029:         if self.provider_file_id is not None:
+0030:             if OpenAIProvider.does_file_exist(self.provider_file_id):
+0031:                 openai.files.delete(self.provider_file_id)
+0032:             self.provider_file_id = None
+0033: 
+0034:         # Call the super's cancel method after the custom cancellation logic
+0035:         super().cancel()
+0036: 
+0037:     def status(self) -> TrainingStatus:
+0038:         status = OpenAIProvider.get_training_status(self.provider_job_id)
+0039:         return status
+0040: 
+0041: 
+0042: class OpenAIProvider(Provider):
+0043:     def __init__(self):
+0044:         super().__init__()
+0045:         self.finetunable = True
+0046:         self.TrainingJob = TrainingJobOpenAI
+0047: 
+0048:     @staticmethod
+0049:     def is_provider_model(model: str) -> bool:
+0050:         if model.startswith("openai/") or model.startswith("ft:"):
+0051:             # Althought it looks strange, `ft:` is a unique identifer for openai finetuned models in litellm context:
+0052:             # https://github.com/BerriAI/litellm/blob/cd893134b7974d9f21477049a373b469fff747a5/litellm/utils.py#L4495
+0053:             return True
+0054: 
+0055:         return False
+0056: 
+0057:     @staticmethod
+0058:     def _remove_provider_prefix(model: str) -> str:
+0059:         provider_prefix = "openai/"
+0060:         return model.replace(provider_prefix, "")
+0061: 
+0062:     @staticmethod
+0063:     def finetune(
+0064:         job: TrainingJobOpenAI,
+0065:         model: str,
+0066:         train_data: list[dict[str, Any]],
+0067:         train_data_format: TrainDataFormat | None,
+0068:         train_kwargs: dict[str, Any] | None = None,
+0069:     ) -> str:
+0070:         model = OpenAIProvider._remove_provider_prefix(model)
+0071: 
+0072:         print("[OpenAI Provider] Validating the data format")
+0073:         OpenAIProvider.validate_data_format(train_data_format)
+0074: 
+0075:         print("[OpenAI Provider] Saving the data to a file")
+0076:         data_path = save_data(train_data)
+0077:         print(f"[OpenAI Provider] Data saved to {data_path}")
+0078: 
+0079:         print("[OpenAI Provider] Uploading the data to the provider")
+0080:         provider_file_id = OpenAIProvider.upload_data(data_path)
+0081:         job.provider_file_id = provider_file_id
+0082: 
+0083:         print("[OpenAI Provider] Starting remote training")
+0084:         provider_job_id = OpenAIProvider._start_remote_training(
+0085:             train_file_id=job.provider_file_id,
+0086:             model=model,
+0087:             train_kwargs=train_kwargs,
+0088:         )
+0089:         job.provider_job_id = provider_job_id
+0090:         print(f"[OpenAI Provider] Job started with the OpenAI Job ID {provider_job_id}")
+0091: 
+0092:         print("[OpenAI Provider] Waiting for training to complete")
+0093:         # TODO(feature): Could we stream OAI logs?
+0094:         OpenAIProvider.wait_for_job(job)
+0095: 
+0096:         print("[OpenAI Provider] Attempting to retrieve the trained model")
+0097:         model = OpenAIProvider.get_trained_model(job)
+0098:         print(f"[OpenAI Provider] Model retrieved: {model}")
+0099: 
+0100:         return model
+0101: 
+0102:     @staticmethod
+0103:     def does_job_exist(job_id: str) -> bool:
+0104:         try:
+0105:             # TODO(nit): This call may fail for other reasons. We should check
+0106:             # the error message to ensure that the job does not exist.
+0107:             openai.fine_tuning.jobs.retrieve(job_id)
+0108:             return True
+0109:         except Exception:
+0110:             return False
+0111: 
+0112:     @staticmethod
+0113:     def does_file_exist(file_id: str) -> bool:
+0114:         try:
+0115:             # TODO(nit): This call may fail for other reasons. We should check
+0116:             # the error message to ensure that the file does not exist.
+0117:             openai.files.retrieve(file_id)
+0118:             return True
+0119:         except Exception:
+0120:             return False
+0121: 
+0122:     @staticmethod
+0123:     def is_terminal_training_status(status: TrainingStatus) -> bool:
+0124:         return status in [
+0125:             TrainingStatus.succeeded,
+0126:             TrainingStatus.failed,
+0127:             TrainingStatus.cancelled,
+0128:         ]
+0129: 
+0130:     @staticmethod
+0131:     def get_training_status(job_id: str) -> TrainingStatus:
+0132:         provider_status_to_training_status = {
+0133:             "validating_files": TrainingStatus.pending,
+0134:             "queued": TrainingStatus.pending,
+0135:             "running": TrainingStatus.running,
+0136:             "succeeded": TrainingStatus.succeeded,
+0137:             "failed": TrainingStatus.failed,
+0138:             "cancelled": TrainingStatus.cancelled,
+0139:         }
+0140: 
+0141:         # Check if there is an active job
+0142:         if job_id is None:
+0143:             print("There is no active job.")
+0144:             return TrainingStatus.not_started
+0145: 
+0146:         err_msg = f"Job with ID {job_id} does not exist."
+0147:         assert OpenAIProvider.does_job_exist(job_id), err_msg
+0148: 
+0149:         # Retrieve the provider's job and report the status
+0150:         provider_job = openai.fine_tuning.jobs.retrieve(job_id)
+0151:         provider_status = provider_job.status
+0152:         status = provider_status_to_training_status[provider_status]
+0153: 
+0154:         return status
+0155: 
+0156:     @staticmethod
+0157:     def validate_data_format(data_format: TrainDataFormat):
+0158:         supported_data_formats = [
+0159:             TrainDataFormat.CHAT,
+0160:             TrainDataFormat.COMPLETION,
+0161:         ]
+0162:         if data_format not in supported_data_formats:
+0163:             err_msg = f"OpenAI does not support the data format {data_format}."
+0164:             raise ValueError(err_msg)
+0165: 
+0166:     @staticmethod
+0167:     def upload_data(data_path: str) -> str:
+0168:         # Upload the data to the provider
+0169:         provider_file = openai.files.create(
+0170:             file=open(data_path, "rb"),
+0171:             purpose="fine-tune",
+0172:         )
+0173:         return provider_file.id
+0174: 
+0175:     @staticmethod
+0176:     def _start_remote_training(train_file_id: str, model: str, train_kwargs: dict[str, Any] | None = None) -> str:
+0177:         train_kwargs = train_kwargs or {}
+0178:         provider_job = openai.fine_tuning.jobs.create(
+0179:             model=model,
+0180:             training_file=train_file_id,
+0181:             hyperparameters=train_kwargs,
+0182:         )
+0183:         return provider_job.id
+0184: 
+0185:     @staticmethod
+0186:     def wait_for_job(
+0187:         job: TrainingJobOpenAI,
+0188:         poll_frequency: int = 20,
+0189:     ):
+0190:         # Poll for the job until it is done
+0191:         done = False
+0192:         cur_event_id = None
+0193:         reported_estimated_time = False
+0194:         while not done:
+0195:             # Report estimated time if not already reported
+0196:             if not reported_estimated_time:
+0197:                 remote_job = openai.fine_tuning.jobs.retrieve(job.provider_job_id)
+0198:                 timestamp = remote_job.estimated_finish
+0199:                 if timestamp:
+0200:                     estimated_finish_dt = datetime.fromtimestamp(timestamp)
+0201:                     delta_dt = estimated_finish_dt - datetime.now()
+0202:                     print(f"[OpenAI Provider] The OpenAI estimated time remaining is: {delta_dt}")
+0203:                     reported_estimated_time = True
+0204: 
+0205:             # Get new events
+0206:             page = openai.fine_tuning.jobs.list_events(fine_tuning_job_id=job.provider_job_id, limit=1)
+0207:             new_event = page.data[0] if page.data else None
+0208:             if new_event and new_event.id != cur_event_id:
+0209:                 dt = datetime.fromtimestamp(new_event.created_at)
+0210:                 print(f"[OpenAI Provider] {dt} {new_event.message}")
+0211:                 cur_event_id = new_event.id
+0212: 
+0213:             # Sleep and update the flag
+0214:             time.sleep(poll_frequency)
+0215:             done = OpenAIProvider.is_terminal_training_status(job.status())
+0216: 
+0217:     @staticmethod
+0218:     def get_trained_model(job):
+0219:         status = job.status()
+0220:         if status != TrainingStatus.succeeded:
+0221:             err_msg = f"Job status is {status}."
+0222:             err_msg += f" Must be {TrainingStatus.succeeded} to retrieve model."
+0223:             raise Exception(err_msg)
+0224: 
+0225:         provider_job = openai.fine_tuning.jobs.retrieve(job.provider_job_id)
+0226:         finetuned_model = provider_job.fine_tuned_model
+0227:         return finetuned_model
+
+Return JSON that matches the schema exactly.

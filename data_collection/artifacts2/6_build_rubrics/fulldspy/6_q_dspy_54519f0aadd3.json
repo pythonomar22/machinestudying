@@ -1,0 +1,116 @@
+{
+ "id": "dspy_54519f0aadd3",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I have image inputs nested inside a richer object, and I want to make sure a custom adapter does not serialize them into marker text before the model sees them. I need to inspect the actual message content blocks, not a stringified approximation.\n\nWhat matters is both the few-shot example and the live query, because I have seen systems preserve one and flatten the other. I want a tiny offline harness that makes the split explicit.\n\nGive me a complete, runnable Python program that formats one demo plus one live request through an XML-style adapter, prints both user-message contents, and asserts that the demo keeps three structured image blocks, the live request keeps one, and no custom-type sentinel text leaks through.",
+ "gold_answer": "```python\nimport pydantic\n\nimport dspy\n\n\nclass ImageWrapper(pydantic.BaseModel):\n    images: list[dspy.Image]\n    tag: list[str]\n\n\nclass MySig(dspy.Signature):\n    image: ImageWrapper = dspy.InputField()\n    text: str = dspy.OutputField()\n\n\ndef count_image_blocks(content):\n    if not isinstance(content, list):\n        return 0\n    return sum(1 for item in content if isinstance(item, dict) and item.get('type') == 'image_url')\n\n\ndemo_wrapper = ImageWrapper(\n    images=[\n        dspy.Image('https://example.com/1.jpg'),\n        dspy.Image('https://example.com/2.jpg'),\n        dspy.Image('https://example.com/3.jpg'),\n    ],\n    tag=['demo'],\n)\nquery_wrapper = ImageWrapper(images=[dspy.Image('https://example.com/4.jpg')], tag=['query'])\n\ndemos = [dspy.Example(image=demo_wrapper, text='demo text')]\nmessages = dspy.XMLAdapter().format(MySig, demos, {'image': query_wrapper})\n\nprint(messages[1]['content'])\nprint(messages[-1]['content'])\n\nassert count_image_blocks(messages[1]['content']) == 3\nassert count_image_blocks(messages[-1]['content']) == 1\nassert 'CUSTOM-TYPE-START-IDENTIFIER' not in str(messages)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The program defines a nested wrapper model whose `images` field is `list[dspy.Image]`, and uses that wrapper as the `image` input field of a DSPy signature.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The harness constructs one few-shot demo wrapper holding three images and one live-query wrapper holding one image, wraps the demo with `dspy.Example`, and formats them with `dspy.XMLAdapter().format(...)`.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "It directly inspects the user-message `content` entries at `messages[1]` and `messages[-1]`, using the structured content-block lists returned after custom-type splitting rather than a single flattened prompt string.",
+   "span_ids": [
+    "s3",
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The demo-side check distinguishes three preserved structured `image_url` blocks for the three example images in the few-shot user message.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The live-query check distinguishes a single preserved structured `image_url` block for the query image in the final user message.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The program asserts that no `CUSTOM-TYPE-START-IDENTIFIER` marker text remains in the formatted messages, reflecting that custom-type sentinel serialization is converted back into content blocks before the final user messages are returned.",
+   "span_ids": [
+    "s4",
+    "s5",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "tests/adapters/test_xml_adapter.py",
+   "start_line": 187,
+   "end_line": 193,
+   "excerpt": "0187:     class ImageWrapper(pydantic.BaseModel):\n0188:         images: list[dspy.Image]\n0189:         tag: list[str]\n0190: \n0191:     class MySignature(dspy.Signature):\n0192:         image: ImageWrapper = dspy.InputField()\n0193:         text: str = dspy.OutputField()"
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/adapters/test_xml_adapter.py",
+   "start_line": 195,
+   "end_line": 209,
+   "excerpt": "0195:     image1 = dspy.Image(url=\"https://example.com/image1.jpg\")\n0196:     image2 = dspy.Image(url=\"https://example.com/image2.jpg\")\n0197:     image3 = dspy.Image(url=\"https://example.com/image3.jpg\")\n0198: \n0199:     image_wrapper = ImageWrapper(images=[image1, image2, image3], tag=[\"test\", \"example\"])\n0200:     demos = [\n0201:         dspy.Example(\n0202:             image=image_wrapper,\n0203:             text=\"This is a test image\",\n0204:         ),\n0205:     ]\n0206: \n0207:     image_wrapper_2 = ImageWrapper(images=[dspy.Image(url=\"https://example.com/image4.jpg\")], tag=[\"test\", \"example\"])\n0208:     adapter = dspy.XMLAdapter()\n0209:     messages = adapter.format(MySignature, demos, {\"image\": image_wrapper_2})"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/adapters/test_xml_adapter.py",
+   "start_line": 211,
+   "end_line": 222,
+   "excerpt": "0211:     assert len(messages) == 4\n0212: \n0213:     # Image information in the few-shot example's user message\n0214:     expected_image1_content = {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/image1.jpg\"}}\n0215:     expected_image2_content = {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/image2.jpg\"}}\n0216:     expected_image3_content = {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/image3.jpg\"}}\n0217:     assert expected_image1_content in messages[1][\"content\"]\n0218:     assert expected_image2_content in messages[1][\"content\"]\n0219:     assert expected_image3_content in messages[1][\"content\"]\n0220: \n0221:     # The query image is formatted in the last user message\n0222:     assert {\"type\": \"image_url\", \"image_url\": {\"url\": \"https://example.com/image4.jpg\"}} in messages[-1][\"content\"]"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/types/base_type.py",
+   "start_line": 70,
+   "end_line": 77,
+   "excerpt": "0070:     @pydantic.model_serializer()\n0071:     def serialize_model(self):\n0072:         formatted = self.format()\n0073:         if isinstance(formatted, list):\n0074:             return (\n0075:                 f\"{CUSTOM_TYPE_START_IDENTIFIER}{json.dumps(formatted, ensure_ascii=False)}{CUSTOM_TYPE_END_IDENTIFIER}\"\n0076:             )\n0077:         return formatted"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/types/base_type.py",
+   "start_line": 161,
+   "end_line": 178,
+   "excerpt": "0161:     for message in messages:\n0162:         if message[\"role\"] != \"user\":\n0163:             # Custom type messages are only in user messages\n0164:             continue\n0165: \n0166:         pattern = rf\"{CUSTOM_TYPE_START_IDENTIFIER}(.*?){CUSTOM_TYPE_END_IDENTIFIER}\"\n0167:         result = []\n0168:         last_end = 0\n0169:         # DSPy adapter always formats user input into a string content before custom type splitting\n0170:         content: str = message[\"content\"]\n0171: \n0172:         for match in re.finditer(pattern, content, re.DOTALL):\n0173:             start, end = match.span()\n0174: \n0175:             # Add text before the current block\n0176:             if start > last_end:\n0177:                 result.append({\"type\": \"text\", \"text\": content[last_end:start]})\n0178: "
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/adapters/types/base_type.py",
+   "start_line": 179,
+   "end_line": 209,
+   "excerpt": "0179:             # Parse the JSON inside the block\n0180:             custom_type_content = match.group(1).strip()\n0181:             parsed = None\n0182: \n0183:             for parse_fn in [json.loads, _parse_doubly_quoted_json, json_repair.loads]:\n0184:                 try:\n0185:                     parsed = parse_fn(custom_type_content)\n0186:                     break\n0187:                 except json.JSONDecodeError:\n0188:                     continue\n0189: \n0190:             if parsed:\n0191:                 for custom_type_content in parsed:\n0192:                     result.append(custom_type_content)\n0193:             else:\n0194:                 # fallback to raw string if it's not valid JSON\n0195:                 result.append({\"type\": \"text\", \"text\": custom_type_content})\n0196: \n0197:             last_end = end\n0198: \n0199:         if last_end == 0:\n0200:             # No custom type found, return the original message\n0201:             continue\n0202: \n0203:         # Add any remaining text after the last match\n0204:         if last_end < len(content):\n0205:             result.append({\"type\": \"text\", \"text\": content[last_end:]})\n0206: \n0207:         message[\"content\"] = result\n0208: \n0209:     return messages"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Good multimodal prompt-inspection case: it checks structured content blocks, not just rendered strings.",
+ "source_index": 30,
+ "smalldspy_scope": false
+}

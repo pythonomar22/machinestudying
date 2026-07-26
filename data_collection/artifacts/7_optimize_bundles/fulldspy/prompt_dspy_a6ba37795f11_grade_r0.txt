@@ -1,0 +1,1985 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_a6ba37795f11`
+- Label: `lm_provider_integration_and_configuration`
+- Question: `I'm wrapping our internal gateway in a custom `dspy.BaseLM`. Structured JSON outputs only seem to work when DSPy believes the backend can accept a schema, and I need to know the minimum capability contract I have to advertise on the LM object.
+
+What I want is not a prose answer but a small experiment that shows the three branches: native structured schema, plain JSON mode, and no response-format hint at all.
+
+Give me a complete, runnable Python program that defines tiny offline `dspy.BaseLM` wrappers with different capability combinations, runs the same `dspy.Predict` + `dspy.JSONAdapter` call through each one, and prints/asserts whether DSPy sent a structured schema, plain JSON mode, or no response-format hint.`
+- Model answer:
+```python
+from types import SimpleNamespace
+
+import dspy
+import pydantic
+
+
+class FakeResp(dict):
+    cache_hit = False
+
+    def __init__(self, text):
+        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason="stop")
+        super().__init__({"choices": [choice]})
+        self.choices = [choice]
+        self.usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        self.model = "custom/offline"
+
+
+class CaptureLM(dspy.BaseLM):
+    def __init__(self, support_response_format, support_schema):
+        super().__init__("custom/offline", "chat", 0.0, 1000, False)
+        self._support_response_format = support_response_format
+        self._support_schema = support_schema
+        self.calls = []
+
+    @property
+    def supported_params(self):
+        return {"response_format"} if self._support_response_format else set()
+
+    @property
+    def supports_response_schema(self):
+        return self._support_schema
+
+    def forward(self, prompt=None, messages=None, **kwargs):
+        self.calls.append({"prompt": prompt, "messages": messages, **kwargs})
+        return FakeResp('{"answer": "Paris"}')
+
+    async def aforward(self, prompt=None, messages=None, **kwargs):
+        return self.forward(prompt=prompt, messages=messages, **kwargs)
+
+
+class QASignature(dspy.Signature):
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField()
+
+
+program = dspy.Predict(QASignature)
+adapter = dspy.JSONAdapter()
+structured_lm = CaptureLM(True, True)
+json_mode_lm = CaptureLM(True, False)
+plain_lm = CaptureLM(False, False)
+
+with dspy.context(lm=structured_lm, adapter=adapter):
+    assert program(question="What is the capital of France?").answer == "Paris"
+
+with dspy.context(lm=json_mode_lm, adapter=adapter):
+    assert program(question="What is the capital of France?").answer == "Paris"
+
+with dspy.context(lm=plain_lm, adapter=adapter):
+    assert program(question="What is the capital of France?").answer == "Paris"
+
+structured_rf = structured_lm.calls[0]["response_format"]
+json_mode_rf = json_mode_lm.calls[0]["response_format"]
+plain_has_rf = "response_format" in plain_lm.calls[0]
+
+assert issubclass(structured_rf, pydantic.BaseModel)
+assert json_mode_rf == {"type": "json_object"}
+assert not plain_has_rf
+
+print(
+    {
+        "structured_response_format_type": structured_rf.__name__,
+        "json_mode_response_format": json_mode_rf,
+        "plain_has_response_format": plain_has_rf,
+    }
+)
+```
+
+## Gold answer
+```python
+from types import SimpleNamespace
+
+import dspy
+import pydantic
+
+
+class FakeResp(dict):
+    cache_hit = False
+
+    def __init__(self, text):
+        choice = SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=None), finish_reason="stop")
+        super().__init__({"choices": [choice]})
+        self.choices = [choice]
+        self.usage = {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2}
+        self.model = "custom/offline"
+
+
+class CaptureLM(dspy.BaseLM):
+    def __init__(self, support_response_format, support_schema):
+        super().__init__("custom/offline", "chat", 0.0, 1000, False)
+        self._support_response_format = support_response_format
+        self._support_schema = support_schema
+        self.calls = []
+
+    @property
+    def supported_params(self):
+        return {"response_format"} if self._support_response_format else set()
+
+    @property
+    def supports_response_schema(self):
+        return self._support_schema
+
+    def forward(self, prompt=None, messages=None, **kwargs):
+        self.calls.append({"prompt": prompt, "messages": messages, **kwargs})
+        return FakeResp('{"answer": "Paris"}')
+
+    async def aforward(self, prompt=None, messages=None, **kwargs):
+        return self.forward(prompt=prompt, messages=messages, **kwargs)
+
+
+class QASignature(dspy.Signature):
+    question: str = dspy.InputField()
+    answer: str = dspy.OutputField()
+
+
+program = dspy.Predict(QASignature)
+adapter = dspy.JSONAdapter()
+structured_lm = CaptureLM(True, True)
+json_mode_lm = CaptureLM(True, False)
+plain_lm = CaptureLM(False, False)
+
+with dspy.context(lm=structured_lm, adapter=adapter):
+    assert program(question="What is the capital of France?").answer == "Paris"
+
+with dspy.context(lm=json_mode_lm, adapter=adapter):
+    assert program(question="What is the capital of France?").answer == "Paris"
+
+with dspy.context(lm=plain_lm, adapter=adapter):
+    assert program(question="What is the capital of France?").answer == "Paris"
+
+structured_rf = structured_lm.calls[0]["response_format"]
+json_mode_rf = json_mode_lm.calls[0]["response_format"]
+plain_has_rf = "response_format" in plain_lm.calls[0]
+
+assert issubclass(structured_rf, pydantic.BaseModel)
+assert json_mode_rf == {"type": "json_object"}
+assert not plain_has_rf
+
+print(
+    {
+        "structured_response_format_type": structured_rf.__name__,
+        "json_mode_response_format": json_mode_rf,
+        "plain_has_response_format": plain_has_rf,
+    }
+)
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 30,
+    "statement": "The custom LM must advertise `\"response_format\"` in `supported_params` for `JSONAdapter` to send any response-format hint; if that property omits it, the LM call should have no `response_format` kwarg.",
+    "span_ids": [
+      "s1",
+      "s4",
+      "s9"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "For the simple QA signature used in the experiment, if `supported_params` includes `\"response_format\"` but `supports_response_schema` is `False`, the adapter should send plain JSON mode with `response_format={\"type\": \"json_object\"}`.",
+    "span_ids": [
+      "s1",
+      "s4",
+      "s10"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "If the LM advertises both `\"response_format\"` support and `supports_response_schema = True`, `JSONAdapter` should generate a Pydantic `BaseModel` subclass from the output signature and pass that class as `response_format`.",
+    "span_ids": [
+      "s2",
+      "s3",
+      "s8"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "supporting",
+    "weight": 10,
+    "statement": "The offline `BaseLM` wrapper should inspect the `**kwargs` arriving in `forward` and return an OpenAI chat-completion-shaped response whose `choices[0].message.content` is a JSON string, so the experiment can run without a real provider and still observe the injected `response_format`.",
+    "span_ids": [
+      "s5",
+      "s6",
+      "s7"
+    ]
+  },
+  {
+    "claim_id": "c5",
+    "claim_type": "supporting",
+    "weight": 10,
+    "statement": "The program should instantiate three LM variants for the three capability combinations and run the same `dspy.Predict` with `dspy.JSONAdapter`, then assert or print whether the captured `response_format` was a schema class, `{\"type\": \"json_object\"}`, or absent.",
+    "span_ids": [
+      "s8",
+      "s9",
+      "s10"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/adapters/json_adapter.py",
+    "start_line": 45,
+    "end_line": 56,
+    "excerpt": "0045:     def _json_adapter_call_common(self, lm, lm_kwargs, signature, demos, inputs, call_fn):\n0046:         \"\"\"Common call logic to be used for both sync and async calls.\"\"\"\n0047:         if \"response_format\" not in lm.supported_params:\n0048:             return call_fn(lm, lm_kwargs, signature, demos, inputs)\n0049: \n0050:         has_tool_calls = any(field.annotation == ToolCalls for field in signature.output_fields.values())\n0051: \n0052:         if _has_open_ended_mapping(signature) or (not self.use_native_function_calling and has_tool_calls) or not lm.supports_response_schema:\n0053:             # We found that structured output mode doesn't work well with dspy.ToolCalls as output field.\n0054:             # So we fall back to json mode if native function calling is disabled and ToolCalls is present.\n0055:             lm_kwargs[\"response_format\"] = {\"type\": \"json_object\"}\n0056:             return call_fn(lm, lm_kwargs, signature, demos, inputs)"
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/adapters/json_adapter.py",
+    "start_line": 66,
+    "end_line": 79,
+    "excerpt": "0066:         result = self._json_adapter_call_common(lm, lm_kwargs, signature, demos, inputs, super().__call__)\n0067:         if result:\n0068:             return result\n0069: \n0070:         try:\n0071:             structured_output_model = _get_structured_outputs_response_format(\n0072:                 signature, self.use_native_function_calling\n0073:             )\n0074:             lm_kwargs[\"response_format\"] = structured_output_model\n0075:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)\n0076:         except Exception:\n0077:             logger.warning(\"Failed to use structured output format, falling back to JSON mode.\")\n0078:             lm_kwargs[\"response_format\"] = {\"type\": \"json_object\"}\n0079:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/adapters/json_adapter.py",
+    "start_line": 233,
+    "end_line": 290,
+    "excerpt": "0233:     fields = {}\n0234:     for name, field in signature.output_fields.items():\n0235:         annotation = field.annotation\n0236:         if use_native_function_calling and annotation == ToolCalls:\n0237:             # Skip ToolCalls field if native function calling is enabled.\n0238:             continue\n0239:         default = field.default if hasattr(field, \"default\") else ...\n0240:         fields[name] = (annotation, default)\n0241: \n0242:     # Build the model with extra fields forbidden.\n0243:     pydantic_model = pydantic.create_model(\n0244:         \"DSPyProgramOutputs\",\n0245:         __config__=pydantic.ConfigDict(extra=\"forbid\"),\n0246:         **fields,\n0247:     )\n0248: \n0249:     # Generate the initial schema.\n0250:     schema = pydantic_model.model_json_schema()\n0251: \n0252:     # Remove any DSPy-specific metadata.\n0253:     for prop in schema.get(\"properties\", {}).values():\n0254:         prop.pop(\"json_schema_extra\", None)\n0255: \n0256:     def enforce_required(schema_part: dict):\n0257:         \"\"\"\n0258:         Recursively ensure that:\n0259:             - for any object schema, a \"required\" key is added with all property names (or [] if no properties)\n0260:             - additionalProperties is set to False regardless of the previous value.\n0261:             - the same enforcement is run for nested arrays and definitions.\n0262:         \"\"\"\n0263:         if schema_part.get(\"type\") == \"object\":\n0264:             props = schema_part.get(\"properties\")\n0265:             if props is not None:\n0266:                 # For objects with explicitly declared properties:\n0267:                 schema_part[\"required\"] = list(props.keys())\n0268:                 schema_part[\"additionalProperties\"] = False\n0269:                 for sub_schema in props.values():\n0270:                     if isinstance(sub_schema, dict):\n0271:                         enforce_required(sub_schema)\n0272:             else:\n0273:                 # For objects with no properties (should not happen normally but a fallback).\n0274:                 schema_part[\"properties\"] = {}\n0275:                 schema_part[\"required\"] = []\n0276:                 schema_part[\"additionalProperties\"] = False\n0277:         if schema_part.get(\"type\") == \"array\" and isinstance(schema_part.get(\"items\"), dict):\n0278:             enforce_required(schema_part[\"items\"])\n0279:         # Also enforce in any nested definitions / $defs.\n0280:         for key in (\"$defs\", \"definitions\"):\n0281:             if key in schema_part:\n0282:                 for def_schema in schema_part[key].values():\n0283:                     enforce_required(def_schema)\n0284: \n0285:     enforce_required(schema)\n0286: \n0287:     # Override the model's JSON schema generation to return our precomputed schema.\n0288:     pydantic_model.model_json_schema = lambda *args, **kwargs: schema\n0289: \n0290:     return pydantic_model"
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/clients/base_lm.py",
+    "start_line": 80,
+    "end_line": 88,
+    "excerpt": "0080:     @property\n0081:     def supports_response_schema(self) -> bool:\n0082:         \"\"\"Whether the model supports structured output via response schema.\"\"\"\n0083:         return False\n0084: \n0085:     @property\n0086:     def supported_params(self) -> set[str]:\n0087:         \"\"\"Set of supported OpenAI-style parameter names for the model.\"\"\"\n0088:         return set()"
+  },
+  {
+    "span_id": "s5",
+    "path": "dspy/clients/base_lm.py",
+    "start_line": 122,
+    "end_line": 130,
+    "excerpt": "0122:     @with_callbacks\n0123:     def __call__(\n0124:         self,\n0125:         prompt: str | None = None,\n0126:         messages: list[dict[str, Any]] | None = None,\n0127:         **kwargs\n0128:     ) -> list[dict[str, Any] | str]:\n0129:         response = self.forward(prompt=prompt, messages=messages, **kwargs)\n0130:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)"
+  },
+  {
+    "span_id": "s6",
+    "path": "dspy/clients/base_lm.py",
+    "start_line": 145,
+    "end_line": 167,
+    "excerpt": "0145:     def forward(\n0146:         self,\n0147:         prompt: str | None = None,\n0148:         messages: list[dict[str, Any]] | None = None,\n0149:         **kwargs\n0150:     ):\n0151:         \"\"\"Forward pass for the language model.\n0152: \n0153:         Subclasses must implement this method, and the response should be identical to either of the following formats:\n0154: \n0155:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)\n0156:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)\n0157:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)\n0158: \n0159:         Raises:\n0160:             dspy.ContextWindowExceededError: When the request fails because the\n0161:                 input exceeds the model's context window. DSPy adapters and\n0162:                 modules rely on this error to trigger fallback behavior (e.g.\n0163:                 truncating the prompt and retrying). Each subclass is\n0164:                 responsible for catching its provider's native error and\n0165:                 re-raising it as `dspy.ContextWindowExceededError`.\n0166:         \"\"\"\n0167:         raise NotImplementedError(\"Subclasses must implement this method.\")"
+  },
+  {
+    "span_id": "s7",
+    "path": "dspy/clients/base_lm.py",
+    "start_line": 259,
+    "end_line": 282,
+    "excerpt": "0259:         outputs = []\n0260:         for c in response.choices:\n0261:             output = {}\n0262:             output[\"text\"] = c.message.content if hasattr(c, \"message\") else c[\"text\"]\n0263: \n0264:             if hasattr(c, \"message\") and hasattr(c.message, \"reasoning_content\") and c.message.reasoning_content:\n0265:                 output[\"reasoning_content\"] = c.message.reasoning_content\n0266: \n0267:             if merged_kwargs.get(\"logprobs\"):\n0268:                 output[\"logprobs\"] = c.logprobs if hasattr(c, \"logprobs\") else c[\"logprobs\"]\n0269:             if hasattr(c, \"message\") and getattr(c.message, \"tool_calls\", None):\n0270:                 output[\"tool_calls\"] = c.message.tool_calls\n0271: \n0272:             # Extract citations from LiteLLM response if available\n0273:             citations = self._extract_citations_from_response(c)\n0274:             if citations:\n0275:                 output[\"citations\"] = citations\n0276: \n0277:             outputs.append(output)\n0278: \n0279:         if all(len(output) == 1 for output in outputs):\n0280:             # Return a list if every output only has \"text\" key\n0281:             outputs = [output[\"text\"] for output in outputs]\n0282:         return outputs"
+  },
+  {
+    "span_id": "s8",
+    "path": "tests/adapters/test_json_adapter.py",
+    "start_line": 12,
+    "end_line": 46,
+    "excerpt": "0012: def test_json_adapter_passes_structured_output_when_supported_by_model():\n0013:     class OutputField3(pydantic.BaseModel):\n0014:         subfield1: int = pydantic.Field(description=\"Int subfield 1\", ge=0, le=10)\n0015:         subfield2: float = pydantic.Field(description=\"Float subfield 2\")\n0016: \n0017:     class TestSignature(dspy.Signature):\n0018:         input1: str = dspy.InputField()\n0019:         output1: str = dspy.OutputField()  # Description intentionally left blank\n0020:         output2: bool = dspy.OutputField(desc=\"Boolean output field\")\n0021:         output3: OutputField3 = dspy.OutputField(desc=\"Nested output field\")\n0022:         output4_unannotated = dspy.OutputField(desc=\"Unannotated output field\")\n0023: \n0024:     program = dspy.Predict(TestSignature)\n0025: \n0026:     # Configure DSPy to use an OpenAI LM that supports structured outputs\n0027:     dspy.configure(lm=dspy.LM(model=\"openai/gpt-4o\"), adapter=dspy.JSONAdapter())\n0028:     with mock.patch(\"litellm.completion\") as mock_completion:\n0029:         program(input1=\"Test input\")\n0030: \n0031:     def clean_schema_extra(field_name, field_info):\n0032:         attrs = dict(field_info.__repr_args__())\n0033:         if \"json_schema_extra\" in attrs:\n0034:             attrs[\"json_schema_extra\"] = {\n0035:                 k: v\n0036:                 for k, v in attrs[\"json_schema_extra\"].items()\n0037:                 if k != \"__dspy_field_type\" and not (k == \"desc\" and v == f\"${{{field_name}}}\")\n0038:             }\n0039:         return attrs\n0040: \n0041:     mock_completion.assert_called_once()\n0042:     _, call_kwargs = mock_completion.call_args\n0043:     response_format = call_kwargs.get(\"response_format\")\n0044:     assert response_format is not None\n0045:     assert issubclass(response_format, pydantic.BaseModel)\n0046:     assert response_format.model_fields.keys() == {\"output1\", \"output2\", \"output3\", \"output4_unannotated\"}"
+  },
+  {
+    "span_id": "s9",
+    "path": "tests/adapters/test_json_adapter.py",
+    "start_line": 49,
+    "end_line": 70,
+    "excerpt": "0049: def test_json_adapter_not_using_structured_outputs_when_not_supported_by_model():\n0050:     class TestSignature(dspy.Signature):\n0051:         input1: str = dspy.InputField()\n0052:         output1: str = dspy.OutputField()\n0053:         output2: bool = dspy.OutputField()\n0054: \n0055:     program = dspy.Predict(TestSignature)\n0056: \n0057:     # Configure DSPy to use a model from a fake provider that doesn't support structured outputs\n0058:     dspy.configure(lm=dspy.LM(model=\"fakeprovider/fakemodel\", cache=False), adapter=dspy.JSONAdapter())\n0059:     with mock.patch(\"litellm.completion\") as mock_completion:\n0060:         mock_completion.return_value = ModelResponse(\n0061:             choices=[Choices(message=Message(content=(\"{'output1': 'Test output', 'output2': True}\")))],\n0062:             model=\"openai/gpt-4o\",\n0063:         )\n0064: \n0065:         program(input1=\"Test input\")\n0066: \n0067:     mock_completion.assert_called_once()\n0068:     _, call_kwargs = mock_completion.call_args\n0069:     assert \"response_format\" not in call_kwargs\n0070: "
+  },
+  {
+    "span_id": "s10",
+    "path": "tests/adapters/test_json_adapter.py",
+    "start_line": 655,
+    "end_line": 682,
+    "excerpt": "0655: def test_json_adapter_json_mode_no_structured_outputs():\n0656:     class TestSignature(dspy.Signature):\n0657:         question: str = dspy.InputField()\n0658:         answer: str = dspy.OutputField(desc=\"String output field\")\n0659: \n0660:     dspy.configure(lm=dspy.LM(model=\"openai/gpt-4o\", cache=False), adapter=dspy.JSONAdapter())\n0661:     program = dspy.Predict(TestSignature)\n0662: \n0663:     with (\n0664:         mock.patch(\"litellm.completion\") as mock_completion,\n0665:         mock.patch(\"litellm.get_supported_openai_params\") as mock_get_supported_openai_params,\n0666:         mock.patch(\"litellm.supports_response_schema\") as mock_supports_response_schema,\n0667:     ):\n0668:         # Call a model that allows json but not structured outputs\n0669:         mock_completion.return_value = ModelResponse(\n0670:             choices=[Choices(message=Message(content=\"{'answer': 'Test output'}\"))]\n0671:         )\n0672:         mock_get_supported_openai_params.return_value = [\"response_format\"]\n0673:         mock_supports_response_schema.return_value = False\n0674: \n0675:         result = program(question=\"Dummy question!\")\n0676: \n0677:         assert mock_completion.call_count == 1\n0678:         assert result.answer == \"Test output\"\n0679: \n0680:         _, call_kwargs = mock_completion.call_args_list[0]\n0681:         assert call_kwargs.get(\"response_format\") == {\"type\": \"json_object\"}\n0682: "
+  }
+]
+
+## Whole evidence files
+### dspy/adapters/json_adapter.py
+0001: import json
+0002: import logging
+0003: from typing import Any, get_origin
+0004: 
+0005: import json_repair
+0006: import pydantic
+0007: import regex
+0008: from pydantic.fields import FieldInfo
+0009: 
+0010: from dspy.adapters.chat_adapter import ChatAdapter, FieldInfoWithName
+0011: from dspy.adapters.types.tool import ToolCalls
+0012: from dspy.adapters.utils import (
+0013:     format_field_value,
+0014:     get_annotation_name,
+0015:     parse_value,
+0016:     serialize_for_json,
+0017:     translate_field_type,
+0018: )
+0019: from dspy.clients.base_lm import BaseLM
+0020: from dspy.signatures.signature import Signature, SignatureMeta
+0021: from dspy.utils.callback import BaseCallback
+0022: from dspy.utils.exceptions import AdapterParseError
+0023: 
+0024: logger = logging.getLogger(__name__)
+0025: 
+0026: 
+0027: def _has_open_ended_mapping(signature: SignatureMeta) -> bool:
+0028:     """
+0029:     Check whether any output field in the signature has an open-ended mapping type,
+0030:     such as dict[str, Any]. Structured Outputs require explicit properties, so such fields
+0031:     are incompatible.
+0032:     """
+0033:     for field in signature.output_fields.values():
+0034:         annotation = field.annotation
+0035:         if get_origin(annotation) is dict:
+0036:             return True
+0037:     return False
+0038: 
+0039: 
+0040: class JSONAdapter(ChatAdapter):
+0041:     def __init__(self, callbacks: list[BaseCallback] | None = None, use_native_function_calling: bool = True):
+0042:         # JSONAdapter uses native function calling by default.
+0043:         super().__init__(callbacks=callbacks, use_native_function_calling=use_native_function_calling)
+0044: 
+0045:     def _json_adapter_call_common(self, lm, lm_kwargs, signature, demos, inputs, call_fn):
+0046:         """Common call logic to be used for both sync and async calls."""
+0047:         if "response_format" not in lm.supported_params:
+0048:             return call_fn(lm, lm_kwargs, signature, demos, inputs)
+0049: 
+0050:         has_tool_calls = any(field.annotation == ToolCalls for field in signature.output_fields.values())
+0051: 
+0052:         if _has_open_ended_mapping(signature) or (not self.use_native_function_calling and has_tool_calls) or not lm.supports_response_schema:
+0053:             # We found that structured output mode doesn't work well with dspy.ToolCalls as output field.
+0054:             # So we fall back to json mode if native function calling is disabled and ToolCalls is present.
+0055:             lm_kwargs["response_format"] = {"type": "json_object"}
+0056:             return call_fn(lm, lm_kwargs, signature, demos, inputs)
+0057: 
+0058:     def __call__(
+0059:         self,
+0060:         lm: BaseLM,
+0061:         lm_kwargs: dict[str, Any],
+0062:         signature: type[Signature],
+0063:         demos: list[dict[str, Any]],
+0064:         inputs: dict[str, Any],
+0065:     ) -> list[dict[str, Any]]:
+0066:         result = self._json_adapter_call_common(lm, lm_kwargs, signature, demos, inputs, super().__call__)
+0067:         if result:
+0068:             return result
+0069: 
+0070:         try:
+0071:             structured_output_model = _get_structured_outputs_response_format(
+0072:                 signature, self.use_native_function_calling
+0073:             )
+0074:             lm_kwargs["response_format"] = structured_output_model
+0075:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)
+0076:         except Exception:
+0077:             logger.warning("Failed to use structured output format, falling back to JSON mode.")
+0078:             lm_kwargs["response_format"] = {"type": "json_object"}
+0079:             return super().__call__(lm, lm_kwargs, signature, demos, inputs)
+0080: 
+0081:     async def acall(
+0082:         self,
+0083:         lm: BaseLM,
+0084:         lm_kwargs: dict[str, Any],
+0085:         signature: type[Signature],
+0086:         demos: list[dict[str, Any]],
+0087:         inputs: dict[str, Any],
+0088:     ) -> list[dict[str, Any]]:
+0089:         result = self._json_adapter_call_common(lm, lm_kwargs, signature, demos, inputs, super().acall)
+0090:         if result:
+0091:             return await result
+0092: 
+0093:         try:
+0094:             structured_output_model = _get_structured_outputs_response_format(
+0095:                 signature, self.use_native_function_calling
+0096:             )
+0097:             lm_kwargs["response_format"] = structured_output_model
+0098:             return await super().acall(lm, lm_kwargs, signature, demos, inputs)
+0099:         except Exception:
+0100:             logger.warning("Failed to use structured output format, falling back to JSON mode.")
+0101:             lm_kwargs["response_format"] = {"type": "json_object"}
+0102:             return await super().acall(lm, lm_kwargs, signature, demos, inputs)
+0103: 
+0104:     def format_field_structure(self, signature: type[Signature]) -> str:
+0105:         parts = []
+0106:         parts.append("All interactions will be structured in the following way, with the appropriate values filled in.")
+0107: 
+0108:         def format_signature_fields_for_instructions(fields: dict[str, FieldInfo], role: str):
+0109:             return self.format_field_with_value(
+0110:                 fields_with_values={
+0111:                     FieldInfoWithName(name=field_name, info=field_info): translate_field_type(field_name, field_info)
+0112:                     for field_name, field_info in fields.items()
+0113:                 },
+0114:                 role=role,
+0115:             )
+0116: 
+0117:         parts.append("Inputs will have the following structure:")
+0118:         parts.append(format_signature_fields_for_instructions(signature.input_fields, role="user"))
+0119:         parts.append("Outputs will be a JSON object with the following fields.")
+0120:         parts.append(format_signature_fields_for_instructions(signature.output_fields, role="assistant"))
+0121:         return "\n\n".join(parts).strip()
+0122: 
+0123:     def user_message_output_requirements(self, signature: type[Signature]) -> str:
+0124:         def type_info(v):
+0125:             return (
+0126:                 f" (must be formatted as a valid Python {get_annotation_name(v.annotation)})"
+0127:                 if v.annotation is not str
+0128:                 else ""
+0129:             )
+0130: 
+0131:         message = "Respond with a JSON object in the following order of fields: "
+0132:         message += ", then ".join(f"`{f}`{type_info(v)}" for f, v in signature.output_fields.items())
+0133:         message += "."
+0134:         return message
+0135: 
+0136:     def format_assistant_message_content(
+0137:         self,
+0138:         signature: type[Signature],
+0139:         outputs: dict[str, Any],
+0140:         missing_field_message=None,
+0141:     ) -> str:
+0142:         fields_with_values = {
+0143:             FieldInfoWithName(name=k, info=v): outputs.get(k, missing_field_message)
+0144:             for k, v in signature.output_fields.items()
+0145:         }
+0146:         return self.format_field_with_value(fields_with_values, role="assistant")
+0147: 
+0148:     def parse(self, signature: type[Signature], completion: str) -> dict[str, Any]:
+0149:         fields = json_repair.loads(completion)
+0150: 
+0151:         if not isinstance(fields, dict):
+0152:             pattern = r"\{(?:[^{}]|(?R))*\}"
+0153:             match = regex.search(pattern, completion, regex.DOTALL)
+0154:             if match:
+0155:                 completion = match.group(0)
+0156:                 fields = json_repair.loads(completion)
+0157: 
+0158:         if not isinstance(fields, dict):
+0159:             raise AdapterParseError(
+0160:                 adapter_name="JSONAdapter",
+0161:                 signature=signature,
+0162:                 lm_response=completion,
+0163:                 message="LM response cannot be serialized to a JSON object.",
+0164:             )
+0165: 
+0166:         fields = {k: v for k, v in fields.items() if k in signature.output_fields}
+0167: 
+0168:         # Attempt to cast each value to type signature.output_fields[k].annotation.
+0169:         for k, v in fields.items():
+0170:             if k in signature.output_fields:
+0171:                 fields[k] = parse_value(v, signature.output_fields[k].annotation)
+0172: 
+0173:         if fields.keys() != signature.output_fields.keys():
+0174:             raise AdapterParseError(
+0175:                 adapter_name="JSONAdapter",
+0176:                 signature=signature,
+0177:                 lm_response=completion,
+0178:                 parsed_result=fields,
+0179:             )
+0180: 
+0181:         return fields
+0182: 
+0183:     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any], role: str = "user") -> str:
+0184:         """
+0185:         Formats the values of the specified fields according to the field's DSPy type (input or output),
+0186:         annotation (e.g. str, int, etc.), and the type of the value itself. Joins the formatted values
+0187:         into a single string, which is a multiline string if there are multiple fields.
+0188: 
+0189:         Args:
+0190:             fields_with_values: A dictionary mapping information about a field to its corresponding value.
+0191:         Returns:
+0192:             The joined formatted values of the fields, represented as a string.
+0193:         """
+0194:         if role == "user":
+0195:             output = []
+0196:             for field, field_value in fields_with_values.items():
+0197:                 formatted_field_value = format_field_value(field_info=field.info, value=field_value)
+0198:                 output.append(f"[[ ## {field.name} ## ]]\n{formatted_field_value}")
+0199:             return "\n\n".join(output).strip()
+0200:         else:
+0201:             d = fields_with_values.items()
+0202:             d = {k.name: v for k, v in d}
+0203:             return json.dumps(serialize_for_json(d), indent=2, ensure_ascii=False)
+0204: 
+0205:     def format_finetune_data(
+0206:         self, signature: type[Signature], demos: list[dict[str, Any]], inputs: dict[str, Any], outputs: dict[str, Any]
+0207:     ) -> dict[str, list[Any]]:
+0208:         # TODO: implement format_finetune_data method in JSONAdapter
+0209:         raise NotImplementedError
+0210: 
+0211: 
+0212: def _get_structured_outputs_response_format(
+0213:     signature: SignatureMeta,
+0214:     use_native_function_calling: bool = True,
+0215: ) -> type[pydantic.BaseModel]:
+0216:     """
+0217:     Builds a Pydantic model from a DSPy signature's output_fields and ensures the generated JSON schema
+0218:     is compatible with OpenAI Structured Outputs (all objects have a "required" key listing every property,
+0219:     and additionalProperties is always false).
+0220: 
+0221:     IMPORTANT: If any field's annotation is an open-ended mapping (e.g. dict[str, Any]), then a structured
+0222:     schema cannot be generated since all properties must be explicitly declared. In that case, an exception
+0223:     is raised so that the caller can fall back to using a plain "json_object" response_format.
+0224:     """
+0225:     # Although we've already performed an early check, we keep this here as a final guard.
+0226:     for name, field in signature.output_fields.items():
+0227:         annotation = field.annotation
+0228:         if get_origin(annotation) is dict:
+0229:             raise ValueError(
+0230:                 f"Field '{name}' has an open-ended mapping type which is not supported by Structured Outputs."
+0231:             )
+0232: 
+0233:     fields = {}
+0234:     for name, field in signature.output_fields.items():
+0235:         annotation = field.annotation
+0236:         if use_native_function_calling and annotation == ToolCalls:
+0237:             # Skip ToolCalls field if native function calling is enabled.
+0238:             continue
+0239:         default = field.default if hasattr(field, "default") else ...
+0240:         fields[name] = (annotation, default)
+0241: 
+0242:     # Build the model with extra fields forbidden.
+0243:     pydantic_model = pydantic.create_model(
+0244:         "DSPyProgramOutputs",
+0245:         __config__=pydantic.ConfigDict(extra="forbid"),
+0246:         **fields,
+0247:     )
+0248: 
+0249:     # Generate the initial schema.
+0250:     schema = pydantic_model.model_json_schema()
+0251: 
+0252:     # Remove any DSPy-specific metadata.
+0253:     for prop in schema.get("properties", {}).values():
+0254:         prop.pop("json_schema_extra", None)
+0255: 
+0256:     def enforce_required(schema_part: dict):
+0257:         """
+0258:         Recursively ensure that:
+0259:             - for any object schema, a "required" key is added with all property names (or [] if no properties)
+0260:             - additionalProperties is set to False regardless of the previous value.
+0261:             - the same enforcement is run for nested arrays and definitions.
+0262:         """
+0263:         if schema_part.get("type") == "object":
+0264:             props = schema_part.get("properties")
+0265:             if props is not None:
+0266:                 # For objects with explicitly declared properties:
+0267:                 schema_part["required"] = list(props.keys())
+0268:                 schema_part["additionalProperties"] = False
+0269:                 for sub_schema in props.values():
+0270:                     if isinstance(sub_schema, dict):
+0271:                         enforce_required(sub_schema)
+0272:             else:
+0273:                 # For objects with no properties (should not happen normally but a fallback).
+0274:                 schema_part["properties"] = {}
+0275:                 schema_part["required"] = []
+0276:                 schema_part["additionalProperties"] = False
+0277:         if schema_part.get("type") == "array" and isinstance(schema_part.get("items"), dict):
+0278:             enforce_required(schema_part["items"])
+0279:         # Also enforce in any nested definitions / $defs.
+0280:         for key in ("$defs", "definitions"):
+0281:             if key in schema_part:
+0282:                 for def_schema in schema_part[key].values():
+0283:                     enforce_required(def_schema)
+0284: 
+0285:     enforce_required(schema)
+0286: 
+0287:     # Override the model's JSON schema generation to return our precomputed schema.
+0288:     pydantic_model.model_json_schema = lambda *args, **kwargs: schema
+0289: 
+0290:     return pydantic_model
+
+### dspy/clients/base_lm.py
+0001: import datetime
+0002: import uuid
+0003: from typing import Any, TextIO
+0004: 
+0005: from dspy.dsp.utils import settings
+0006: from dspy.utils.callback import with_callbacks
+0007: from dspy.utils.inspect_history import pretty_print_history
+0008: 
+0009: MAX_HISTORY_SIZE = 10_000
+0010: GLOBAL_HISTORY = []
+0011: 
+0012: 
+0013: class BaseLM:
+0014:     """Base class for handling LLM calls.
+0015: 
+0016:     Most users can directly use the `dspy.LM` class, which is a subclass of `BaseLM`. Users can also implement their
+0017:     own subclasses of `BaseLM` to support custom LLM providers and inject custom logic. To do so, simply override the
+0018:     `forward` method and make sure the return format is identical to the
+0019:     [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object).
+0020: 
+0021:     Examples:
+0022: 
+0023:     ```python
+0024:     from openai import OpenAI
+0025: 
+0026:     import dspy
+0027: 
+0028: 
+0029:     class MyLM(dspy.BaseLM):
+0030:         @property
+0031:         def supports_function_calling(self) -> bool:
+0032:             return self.model.startswith("openai/gpt-4o")
+0033: 
+0034:         @property
+0035:         def supports_reasoning(self) -> bool:
+0036:             return self.model.startswith("anthropic/claude-3-7")
+0037: 
+0038:         @property
+0039:         def supports_response_schema(self) -> bool:
+0040:             return self.model.startswith("openai/gpt-4o")
+0041: 
+0042:         @property
+0043:         def supported_params(self) -> set[str]:
+0044:             if self.model.startswith("openai/gpt-4o"):
+0045:                 return {"response_format"}  # accepts response_format=...
+0046:             return set()
+0047: 
+0048:         def forward(self, prompt, messages=None, **kwargs):
+0049:             client = OpenAI()
+0050:             return client.chat.completions.create(
+0051:                 model=self.model,
+0052:                 messages=messages or [{"role": "user", "content": prompt}],
+0053:                 **self.kwargs,
+0054:             )
+0055: 
+0056: 
+0057:     lm = MyLM(model="gpt-4o-mini")
+0058:     dspy.configure(lm=lm)
+0059:     print(dspy.Predict("q->a")(q="Why did the chicken cross the kitchen?"))
+0060:     ```
+0061:     """
+0062: 
+0063:     def __init__(self, model, model_type="chat", temperature=0.0, max_tokens=1000, cache=True, **kwargs):
+0064:         self.model = model
+0065:         self.model_type = model_type
+0066:         self.cache = cache
+0067:         self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)
+0068:         self.history = []
+0069: 
+0070:     @property
+0071:     def supports_function_calling(self) -> bool:
+0072:         """Whether the model supports function calling (tool use)."""
+0073:         return False
+0074: 
+0075:     @property
+0076:     def supports_reasoning(self) -> bool:
+0077:         """Whether the model supports native reasoning (extended thinking)."""
+0078:         return False
+0079: 
+0080:     @property
+0081:     def supports_response_schema(self) -> bool:
+0082:         """Whether the model supports structured output via response schema."""
+0083:         return False
+0084: 
+0085:     @property
+0086:     def supported_params(self) -> set[str]:
+0087:         """Set of supported OpenAI-style parameter names for the model."""
+0088:         return set()
+0089: 
+0090:     def _process_lm_response(self, response, prompt, messages, **kwargs):
+0091:         merged_kwargs = {**self.kwargs, **kwargs}
+0092: 
+0093:         if self.model_type == "responses":
+0094:             outputs = self._process_response(response)
+0095:         else:
+0096:             outputs = self._process_completion(response, merged_kwargs)
+0097: 
+0098:         if settings.disable_history:
+0099:             return outputs
+0100: 
+0101:         # Logging, with removed api key & where `cost` is None on cache hit.
+0102:         kwargs = {k: v for k, v in kwargs.items() if not k.startswith("api_")}
+0103:         entry = {
+0104:             "prompt": prompt,
+0105:             "messages": messages,
+0106:             "kwargs": kwargs,
+0107:             "response": response,
+0108:             "outputs": outputs,
+0109:             "usage": dict(response.usage),
+0110:             "cost": getattr(response, "_hidden_params", {}).get("response_cost"),
+0111:             "timestamp": datetime.datetime.now().isoformat(),
+0112:             "uuid": str(uuid.uuid4()),
+0113:             "model": self.model,
+0114:             "response_model": response.model,
+0115:             "model_type": self.model_type,
+0116:         }
+0117: 
+0118:         self.update_history(entry)
+0119: 
+0120:         return outputs
+0121: 
+0122:     @with_callbacks
+0123:     def __call__(
+0124:         self,
+0125:         prompt: str | None = None,
+0126:         messages: list[dict[str, Any]] | None = None,
+0127:         **kwargs
+0128:     ) -> list[dict[str, Any] | str]:
+0129:         response = self.forward(prompt=prompt, messages=messages, **kwargs)
+0130:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
+0131: 
+0132:         return outputs
+0133: 
+0134:     @with_callbacks
+0135:     async def acall(
+0136:         self,
+0137:         prompt: str | None = None,
+0138:         messages: list[dict[str, Any]] | None = None,
+0139:         **kwargs
+0140:     ) -> list[dict[str, Any] | str]:
+0141:         response = await self.aforward(prompt=prompt, messages=messages, **kwargs)
+0142:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
+0143:         return outputs
+0144: 
+0145:     def forward(
+0146:         self,
+0147:         prompt: str | None = None,
+0148:         messages: list[dict[str, Any]] | None = None,
+0149:         **kwargs
+0150:     ):
+0151:         """Forward pass for the language model.
+0152: 
+0153:         Subclasses must implement this method, and the response should be identical to either of the following formats:
+0154: 
+0155:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+0156:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+0157:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
+0158: 
+0159:         Raises:
+0160:             dspy.ContextWindowExceededError: When the request fails because the
+0161:                 input exceeds the model's context window. DSPy adapters and
+0162:                 modules rely on this error to trigger fallback behavior (e.g.
+0163:                 truncating the prompt and retrying). Each subclass is
+0164:                 responsible for catching its provider's native error and
+0165:                 re-raising it as `dspy.ContextWindowExceededError`.
+0166:         """
+0167:         raise NotImplementedError("Subclasses must implement this method.")
+0168: 
+0169:     async def aforward(
+0170:         self,
+0171:         prompt: str | None = None,
+0172:         messages: list[dict[str, Any]] | None = None,
+0173:         **kwargs
+0174:     ):
+0175:         """Async forward pass for the language model.
+0176: 
+0177:         Subclasses must implement this method, and the response should be identical to either of the following formats:
+0178: 
+0179:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+0180:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+0181:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
+0182: 
+0183:         Raises:
+0184:             dspy.ContextWindowExceededError: When the request fails because the
+0185:                 input exceeds the model's context window. DSPy adapters and
+0186:                 modules rely on this error to trigger fallback behavior (e.g.
+0187:                 truncating the prompt and retrying). Each subclass is
+0188:                 responsible for catching its provider's native error and
+0189:                 re-raising it as `dspy.ContextWindowExceededError`.
+0190:         """
+0191:         raise NotImplementedError("Subclasses must implement this method.")
+0192: 
+0193:     def copy(self, **kwargs):
+0194:         """Returns a copy of the language model with possibly updated parameters.
+0195: 
+0196:         Any provided keyword arguments update the corresponding attributes or LM kwargs of
+0197:         the copy. For example, ``lm.copy(rollout_id=1, temperature=1.0)`` returns an LM whose
+0198:         requests use a different rollout ID at non-zero temperature to bypass cache collisions.
+0199:         """
+0200: 
+0201:         import copy
+0202: 
+0203:         new_instance = copy.deepcopy(self)
+0204:         new_instance.history = []
+0205: 
+0206:         for key, value in kwargs.items():
+0207:             if hasattr(self, key):
+0208:                 setattr(new_instance, key, value)
+0209:             if (key in self.kwargs) or (not hasattr(self, key)):
+0210:                 if value is None:
+0211:                     new_instance.kwargs.pop(key, None)
+0212:                 else:
+0213:                     new_instance.kwargs[key] = value
+0214:         if hasattr(new_instance, "_warned_zero_temp_rollout"):
+0215:             new_instance._warned_zero_temp_rollout = False
+0216: 
+0217:         return new_instance
+0218: 
+0219:     def inspect_history(self, n: int = 1, file: "TextIO | None" = None) -> None:
+0220:         pretty_print_history(self.history, n, file=file)
+0221: 
+0222:     def update_history(self, entry):
+0223:         if settings.disable_history:
+0224:             return
+0225: 
+0226:         # Global LM history
+0227:         if len(GLOBAL_HISTORY) >= MAX_HISTORY_SIZE:
+0228:             GLOBAL_HISTORY.pop(0)
+0229: 
+0230:         GLOBAL_HISTORY.append(entry)
+0231: 
+0232:         if settings.max_history_size == 0:
+0233:             return
+0234: 
+0235:         # dspy.LM.history
+0236:         if len(self.history) >= settings.max_history_size:
+0237:             self.history.pop(0)
+0238: 
+0239:         self.history.append(entry)
+0240: 
+0241:         # Per-module history
+0242:         caller_modules = settings.caller_modules or []
+0243:         for module in caller_modules:
+0244:             if len(module.history) >= settings.max_history_size:
+0245:                 module.history.pop(0)
+0246:             module.history.append(entry)
+0247: 
+0248:     def _process_completion(self, response, merged_kwargs):
+0249:         """Process the response of OpenAI chat completion API and extract outputs.
+0250: 
+0251:         Args:
+0252:             response: The OpenAI chat completion response
+0253:                 https://platform.openai.com/docs/api-reference/chat/object
+0254:             merged_kwargs: Merged kwargs from self.kwargs and method kwargs
+0255: 
+0256:         Returns:
+0257:             List of processed outputs
+0258:         """
+0259:         outputs = []
+0260:         for c in response.choices:
+0261:             output = {}
+0262:             output["text"] = c.message.content if hasattr(c, "message") else c["text"]
+0263: 
+0264:             if hasattr(c, "message") and hasattr(c.message, "reasoning_content") and c.message.reasoning_content:
+0265:                 output["reasoning_content"] = c.message.reasoning_content
+0266: 
+0267:             if merged_kwargs.get("logprobs"):
+0268:                 output["logprobs"] = c.logprobs if hasattr(c, "logprobs") else c["logprobs"]
+0269:             if hasattr(c, "message") and getattr(c.message, "tool_calls", None):
+0270:                 output["tool_calls"] = c.message.tool_calls
+0271: 
+0272:             # Extract citations from LiteLLM response if available
+0273:             citations = self._extract_citations_from_response(c)
+0274:             if citations:
+0275:                 output["citations"] = citations
+0276: 
+0277:             outputs.append(output)
+0278: 
+0279:         if all(len(output) == 1 for output in outputs):
+0280:             # Return a list if every output only has "text" key
+0281:             outputs = [output["text"] for output in outputs]
+0282:         return outputs
+0283: 
+0284:     def _extract_citations_from_response(self, choice):
+0285:         """Extract citations from LiteLLM response if available.
+0286:         Reference: https://docs.litellm.ai/docs/providers/anthropic#beta-citations-api
+0287: 
+0288:         Args:
+0289:             choice: The choice object from response.choices
+0290: 
+0291:         Returns:
+0292:             A list of citation dictionaries or None if no citations found
+0293:         """
+0294:         try:
+0295:             # Check for citations in LiteLLM provider_specific_fields
+0296:             citations_data = choice.message.provider_specific_fields.get("citations")
+0297:             if isinstance(citations_data, list):
+0298:                 return [citation for citations in citations_data for citation in citations]
+0299:         except Exception:
+0300:             return None
+0301: 
+0302:     def _process_response(self, response):
+0303:         """Process the response of OpenAI Response API and extract outputs.
+0304: 
+0305:         Args:
+0306:             response: OpenAI Response API response
+0307:                 https://platform.openai.com/docs/api-reference/responses/object
+0308: 
+0309:         Returns:
+0310:             List of processed outputs, which is always of size 1 because the Response API only supports one output.
+0311:         """
+0312:         text_outputs = []
+0313:         tool_calls = []
+0314:         reasoning_contents = []
+0315: 
+0316:         for output_item in response.output:
+0317:             output_item_type = output_item.type
+0318:             if output_item_type == "message":
+0319:                 for content_item in output_item.content:
+0320:                     text_outputs.append(content_item.text)
+0321:             elif output_item_type == "function_call":
+0322:                 tool_calls.append(output_item.model_dump())
+0323:             elif output_item_type == "reasoning":
+0324:                 if getattr(output_item, "content", None) and len(output_item.content) > 0:
+0325:                     for content_item in output_item.content:
+0326:                         reasoning_contents.append(content_item.text)
+0327:                 elif getattr(output_item, "summary", None) and len(output_item.summary) > 0:
+0328:                     for summary_item in output_item.summary:
+0329:                         reasoning_contents.append(summary_item.text)
+0330: 
+0331:         result = {}
+0332:         if len(text_outputs) > 0:
+0333:             result["text"] = "".join(text_outputs)
+0334:         if len(tool_calls) > 0:
+0335:             result["tool_calls"] = tool_calls
+0336:         if len(reasoning_contents) > 0:
+0337:             result["reasoning_content"] = "".join(reasoning_contents)
+0338:         # All `response.output` items map to one answer, so we return a list of size 1.
+0339:         return [result]
+0340: 
+0341: 
+0342: def inspect_history(n: int = 1, file: "TextIO | None" = None) -> None:
+0343:     """The global history shared across all LMs.
+0344: 
+0345:     Args:
+0346:         n: Number of recent entries to display. Defaults to 1.
+0347:         file: An optional file-like object to write output to. When
+0348:             provided, ANSI color codes are automatically disabled.
+0349:             Defaults to `None` (prints to stdout).
+0350:     """
+0351:     pretty_print_history(GLOBAL_HISTORY, n, file=file)
+
+### tests/adapters/test_json_adapter.py
+0001: from unittest import mock
+0002: 
+0003: import pydantic
+0004: import pytest
+0005: from litellm.types.llms.openai import ResponseAPIUsage, ResponsesAPIResponse
+0006: from litellm.utils import ChatCompletionMessageToolCall, Choices, Function, Message, ModelResponse
+0007: from openai.types.responses import ResponseOutputMessage
+0008: 
+0009: import dspy
+0010: 
+0011: 
+0012: def test_json_adapter_passes_structured_output_when_supported_by_model():
+0013:     class OutputField3(pydantic.BaseModel):
+0014:         subfield1: int = pydantic.Field(description="Int subfield 1", ge=0, le=10)
+0015:         subfield2: float = pydantic.Field(description="Float subfield 2")
+0016: 
+0017:     class TestSignature(dspy.Signature):
+0018:         input1: str = dspy.InputField()
+0019:         output1: str = dspy.OutputField()  # Description intentionally left blank
+0020:         output2: bool = dspy.OutputField(desc="Boolean output field")
+0021:         output3: OutputField3 = dspy.OutputField(desc="Nested output field")
+0022:         output4_unannotated = dspy.OutputField(desc="Unannotated output field")
+0023: 
+0024:     program = dspy.Predict(TestSignature)
+0025: 
+0026:     # Configure DSPy to use an OpenAI LM that supports structured outputs
+0027:     dspy.configure(lm=dspy.LM(model="openai/gpt-4o"), adapter=dspy.JSONAdapter())
+0028:     with mock.patch("litellm.completion") as mock_completion:
+0029:         program(input1="Test input")
+0030: 
+0031:     def clean_schema_extra(field_name, field_info):
+0032:         attrs = dict(field_info.__repr_args__())
+0033:         if "json_schema_extra" in attrs:
+0034:             attrs["json_schema_extra"] = {
+0035:                 k: v
+0036:                 for k, v in attrs["json_schema_extra"].items()
+0037:                 if k != "__dspy_field_type" and not (k == "desc" and v == f"${{{field_name}}}")
+0038:             }
+0039:         return attrs
+0040: 
+0041:     mock_completion.assert_called_once()
+0042:     _, call_kwargs = mock_completion.call_args
+0043:     response_format = call_kwargs.get("response_format")
+0044:     assert response_format is not None
+0045:     assert issubclass(response_format, pydantic.BaseModel)
+0046:     assert response_format.model_fields.keys() == {"output1", "output2", "output3", "output4_unannotated"}
+0047: 
+0048: 
+0049: def test_json_adapter_not_using_structured_outputs_when_not_supported_by_model():
+0050:     class TestSignature(dspy.Signature):
+0051:         input1: str = dspy.InputField()
+0052:         output1: str = dspy.OutputField()
+0053:         output2: bool = dspy.OutputField()
+0054: 
+0055:     program = dspy.Predict(TestSignature)
+0056: 
+0057:     # Configure DSPy to use a model from a fake provider that doesn't support structured outputs
+0058:     dspy.configure(lm=dspy.LM(model="fakeprovider/fakemodel", cache=False), adapter=dspy.JSONAdapter())
+0059:     with mock.patch("litellm.completion") as mock_completion:
+0060:         mock_completion.return_value = ModelResponse(
+0061:             choices=[Choices(message=Message(content=("{'output1': 'Test output', 'output2': True}")))],
+0062:             model="openai/gpt-4o",
+0063:         )
+0064: 
+0065:         program(input1="Test input")
+0066: 
+0067:     mock_completion.assert_called_once()
+0068:     _, call_kwargs = mock_completion.call_args
+0069:     assert "response_format" not in call_kwargs
+0070: 
+0071: 
+0072: def test_json_adapter_falls_back_when_structured_outputs_fails():
+0073:     class TestSignature(dspy.Signature):
+0074:         input1: str = dspy.InputField()
+0075:         output1: str = dspy.OutputField(desc="String output field")
+0076: 
+0077:     dspy.configure(lm=dspy.LM(model="openai/gpt-4o", cache=False), adapter=dspy.JSONAdapter())
+0078:     program = dspy.Predict(TestSignature)
+0079:     with mock.patch("litellm.completion") as mock_completion:
+0080:         mock_completion.side_effect = [Exception("Bad structured outputs!"), mock_completion.return_value]
+0081:         program(input1="Test input")
+0082:         assert mock_completion.call_count == 2
+0083:         _, first_call_kwargs = mock_completion.call_args_list[0]
+0084:         assert issubclass(first_call_kwargs.get("response_format"), pydantic.BaseModel)
+0085:         _, second_call_kwargs = mock_completion.call_args_list[1]
+0086:         assert second_call_kwargs.get("response_format") == {"type": "json_object"}
+0087: 
+0088: 
+0089: def test_json_adapter_with_structured_outputs_does_not_mutate_original_signature():
+0090:     class OutputField3(pydantic.BaseModel):
+0091:         subfield1: int = pydantic.Field(description="Int subfield 1")
+0092:         subfield2: float = pydantic.Field(description="Float subfield 2")
+0093: 
+0094:     class TestSignature(dspy.Signature):
+0095:         input1: str = dspy.InputField()
+0096:         output1: str = dspy.OutputField()  # Description intentionally left blank
+0097:         output2: bool = dspy.OutputField(desc="Boolean output field")
+0098:         output3: OutputField3 = dspy.OutputField(desc="Nested output field")
+0099:         output4_unannotated = dspy.OutputField(desc="Unannotated output field")
+0100: 
+0101:     dspy.configure(lm=dspy.LM(model="openai/gpt-4o"), adapter=dspy.JSONAdapter())
+0102:     program = dspy.Predict(TestSignature)
+0103:     with mock.patch("litellm.completion"):
+0104:         program(input1="Test input")
+0105: 
+0106:     assert program.signature.output_fields == TestSignature.output_fields
+0107: 
+0108: 
+0109: def test_json_adapter_sync_call():
+0110:     signature = dspy.make_signature("question->answer")
+0111:     adapter = dspy.JSONAdapter()
+0112:     lm = dspy.utils.DummyLM([{"answer": "Paris"}], adapter=adapter)
+0113:     with dspy.context(adapter=adapter):
+0114:         result = adapter(lm, {}, signature, [], {"question": "What is the capital of France?"})
+0115:     assert result == [{"answer": "Paris"}]
+0116: 
+0117: 
+0118: @pytest.mark.asyncio
+0119: async def test_json_adapter_async_call():
+0120:     signature = dspy.make_signature("question->answer")
+0121:     adapter = dspy.JSONAdapter()
+0122:     lm = dspy.utils.DummyLM([{"answer": "Paris"}], adapter=adapter)
+0123:     with dspy.context(adapter=adapter):
+0124:         result = await adapter.acall(lm, {}, signature, [], {"question": "What is the capital of France?"})
+0125:     assert result == [{"answer": "Paris"}]
+0126: 
+0127: 
+0128: def test_json_adapter_on_pydantic_model():
+0129:     from litellm.utils import Choices, Message, ModelResponse
+0130: 
+0131:     class User(pydantic.BaseModel):
+0132:         id: int
+0133:         name: str
+0134:         email: str
+0135: 
+0136:     class Answer(pydantic.BaseModel):
+0137:         analysis: str
+0138:         result: str
+0139: 
+0140:     class TestSignature(dspy.Signature):
+0141:         user: User = dspy.InputField(desc="The user who asks the question")
+0142:         question: str = dspy.InputField(desc="Question the user asks")
+0143:         answer: Answer = dspy.OutputField(desc="Answer to this question")
+0144: 
+0145:     program = dspy.Predict(TestSignature)
+0146: 
+0147:     dspy.configure(lm=dspy.LM(model="openai/gpt-4o", cache=False), adapter=dspy.JSONAdapter())
+0148: 
+0149:     with mock.patch("litellm.completion") as mock_completion:
+0150:         mock_completion.return_value = ModelResponse(
+0151:             choices=[
+0152:                 Choices(
+0153:                     message=Message(
+0154:                         content="{'answer': {'analysis': 'Paris is the capital of France', 'result': 'Paris'}}"
+0155:                     )
+0156:                 )
+0157:             ],
+0158:             model="openai/gpt-4o",
+0159:         )
+0160:         result = program(
+0161:             user={"id": 5, "name": "name_test", "email": "email_test"}, question="What is the capital of France?"
+0162:         )
+0163: 
+0164:         # Check that litellm.completion was called exactly once
+0165:         mock_completion.assert_called_once()
+0166: 
+0167:         _, call_kwargs = mock_completion.call_args
+0168:         # Assert that there are exactly 2 messages (system + user)
+0169:         assert len(call_kwargs["messages"]) == 2
+0170: 
+0171:         assert call_kwargs["messages"][0]["role"] == "system"
+0172:         content = call_kwargs["messages"][0]["content"]
+0173:         assert content is not None
+0174: 
+0175:         # Assert that system prompt includes correct input field descriptions
+0176:         expected_input_fields = (
+0177:             "1. `user` (User): The user who asks the question\n2. `question` (str): Question the user asks\n"
+0178:         )
+0179:         assert expected_input_fields in content
+0180: 
+0181:         # Assert that system prompt includes correct output field description
+0182:         expected_output_fields = "1. `answer` (Answer): Answer to this question\n"
+0183:         assert expected_output_fields in content
+0184: 
+0185:         # Assert that system prompt includes input formatting structure
+0186:         expected_input_structure = "[[ ## user ## ]]\n{user}\n\n[[ ## question ## ]]\n{question}\n\n"
+0187:         assert expected_input_structure in content
+0188: 
+0189:         # Assert that system prompt includes output formatting structure
+0190:         expected_output_structure = (
+0191:             "Outputs will be a JSON object with the following fields.\n\n{\n  "
+0192:             '"answer": "{answer}        # note: the value you produce must adhere to the JSON schema: '
+0193:             '{\\"type\\": \\"object\\", \\"properties\\": {\\"analysis\\": {\\"type\\": \\"string\\", \\"title\\": '
+0194:             '\\"Analysis\\"}, \\"result\\": {\\"type\\": \\"string\\", \\"title\\": \\"Result\\"}}, \\"required\\": '
+0195:             '[\\"analysis\\", \\"result\\"], \\"title\\": \\"Answer\\"}"\n}'
+0196:         )
+0197:         assert expected_output_structure in content
+0198: 
+0199:         assert call_kwargs["messages"][1]["role"] == "user"
+0200:         user_message_content = call_kwargs["messages"][1]["content"]
+0201:         assert user_message_content is not None
+0202: 
+0203:         # Assert that the user input data is formatted correctly
+0204:         expected_input_data = (
+0205:             '[[ ## user ## ]]\n{"id": 5, "name": "name_test", "email": "email_test"}\n\n[[ ## question ## ]]\n'
+0206:             "What is the capital of France?\n\n"
+0207:         )
+0208:         assert expected_input_data in user_message_content
+0209: 
+0210:         # Assert that the adapter output has expected fields and values
+0211:         assert result.answer.analysis == "Paris is the capital of France"
+0212:         assert result.answer.result == "Paris"
+0213: 
+0214: 
+0215: def test_json_adapter_parse_raise_error_on_mismatch_fields():
+0216:     signature = dspy.make_signature("question->answer")
+0217:     adapter = dspy.JSONAdapter()
+0218:     with mock.patch("litellm.completion") as mock_completion:
+0219:         mock_completion.return_value = ModelResponse(
+0220:             choices=[
+0221:                 Choices(message=Message(content="{'answer1': 'Paris'}")),
+0222:             ],
+0223:             model="openai/gpt-4o",
+0224:         )
+0225:         lm = dspy.LM(model="openai/gpt-4o-mini")
+0226:         with pytest.raises(dspy.utils.exceptions.AdapterParseError) as e:
+0227:             adapter(lm, {}, signature, [], {"question": "What is the capital of France?"})
+0228: 
+0229:     assert e.value.adapter_name == "JSONAdapter"
+0230:     assert e.value.signature == signature
+0231:     assert e.value.lm_response == "{'answer1': 'Paris'}"
+0232:     assert e.value.parsed_result == {}
+0233: 
+0234:     assert str(e.value) == (
+0235:         "Adapter JSONAdapter failed to parse the LM response. \n\n"
+0236:         "LM Response: {'answer1': 'Paris'} \n\n"
+0237:         "Expected to find output fields in the LM response: [answer] \n\n"
+0238:         "Actual output fields parsed from the LM response: [] \n\n"
+0239:     )
+0240: 
+0241: 
+0242: def test_json_adapter_formats_image():
+0243:     # Test basic image formatting
+0244:     image = dspy.Image(url="https://example.com/image.jpg")
+0245: 
+0246:     class MySignature(dspy.Signature):
+0247:         image: dspy.Image = dspy.InputField()
+0248:         text: str = dspy.OutputField()
+0249: 
+0250:     adapter = dspy.JSONAdapter()
+0251:     messages = adapter.format(MySignature, [], {"image": image})
+0252: 
+0253:     assert len(messages) == 2
+0254:     user_message_content = messages[1]["content"]
+0255:     assert user_message_content is not None
+0256: 
+0257:     # The message should have 3 chunks of types: text, image_url, text
+0258:     assert len(user_message_content) == 3
+0259:     assert user_message_content[0]["type"] == "text"
+0260:     assert user_message_content[2]["type"] == "text"
+0261: 
+0262:     # Assert that the image is formatted correctly
+0263:     expected_image_content = {"type": "image_url", "image_url": {"url": "https://example.com/image.jpg"}}
+0264:     assert expected_image_content in user_message_content
+0265: 
+0266: 
+0267: def test_json_adapter_formats_image_with_few_shot_examples():
+0268:     class MySignature(dspy.Signature):
+0269:         image: dspy.Image = dspy.InputField()
+0270:         text: str = dspy.OutputField()
+0271: 
+0272:     adapter = dspy.JSONAdapter()
+0273: 
+0274:     demos = [
+0275:         dspy.Example(
+0276:             image=dspy.Image(url="https://example.com/image1.jpg"),
+0277:             text="This is a test image",
+0278:         ),
+0279:         dspy.Example(
+0280:             image=dspy.Image(url="https://example.com/image2.jpg"),
+0281:             text="This is another test image",
+0282:         ),
+0283:     ]
+0284:     messages = adapter.format(MySignature, demos, {"image": dspy.Image(url="https://example.com/image3.jpg")})
+0285: 
+0286:     # 1 system message, 2 few shot examples (1 user and assistant message for each example), 1 user message
+0287:     assert len(messages) == 6
+0288: 
+0289:     assert {"type": "image_url", "image_url": {"url": "https://example.com/image1.jpg"}} in messages[1]["content"]
+0290:     assert {"type": "image_url", "image_url": {"url": "https://example.com/image2.jpg"}} in messages[3]["content"]
+0291:     assert {"type": "image_url", "image_url": {"url": "https://example.com/image3.jpg"}} in messages[5]["content"]
+0292: 
+0293: 
+0294: def test_json_adapter_formats_image_with_nested_images():
+0295:     class ImageWrapper(pydantic.BaseModel):
+0296:         images: list[dspy.Image]
+0297:         tag: list[str]
+0298: 
+0299:     class MySignature(dspy.Signature):
+0300:         image: ImageWrapper = dspy.InputField()
+0301:         text: str = dspy.OutputField()
+0302: 
+0303:     image1 = dspy.Image(url="https://example.com/image1.jpg")
+0304:     image2 = dspy.Image(url="https://example.com/image2.jpg")
+0305:     image3 = dspy.Image(url="https://example.com/image3.jpg")
+0306: 
+0307:     image_wrapper = ImageWrapper(images=[image1, image2, image3], tag=["test", "example"])
+0308: 
+0309:     adapter = dspy.JSONAdapter()
+0310:     messages = adapter.format(MySignature, [], {"image": image_wrapper})
+0311: 
+0312:     expected_image1_content = {"type": "image_url", "image_url": {"url": "https://example.com/image1.jpg"}}
+0313:     expected_image2_content = {"type": "image_url", "image_url": {"url": "https://example.com/image2.jpg"}}
+0314:     expected_image3_content = {"type": "image_url", "image_url": {"url": "https://example.com/image3.jpg"}}
+0315: 
+0316:     assert expected_image1_content in messages[1]["content"]
+0317:     assert expected_image2_content in messages[1]["content"]
+0318:     assert expected_image3_content in messages[1]["content"]
+0319: 
+0320: 
+0321: def test_json_adapter_formats_with_nested_documents():
+0322:     class DocumentWrapper(pydantic.BaseModel):
+0323:         documents: list[dspy.experimental.Document]
+0324: 
+0325:     class MySignature(dspy.Signature):
+0326:         document: DocumentWrapper = dspy.InputField()
+0327:         text: str = dspy.OutputField()
+0328: 
+0329:     doc1 = dspy.experimental.Document(data="Hello, world!")
+0330:     doc2 = dspy.experimental.Document(data="Hello, world 2!")
+0331: 
+0332:     document_wrapper = DocumentWrapper(documents=[doc1, doc2])
+0333: 
+0334:     adapter = dspy.JSONAdapter()
+0335:     messages = adapter.format(MySignature, [], {"document": document_wrapper})
+0336: 
+0337:     expected_doc1_content = {
+0338:         "type": "document",
+0339:         "source": {"type": "text", "media_type": "text/plain", "data": "Hello, world!"},
+0340:         "citations": {"enabled": True},
+0341:     }
+0342:     expected_doc2_content = {
+0343:         "type": "document",
+0344:         "source": {"type": "text", "media_type": "text/plain", "data": "Hello, world 2!"},
+0345:         "citations": {"enabled": True},
+0346:     }
+0347: 
+0348:     assert expected_doc1_content in messages[1]["content"]
+0349:     assert expected_doc2_content in messages[1]["content"]
+0350: 
+0351: 
+0352: def test_json_adapter_formats_image_with_few_shot_examples_with_nested_images():
+0353:     class ImageWrapper(pydantic.BaseModel):
+0354:         images: list[dspy.Image]
+0355:         tag: list[str]
+0356: 
+0357:     class MySignature(dspy.Signature):
+0358:         image: ImageWrapper = dspy.InputField()
+0359:         text: str = dspy.OutputField()
+0360: 
+0361:     image1 = dspy.Image(url="https://example.com/image1.jpg")
+0362:     image2 = dspy.Image(url="https://example.com/image2.jpg")
+0363:     image3 = dspy.Image(url="https://example.com/image3.jpg")
+0364: 
+0365:     image_wrapper = ImageWrapper(images=[image1, image2, image3], tag=["test", "example"])
+0366:     demos = [
+0367:         dspy.Example(
+0368:             image=image_wrapper,
+0369:             text="This is a test image",
+0370:         ),
+0371:     ]
+0372: 
+0373:     image_wrapper_2 = ImageWrapper(images=[dspy.Image(url="https://example.com/image4.jpg")], tag=["test", "example"])
+0374:     adapter = dspy.JSONAdapter()
+0375:     messages = adapter.format(MySignature, demos, {"image": image_wrapper_2})
+0376: 
+0377:     assert len(messages) == 4
+0378: 
+0379:     # Image information in the few-shot example's user message
+0380:     expected_image1_content = {"type": "image_url", "image_url": {"url": "https://example.com/image1.jpg"}}
+0381:     expected_image2_content = {"type": "image_url", "image_url": {"url": "https://example.com/image2.jpg"}}
+0382:     expected_image3_content = {"type": "image_url", "image_url": {"url": "https://example.com/image3.jpg"}}
+0383:     assert expected_image1_content in messages[1]["content"]
+0384:     assert expected_image2_content in messages[1]["content"]
+0385:     assert expected_image3_content in messages[1]["content"]
+0386: 
+0387:     # The query image is formatted in the last user message
+0388:     assert {"type": "image_url", "image_url": {"url": "https://example.com/image4.jpg"}} in messages[-1]["content"]
+0389: 
+0390: 
+0391: def test_json_adapter_with_tool():
+0392:     class MySignature(dspy.Signature):
+0393:         """Answer question with the help of the tools"""
+0394: 
+0395:         question: str = dspy.InputField()
+0396:         tools: list[dspy.Tool] = dspy.InputField()
+0397:         answer: str = dspy.OutputField()
+0398:         tool_calls: dspy.ToolCalls = dspy.OutputField()
+0399: 
+0400:     def get_weather(city: str) -> str:
+0401:         """Get the weather for a city"""
+0402:         return f"The weather in {city} is sunny"
+0403: 
+0404:     def get_population(country: str, year: int) -> str:
+0405:         """Get the population for a country"""
+0406:         return f"The population of {country} in {year} is 1000000"
+0407: 
+0408:     tools = [dspy.Tool(get_weather), dspy.Tool(get_population)]
+0409: 
+0410:     adapter = dspy.JSONAdapter()
+0411:     messages = adapter.format(MySignature, [], {"question": "What is the weather in Tokyo?", "tools": tools})
+0412: 
+0413:     assert len(messages) == 2
+0414: 
+0415:     # The output field type description should be included in the system message even if the output field is nested
+0416:     assert dspy.ToolCalls.description() in messages[0]["content"]
+0417: 
+0418:     # The user message should include the question and the tools
+0419:     assert "What is the weather in Tokyo?" in messages[1]["content"]
+0420:     assert "get_weather" in messages[1]["content"]
+0421:     assert "get_population" in messages[1]["content"]
+0422: 
+0423:     # Tool arguments format should be included in the user message
+0424:     assert "{'city': {'type': 'string'}}" in messages[1]["content"]
+0425:     assert "{'country': {'type': 'string'}, 'year': {'type': 'integer'}}" in messages[1]["content"]
+0426: 
+0427:     with mock.patch("litellm.completion") as mock_completion:
+0428:         lm = dspy.LM(model="openai/gpt-4o-mini")
+0429:         adapter(lm, {}, MySignature, [], {"question": "What is the weather in Tokyo?", "tools": tools})
+0430: 
+0431:     mock_completion.assert_called_once()
+0432:     _, call_kwargs = mock_completion.call_args
+0433: 
+0434:     # Assert tool calls are included in the `tools` arg
+0435:     assert len(call_kwargs["tools"]) > 0
+0436:     assert call_kwargs["tools"][0] == {
+0437:         "type": "function",
+0438:         "function": {
+0439:             "name": "get_weather",
+0440:             "description": "Get the weather for a city",
+0441:             "parameters": {
+0442:                 "type": "object",
+0443:                 "properties": {
+0444:                     "city": {
+0445:                         "type": "string",
+0446:                     },
+0447:                 },
+0448:                 "required": ["city"],
+0449:             },
+0450:         },
+0451:     }
+0452:     assert call_kwargs["tools"][1] == {
+0453:         "type": "function",
+0454:         "function": {
+0455:             "name": "get_population",
+0456:             "description": "Get the population for a country",
+0457:             "parameters": {
+0458:                 "type": "object",
+0459:                 "properties": {
+0460:                     "country": {
+0461:                         "type": "string",
+0462:                     },
+0463:                     "year": {
+0464:                         "type": "integer",
+0465:                     },
+0466:                 },
+0467:                 "required": ["country", "year"],
+0468:             },
+0469:         },
+0470:     }
+0471: 
+0472: 
+0473: def test_json_adapter_with_code():
+0474:     # Test with code as input field
+0475:     class CodeAnalysis(dspy.Signature):
+0476:         """Analyze the time complexity of the code"""
+0477: 
+0478:         code: dspy.Code = dspy.InputField()
+0479:         result: str = dspy.OutputField()
+0480: 
+0481:     adapter = dspy.JSONAdapter()
+0482:     messages = adapter.format(CodeAnalysis, [], {"code": "print('Hello, world!')"})
+0483: 
+0484:     assert len(messages) == 2
+0485: 
+0486:     # The output field type description should be included in the system message even if the output field is nested
+0487:     assert dspy.Code.description() in messages[0]["content"]
+0488: 
+0489:     # The user message should include the question and the tools
+0490:     assert "print('Hello, world!')" in messages[1]["content"]
+0491: 
+0492:     # Test with code as output field
+0493:     class CodeGeneration(dspy.Signature):
+0494:         """Generate code to answer the question"""
+0495: 
+0496:         question: str = dspy.InputField()
+0497:         code: dspy.Code = dspy.OutputField()
+0498: 
+0499:     adapter = dspy.JSONAdapter()
+0500:     with mock.patch("litellm.completion") as mock_completion:
+0501:         mock_completion.return_value = ModelResponse(
+0502:             choices=[Choices(message=Message(content="{'code': 'print(\"Hello, world!\")'}"))],
+0503:             model="openai/gpt-4o-mini",
+0504:         )
+0505:         result = adapter(
+0506:             dspy.LM(model="openai/gpt-4o-mini", cache=False),
+0507:             {},
+0508:             CodeGeneration,
+0509:             [],
+0510:             {"question": "Write a python program to print 'Hello, world!'"},
+0511:         )
+0512:         assert result[0]["code"].code == 'print("Hello, world!")'
+0513: 
+0514: 
+0515: def test_json_adapter_formats_conversation_history():
+0516:     class MySignature(dspy.Signature):
+0517:         question: str = dspy.InputField()
+0518:         history: dspy.History = dspy.InputField()
+0519:         answer: str = dspy.OutputField()
+0520: 
+0521:     history = dspy.History(
+0522:         messages=[
+0523:             {"question": "What is the capital of France?", "answer": "Paris"},
+0524:             {"question": "What is the capital of Germany?", "answer": "Berlin"},
+0525:         ]
+0526:     )
+0527: 
+0528:     adapter = dspy.JSONAdapter()
+0529:     messages = adapter.format(MySignature, [], {"question": "What is the capital of France?", "history": history})
+0530: 
+0531:     assert len(messages) == 6
+0532:     assert messages[1]["content"] == "[[ ## question ## ]]\nWhat is the capital of France?"
+0533:     assert messages[2]["content"] == '{\n  "answer": "Paris"\n}'
+0534:     assert messages[3]["content"] == "[[ ## question ## ]]\nWhat is the capital of Germany?"
+0535:     assert messages[4]["content"] == '{\n  "answer": "Berlin"\n}'
+0536: 
+0537: 
+0538: @pytest.mark.asyncio
+0539: async def test_json_adapter_on_pydantic_model_async():
+0540:     from litellm.utils import Choices, Message, ModelResponse
+0541: 
+0542:     class User(pydantic.BaseModel):
+0543:         id: int
+0544:         name: str
+0545:         email: str
+0546: 
+0547:     class Answer(pydantic.BaseModel):
+0548:         analysis: str
+0549:         result: str
+0550: 
+0551:     class TestSignature(dspy.Signature):
+0552:         user: User = dspy.InputField(desc="The user who asks the question")
+0553:         question: str = dspy.InputField(desc="Question the user asks")
+0554:         answer: Answer = dspy.OutputField(desc="Answer to this question")
+0555: 
+0556:     program = dspy.Predict(TestSignature)
+0557: 
+0558:     with mock.patch("litellm.acompletion") as mock_completion:
+0559:         mock_completion.return_value = ModelResponse(
+0560:             choices=[
+0561:                 Choices(
+0562:                     message=Message(
+0563:                         content="{'answer': {'analysis': 'Paris is the capital of France', 'result': 'Paris'}}"
+0564:                     )
+0565:                 )
+0566:             ],
+0567:             model="openai/gpt-4o",
+0568:         )
+0569: 
+0570:         with dspy.context(lm=dspy.LM(model="openai/gpt-4o", cache=False), adapter=dspy.JSONAdapter()):
+0571:             result = await program.acall(
+0572:                 user={"id": 5, "name": "name_test", "email": "email_test"}, question="What is the capital of France?"
+0573:             )
+0574: 
+0575:         # Check that litellm.acompletion was called exactly once
+0576:         mock_completion.assert_called_once()
+0577: 
+0578:         _, call_kwargs = mock_completion.call_args
+0579:         # Assert that there are exactly 2 messages (system + user)
+0580:         assert len(call_kwargs["messages"]) == 2
+0581: 
+0582:         assert call_kwargs["messages"][0]["role"] == "system"
+0583:         content = call_kwargs["messages"][0]["content"]
+0584:         assert content is not None
+0585: 
+0586:         # Assert that system prompt includes correct input field descriptions
+0587:         expected_input_fields = (
+0588:             "1. `user` (User): The user who asks the question\n2. `question` (str): Question the user asks\n"
+0589:         )
+0590:         assert expected_input_fields in content
+0591: 
+0592:         # Assert that system prompt includes correct output field description
+0593:         expected_output_fields = "1. `answer` (Answer): Answer to this question\n"
+0594:         assert expected_output_fields in content
+0595: 
+0596:         # Assert that system prompt includes input formatting structure
+0597:         expected_input_structure = "[[ ## user ## ]]\n{user}\n\n[[ ## question ## ]]\n{question}\n\n"
+0598:         assert expected_input_structure in content
+0599: 
+0600:         # Assert that system prompt includes output formatting structure
+0601:         expected_output_structure = (
+0602:             "Outputs will be a JSON object with the following fields.\n\n{\n  "
+0603:             '"answer": "{answer}        # note: the value you produce must adhere to the JSON schema: '
+0604:             '{\\"type\\": \\"object\\", \\"properties\\": {\\"analysis\\": {\\"type\\": \\"string\\", \\"title\\": '
+0605:             '\\"Analysis\\"}, \\"result\\": {\\"type\\": \\"string\\", \\"title\\": \\"Result\\"}}, \\"required\\": '
+0606:             '[\\"analysis\\", \\"result\\"], \\"title\\": \\"Answer\\"}"\n}'
+0607:         )
+0608:         assert expected_output_structure in content
+0609: 
+0610:         assert call_kwargs["messages"][1]["role"] == "user"
+0611:         user_message_content = call_kwargs["messages"][1]["content"]
+0612:         assert user_message_content is not None
+0613: 
+0614:         # Assert that the user input data is formatted correctly
+0615:         expected_input_data = (
+0616:             '[[ ## user ## ]]\n{"id": 5, "name": "name_test", "email": "email_test"}\n\n[[ ## question ## ]]\n'
+0617:             "What is the capital of France?\n\n"
+0618:         )
+0619:         assert expected_input_data in user_message_content
+0620: 
+0621:         # Assert that the adapter output has expected fields and values
+0622:         assert result.answer.analysis == "Paris is the capital of France"
+0623:         assert result.answer.result == "Paris"
+0624: 
+0625: 
+0626: def test_json_adapter_fallback_to_json_mode_on_structured_output_failure():
+0627:     class TestSignature(dspy.Signature):
+0628:         question: str = dspy.InputField()
+0629:         answer: str = dspy.OutputField(desc="String output field")
+0630: 
+0631:     dspy.configure(lm=dspy.LM(model="openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter())
+0632:     program = dspy.Predict(TestSignature)
+0633: 
+0634:     with mock.patch("litellm.completion") as mock_completion:
+0635:         # First call raises error to simulate structured output failure, second call returns a valid response
+0636:         mock_completion.side_effect = [
+0637:             RuntimeError("Structured output failed!"),
+0638:             ModelResponse(choices=[Choices(message=Message(content="{'answer': 'Test output'}"))]),
+0639:         ]
+0640: 
+0641:         result = program(question="Dummy question!")
+0642:         # The parse should succeed on the second call
+0643:         assert mock_completion.call_count == 2
+0644:         assert result.answer == "Test output"
+0645: 
+0646:         # The first call should have tried structured output
+0647:         _, first_call_kwargs = mock_completion.call_args_list[0]
+0648:         assert issubclass(first_call_kwargs.get("response_format"), pydantic.BaseModel)
+0649: 
+0650:         # The second call should have used JSON mode
+0651:         _, second_call_kwargs = mock_completion.call_args_list[1]
+0652:         assert second_call_kwargs.get("response_format") == {"type": "json_object"}
+0653: 
+0654: 
+0655: def test_json_adapter_json_mode_no_structured_outputs():
+0656:     class TestSignature(dspy.Signature):
+0657:         question: str = dspy.InputField()
+0658:         answer: str = dspy.OutputField(desc="String output field")
+0659: 
+0660:     dspy.configure(lm=dspy.LM(model="openai/gpt-4o", cache=False), adapter=dspy.JSONAdapter())
+0661:     program = dspy.Predict(TestSignature)
+0662: 
+0663:     with (
+0664:         mock.patch("litellm.completion") as mock_completion,
+0665:         mock.patch("litellm.get_supported_openai_params") as mock_get_supported_openai_params,
+0666:         mock.patch("litellm.supports_response_schema") as mock_supports_response_schema,
+0667:     ):
+0668:         # Call a model that allows json but not structured outputs
+0669:         mock_completion.return_value = ModelResponse(
+0670:             choices=[Choices(message=Message(content="{'answer': 'Test output'}"))]
+0671:         )
+0672:         mock_get_supported_openai_params.return_value = ["response_format"]
+0673:         mock_supports_response_schema.return_value = False
+0674: 
+0675:         result = program(question="Dummy question!")
+0676: 
+0677:         assert mock_completion.call_count == 1
+0678:         assert result.answer == "Test output"
+0679: 
+0680:         _, call_kwargs = mock_completion.call_args_list[0]
+0681:         assert call_kwargs.get("response_format") == {"type": "json_object"}
+0682: 
+0683: 
+0684: @pytest.mark.asyncio
+0685: async def test_json_adapter_json_mode_no_structured_outputs_async():
+0686:     class TestSignature(dspy.Signature):
+0687:         question: str = dspy.InputField()
+0688:         answer: str = dspy.OutputField(desc="String output field")
+0689: 
+0690:     program = dspy.Predict(TestSignature)
+0691: 
+0692:     with (
+0693:         mock.patch("litellm.acompletion") as mock_acompletion,
+0694:         mock.patch("litellm.get_supported_openai_params") as mock_get_supported_openai_params,
+0695:         mock.patch("litellm.supports_response_schema") as mock_supports_response_schema,
+0696:     ):
+0697:         # Call a model that allows json but not structured outputs
+0698:         mock_acompletion.return_value = ModelResponse(
+0699:             choices=[Choices(message=Message(content="{'answer': 'Test output'}"))]
+0700:         )
+0701:         mock_get_supported_openai_params.return_value = ["response_format"]
+0702:         mock_supports_response_schema.return_value = False
+0703: 
+0704:         with dspy.context(lm=dspy.LM(model="openai/gpt-4o", cache=False), adapter=dspy.JSONAdapter()):
+0705:             result = await program.acall(question="Dummy question!")
+0706: 
+0707:         assert mock_acompletion.call_count == 1
+0708:         assert result.answer == "Test output"
+0709: 
+0710:         _, call_kwargs = mock_acompletion.call_args_list[0]
+0711:         assert call_kwargs.get("response_format") == {"type": "json_object"}
+0712: 
+0713: 
+0714: @pytest.mark.asyncio
+0715: async def test_json_adapter_fallback_to_json_mode_on_structured_output_failure_async():
+0716:     class TestSignature(dspy.Signature):
+0717:         question: str = dspy.InputField()
+0718:         answer: str = dspy.OutputField(desc="String output field")
+0719: 
+0720:     program = dspy.Predict(TestSignature)
+0721: 
+0722:     with mock.patch("litellm.acompletion") as mock_acompletion:
+0723:         # First call raises error to simulate structured output failure, second call returns a valid response
+0724:         mock_acompletion.side_effect = [
+0725:             RuntimeError("Structured output failed!"),
+0726:             ModelResponse(choices=[Choices(message=Message(content="{'answer': 'Test output'}"))]),
+0727:         ]
+0728: 
+0729:         with dspy.context(lm=dspy.LM(model="openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter()):
+0730:             result = await program.acall(question="Dummy question!")
+0731:         # The parse should succeed on the second call
+0732:         assert mock_acompletion.call_count == 2
+0733:         assert result.answer == "Test output"
+0734: 
+0735:         # The first call should have tried structured output
+0736:         _, first_call_kwargs = mock_acompletion.call_args_list[0]
+0737:         assert issubclass(first_call_kwargs.get("response_format"), pydantic.BaseModel)
+0738: 
+0739:         # The second call should have used JSON mode
+0740:         _, second_call_kwargs = mock_acompletion.call_args_list[1]
+0741:         assert second_call_kwargs.get("response_format") == {"type": "json_object"}
+0742: 
+0743: 
+0744: def test_error_message_on_json_adapter_failure():
+0745:     class TestSignature(dspy.Signature):
+0746:         question: str = dspy.InputField()
+0747:         answer: str = dspy.OutputField(desc="String output field")
+0748: 
+0749:     program = dspy.Predict(TestSignature)
+0750: 
+0751:     dspy.configure(lm=dspy.LM(model="openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter())
+0752: 
+0753:     with mock.patch("litellm.completion") as mock_completion:
+0754:         mock_completion.side_effect = RuntimeError("RuntimeError!")
+0755: 
+0756:         with pytest.raises(RuntimeError) as error:
+0757:             program(question="Dummy question!")
+0758: 
+0759:         assert "RuntimeError!" in str(error.value)
+0760: 
+0761:         mock_completion.side_effect = ValueError("ValueError!")
+0762:         with pytest.raises(ValueError) as error:
+0763:             program(question="Dummy question!")
+0764: 
+0765:         assert "ValueError!" in str(error.value)
+0766: 
+0767: 
+0768: @pytest.mark.asyncio
+0769: async def test_error_message_on_json_adapter_failure_async():
+0770:     class TestSignature(dspy.Signature):
+0771:         question: str = dspy.InputField()
+0772:         answer: str = dspy.OutputField(desc="String output field")
+0773: 
+0774:     program = dspy.Predict(TestSignature)
+0775: 
+0776:     with mock.patch("litellm.acompletion") as mock_acompletion:
+0777:         with dspy.context(lm=dspy.LM(model="openai/gpt-4o-mini", cache=False), adapter=dspy.JSONAdapter()):
+0778:             mock_acompletion.side_effect = RuntimeError("RuntimeError!")
+0779:             with pytest.raises(RuntimeError) as error:
+0780:                 await program.acall(question="Dummy question!")
+0781: 
+0782:             assert "RuntimeError!" in str(error.value)
+0783: 
+0784:             mock_acompletion.side_effect = ValueError("ValueError!")
+0785:             with pytest.raises(ValueError) as error:
+0786:                 await program.acall(question="Dummy question!")
+0787: 
+0788:             assert "ValueError!" in str(error.value)
+0789: 
+0790: 
+0791: def test_json_adapter_toolcalls_native_function_calling():
+0792:     class MySignature(dspy.Signature):
+0793:         question: str = dspy.InputField()
+0794:         tools: list[dspy.Tool] = dspy.InputField()
+0795:         answer: str = dspy.OutputField()
+0796:         tool_calls: dspy.ToolCalls = dspy.OutputField()
+0797: 
+0798:     def get_weather(city: str) -> str:
+0799:         return f"The weather in {city} is sunny"
+0800: 
+0801:     tools = [dspy.Tool(get_weather)]
+0802: 
+0803:     adapter = dspy.JSONAdapter(use_native_function_calling=True)
+0804: 
+0805:     # Case 1: Tool calls are present in the response, while content is None.
+0806:     with mock.patch("litellm.completion") as mock_completion:
+0807:         mock_completion.return_value = ModelResponse(
+0808:             choices=[
+0809:                 Choices(
+0810:                     finish_reason="tool_calls",
+0811:                     index=0,
+0812:                     message=Message(
+0813:                         content=None,
+0814:                         role="assistant",
+0815:                         tool_calls=[
+0816:                             ChatCompletionMessageToolCall(
+0817:                                 function=Function(arguments='{"city":"Paris"}', name="get_weather"),
+0818:                                 id="call_pQm8ajtSMxgA0nrzK2ivFmxG",
+0819:                                 type="function",
+0820:                             )
+0821:                         ],
+0822:                     ),
+0823:                 ),
+0824:             ],
+0825:             model="openai/gpt-4o-mini",
+0826:         )
+0827:         result = adapter(
+0828:             dspy.LM(model="openai/gpt-4o-mini", cache=False),
+0829:             {},
+0830:             MySignature,
+0831:             [],
+0832:             {"question": "What is the weather in Paris?", "tools": tools},
+0833:         )
+0834: 
+0835:         assert result[0]["tool_calls"] == dspy.ToolCalls(
+0836:             tool_calls=[dspy.ToolCalls.ToolCall(name="get_weather", args={"city": "Paris"})]
+0837:         )
+0838:         # `answer` is not present, so we set it to None
+0839:         assert result[0]["answer"] is None
+0840: 
+0841:     # Case 2: Tool calls are not present in the response, while content is present.
+0842:     with mock.patch("litellm.completion") as mock_completion:
+0843:         mock_completion.return_value = ModelResponse(
+0844:             choices=[Choices(message=Message(content="{'answer': 'Paris'}"))],
+0845:             model="openai/gpt-4o-mini",
+0846:         )
+0847:         result = adapter(
+0848:             dspy.LM(model="openai/gpt-4o-mini", cache=False),
+0849:             {},
+0850:             MySignature,
+0851:             [],
+0852:             {"question": "What is the weather in Paris?", "tools": tools},
+0853:         )
+0854:         assert result[0]["answer"] == "Paris"
+0855:         assert result[0]["tool_calls"] is None
+0856: 
+0857: 
+0858: def test_json_adapter_toolcalls_no_native_function_calling():
+0859:     class MySignature(dspy.Signature):
+0860:         question: str = dspy.InputField()
+0861:         tools: list[dspy.Tool] = dspy.InputField()
+0862:         answer: str = dspy.OutputField()
+0863:         tool_calls: dspy.ToolCalls = dspy.OutputField()
+0864: 
+0865:     def get_weather(city: str) -> str:
+0866:         return f"The weather in {city} is sunny"
+0867: 
+0868:     tools = [dspy.Tool(get_weather)]
+0869: 
+0870:     # Patch _get_structured_outputs_response_format to track calls
+0871:     with mock.patch("dspy.adapters.json_adapter._get_structured_outputs_response_format") as mock_structured:
+0872:         # Patch litellm.completion to return a dummy response
+0873:         with mock.patch("litellm.completion") as mock_completion:
+0874:             mock_completion.return_value = ModelResponse(
+0875:                 choices=[Choices(message=Message(content="{'answer': 'sunny', 'tool_calls': {'tool_calls': []}}"))],
+0876:                 model="openai/gpt-4o-mini",
+0877:             )
+0878:             adapter = dspy.JSONAdapter(use_native_function_calling=False)
+0879:             lm = dspy.LM(model="openai/gpt-4o-mini", cache=False)
+0880:             adapter(lm, {}, MySignature, [], {"question": "What is the weather in Tokyo?", "tools": tools})
+0881: 
+0882:         # _get_structured_outputs_response_format is not called because without using native function calling,
+0883:         # JSONAdapter falls back to json mode for stable quality.
+0884:         mock_structured.assert_not_called()
+0885:         mock_completion.assert_called_once()
+0886:         _, call_kwargs = mock_completion.call_args
+0887:         assert call_kwargs["response_format"] == {"type": "json_object"}
+0888: 
+0889: 
+0890: def test_json_adapter_native_reasoning():
+0891:     class MySignature(dspy.Signature):
+0892:         question: str = dspy.InputField()
+0893:         reasoning: dspy.Reasoning = dspy.OutputField()
+0894:         answer: str = dspy.OutputField()
+0895: 
+0896:     adapter = dspy.JSONAdapter()
+0897: 
+0898:     with mock.patch("litellm.completion") as mock_completion:
+0899:         mock_completion.return_value = ModelResponse(
+0900:             choices=[
+0901:                 Choices(
+0902:                     message=Message(
+0903:                         content="{'answer': 'Paris'}",
+0904:                         reasoning_content="Step-by-step thinking about the capital of France",
+0905:                     ),
+0906:                 )
+0907:             ],
+0908:             model="anthropic/claude-3-7-sonnet-20250219",
+0909:         )
+0910:         modified_signature = adapter._call_preprocess(
+0911:             dspy.LM(model="anthropic/claude-3-7-sonnet-20250219", reasoning_effort="low", cache=False),
+0912:             {},
+0913:             MySignature,
+0914:             {"question": "What is the capital of France?"},
+0915:         )
+0916:         assert "reasoning" not in modified_signature.output_fields
+0917: 
+0918:         result = adapter(
+0919:             dspy.LM(model="anthropic/claude-3-7-sonnet-20250219", reasoning_effort="low", cache=False),
+0920:             {},
+0921:             MySignature,
+0922:             [],
+0923:             {"question": "What is the capital of France?"},
+0924:         )
+0925:         assert result[0]["reasoning"] == dspy.Reasoning(content="Step-by-step thinking about the capital of France")
+0926: 
+0927: 
+0928: def test_json_adapter_with_responses_api():
+0929:     class TestSignature(dspy.Signature):
+0930:         question: str = dspy.InputField()
+0931:         answer: str = dspy.OutputField()
+0932: 
+0933:     api_response = ResponsesAPIResponse(
+0934:         id="resp_1",
+0935:         created_at=0.0,
+0936:         error=None,
+0937:         incomplete_details=None,
+0938:         instructions=None,
+0939:         model="openai/gpt-4o",
+0940:         object="response",
+0941:         output=[
+0942:             ResponseOutputMessage(
+0943:                 **{
+0944:                     "id": "msg_1",
+0945:                     "type": "message",
+0946:                     "role": "assistant",
+0947:                     "status": "completed",
+0948:                     "content": [{"type": "output_text", "text": '{"answer": "Washington, D.C."}', "annotations": []}],
+0949:                 },
+0950:             ),
+0951:         ],
+0952:         metadata={},
+0953:         parallel_tool_calls=False,
+0954:         temperature=1.0,
+0955:         tool_choice="auto",
+0956:         tools=[],
+0957:         top_p=1.0,
+0958:         max_output_tokens=None,
+0959:         previous_response_id=None,
+0960:         reasoning=None,
+0961:         status="completed",
+0962:         text=None,
+0963:         truncation="disabled",
+0964:         usage=ResponseAPIUsage(input_tokens=10, output_tokens=5, total_tokens=15),
+0965:         user=None,
+0966:     )
+0967: 
+0968:     lm = dspy.LM(model="openai/gpt-4o", model_type="responses", cache=False)
+0969:     dspy.configure(lm=lm, adapter=dspy.JSONAdapter())
+0970: 
+0971:     program = dspy.Predict(TestSignature)
+0972:     with mock.patch("litellm.responses", autospec=True, return_value=api_response) as mock_responses:
+0973:         result = program(question="What is the capital of the USA?")
+0974: 
+0975:     assert result.answer == "Washington, D.C."
+0976:     mock_responses.assert_called_once()
+0977:     # Verify that response_format was converted to text.format
+0978:     call_kwargs = mock_responses.call_args.kwargs
+0979:     assert "response_format" not in call_kwargs
+0980:     assert "text" in call_kwargs
+0981: 
+0982:     assert isinstance(call_kwargs["text"]["format"], dict)
+0983:     assert isinstance(call_kwargs["text"]["format"]["name"], str)
+0984:     assert call_kwargs["text"]["format"]["type"] == "json_schema"
+0985:     assert isinstance(call_kwargs["text"]["format"]["schema"], dict)
+0986: 
+0987: 
+0988: def test_format_system_message():
+0989:     class MySignature(dspy.Signature):
+0990:         """Answer the question with multiple answers and scores"""
+0991: 
+0992:         question: str = dspy.InputField()
+0993:         answers: list[str] = dspy.OutputField()
+0994:         scores: list[float] = dspy.OutputField()
+0995: 
+0996:     adapter = dspy.JSONAdapter()
+0997:     system_message = adapter.format_system_message(MySignature)
+0998:     expected_system_message = """Your input fields are:
+0999: 1. `question` (str):
+1000: Your output fields are:
+1001: 1. `answers` (list[str]): 
+1002: 2. `scores` (list[float]):
+1003: All interactions will be structured in the following way, with the appropriate values filled in.
+1004: 
+1005: Inputs will have the following structure:
+1006: 
+1007: [[ ## question ## ]]
+1008: {question}
+1009: 
+1010: Outputs will be a JSON object with the following fields.
+1011: 
+1012: {
+1013:   "answers": "{answers}        # note: the value you produce must adhere to the JSON schema: {\\"type\\": \\"array\\", \\"items\\": {\\"type\\": \\"string\\"}}",
+1014:   "scores": "{scores}        # note: the value you produce must adhere to the JSON schema: {\\"type\\": \\"array\\", \\"items\\": {\\"type\\": \\"number\\"}}"
+1015: }
+1016: In adhering to this structure, your objective is: 
+1017:         Answer the question with multiple answers and scores"""
+1018:     assert system_message == expected_system_message
+
+Return JSON that matches the schema exactly.

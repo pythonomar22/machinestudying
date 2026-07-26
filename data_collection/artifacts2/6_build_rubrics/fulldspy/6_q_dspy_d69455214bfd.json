@@ -1,0 +1,112 @@
+{
+ "id": "dspy_d69455214bfd",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I set `num_retries=3` and got more provider attempts than I expected. I need a tiny proof of whether DSPy interprets that as three total calls or three retries after the initial attempt.\n\nGive me a complete, runnable Python program that patches the failing chat path to raise a rate-limit error every time, runs one `dspy.LM` call, and prints/asserts the total attempt count so the retry semantics are undeniable.",
+ "gold_answer": "```python\nimport dspy\nimport litellm\nfrom openai import RateLimitError\nfrom unittest import mock\n\nattempts = {'count': 0}\n\ndef always_rate_limited(*args, **kwargs):\n    attempts['count'] += 1\n    response = mock.Mock()\n    response.headers = {}\n    response.status_code = 429\n    raise RateLimitError(response=response, message='rate limited', body='error')\n\nlm = dspy.LM('openai/gpt-4o-mini', max_tokens=250, num_retries=3)\nwith mock.patch.object(litellm.OpenAIChatCompletion, 'completion', side_effect=always_rate_limited):\n    try:\n        lm('question')\n    except RateLimitError:\n        print(attempts['count'])\n        assert attempts['count'] == 4\n    else:\n        raise AssertionError('Expected RateLimitError')\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The answer constructs a chat `dspy.LM` with `num_retries=3` and relies on DSPy passing that exact retry count into the chat completion call.",
+   "span_ids": [
+    "s1",
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The proof patches `litellm.OpenAIChatCompletion.completion` so each provider attempt increments a shared counter and then raises `openai.RateLimitError`.",
+   "span_ids": [
+    "s5",
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The simulated failure uses a mock response with `headers = {}` and `status_code = 429`, matching the rate-limit error shape exercised by DSPy's retry test.",
+   "span_ids": [
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "Under the patch, the program makes exactly one `lm(...)` invocation and expects a propagated `RateLimitError` after retries are exhausted.",
+   "span_ids": [
+    "s7"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The answer must surface that the total attempt count is `4`, proving that `num_retries=3` means three retries after the initial call rather than three total attempts.",
+   "span_ids": [
+    "s2",
+    "s7"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 35,
+   "end_line": 42,
+   "excerpt": "0035:         model: str,\n0036:         model_type: Literal[\"chat\", \"text\", \"responses\"] = \"chat\",\n0037:         temperature: float | None = None,\n0038:         max_tokens: int | None = None,\n0039:         cache: bool = True,\n0040:         callbacks: list[BaseCallback] | None = None,\n0041:         num_retries: int = 3,\n0042:         provider: Provider | None = None,"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 61,
+   "end_line": 63,
+   "excerpt": "0061:             num_retries: The number of times to retry a request if it fails transiently due to\n0062:                          network error, rate limiting, etc. Requests are retried with exponential\n0063:                          backoff."
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 177,
+   "end_line": 190,
+   "excerpt": "0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0184: \n0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,\n0189:                 cache=litellm_cache_args,\n0190:             )"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 279,
+   "end_line": 284,
+   "excerpt": "0279: def test_retry_number_set_correctly():\n0280:     lm = dspy.LM(\"openai/gpt-4o-mini\", num_retries=3)\n0281:     with mock.patch(\"litellm.completion\") as mock_completion:\n0282:         lm(\"query\")\n0283: \n0284:     assert mock_completion.call_args.kwargs[\"num_retries\"] == 3"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 288,
+   "end_line": 296,
+   "excerpt": "0288:     retry_tracking = [0]  # Using a list to track retries\n0289: \n0290:     def mock_create(*args, **kwargs):\n0291:         retry_tracking[0] += 1\n0292:         # These fields are called during the error handling\n0293:         mock_response = mock.Mock()\n0294:         mock_response.headers = {}\n0295:         mock_response.status_code = 429\n0296:         raise RateLimitError(response=mock_response, message=\"message\", body=\"error\")"
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 292,
+   "end_line": 296,
+   "excerpt": "0292:         # These fields are called during the error handling\n0293:         mock_response = mock.Mock()\n0294:         mock_response.headers = {}\n0295:         mock_response.status_code = 429\n0296:         raise RateLimitError(response=mock_response, message=\"message\", body=\"error\")"
+  },
+  {
+   "span_id": "s7",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 298,
+   "end_line": 303,
+   "excerpt": "0298:     lm = dspy.LM(model=\"openai/gpt-4o-mini\", max_tokens=250, num_retries=3)\n0299:     with mock.patch.object(litellm.OpenAIChatCompletion, \"completion\", side_effect=mock_create):\n0300:         with pytest.raises(RateLimitError):\n0301:             lm(\"question\")\n0302: \n0303:     assert retry_tracking[0] == 4"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "`num_retries=3` means one initial attempt plus three retries.",
+ "source_index": 28,
+ "smalldspy_scope": false
+}

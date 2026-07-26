@@ -1,0 +1,837 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_b71cae7215ee`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I also have async code that fans out several DSPy tasks at once. I need to know whether sibling async tasks are allowed to change DSPy's global defaults, or whether the only safe pattern there is temporary task-local overrides.
+
+This matters because I do per-task model overrides in async evaluation and judge pipelines, and one task must not leak its LM or trace state into another. I want a repro that shows the restriction and also proves the temporary overrides stay isolated across concurrent tasks.
+
+Give me a complete, runnable Python program that uses `DummyLM` offline, establishes the global settings inside one async entry task, then tries to reconfigure them from a sibling task, uses temporary overrides in two concurrent tasks, and prints/asserts the per-task values plus the unchanged global state afterward.`
+- Model answer:
+```python
+import asyncio
+
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+async def forbidden_configure():
+    try:
+        bad_lm = DummyLM([{"answer": "bad"}])
+        bad_lm.tag = "bad"
+        dspy.configure(lm=bad_lm)
+    except RuntimeError as e:
+        return str(e)
+    raise AssertionError("Expected dspy.configure to fail in a sibling async task")
+
+
+async def allowed_context(tag):
+    local_lm = DummyLM([{"answer": tag}])
+    local_lm.tag = tag
+    with dspy.context(lm=local_lm, trace=[tag]):
+        await asyncio.sleep(0)
+        return dspy.settings.lm.tag, list(dspy.settings.trace)
+
+
+async def main():
+    base_lm = DummyLM([{"answer": "base"}])
+    base_lm.tag = "base"
+    dspy.configure(lm=base_lm, trace=[])
+
+    error_text, first, second = await asyncio.gather(
+        forbidden_configure(),
+        allowed_context("task-one"),
+        allowed_context("task-two"),
+    )
+    return error_text, first, second, dspy.settings.lm.tag, list(dspy.settings.trace)
+
+
+error_text, first, second, global_tag, global_trace = asyncio.run(main())
+print("configure_error:", error_text)
+print("task_one:", first)
+print("task_two:", second)
+print("global_after:", global_tag, global_trace)
+assert "same async task" in error_text
+assert first == ("task-one", ["task-one"])
+assert second == ("task-two", ["task-two"])
+assert global_tag == "base"
+assert global_trace == []
+```
+
+## Gold answer
+```python
+import asyncio
+
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+async def forbidden_configure():
+    try:
+        bad_lm = DummyLM([{"answer": "bad"}])
+        bad_lm.tag = "bad"
+        dspy.configure(lm=bad_lm)
+    except RuntimeError as e:
+        return str(e)
+    raise AssertionError("Expected dspy.configure to fail in a sibling async task")
+
+
+async def allowed_context(tag):
+    local_lm = DummyLM([{"answer": tag}])
+    local_lm.tag = tag
+    with dspy.context(lm=local_lm, trace=[tag]):
+        await asyncio.sleep(0)
+        return dspy.settings.lm.tag, list(dspy.settings.trace)
+
+
+async def main():
+    base_lm = DummyLM([{"answer": "base"}])
+    base_lm.tag = "base"
+    dspy.configure(lm=base_lm, trace=[])
+
+    error_text, first, second = await asyncio.gather(
+        forbidden_configure(),
+        allowed_context("task-one"),
+        allowed_context("task-two"),
+    )
+    return error_text, first, second, dspy.settings.lm.tag, list(dspy.settings.trace)
+
+
+error_text, first, second, global_tag, global_trace = asyncio.run(main())
+print("configure_error:", error_text)
+print("task_one:", first)
+print("task_two:", second)
+print("global_after:", global_tag, global_trace)
+assert "same async task" in error_text
+assert first == ("task-one", ["task-one"])
+assert second == ("task-two", ["task-two"])
+assert global_tag == "base"
+assert global_trace == []
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The program initializes DSPy's global defaults with `dspy.configure(...)` inside the async entry task before launching sibling tasks, because the first async task to configure becomes the owner for later `configure` calls.",
+    "span_ids": [
+      "s1",
+      "s6"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "The program demonstrates that a sibling async task cannot change DSPy's global defaults with `dspy.configure(...)` and must receive a `RuntimeError` saying only the same async task may call `configure` and that other tasks should use `dspy.context(...)`.",
+    "span_ids": [
+      "s2",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "Per-task async overrides are done with `dspy.context(...)`, not `configure`, and those overrides are temporary: they are layered onto the current settings for the `with` block and then restored on exit.",
+    "span_ids": [
+      "s3",
+      "s4",
+      "s5"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The repro runs concurrent async tasks under separate `dspy.context(...)` blocks and verifies inside those tasks that each one sees its own overridden LM together with task-local trace state, rather than a sibling task's settings.",
+    "span_ids": [
+      "s7",
+      "s8"
+    ]
+  },
+  {
+    "claim_id": "c5",
+    "claim_type": "supporting",
+    "weight": 15,
+    "statement": "After the concurrent tasks finish, the program verifies that the outer/global settings still match the entry task's configured defaults, including the base LM and unchanged outer trace state.",
+    "span_ids": [
+      "s4",
+      "s8"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/dsp/utils/settings.py",
+    "start_line": 121,
+    "end_line": 145,
+    "excerpt": "0121:         if config_owner_thread_id is None:\n0122:             # First `configure` call assigns the owner thread id.\n0123:             config_owner_thread_id = current_thread_id\n0124: \n0125:         if config_owner_thread_id != current_thread_id:\n0126:             # Disallow a second `configure` calls from other threads.\n0127:             raise RuntimeError(\"dspy.settings can only be changed by the thread that initially configured it.\")\n0128: \n0129:         # Async task doesn't allow a second `configure` call, must use dspy.context(...) instead.\n0130:         is_async_task = False\n0131:         try:\n0132:             if asyncio.current_task() is not None:\n0133:                 is_async_task = True\n0134:         except RuntimeError:\n0135:             # This exception (e.g., \"no current task\") means we are not in an async loop/task,\n0136:             # or asyncio module itself is not fully functional in this specific sub-thread context.\n0137:             is_async_task = False\n0138: \n0139:         if not is_async_task:\n0140:             return\n0141: \n0142:         if config_owner_async_task is None:\n0143:             # First `configure` call assigns the owner async task.\n0144:             config_owner_async_task = asyncio.current_task()\n0145:             return"
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/dsp/utils/settings.py",
+    "start_line": 159,
+    "end_line": 163,
+    "excerpt": "0159:         if not in_ipython and config_owner_async_task != asyncio.current_task():\n0160:             raise RuntimeError(\n0161:                 \"dspy.configure(...) can only be called from the same async task that called it first. Please \"\n0162:                 \"use `dspy.context(...)` in other async tasks instead.\"\n0163:             )"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/dsp/utils/settings.py",
+    "start_line": 219,
+    "end_line": 225,
+    "excerpt": "0219:         Use `dspy.context(...)` when you need temporary settings—a different\n0220:         LM, adapter, or flag—without changing the process-wide defaults from\n0221:         `dspy.configure(...)`. The block inherits every current setting,\n0222:         overrides only the keys you pass, and restores the originals on exit.\n0223: \n0224:         Unlike `dspy.configure(...)`, you can call `dspy.context(...)` from\n0225:         any thread or async task."
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/dsp/utils/settings.py",
+    "start_line": 250,
+    "end_line": 257,
+    "excerpt": "0250:         original_overrides = thread_local_overrides.get().copy()\n0251:         new_overrides = dotdict({**main_thread_config, **original_overrides, **kwargs})\n0252:         token = thread_local_overrides.set(new_overrides)\n0253: \n0254:         try:\n0255:             yield\n0256:         finally:\n0257:             thread_local_overrides.reset(token)"
+  },
+  {
+    "span_id": "s5",
+    "path": "tests/utils/test_settings.py",
+    "start_line": 159,
+    "end_line": 180,
+    "excerpt": "0159:     def bar1():\n0160:         # `dspy.configure` is disallowed in different async tasks from the initial one.\n0161:         # In this case, foo1 (async) calls bar1 (sync), and bar1 uses the async task from foo1.\n0162:         with pytest.raises(RuntimeError) as e:\n0163:             dspy.configure(lm=dspy.LM(\"openai/gpt-4o\"))\n0164:         assert \"dspy.configure(...) can only be called from the same async\" in str(e.value)\n0165: \n0166:     async def foo1():\n0167:         bar1()\n0168:         await asyncio.sleep(0.1)\n0169: \n0170:     async def foo2():\n0171:         # `dspy.configure` is disallowed in different async tasks from the initial one.\n0172:         with pytest.raises(RuntimeError) as e:\n0173:             dspy.configure(lm=dspy.LM(\"openai/gpt-4o\"))\n0174:         assert \"dspy.configure(...) can only be called from the same async\" in str(e.value)\n0175:         await asyncio.sleep(0.1)\n0176: \n0177:     async def foo3():\n0178:         # `dspy.context` is allowed in different async tasks from the initial one.\n0179:         with dspy.context(lm=dspy.LM(\"openai/gpt-4o\")):\n0180:             await asyncio.sleep(0.1)"
+  },
+  {
+    "span_id": "s6",
+    "path": "tests/utils/test_settings.py",
+    "start_line": 187,
+    "end_line": 193,
+    "excerpt": "0187:     # `dspy.configure` is allowed to be called multiple times in the same async task.\n0188:     dspy.configure(lm=dspy.LM(\"openai/gpt-4o-mini\"))\n0189:     dspy.configure(lm=dspy.LM(\"openai/gpt-4o\"))\n0190:     dspy.configure(adapter=dspy.JSONAdapter())\n0191: \n0192:     await asyncio.gather(foo1(), foo2(), foo3())\n0193: "
+  },
+  {
+    "span_id": "s7",
+    "path": "tests/utils/test_settings.py",
+    "start_line": 105,
+    "end_line": 116,
+    "excerpt": "0105:         async def aforward(self, question: str) -> str:\n0106:             lm = (\n0107:                 dspy.LM(\"openai/gpt-4o-mini\", cache=False)\n0108:                 if \"France\" in question\n0109:                 else dspy.LM(\"openai/gpt-4o\", cache=False)\n0110:             )\n0111:             with dspy.context(lm=lm, trace=[]):\n0112:                 await asyncio.sleep(1)\n0113:                 assert dspy.settings.lm.model == lm.model\n0114:                 result = await self.predict.acall(question=question)\n0115:                 assert len(dspy.settings.trace) == 1\n0116:                 return result"
+  },
+  {
+    "span_id": "s8",
+    "path": "tests/utils/test_settings.py",
+    "start_line": 127,
+    "end_line": 154,
+    "excerpt": "0127:             # Define the coroutines to be run\n0128:             coroutines = [\n0129:                 module.acall(question=\"What is the capital of France?\"),\n0130:                 module.acall(question=\"What is the capital of France?\"),\n0131:                 module.acall(question=\"What is the capital of Germany?\"),\n0132:                 module.acall(question=\"What is the capital of Germany?\"),\n0133:             ]\n0134: \n0135:             # Run them concurrently and gather results\n0136:             results = await asyncio.gather(*coroutines)\n0137: \n0138:         assert results[0].answer == \"Paris\"\n0139:         assert results[1].answer == \"Paris\"\n0140:         assert results[2].answer == \"Paris\"\n0141:         assert results[3].answer == \"Paris\"\n0142: \n0143:         # Verify mock was called correctly\n0144:         assert mock_completion.call_count == 4\n0145:         # France question uses gpt-4o-mini\n0146:         assert mock_completion.call_args_list[0].kwargs[\"model\"] == \"openai/gpt-4o-mini\"\n0147:         assert mock_completion.call_args_list[1].kwargs[\"model\"] == \"openai/gpt-4o-mini\"\n0148:         # Germany question uses gpt-4o\n0149:         assert mock_completion.call_args_list[2].kwargs[\"model\"] == \"openai/gpt-4o\"\n0150:         assert mock_completion.call_args_list[3].kwargs[\"model\"] == \"openai/gpt-4o\"\n0151: \n0152:         # The main thread is not affected by the context\n0153:         assert dspy.settings.lm.model == \"openai/gpt-4.1\"\n0154:         assert dspy.settings.trace == []"
+  }
+]
+
+## Whole evidence files
+### dspy/dsp/utils/settings.py
+0001: import asyncio
+0002: import contextvars
+0003: import copy
+0004: import logging
+0005: import threading
+0006: from contextlib import contextmanager
+0007: from typing import Any
+0008: 
+0009: import cloudpickle
+0010: 
+0011: from dspy.dsp.utils.utils import dotdict
+0012: 
+0013: logger = logging.getLogger(__name__)
+0014: 
+0015: DEFAULT_CONFIG = dotdict(
+0016:     lm=None,
+0017:     adapter=None,
+0018:     rm=None,
+0019:     branch_idx=0,
+0020:     trace=[],
+0021:     callbacks=[],
+0022:     async_max_workers=8,
+0023:     send_stream=None,
+0024:     disable_history=False,
+0025:     track_usage=False,
+0026:     usage_tracker=None,
+0027:     caller_predict=None,
+0028:     caller_modules=None,
+0029:     stream_listeners=[],
+0030:     provide_traceback=False,  # Whether to include traceback information in error logs.
+0031:     num_threads=8,  # Number of threads to use for parallel processing.
+0032:     max_errors=10,  # Maximum errors before halting operations.
+0033:     # If true, async tools can be called in sync mode by getting converted to sync.
+0034:     allow_tool_async_sync_conversion=False,
+0035:     max_history_size=10000,
+0036:     max_trace_size=10000,
+0037:     warn_on_type_mismatch=True,  # Whether to log warnings when a module's input type doesn't match the signature type.
+0038: )
+0039: 
+0040: # Global base configuration and owner tracking
+0041: main_thread_config = copy.deepcopy(DEFAULT_CONFIG)
+0042: config_owner_thread_id = None
+0043: config_owner_async_task = None
+0044: 
+0045: # Global lock for settings configuration
+0046: global_lock = threading.Lock()
+0047: 
+0048: thread_local_overrides = contextvars.ContextVar("context_overrides", default=dotdict())
+0049: 
+0050: 
+0051: class Settings:
+0052:     """
+0053:     A singleton class for DSPy configuration settings.
+0054:     Thread-safe global configuration.
+0055:     - 'configure' can be called by only one 'owner' thread (the first thread that calls it).
+0056:     - Other threads see the configured global values from 'main_thread_config'.
+0057:     - 'context' sets thread-local overrides. These overrides propagate to threads spawned
+0058:       inside that context block, when (and only when!) using a ParallelExecutor that copies overrides.
+0059: 
+0060:       1. Only one unique thread (which can be any thread!) can call dspy.configure.
+0061:       2. It affects a global state, visible to all. As a result, user threads work, but they shouldn't be
+0062:          mixed with concurrent changes to dspy.configure from the "main" thread.
+0063:          (TODO: In the future, add warnings: if there are near-in-time user-thread reads followed by .configure calls.)
+0064:       3. Any thread can use dspy.context. It propagates to child threads created with DSPy primitives: Parallel, asyncify, etc.
+0065:     """
+0066: 
+0067:     _instance = None
+0068: 
+0069:     def __new__(cls):
+0070:         if cls._instance is None:
+0071:             cls._instance = super().__new__(cls)
+0072:         return cls._instance
+0073: 
+0074:     @property
+0075:     def lock(self):
+0076:         return global_lock
+0077: 
+0078:     def __getattr__(self, name):
+0079:         overrides = thread_local_overrides.get()
+0080:         if name in overrides:
+0081:             return overrides[name]
+0082:         elif name in main_thread_config:
+0083:             return main_thread_config[name]
+0084:         else:
+0085:             raise AttributeError(f"'Settings' object has no attribute '{name}'")
+0086: 
+0087:     def __setattr__(self, name, value):
+0088:         if name in ("_instance",):
+0089:             super().__setattr__(name, value)
+0090:         else:
+0091:             self.configure(**{name: value})
+0092: 
+0093:     def __getitem__(self, key):
+0094:         return self.__getattr__(key)
+0095: 
+0096:     def __setitem__(self, key, value):
+0097:         self.__setattr__(key, value)
+0098: 
+0099:     def __contains__(self, key):
+0100:         overrides = thread_local_overrides.get()
+0101:         return key in overrides or key in main_thread_config
+0102: 
+0103:     def get(self, key, default=None):
+0104:         try:
+0105:             return self[key]
+0106:         except AttributeError:
+0107:             return default
+0108: 
+0109:     def copy(self):
+0110:         overrides = thread_local_overrides.get()
+0111:         return dotdict({**main_thread_config, **overrides})
+0112: 
+0113:     @property
+0114:     def config(self):
+0115:         return self.copy()
+0116: 
+0117:     def _ensure_configure_allowed(self):
+0118:         global main_thread_config, config_owner_thread_id, config_owner_async_task
+0119:         current_thread_id = threading.get_ident()
+0120: 
+0121:         if config_owner_thread_id is None:
+0122:             # First `configure` call assigns the owner thread id.
+0123:             config_owner_thread_id = current_thread_id
+0124: 
+0125:         if config_owner_thread_id != current_thread_id:
+0126:             # Disallow a second `configure` calls from other threads.
+0127:             raise RuntimeError("dspy.settings can only be changed by the thread that initially configured it.")
+0128: 
+0129:         # Async task doesn't allow a second `configure` call, must use dspy.context(...) instead.
+0130:         is_async_task = False
+0131:         try:
+0132:             if asyncio.current_task() is not None:
+0133:                 is_async_task = True
+0134:         except RuntimeError:
+0135:             # This exception (e.g., "no current task") means we are not in an async loop/task,
+0136:             # or asyncio module itself is not fully functional in this specific sub-thread context.
+0137:             is_async_task = False
+0138: 
+0139:         if not is_async_task:
+0140:             return
+0141: 
+0142:         if config_owner_async_task is None:
+0143:             # First `configure` call assigns the owner async task.
+0144:             config_owner_async_task = asyncio.current_task()
+0145:             return
+0146: 
+0147:         # We are in an async task. Now check for IPython and allow calling `configure` from IPython.
+0148:         in_ipython = False
+0149:         try:
+0150:             from IPython import get_ipython
+0151: 
+0152:             # get_ipython is a global injected by IPython environments.
+0153:             # We check its existence and type to be more robust.
+0154:             in_ipython = get_ipython() is not None
+0155:         except Exception:
+0156:             # If `IPython` is not installed or `get_ipython` failed, we are not in an IPython environment.
+0157:             in_ipython = False
+0158: 
+0159:         if not in_ipython and config_owner_async_task != asyncio.current_task():
+0160:             raise RuntimeError(
+0161:                 "dspy.configure(...) can only be called from the same async task that called it first. Please "
+0162:                 "use `dspy.context(...)` in other async tasks instead."
+0163:             )
+0164: 
+0165:     def configure(self, **kwargs):
+0166:         """Set the default language model, adapter, and other settings for DSPy.
+0167: 
+0168:         Call `dspy.configure(...)` once near the top of your script. Every
+0169:         DSPy module will use these defaults unless you override them with
+0170:         `dspy.context(...)`. The values persist until you call
+0171:         `dspy.configure(...)` again.
+0172: 
+0173:         Only the thread that first calls `dspy.configure(...)` may call it
+0174:         again. Use `dspy.context(...)` for temporary overrides in other
+0175:         threads or async tasks.
+0176: 
+0177:         Args:
+0178:             **kwargs: Settings to update. Common keys include `lm` (a
+0179:                 `dspy.LM`), `adapter` (e.g. `dspy.JSONAdapter()`),
+0180:                 `callbacks`, `track_usage`, `async_max_workers`, and
+0181:                 `num_threads`.
+0182: 
+0183:         Examples:
+0184:             Set a default LM:
+0185:             ```python
+0186:             import dspy
+0187: 
+0188:             dspy.configure(lm=dspy.LM("openai/gpt-5-mini"))
+0189:             ```
+0190: 
+0191:             Set multiple defaults at once:
+0192:             ```python
+0193:             import dspy
+0194: 
+0195:             dspy.configure(
+0196:                 lm=dspy.LM("anthropic/claude-sonnet-4-6"),
+0197:                 adapter=dspy.JSONAdapter(),
+0198:                 track_usage=True,
+0199:             )
+0200:             ```
+0201: 
+0202:         See Also:
+0203:             [`dspy.LM`][dspy.LM]: create the language model you pass as `lm`.
+0204:             `dspy.context`: temporary overrides inside one block.
+0205:         """
+0206:         # `dspy.configure` is documented manually in docs/docs/api/utils/context.md
+0207:         # changes here should be reflected there as well.
+0208:         # If no exception is raised, the `configure` call is allowed.
+0209:         self._ensure_configure_allowed()
+0210: 
+0211:         # Update global config
+0212:         for k, v in kwargs.items():
+0213:             main_thread_config[k] = v
+0214: 
+0215:     @contextmanager
+0216:     def context(self, **kwargs):
+0217:         """Override DSPy settings for one `with` block.
+0218: 
+0219:         Use `dspy.context(...)` when you need temporary settings—a different
+0220:         LM, adapter, or flag—without changing the process-wide defaults from
+0221:         `dspy.configure(...)`. The block inherits every current setting,
+0222:         overrides only the keys you pass, and restores the originals on exit.
+0223: 
+0224:         Unlike `dspy.configure(...)`, you can call `dspy.context(...)` from
+0225:         any thread or async task.
+0226: 
+0227:         Args:
+0228:             **kwargs: Settings to override, such as `lm`, `adapter`,
+0229:                 `track_usage`, or `allow_tool_async_sync_conversion`.
+0230: 
+0231:         Examples:
+0232:             Use a different LM for one call:
+0233:             ```python
+0234:             import dspy
+0235: 
+0236:             dspy.configure(lm=dspy.LM("openai/gpt-5-mini"))
+0237:             qa = dspy.Predict("question -> answer")
+0238: 
+0239:             with dspy.context(lm=dspy.LM("anthropic/claude-sonnet-4-6")):
+0240:                 result = qa(question="What is the capital of France?")
+0241:                 # uses claude-sonnet-4-6 inside this block
+0242:             # back to gpt-5-mini here
+0243:             ```
+0244: 
+0245:         See Also:
+0246:             `dspy.configure`: set process-wide defaults.
+0247:         """
+0248:         # `dspy.context` is documented manually in docs/docs/api/utils/context.md
+0249:         # changes here should be reflected there as well.
+0250:         original_overrides = thread_local_overrides.get().copy()
+0251:         new_overrides = dotdict({**main_thread_config, **original_overrides, **kwargs})
+0252:         token = thread_local_overrides.set(new_overrides)
+0253: 
+0254:         try:
+0255:             yield
+0256:         finally:
+0257:             thread_local_overrides.reset(token)
+0258: 
+0259:     def __repr__(self):
+0260:         overrides = thread_local_overrides.get()
+0261:         combined_config = {**main_thread_config, **overrides}
+0262:         return repr(combined_config)
+0263: 
+0264:     def save(
+0265:         self, path: str,
+0266:         modules_to_serialize: list[str] | None = None,
+0267:         exclude_keys: list[str] | None = None,
+0268:     ):
+0269:         """
+0270:         Save the settings to a file using cloudpickle.
+0271: 
+0272:         Args:
+0273:             path: The file path to save the settings to.
+0274:             modules_to_serialize (list or None): A list of modules to serialize with cloudpickle's `register_pickle_by_value`.
+0275:                 If None, then no modules will be registered for serialization.
+0276:             exclude_keys (list or None): A list of keys to exclude during saving.
+0277:         """
+0278:         logger.warning(
+0279:             "`dspy.settings` are serialized using cloudpickle. Because cloudpickle allows for the "
+0280:             "execution of arbitrary code during deserialization, you should only load files from "
+0281:             "verified sources within a trusted environment."
+0282:         )
+0283:         try:
+0284:             modules_to_serialize = modules_to_serialize or []
+0285:             for module in modules_to_serialize:
+0286:                 cloudpickle.register_pickle_by_value(module)
+0287: 
+0288:             exclude_keys = exclude_keys or []
+0289:             data = {key: value for key, value in self.config.items() if key not in exclude_keys}
+0290:             with open(path, "wb") as f:
+0291:                 cloudpickle.dump(data, f)
+0292:         except Exception as e:
+0293:             raise RuntimeError(
+0294:                 f"Saving failed with error: {e}. Please remove the non-picklable attributes from the values "
+0295:                 "in the `dspy.settings`."
+0296:             )
+0297: 
+0298:     @classmethod
+0299:     def load(cls, path: str, allow_pickle: bool = False) -> dict[str, Any]:
+0300:         """
+0301:         Load the settings from a file using cloudpickle.
+0302: 
+0303:         Args:
+0304:             path: The file path to load the settings from.
+0305:             allow_pickle: Whether to allow loading with pickle. Loading untrusted .pkl files
+0306:                 can run arbitrary code. Set to True only if you trust the source of the file.
+0307: 
+0308:         Returns:
+0309:             A dict that stores the loaded settings.
+0310:         """
+0311:         if not allow_pickle:
+0312:             raise ValueError(
+0313:                 "Loading .pkl files can run arbitrary code, which may be dangerous. "
+0314:                 "Set `allow_pickle=True` if you trust the source of the file."
+0315:             )
+0316: 
+0317:         with open(path, "rb") as f:
+0318:             configs = cloudpickle.load(f)
+0319: 
+0320:         return configs
+0321: 
+0322: 
+0323: settings = Settings()
+
+### tests/utils/test_settings.py
+0001: import asyncio
+0002: import sys
+0003: import time
+0004: from concurrent.futures import ThreadPoolExecutor
+0005: from unittest import mock
+0006: 
+0007: import pytest
+0008: from litellm import Choices, Message, ModelResponse
+0009: 
+0010: import dspy
+0011: 
+0012: 
+0013: def test_basic_dspy_settings():
+0014:     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), callbacks=[lambda x: x])
+0015:     assert dspy.settings.lm.model == "openai/gpt-4o"
+0016:     assert isinstance(dspy.settings.adapter, dspy.JSONAdapter)
+0017:     assert len(dspy.settings.callbacks) == 1
+0018: 
+0019: 
+0020: def test_forbid_configure_call_in_child_thread():
+0021:     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), callbacks=[lambda x: x])
+0022: 
+0023:     def worker():
+0024:         with pytest.raises(RuntimeError, match="Cannot call dspy.configure"):
+0025:             dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"), callbacks=[])
+0026: 
+0027:     with ThreadPoolExecutor(max_workers=1) as executor:
+0028:         executor.submit(worker)
+0029: 
+0030: 
+0031: def test_dspy_context():
+0032:     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), callbacks=[lambda x: x])
+0033:     with dspy.context(lm=dspy.LM("openai/gpt-4o-mini"), callbacks=[]):
+0034:         assert dspy.settings.lm.model == "openai/gpt-4o-mini"
+0035:         assert len(dspy.settings.callbacks) == 0
+0036: 
+0037:     assert dspy.settings.lm.model == "openai/gpt-4o"
+0038:     assert len(dspy.settings.callbacks) == 1
+0039: 
+0040: 
+0041: def test_dspy_context_parallel():
+0042:     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), callbacks=[lambda x: x])
+0043: 
+0044:     def worker(i):
+0045:         with dspy.context(lm=dspy.LM("openai/gpt-4o-mini"), trace=[i], callbacks=[]):
+0046:             assert dspy.settings.lm.model == "openai/gpt-4o-mini"
+0047:             assert dspy.settings.trace == [i]
+0048:             assert len(dspy.settings.callbacks) == 0
+0049: 
+0050:     with ThreadPoolExecutor(max_workers=5) as executor:
+0051:         executor.map(worker, range(3))
+0052: 
+0053:     assert dspy.settings.lm.model == "openai/gpt-4o"
+0054:     assert len(dspy.settings.callbacks) == 1
+0055: 
+0056: 
+0057: def test_dspy_context_with_dspy_parallel():
+0058:     dspy.configure(lm=dspy.LM("openai/gpt-4o", cache=False), adapter=dspy.ChatAdapter())
+0059: 
+0060:     class MyModule(dspy.Module):
+0061:         def __init__(self):
+0062:             self.predict = dspy.Predict("question -> answer")
+0063: 
+0064:         def forward(self, question: str) -> str:
+0065:             lm = dspy.LM("openai/gpt-4o-mini", cache=False) if "France" in question else dspy.settings.lm
+0066:             with dspy.context(lm=lm):
+0067:                 time.sleep(1)
+0068:                 assert dspy.settings.lm.model == lm.model
+0069:                 return self.predict(question=question)
+0070: 
+0071:     with mock.patch("litellm.completion") as mock_completion:
+0072:         mock_completion.return_value = ModelResponse(
+0073:             choices=[Choices(message=Message(content="[[ ## answer ## ]]\nParis"))],
+0074:             model="openai/gpt-4o-mini",
+0075:         )
+0076: 
+0077:         module = MyModule()
+0078:         parallelizer = dspy.Parallel()
+0079:         input_pairs = [
+0080:             (module, {"question": "What is the capital of France?"}),
+0081:             (module, {"question": "What is the capital of Germany?"}),
+0082:         ]
+0083:         parallelizer(input_pairs)
+0084: 
+0085:         # Verify mock was called correctly
+0086:         assert mock_completion.call_count == 2
+0087:         for call_args in mock_completion.call_args_list:
+0088:             if "France" in call_args.kwargs["messages"][-1]["content"]:
+0089:                 # France question uses gpt-4o-mini
+0090:                 assert call_args.kwargs["model"] == "openai/gpt-4o-mini"
+0091:             else:
+0092:                 # Germany question uses gpt-4o
+0093:                 assert call_args.kwargs["model"] == "openai/gpt-4o"
+0094: 
+0095:         # The main thread is not affected by the context
+0096:         assert dspy.settings.lm.model == "openai/gpt-4o"
+0097: 
+0098: 
+0099: @pytest.mark.asyncio
+0100: async def test_dspy_context_with_async_task_group():
+0101:     class MyModule(dspy.Module):
+0102:         def __init__(self):
+0103:             self.predict = dspy.Predict("question -> answer")
+0104: 
+0105:         async def aforward(self, question: str) -> str:
+0106:             lm = (
+0107:                 dspy.LM("openai/gpt-4o-mini", cache=False)
+0108:                 if "France" in question
+0109:                 else dspy.LM("openai/gpt-4o", cache=False)
+0110:             )
+0111:             with dspy.context(lm=lm, trace=[]):
+0112:                 await asyncio.sleep(1)
+0113:                 assert dspy.settings.lm.model == lm.model
+0114:                 result = await self.predict.acall(question=question)
+0115:                 assert len(dspy.settings.trace) == 1
+0116:                 return result
+0117: 
+0118:     module = MyModule()
+0119: 
+0120:     with dspy.context(lm=dspy.LM("openai/gpt-4.1", cache=False), adapter=dspy.ChatAdapter()):
+0121:         with mock.patch("litellm.acompletion") as mock_completion:
+0122:             mock_completion.return_value = ModelResponse(
+0123:                 choices=[Choices(message=Message(content="[[ ## answer ## ]]\nParis"))],
+0124:                 model="openai/gpt-4o-mini",
+0125:             )
+0126: 
+0127:             # Define the coroutines to be run
+0128:             coroutines = [
+0129:                 module.acall(question="What is the capital of France?"),
+0130:                 module.acall(question="What is the capital of France?"),
+0131:                 module.acall(question="What is the capital of Germany?"),
+0132:                 module.acall(question="What is the capital of Germany?"),
+0133:             ]
+0134: 
+0135:             # Run them concurrently and gather results
+0136:             results = await asyncio.gather(*coroutines)
+0137: 
+0138:         assert results[0].answer == "Paris"
+0139:         assert results[1].answer == "Paris"
+0140:         assert results[2].answer == "Paris"
+0141:         assert results[3].answer == "Paris"
+0142: 
+0143:         # Verify mock was called correctly
+0144:         assert mock_completion.call_count == 4
+0145:         # France question uses gpt-4o-mini
+0146:         assert mock_completion.call_args_list[0].kwargs["model"] == "openai/gpt-4o-mini"
+0147:         assert mock_completion.call_args_list[1].kwargs["model"] == "openai/gpt-4o-mini"
+0148:         # Germany question uses gpt-4o
+0149:         assert mock_completion.call_args_list[2].kwargs["model"] == "openai/gpt-4o"
+0150:         assert mock_completion.call_args_list[3].kwargs["model"] == "openai/gpt-4o"
+0151: 
+0152:         # The main thread is not affected by the context
+0153:         assert dspy.settings.lm.model == "openai/gpt-4.1"
+0154:         assert dspy.settings.trace == []
+0155: 
+0156: 
+0157: @pytest.mark.asyncio
+0158: async def test_dspy_configure_allowance_async():
+0159:     def bar1():
+0160:         # `dspy.configure` is disallowed in different async tasks from the initial one.
+0161:         # In this case, foo1 (async) calls bar1 (sync), and bar1 uses the async task from foo1.
+0162:         with pytest.raises(RuntimeError) as e:
+0163:             dspy.configure(lm=dspy.LM("openai/gpt-4o"))
+0164:         assert "dspy.configure(...) can only be called from the same async" in str(e.value)
+0165: 
+0166:     async def foo1():
+0167:         bar1()
+0168:         await asyncio.sleep(0.1)
+0169: 
+0170:     async def foo2():
+0171:         # `dspy.configure` is disallowed in different async tasks from the initial one.
+0172:         with pytest.raises(RuntimeError) as e:
+0173:             dspy.configure(lm=dspy.LM("openai/gpt-4o"))
+0174:         assert "dspy.configure(...) can only be called from the same async" in str(e.value)
+0175:         await asyncio.sleep(0.1)
+0176: 
+0177:     async def foo3():
+0178:         # `dspy.context` is allowed in different async tasks from the initial one.
+0179:         with dspy.context(lm=dspy.LM("openai/gpt-4o")):
+0180:             await asyncio.sleep(0.1)
+0181: 
+0182:     async def foo4():
+0183:         # foo4 is directly invoked by the entry task, so it has the same async task as the entry task.
+0184:         dspy.configure(lm=dspy.LM("openai/gpt-4o"))
+0185:         await asyncio.sleep(0.1)
+0186: 
+0187:     # `dspy.configure` is allowed to be called multiple times in the same async task.
+0188:     dspy.configure(lm=dspy.LM("openai/gpt-4o-mini"))
+0189:     dspy.configure(lm=dspy.LM("openai/gpt-4o"))
+0190:     dspy.configure(adapter=dspy.JSONAdapter())
+0191: 
+0192:     await asyncio.gather(foo1(), foo2(), foo3())
+0193: 
+0194:     foo4()
+0195: 
+0196: 
+0197: def test_dspy_settings_save_load(tmp_path):
+0198:     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), callbacks=[lambda x: x])
+0199: 
+0200:     dspy.settings.save(tmp_path / "settings.pkl")
+0201:     dspy.configure(lm=None, adapter=None, callbacks=None)
+0202: 
+0203:     loaded_settings = dspy.load_settings(tmp_path / "settings.pkl", allow_pickle=True)
+0204:     dspy.configure(**loaded_settings)
+0205:     assert dspy.settings.lm.model == "openai/gpt-4o"
+0206:     assert isinstance(dspy.settings.adapter, dspy.JSONAdapter)
+0207:     assert len(dspy.settings.callbacks) == 1
+0208: 
+0209: 
+0210: def test_dspy_settings_save_exclude_keys(tmp_path):
+0211:     dspy.configure(lm=dspy.LM("openai/gpt-4o"), adapter=dspy.JSONAdapter(), track_usage=True)
+0212: 
+0213:     dspy.settings.save(tmp_path / "settings.pkl", exclude_keys=["adapter", "track_usage"])
+0214:     dspy.configure(lm=None, adapter=None, track_usage=False)
+0215: 
+0216:     loaded_settings = dspy.load_settings(tmp_path / "settings.pkl", allow_pickle=True)
+0217:     dspy.configure(**loaded_settings)
+0218:     assert dspy.settings.lm.model == "openai/gpt-4o"
+0219:     assert dspy.settings.adapter is None
+0220:     assert not dspy.settings.track_usage
+0221: 
+0222: 
+0223: 
+0224: def test_settings_save_with_extra_modules(tmp_path):
+0225:     # Create a temporary Python file with our custom module
+0226:     custom_module_path = tmp_path / "custom_module.py"
+0227:     with open(custom_module_path, "w") as f:
+0228:         f.write(
+0229:             """
+0230: def callback(x):
+0231:     return x + 1
+0232: """
+0233:         )
+0234: 
+0235:     # Add the tmp_path to Python path so we can import the module
+0236:     sys.path.insert(0, str(tmp_path))
+0237:     try:
+0238:         import custom_module
+0239: 
+0240:         dspy.configure(callbacks=[custom_module.callback])
+0241: 
+0242:         settings_path = tmp_path / "settings.pkl"
+0243:         sys.path.insert(0, str(tmp_path))
+0244: 
+0245:         dspy.configure(callbacks=[custom_module.callback])
+0246:         dspy.settings.save(settings_path, modules_to_serialize=[custom_module])
+0247: 
+0248:         # Remove the custom module again to simulate it not being available at load time
+0249:         sys.modules.pop("custom_module", None)
+0250:         sys.path.remove(str(tmp_path))
+0251:         del custom_module
+0252: 
+0253:         dspy.configure(callbacks=None)
+0254: 
+0255:         # Loading should now succeed and preserve the adapter instance
+0256:         loaded_settings = dspy.load_settings(settings_path, allow_pickle=True)
+0257:         dspy.settings.configure(**loaded_settings)
+0258: 
+0259:         assert dspy.settings.callbacks[0](3) == 4
+0260: 
+0261:     finally:
+0262:         # Only need to clean up sys.path
+0263:         if str(tmp_path) in sys.path:
+0264:             sys.path.remove(str(tmp_path))
+
+Return JSON that matches the schema exactly.

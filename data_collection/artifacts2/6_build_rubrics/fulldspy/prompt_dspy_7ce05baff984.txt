@@ -1,0 +1,723 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_7ce05baff984`
+- Label: `evaluation_metrics_and_parallelism`
+- Question: `I asked the random-search few-shot optimizer for only one candidate set, but the compiled program came back carrying more scored variants than I requested. I suspect DSPy is always evaluating a few built-in baselines before it starts counting random candidates, but I want a repro that proves the exact count.
+
+Give me a complete, runnable Python program that uses `DummyLM` offline, asks for one candidate set, and prints/asserts both the stored count and the stored seed identifiers if DSPy records them.`
+- Gold answer:
+```python
+import dspy
+from dspy.teleprompt import BootstrapFewShotWithRandomSearch
+from dspy.utils.dummies import DummyLM
+
+
+class SimpleModule(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.predictor = dspy.Predict("question -> answer")
+
+    def forward(self, question):
+        return self.predictor(question=question)
+
+
+
+def metric(example, prediction, trace=None):
+    return example.answer == prediction.answer
+
+
+dspy.configure(
+    lm=DummyLM(
+        {
+            "q1": {"answer": "A"},
+            "q2": {"answer": "B"},
+        }
+    )
+)
+
+trainset = [
+    dspy.Example(question="q1", answer="A").with_inputs("question"),
+    dspy.Example(question="q2", answer="B").with_inputs("question"),
+]
+
+optimizer = BootstrapFewShotWithRandomSearch(
+    metric=metric,
+    num_candidate_programs=1,
+    max_bootstrapped_demos=1,
+    max_labeled_demos=1,
+    num_threads=1,
+)
+best = optimizer.compile(SimpleModule(), teacher=SimpleModule(), trainset=trainset, valset=trainset)
+seeds = [candidate["seed"] for candidate in best.candidate_programs]
+print(len(seeds), seeds)
+assert len(seeds) == 4
+assert set(seeds) == {-3, -2, -1, 0}
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/teleprompt/random_search.py",
+    "symbol": "BootstrapFewShotWithRandomSearch.compile"
+  },
+  {
+    "file": "dspy/teleprompt/utils.py",
+    "symbol": "create_n_fewshot_demo_sets"
+  }
+]
+
+## Full evidence files
+### dspy/teleprompt/random_search.py
+0001: import random
+0002: 
+0003: import dspy
+0004: from dspy.evaluate.evaluate import Evaluate
+0005: from dspy.teleprompt.teleprompt import Teleprompter
+0006: 
+0007: from .bootstrap import BootstrapFewShot
+0008: from .vanilla import LabeledFewShot
+0009: 
+0010: # TODO: Don't forget dealing with the raw demos.
+0011: # TODO: Deal with the (pretty common) case of having a metric for filtering and a separate metric for eval.
+0012: # The metric itself may tell though by the presence of trace.
+0013: 
+0014: # TODO: This function should take a max_budget and max_teacher_budget. That's in the number of program calls.
+0015: # In this case, max_student_budget is max_budget - max_teacher_budget.
+0016: # For max_teacher_budget, this will just limit the total number of things we bootstrap.
+0017: # This can end up implicitly defining the number of candidate programs (i.e., stop when runs out). Cap at 16.
+0018: # For max_student_budget, this will be a more upfront calculation.
+0019: # Right now, it can also just induce the number of candidate programs. Later, it could be used more interestingly
+0020: # for selective early stopping.
+0021: # Progressive elimination sounds about right: after 50 examples, drop bottom third, after 100, another third, etc.
+0022: # until only 3--5 are left for the end. Could also be systematic and add (earlier) stopping based on error bounds.
+0023: # In general, though, the early filtering is just saying: either there are some really bad ones, or some really really
+0024: # good ones, or most things are pretty close. In all of these cases, dropping the bottom third is not going to hurt.
+0025: 
+0026: 
+0027: class BootstrapFewShotWithRandomSearch(Teleprompter):
+0028:     def __init__(
+0029:         self,
+0030:         metric,
+0031:         teacher_settings=None,
+0032:         max_bootstrapped_demos=4,
+0033:         max_labeled_demos=16,
+0034:         max_rounds=1,
+0035:         num_candidate_programs=16,
+0036:         num_threads=None,
+0037:         max_errors=None,
+0038:         stop_at_score=None,
+0039:         metric_threshold=None,
+0040:     ):
+0041:         self.metric = metric
+0042:         self.teacher_settings = teacher_settings or {}
+0043:         self.max_rounds = max_rounds
+0044: 
+0045:         self.num_threads = num_threads
+0046:         self.stop_at_score = stop_at_score
+0047:         self.metric_threshold = metric_threshold
+0048:         self.min_num_samples = 1
+0049:         self.max_num_samples = max_bootstrapped_demos
+0050:         self.max_errors = max_errors
+0051:         self.num_candidate_sets = num_candidate_programs
+0052:         self.max_labeled_demos = max_labeled_demos
+0053: 
+0054:         print(f"Going to sample between {self.min_num_samples} and {self.max_num_samples} traces per predictor.")
+0055:         print(f"Will attempt to bootstrap {self.num_candidate_sets} candidate sets.")
+0056: 
+0057:     def compile(self, student, *, teacher=None, trainset, valset=None, restrict=None, labeled_sample=True):
+0058:         self.trainset = trainset
+0059:         self.valset = valset or trainset  # TODO: FIXME: Note this choice.
+0060: 
+0061:         effective_max_errors = self.max_errors if self.max_errors is not None else dspy.settings.max_errors
+0062: 
+0063:         scores = []
+0064:         all_subscores = []
+0065:         score_data = []
+0066: 
+0067:         for seed in range(-3, self.num_candidate_sets):
+0068:             if (restrict is not None) and (seed not in restrict):
+0069:                 continue
+0070: 
+0071:             trainset_copy = list(self.trainset)
+0072: 
+0073:             if seed == -3:
+0074:                 # zero-shot
+0075:                 program = student.reset_copy()
+0076: 
+0077:             elif seed == -2:
+0078:                 # labels only
+0079:                 teleprompter = LabeledFewShot(k=self.max_labeled_demos)
+0080:                 program = teleprompter.compile(student, trainset=trainset_copy, sample=labeled_sample)
+0081: 
+0082:             elif seed == -1:
+0083:                 # unshuffled few-shot
+0084:                 optimizer = BootstrapFewShot(
+0085:                     metric=self.metric,
+0086:                     metric_threshold=self.metric_threshold,
+0087:                     max_bootstrapped_demos=self.max_num_samples,
+0088:                     max_labeled_demos=self.max_labeled_demos,
+0089:                     teacher_settings=self.teacher_settings,
+0090:                     max_rounds=self.max_rounds,
+0091:                     max_errors=effective_max_errors,
+0092:                 )
+0093:                 program = optimizer.compile(student, teacher=teacher, trainset=trainset_copy)
+0094: 
+0095:             else:
+0096:                 assert seed >= 0, seed
+0097: 
+0098:                 random.Random(seed).shuffle(trainset_copy)
+0099:                 size = random.Random(seed).randint(self.min_num_samples, self.max_num_samples)
+0100: 
+0101:                 optimizer = BootstrapFewShot(
+0102:                     metric=self.metric,
+0103:                     metric_threshold=self.metric_threshold,
+0104:                     max_bootstrapped_demos=size,
+0105:                     max_labeled_demos=self.max_labeled_demos,
+0106:                     teacher_settings=self.teacher_settings,
+0107:                     max_rounds=self.max_rounds,
+0108:                     max_errors=effective_max_errors,
+0109:                 )
+0110: 
+0111:                 program = optimizer.compile(student, teacher=teacher, trainset=trainset_copy)
+0112: 
+0113:             evaluate = Evaluate(
+0114:                 devset=self.valset,
+0115:                 metric=self.metric,
+0116:                 num_threads=self.num_threads,
+0117:                 max_errors=effective_max_errors,
+0118:                 display_table=False,
+0119:                 display_progress=True,
+0120:             )
+0121: 
+0122:             result = evaluate(program)
+0123: 
+0124:             score, subscores = result.score, [output[2] for output in result.results]
+0125: 
+0126:             all_subscores.append(subscores)
+0127: 
+0128:             if len(scores) == 0 or score > max(scores):
+0129:                 print("New best score:", score, "for seed", seed)
+0130:                 best_program = program
+0131: 
+0132:             scores.append(score)
+0133:             print(f"Scores so far: {scores}")
+0134:             print(f"Best score so far: {max(scores)}")
+0135: 
+0136:             score_data.append({"score": score, "subscores": subscores, "seed": seed, "program": program})
+0137: 
+0138:             if self.stop_at_score is not None and score >= self.stop_at_score:
+0139:                 print(f"Stopping early because score {score} is >= stop_at_score {self.stop_at_score}")
+0140:                 break
+0141: 
+0142:         # To best program, attach all program candidates in decreasing average score
+0143:         best_program.candidate_programs = score_data
+0144:         best_program.candidate_programs = sorted(
+0145:             best_program.candidate_programs, key=lambda x: x["score"], reverse=True
+0146:         )
+0147: 
+0148:         print(f"{len(best_program.candidate_programs)} candidate programs found.")
+0149: 
+0150:         return best_program
+0151: 
+0152: 
+0153: # sample between 4 and 10 examples from traces
+0154: # TODO: FIXME: The max number of demos should be determined in part by the LM's tokenizer + max_length.
+0155: # This does require executing the program, or at least the predictor.
+0156: # # # # # # (Actually we can just combine the token counts of the traces, when formatted via signature/adapter).
+0157: # Alternatively, we can keep track of the (zero-shot) number of tokens when we bootstrap.
+0158: # As another option, we can just try a wide range and handle failures as penalties on the score.
+0159: # The number "24" of traces to collect can also be affected. If we only need 3x10, some overlap is ok.
+0160: # We can also consider having short_demos and long_demos.
+
+### dspy/teleprompt/utils.py
+0001: import inspect
+0002: import logging
+0003: import math
+0004: import os
+0005: import random
+0006: import shutil
+0007: import sys
+0008: 
+0009: import numpy as np
+0010: 
+0011: try:
+0012:     from IPython.core.magics.code import extract_symbols
+0013: except ImportError:
+0014:     # Won't be able to read code from jupyter notebooks
+0015:     extract_symbols = None
+0016: 
+0017: import dspy
+0018: from dspy.teleprompt.bootstrap import BootstrapFewShot, LabeledFewShot
+0019: 
+0020: """
+0021: This file consists of helper functions for our variety of optimizers.
+0022: """
+0023: 
+0024: ### OPTIMIZER TRAINING UTILS ###
+0025: 
+0026: logger = logging.getLogger(__name__)
+0027: 
+0028: 
+0029: def create_minibatch(trainset, batch_size=50, rng=None):
+0030:     """Create a minibatch from the trainset."""
+0031: 
+0032:     # Ensure batch_size isn't larger than the size of the dataset
+0033:     batch_size = min(batch_size, len(trainset))
+0034: 
+0035:     # If no RNG is provided, fall back to the global random instance
+0036:     rng = rng or random
+0037: 
+0038:     # Randomly sample indices for the mini-batch using the provided rng
+0039:     sampled_indices = rng.sample(range(len(trainset)), batch_size)
+0040: 
+0041:     # Create the mini-batch using the sampled indices
+0042:     minibatch = [trainset[i] for i in sampled_indices]
+0043: 
+0044:     return minibatch
+0045: 
+0046: 
+0047: def eval_candidate_program(batch_size, trainset, candidate_program, evaluate, rng=None):
+0048:     """Evaluate a candidate program on the trainset, using the specified batch size."""
+0049: 
+0050:     try:
+0051:         # Evaluate on the full trainset
+0052:         if batch_size >= len(trainset):
+0053:             return evaluate(candidate_program, devset=trainset, callback_metadata={"metric_key": "eval_full"})
+0054:         # Or evaluate on a minibatch
+0055:         else:
+0056:             return evaluate(
+0057:                 candidate_program,
+0058:                 devset=create_minibatch(trainset, batch_size, rng),
+0059:                 callback_metadata={"metric_key": "eval_minibatch"}
+0060:             )
+0061:     except Exception:
+0062:         logger.error("An exception occurred during evaluation", exc_info=True)
+0063:         # TODO: Handle this better, as -ve scores are possible
+0064:         return dspy.Prediction(score=0.0, results=[])
+0065: 
+0066: 
+0067: def eval_candidate_program_with_pruning(
+0068:     trial,
+0069:     trial_logs,
+0070:     trainset,
+0071:     candidate_program,
+0072:     evaluate,
+0073:     trial_num,
+0074:     batch_size=100,
+0075: ):
+0076:     """Evaluation of candidate_program with pruning implemented"""
+0077: 
+0078:     # Evaluate with the new prompts
+0079:     total_score = 0
+0080:     num_batches = math.ceil(len(trainset) / batch_size)
+0081:     total_eval_size = 0
+0082: 
+0083:     for i in range(num_batches):
+0084:         start_index = i * batch_size
+0085:         end_index = min((i + 1) * batch_size, len(trainset))
+0086:         split_trainset = trainset[start_index:end_index]
+0087:         split_score = evaluate(
+0088:             candidate_program,
+0089:             devset=split_trainset,
+0090:             display_table=0,
+0091:         )
+0092:         print(f"{i}st split score: {split_score}")
+0093:         total_eval_size += len(split_trainset)
+0094: 
+0095:         total_score += split_score * len(split_trainset)
+0096:         curr_weighted_avg_score = total_score / min((i + 1) * batch_size, len(trainset))
+0097:         print(f"curr average score: {curr_weighted_avg_score}")
+0098: 
+0099:         trial.report(curr_weighted_avg_score, i)
+0100: 
+0101:         # Handle pruning based on the intermediate value.
+0102:         if trial.should_prune():
+0103:             print("Trial pruned.")
+0104:             trial_logs[trial_num]["score"] = curr_weighted_avg_score
+0105:             trial_logs[trial_num]["num_eval_calls"] = total_eval_size
+0106:             trial_logs[trial_num]["pruned"] = True
+0107:             return curr_weighted_avg_score, trial_logs, total_eval_size, True
+0108: 
+0109:     print(f"Fully evaled score: {curr_weighted_avg_score}")
+0110:     score = curr_weighted_avg_score
+0111: 
+0112:     trial_logs[trial_num]["full_eval"] = False
+0113:     trial_logs[trial_num]["score"] = score
+0114:     trial_logs[trial_num]["pruned"] = False
+0115:     return score, trial_logs, total_eval_size, False
+0116: 
+0117: 
+0118: def get_program_with_highest_avg_score(param_score_dict, fully_evaled_param_combos):
+0119:     """Used as a helper function for bayesian + minibatching optimizers. Returns the program with the highest average score from the batches evaluated so far."""
+0120: 
+0121:     # Calculate the mean for each combination of categorical parameters, based on past trials
+0122:     results = []
+0123:     for key, values in param_score_dict.items():
+0124:         scores = np.array([v[0] for v in values])
+0125:         mean = np.average(scores)
+0126:         program = values[0][1]
+0127:         params = values[0][2]
+0128:         results.append((key, mean, program, params))
+0129: 
+0130:     # Sort results by the mean
+0131:     sorted_results = sorted(results, key=lambda x: x[1], reverse=True)
+0132: 
+0133:     # Find the combination with the highest mean, skip fully evaluated ones
+0134:     for combination in sorted_results:
+0135:         key, mean, program, params = combination
+0136: 
+0137:         if key in fully_evaled_param_combos:
+0138:             continue
+0139: 
+0140:         return program, mean, key, params
+0141: 
+0142:     # If no valid program is found, we return the last valid one that we found
+0143:     return program, mean, key, params
+0144: 
+0145: 
+0146: def calculate_last_n_proposed_quality(
+0147:     base_program,
+0148:     trial_logs,
+0149:     evaluate,
+0150:     trainset,
+0151:     devset,
+0152:     n,
+0153: ):
+0154:     """
+0155:     Calculate the average and best quality of the last n programs proposed. This is useful for seeing if our proposals
+0156:     are actually 'improving' overtime or not.
+0157:     """
+0158:     # Get the trials from the last n keys in trial logs
+0159:     last_n_trial_nums = list(trial_logs.keys())[-n:]
+0160: 
+0161:     # Calculate the average and best score of these trials
+0162:     # if num_eval_calls in the trial is less than the trainset, throw a not-implemented error for now
+0163:     total_train_score = 0
+0164:     best_train_score = 0
+0165:     total_dev_score = 0
+0166:     best_dev_score = 0
+0167:     for trial_num in last_n_trial_nums:
+0168:         full_eval = trial_logs[trial_num]["full_eval"]
+0169:         if not full_eval:
+0170:             raise NotImplementedError(
+0171:                 "Still need to implement non full eval handling in calculate_last_n_proposed_quality",
+0172:             )
+0173:         train_score = trial_logs[trial_num]["score"]
+0174:         program = base_program.deepcopy()
+0175:         program.load(trial_logs[trial_num]["program_path"])
+0176: 
+0177:         dev_score = evaluate(program, devset=devset)
+0178: 
+0179:         total_train_score += train_score
+0180:         total_dev_score += dev_score
+0181:         if train_score > best_train_score:
+0182:             best_train_score = train_score
+0183:             best_dev_score = dev_score
+0184: 
+0185:     return best_train_score, total_train_score / n, best_dev_score, total_dev_score / n
+0186: 
+0187: 
+0188: ### LOGGING UTILS ###
+0189: 
+0190: 
+0191: def get_task_model_history_for_full_example(
+0192:     candidate_program,
+0193:     task_model,
+0194:     devset,
+0195:     evaluate,
+0196: ):
+0197:     """Get a full trace of the task model's history for a given candidate program."""
+0198:     _ = evaluate(candidate_program, devset=devset[:1])
+0199:     _ = task_model.inspect_history(n=len(candidate_program.predictors()))
+0200:     return task_model.inspect_history(n=len(candidate_program.predictors()))
+0201: 
+0202: 
+0203: def print_full_program(program):
+0204:     """Print out the program's instructions & prefixes for each module."""
+0205:     for i, predictor in enumerate(program.predictors()):
+0206:         print(f"Predictor {i}")
+0207:         print(f"i: {get_signature(predictor).instructions}")
+0208:         *_, last_field = get_signature(predictor).fields.values()
+0209:         print(f"p: {last_field.json_schema_extra['prefix']}")
+0210:     print("\n")
+0211: 
+0212: 
+0213: def save_candidate_program(program, log_dir, trial_num, note=None):
+0214:     """Save the candidate program to the log directory."""
+0215: 
+0216:     if log_dir is None:
+0217:         return None
+0218: 
+0219:     # Ensure the directory exists
+0220:     eval_programs_dir = os.path.join(log_dir, "evaluated_programs")
+0221:     os.makedirs(eval_programs_dir, exist_ok=True)
+0222: 
+0223:     # Define the save path for the program
+0224:     if note:
+0225:         save_path = os.path.join(eval_programs_dir, f"program_{trial_num}_{note}.json")
+0226:     else:
+0227:         save_path = os.path.join(eval_programs_dir, f"program_{trial_num}.json")
+0228: 
+0229:     # Save the program
+0230:     program.save(save_path)
+0231: 
+0232:     return save_path
+0233: 
+0234: 
+0235: def save_file_to_log_dir(source_file_path, log_dir):
+0236:     if log_dir is None:
+0237:         return
+0238:     """Save a file to our log directory"""
+0239:     if not os.path.exists(log_dir):
+0240:         os.makedirs(log_dir)
+0241:     destination_file_path = os.path.join(log_dir, os.path.basename(source_file_path))
+0242: 
+0243:     # Copy the file
+0244:     shutil.copy(source_file_path, destination_file_path)
+0245: 
+0246: 
+0247: def setup_logging(log_dir):
+0248:     """Setup logger, which will log our print statements to a txt file at our log_dir for later viewing"""
+0249:     if log_dir is None:
+0250:         return
+0251:     # Create a logger
+0252:     logger = logging.getLogger()
+0253:     logger.setLevel(logging.WARNING)
+0254: 
+0255:     # Create a file handler that logs debug and higher level messages
+0256:     file_handler = logging.FileHandler(f"{log_dir}/logs.txt")
+0257:     file_handler.setLevel(logging.WARNING)
+0258:     file_formatter = logging.Formatter("%(asctime)s - %(message)s")
+0259:     file_handler.setFormatter(file_formatter)
+0260:     logger.addHandler(file_handler)
+0261: 
+0262:     # Create a console handler with a higher log level
+0263:     console_handler = logging.StreamHandler()
+0264:     console_handler.setLevel(logging.WARNING)
+0265:     console_formatter = logging.Formatter("%(message)s")
+0266:     console_handler.setFormatter(console_formatter)
+0267:     logger.addHandler(console_handler)
+0268: 
+0269: 
+0270: def get_token_usage(model) -> tuple[int, int]:
+0271:     """
+0272:     Extract total input tokens and output tokens from a model's interaction history.
+0273:     Returns (total_input_tokens, total_output_tokens).
+0274:     """
+0275:     if not hasattr(model, "history"):
+0276:         return 0, 0
+0277: 
+0278:     input_tokens = []
+0279:     output_tokens = []
+0280:     for interaction in model.history:
+0281:         usage = interaction.get("usage", {})
+0282:         _input_tokens = usage.get("prompt_tokens", 0)
+0283:         _output_tokens = usage.get("completion_tokens", 0)
+0284:         input_tokens.append(_input_tokens)
+0285:         output_tokens.append(_output_tokens)
+0286: 
+0287:     total_input_tokens = int(np.sum(input_tokens))
+0288:     total_output_tokens = int(np.sum(output_tokens))
+0289: 
+0290:     return total_input_tokens, total_output_tokens
+0291: 
+0292: 
+0293: def log_token_usage(trial_logs, trial_num, model_dict):
+0294:     """
+0295:     Extract total input and output tokens used by each model and log to trial_logs[trial_num]["token_usage"].
+0296:     """
+0297: 
+0298:     token_usage_dict = {}
+0299: 
+0300:     for model_name, model in model_dict.items():
+0301:         in_tokens, out_tokens = get_token_usage(model)
+0302:         token_usage_dict[model_name] = {"total_input_tokens": in_tokens, "total_output_tokens": out_tokens}
+0303: 
+0304:     # Store token usage info in trial logs
+0305:     trial_logs[trial_num]["token_usage"] = token_usage_dict
+0306: 
+0307: 
+0308: ### OTHER UTILS ###
+0309: 
+0310: 
+0311: def get_prompt_model(prompt_model):
+0312:     if prompt_model:
+0313:         return prompt_model
+0314:     else:
+0315:         return dspy.settings.lm
+0316: 
+0317: 
+0318: def get_signature(predictor):
+0319:     assert hasattr(predictor, "signature")
+0320:     return predictor.signature
+0321: 
+0322: 
+0323: def set_signature(predictor, updated_signature):
+0324:     assert hasattr(predictor, "signature")
+0325:     predictor.signature = updated_signature
+0326: 
+0327: 
+0328: def create_n_fewshot_demo_sets(
+0329:     student,
+0330:     num_candidate_sets,
+0331:     trainset,
+0332:     max_labeled_demos,
+0333:     max_bootstrapped_demos,
+0334:     metric,
+0335:     teacher_settings,
+0336:     max_errors=None,
+0337:     max_rounds=1,
+0338:     labeled_sample=True,
+0339:     min_num_samples=1,
+0340:     metric_threshold=None,
+0341:     teacher=None,
+0342:     include_non_bootstrapped=True,
+0343:     seed=0,
+0344:     rng=None,
+0345: ):
+0346:     """
+0347:     This function is copied from random_search.py, and creates fewshot examples in the same way that random search does.
+0348:     This allows us to take advantage of using the same fewshot examples when we use the same random seed in our optimizers.
+0349:     """
+0350:     max_errors = dspy.settings.max_errors if max_errors is None else max_errors
+0351:     demo_candidates = {}
+0352: 
+0353:     # Account for confusing way this is set up, where we add in 3 more candidate sets to the N specified
+0354:     num_candidate_sets -= 3
+0355: 
+0356:     # Initialize demo_candidates dictionary
+0357:     for i, _ in enumerate(student.predictors()):
+0358:         demo_candidates[i] = []
+0359: 
+0360:     rng = rng or random.Random(seed)
+0361: 
+0362:     # Go through and create each candidate set
+0363:     for seed in range(-3, num_candidate_sets):
+0364:         print(f"Bootstrapping set {seed + 4}/{num_candidate_sets + 3}")
+0365: 
+0366:         trainset_copy = list(trainset)
+0367: 
+0368:         if seed == -3 and include_non_bootstrapped:
+0369:             # zero-shot
+0370:             program2 = student.reset_copy()
+0371: 
+0372:         elif seed == -2 and max_labeled_demos > 0 and include_non_bootstrapped:
+0373:             # labels only
+0374:             teleprompter = LabeledFewShot(k=max_labeled_demos)
+0375:             program2 = teleprompter.compile(
+0376:                 student,
+0377:                 trainset=trainset_copy,
+0378:                 sample=labeled_sample,
+0379:             )
+0380: 
+0381:         elif seed == -1:
+0382:             # unshuffled few-shot
+0383:             program = BootstrapFewShot(
+0384:                 metric=metric,
+0385:                 max_errors=max_errors,
+0386:                 metric_threshold=metric_threshold,
+0387:                 max_bootstrapped_demos=max_bootstrapped_demos,
+0388:                 max_labeled_demos=max_labeled_demos,
+0389:                 teacher_settings=teacher_settings,
+0390:                 max_rounds=max_rounds,
+0391:             )
+0392:             program2 = program.compile(student, teacher=teacher, trainset=trainset_copy)
+0393: 
+0394:         else:
+0395:             # shuffled few-shot
+0396:             rng.shuffle(trainset_copy)
+0397:             size = rng.randint(min_num_samples, max_bootstrapped_demos)
+0398: 
+0399:             teleprompter = BootstrapFewShot(
+0400:                 metric=metric,
+0401:                 max_errors=max_errors,
+0402:                 metric_threshold=metric_threshold,
+0403:                 max_bootstrapped_demos=size,
+0404:                 max_labeled_demos=max_labeled_demos,
+0405:                 teacher_settings=teacher_settings,
+0406:                 max_rounds=max_rounds,
+0407:             )
+0408: 
+0409:             program2 = teleprompter.compile(
+0410:                 student,
+0411:                 teacher=teacher,
+0412:                 trainset=trainset_copy,
+0413:             )
+0414: 
+0415:         for i, _ in enumerate(student.predictors()):
+0416:             demo_candidates[i].append(program2.predictors()[i].demos)
+0417: 
+0418:     return demo_candidates
+0419: 
+0420: 
+0421: def old_getfile(object):
+0422:     """Work out which source or compiled file an object was defined in."""
+0423:     if inspect.ismodule(object):
+0424:         if getattr(object, "__file__", None):
+0425:             return object.__file__
+0426:         raise TypeError(f"{object!r} is a built-in module")
+0427:     if inspect.isclass(object):
+0428:         if hasattr(object, "__module__"):
+0429:             module = sys.modules.get(object.__module__)
+0430:             if getattr(module, "__file__", None):
+0431:                 return module.__file__
+0432:             if object.__module__ == "__main__":
+0433:                 raise OSError("source code not available")
+0434:         raise TypeError(f"{object!r} is a built-in class")
+0435:     if inspect.ismethod(object):
+0436:         object = object.__func__
+0437:     if inspect.isfunction(object):
+0438:         object = object.__code__
+0439:     if inspect.istraceback(object):
+0440:         object = object.tb_frame
+0441:     if inspect.isframe(object):
+0442:         object = object.f_code
+0443:     if inspect.iscode(object):
+0444:         return object.co_filename
+0445:     raise TypeError(
+0446:         f"module, class, method, function, traceback, frame, or code object was expected, got {type(object).__name__}"
+0447:     )
+0448: 
+0449: 
+0450: def new_getfile(object):
+0451:     if not inspect.isclass(object):
+0452:         return old_getfile(object)
+0453: 
+0454:     # Lookup by parent module (as in current inspect)
+0455:     if hasattr(object, "__module__"):
+0456:         object_ = sys.modules.get(object.__module__)
+0457:         if hasattr(object_, "__file__"):
+0458:             return object_.__file__
+0459: 
+0460:     # If parent module is __main__, lookup by methods (NEW)
+0461:     for _, member in inspect.getmembers(object):
+0462:         if inspect.isfunction(member) and object.__qualname__ + "." + member.__name__ == member.__qualname__:
+0463:             return inspect.getfile(member)
+0464:     raise TypeError(f"Source for {object!r} not found")
+0465: 
+0466: 
+0467: inspect.getfile = new_getfile
+
+Return JSON that matches the schema exactly.

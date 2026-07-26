@@ -1,0 +1,103 @@
+{
+ "id": "dspy_4bf6d24b1327",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I'm using an OpenAI-branded model name for inference, but the remote fine-tuning API usually wants the bare model ID without the provider prefix. I want proof that DSPy strips the prefix before it starts the remote training job instead of sending the fully qualified inference string.\n\nGive me a complete, runnable Python program that patches the OpenAI fine-tuning path offline and prints/asserts the exact model string DSPy hands to the remote training call.",
+ "gold_answer": "```python\nfrom unittest import mock\n\nfrom dspy.clients.openai import OpenAIProvider, TrainingJobOpenAI\nfrom dspy.clients.utils_finetune import TrainDataFormat\n\ncaptured = {}\n\ndef fake_start(train_file_id, model, train_kwargs=None):\n    captured['train_file_id'] = train_file_id\n    captured['model'] = model\n    captured['train_kwargs'] = train_kwargs\n    return 'job_123'\n\njob = TrainingJobOpenAI(\n    model='openai/gpt-4o-mini',\n    train_data=[{'messages': []}],\n    train_data_format=TrainDataFormat.CHAT,\n    train_kwargs={'n_epochs': 2},\n)\n\nwith mock.patch.object(OpenAIProvider, 'validate_data_format'), \\\n     mock.patch.object(OpenAIProvider, 'upload_data', return_value='file_123'), \\\n     mock.patch.object(OpenAIProvider, '_start_remote_training', side_effect=fake_start), \\\n     mock.patch.object(OpenAIProvider, 'wait_for_job'), \\\n     mock.patch.object(OpenAIProvider, 'get_trained_model', return_value='ft:gpt-4o-mini:demo'):\n    result = OpenAIProvider.finetune(\n        job=job,\n        model='openai/gpt-4o-mini',\n        train_data=[{'messages': []}],\n        train_data_format=TrainDataFormat.CHAT,\n        train_kwargs={'n_epochs': 2},\n    )\n\nprint(captured['model'])\nprint(result)\nassert captured['model'] == 'gpt-4o-mini'\nassert result == 'ft:gpt-4o-mini:demo'\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The answer must show that `OpenAIProvider.finetune` strips the `openai/` provider prefix before starting remote training, so a provider-qualified inference name is converted to the bare model ID first.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The proof should patch or stub `OpenAIProvider._start_remote_training` and capture its `model` argument, because that argument is the exact model string DSPy forwards into the OpenAI fine-tuning job creation call.",
+   "span_ids": [
+    "s2",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "To keep the program offline while still exercising `OpenAIProvider.finetune`, it should stub the provider-facing steps that `finetune` invokes around the job lifecycle, including upload, remote training start, waiting, and trained-model retrieval.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "The program should assert that the captured remote-training model is the stripped bare ID for the chosen prefixed input (for example, `openai/gpt-4o-mini` becomes `gpt-4o-mini`) and also assert that `finetune` returns the mocked trained-model value from `get_trained_model`.",
+   "span_ids": [
+    "s1",
+    "s3",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/openai.py",
+   "start_line": 58,
+   "end_line": 60,
+   "excerpt": "0058:     def _remove_provider_prefix(model: str) -> str:\n0059:         provider_prefix = \"openai/\"\n0060:         return model.replace(provider_prefix, \"\")"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/openai.py",
+   "start_line": 63,
+   "end_line": 88,
+   "excerpt": "0063:     def finetune(\n0064:         job: TrainingJobOpenAI,\n0065:         model: str,\n0066:         train_data: list[dict[str, Any]],\n0067:         train_data_format: TrainDataFormat | None,\n0068:         train_kwargs: dict[str, Any] | None = None,\n0069:     ) -> str:\n0070:         model = OpenAIProvider._remove_provider_prefix(model)\n0071: \n0072:         print(\"[OpenAI Provider] Validating the data format\")\n0073:         OpenAIProvider.validate_data_format(train_data_format)\n0074: \n0075:         print(\"[OpenAI Provider] Saving the data to a file\")\n0076:         data_path = save_data(train_data)\n0077:         print(f\"[OpenAI Provider] Data saved to {data_path}\")\n0078: \n0079:         print(\"[OpenAI Provider] Uploading the data to the provider\")\n0080:         provider_file_id = OpenAIProvider.upload_data(data_path)\n0081:         job.provider_file_id = provider_file_id\n0082: \n0083:         print(\"[OpenAI Provider] Starting remote training\")\n0084:         provider_job_id = OpenAIProvider._start_remote_training(\n0085:             train_file_id=job.provider_file_id,\n0086:             model=model,\n0087:             train_kwargs=train_kwargs,\n0088:         )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/openai.py",
+   "start_line": 79,
+   "end_line": 100,
+   "excerpt": "0079:         print(\"[OpenAI Provider] Uploading the data to the provider\")\n0080:         provider_file_id = OpenAIProvider.upload_data(data_path)\n0081:         job.provider_file_id = provider_file_id\n0082: \n0083:         print(\"[OpenAI Provider] Starting remote training\")\n0084:         provider_job_id = OpenAIProvider._start_remote_training(\n0085:             train_file_id=job.provider_file_id,\n0086:             model=model,\n0087:             train_kwargs=train_kwargs,\n0088:         )\n0089:         job.provider_job_id = provider_job_id\n0090:         print(f\"[OpenAI Provider] Job started with the OpenAI Job ID {provider_job_id}\")\n0091: \n0092:         print(\"[OpenAI Provider] Waiting for training to complete\")\n0093:         # TODO(feature): Could we stream OAI logs?\n0094:         OpenAIProvider.wait_for_job(job)\n0095: \n0096:         print(\"[OpenAI Provider] Attempting to retrieve the trained model\")\n0097:         model = OpenAIProvider.get_trained_model(job)\n0098:         print(f\"[OpenAI Provider] Model retrieved: {model}\")\n0099: \n0100:         return model"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/openai.py",
+   "start_line": 167,
+   "end_line": 183,
+   "excerpt": "0167:     def upload_data(data_path: str) -> str:\n0168:         # Upload the data to the provider\n0169:         provider_file = openai.files.create(\n0170:             file=open(data_path, \"rb\"),\n0171:             purpose=\"fine-tune\",\n0172:         )\n0173:         return provider_file.id\n0174: \n0175:     @staticmethod\n0176:     def _start_remote_training(train_file_id: str, model: str, train_kwargs: dict[str, Any] | None = None) -> str:\n0177:         train_kwargs = train_kwargs or {}\n0178:         provider_job = openai.fine_tuning.jobs.create(\n0179:             model=model,\n0180:             training_file=train_file_id,\n0181:             hyperparameters=train_kwargs,\n0182:         )\n0183:         return provider_job.id"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/openai.py",
+   "start_line": 186,
+   "end_line": 227,
+   "excerpt": "0186:     def wait_for_job(\n0187:         job: TrainingJobOpenAI,\n0188:         poll_frequency: int = 20,\n0189:     ):\n0190:         # Poll for the job until it is done\n0191:         done = False\n0192:         cur_event_id = None\n0193:         reported_estimated_time = False\n0194:         while not done:\n0195:             # Report estimated time if not already reported\n0196:             if not reported_estimated_time:\n0197:                 remote_job = openai.fine_tuning.jobs.retrieve(job.provider_job_id)\n0198:                 timestamp = remote_job.estimated_finish\n0199:                 if timestamp:\n0200:                     estimated_finish_dt = datetime.fromtimestamp(timestamp)\n0201:                     delta_dt = estimated_finish_dt - datetime.now()\n0202:                     print(f\"[OpenAI Provider] The OpenAI estimated time remaining is: {delta_dt}\")\n0203:                     reported_estimated_time = True\n0204: \n0205:             # Get new events\n0206:             page = openai.fine_tuning.jobs.list_events(fine_tuning_job_id=job.provider_job_id, limit=1)\n0207:             new_event = page.data[0] if page.data else None\n0208:             if new_event and new_event.id != cur_event_id:\n0209:                 dt = datetime.fromtimestamp(new_event.created_at)\n0210:                 print(f\"[OpenAI Provider] {dt} {new_event.message}\")\n0211:                 cur_event_id = new_event.id\n0212: \n0213:             # Sleep and update the flag\n0214:             time.sleep(poll_frequency)\n0215:             done = OpenAIProvider.is_terminal_training_status(job.status())\n0216: \n0217:     @staticmethod\n0218:     def get_trained_model(job):\n0219:         status = job.status()\n0220:         if status != TrainingStatus.succeeded:\n0221:             err_msg = f\"Job status is {status}.\"\n0222:             err_msg += f\" Must be {TrainingStatus.succeeded} to retrieve model.\"\n0223:             raise Exception(err_msg)\n0224: \n0225:         provider_job = openai.fine_tuning.jobs.retrieve(job.provider_job_id)\n0226:         finetuned_model = provider_job.fine_tuned_model\n0227:         return finetuned_model"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "OpenAI fine-tune requests use the bare model ID.",
+ "source_index": 34,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

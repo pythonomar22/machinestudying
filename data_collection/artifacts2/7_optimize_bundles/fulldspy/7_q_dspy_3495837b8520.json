@@ -1,0 +1,109 @@
+{
+ "id": "dspy_3495837b8520",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I want one model ID for inference but a different base model for the fine-tune job. The question is whether DSPy really trains the separate fine-tuning target and then returns a new LM pointed at the provider's trained model, or whether it keeps using the original inference name.\n\nGive me a complete, runnable Python program that uses a tiny custom provider offline, starts a fine-tune job from `dspy.LM`, and prints/asserts which model the provider saw and what model the returned LM ends up using.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.clients.provider import Provider\nfrom dspy.clients.utils_finetune import TrainDataFormat\n\nclass CaptureProvider(Provider):\n    def __init__(self):\n        super().__init__()\n        self.finetunable = True\n        self.seen = {}\n\n    def finetune(self, job, model, train_data, train_data_format, train_kwargs=None):\n        self.seen = {\n            'model': model,\n            'train_data_format': train_data_format,\n            'train_kwargs': train_kwargs,\n        }\n        return 'openai/ft:trained-model'\n\nprovider = CaptureProvider()\nlm = dspy.LM(\n    'openai/inference-model',\n    provider=provider,\n    finetuning_model='openai/base-train-model',\n    train_kwargs={'epochs': 1},\n)\njob = lm.finetune(\n    train_data=[{'messages': [{'role': 'user', 'content': 'hi'}, {'role': 'assistant', 'content': 'hello'}]}],\n    train_data_format=TrainDataFormat.CHAT,\n)\ntrained_lm = job.result(timeout=5)\n\nprint(provider.seen['model'])\nprint(trained_lm.model)\nassert provider.seen['model'] == 'openai/base-train-model'\nassert isinstance(trained_lm, dspy.LM)\nassert trained_lm.model == 'openai/ft:trained-model'\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The answer must demonstrate that the training job uses `finetuning_model` instead of the inference `model` when those IDs differ, because `LM.finetune()` sets `job.model` from `self.finetuning_model or self.model` and `_run_finetune_job()` passes `job.model` to `provider.finetune()`.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The answer must show that the completed fine-tune job returns a new LM pointed at the provider's trained model ID, not the original inference name, because `_run_finetune_job()` takes the provider's return value, calls `self.copy(model=model)`, and stores that LM as the job result.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The custom provider must enable fine-tuning (`finetunable=True`); otherwise `LM.finetune()` raises a `ValueError` instead of launching the job.",
+   "span_ids": [
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "If the example omits per-call `train_kwargs` in `lm.finetune(...)`, the provider should still see the `train_kwargs` supplied when the `LM` was constructed.",
+   "span_ids": [
+    "s1",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The provider can capture and assert forwarded training inputs such as `train_data` and `train_data_format`, since `LM.finetune()` stores them on the `TrainingJob` and `_run_finetune_job()` passes those exact fields into `provider.finetune()`.",
+   "span_ids": [
+    "s3",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 81,
+   "end_line": 83,
+   "excerpt": "0081:         self.finetuning_model = finetuning_model\n0082:         self.launch_kwargs = launch_kwargs or {}\n0083:         self.train_kwargs = train_kwargs or {}"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 255,
+   "end_line": 260,
+   "excerpt": "0255:         if not self.provider.finetunable:\n0256:             raise ValueError(\n0257:                 f\"Provider {self.provider} does not support fine-tuning, please specify your provider by explicitly \"\n0258:                 \"setting `provider` when creating the `dspy.LM` instance. For example, \"\n0259:                 \"`dspy.LM('openai/gpt-4.1-mini-2025-04-14', provider=dspy.OpenAIProvider())`.\"\n0260:             )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 266,
+   "end_line": 274,
+   "excerpt": "0266:         train_kwargs = train_kwargs or self.train_kwargs\n0267:         model_to_finetune = self.finetuning_model or self.model\n0268:         job = self.provider.TrainingJob(\n0269:             thread=thread,\n0270:             model=model_to_finetune,\n0271:             train_data=train_data,\n0272:             train_data_format=train_data_format,\n0273:             train_kwargs=train_kwargs,\n0274:         )"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/lm.py",
+   "start_line": 293,
+   "end_line": 302,
+   "excerpt": "0293:         try:\n0294:             model = self.provider.finetune(\n0295:                 job=job,\n0296:                 model=job.model,\n0297:                 train_data=job.train_data,\n0298:                 train_data_format=job.train_data_format,\n0299:                 train_kwargs=job.train_kwargs,\n0300:             )\n0301:             lm = self.copy(model=model)\n0302:             job.set_result(lm)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/lm.py",
+   "start_line": 294,
+   "end_line": 300,
+   "excerpt": "0294:             model = self.provider.finetune(\n0295:                 job=job,\n0296:                 model=job.model,\n0297:                 train_data=job.train_data,\n0298:                 train_data_format=job.train_data_format,\n0299:                 train_kwargs=job.train_kwargs,\n0300:             )"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "`finetuning_model` overrides the inference model only for training.",
+ "source_index": 31,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

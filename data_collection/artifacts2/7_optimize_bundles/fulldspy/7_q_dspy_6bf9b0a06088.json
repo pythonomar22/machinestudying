@@ -1,0 +1,122 @@
+{
+ "id": "dspy_6bf9b0a06088",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I want to temporarily swap prompt formats for one call without rebuilding the predictor. I know `dspy.context` can override settings, but I only trust it if the same predictor emits one prompt format outside the context and a different one inside.\n\nI need a real offline proof, including the after-state, because this is going into a caching benchmark. The evidence I care about is the actual system messages recorded by the LMs before, during, and after the local override.\n\nGive me a complete, runnable Python program that reuses one predictor across normal chat formatting, an XML-only context override, and a final post-context call, printing the recorded system messages and asserting that the XML format only appears inside the context.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nchat_lm = DummyLM([{'answer': 'chat-1'}, {'answer': 'chat-2'}], adapter=dspy.ChatAdapter())\nxml_lm = DummyLM([{'answer': 'xml'}], adapter=dspy.XMLAdapter())\n\ndspy.configure(lm=chat_lm)\npredict = dspy.Predict('question -> answer')\n\npredict(question='outside before')\nwith dspy.context(lm=xml_lm, adapter=dspy.XMLAdapter()):\n    predict(question='inside xml')\npredict(question='outside after')\n\nchat_system_before = chat_lm.history[0]['messages'][0]['content']\nxml_system = xml_lm.history[0]['messages'][0]['content']\nchat_system_after = chat_lm.history[1]['messages'][0]['content']\n\nprint(chat_system_before)\nprint(xml_system)\nprint(chat_system_after)\n\nassert '[[ ## question ## ]]' in chat_system_before\nassert '<question>' in xml_system\nassert '[[ ## question ## ]]' not in xml_system\nassert '[[ ## question ## ]]' in chat_system_after\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The program must create one `dspy.Predict('question -> answer')` and reuse that same predictor for three calls, relying on `Predict` to resolve the LM and adapter from current settings at call time rather than fixing a prompt format at construction.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The baseline outer call must use chat-style prompt formatting, so the recorded system message includes ChatAdapter field markers such as `[[ ## question ## ]]` derived from the signature fields.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Inside the local override, the same predictor must switch to XML-style prompt formatting, so the system message for the same signature uses XML-wrapped fields like `<question>` and `<answer>` instead of chat brackets.",
+   "span_ids": [
+    "s2",
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "After exiting the override, a third call with the same predictor must return to the default chat-formatted system message, demonstrating that the XML prompt format was scoped to the override and did not persist on the predictor.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "The program must surface the before/inside/after system-message contents and assert the marker pattern: chat markers on both outer calls, XML tags on the inner call, and no `[[ ## question ## ]]` marker in the XML call.",
+   "span_ids": [
+    "s4",
+    "s5",
+    "s2"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/predict.py",
+   "start_line": 143,
+   "end_line": 147,
+   "excerpt": "0143:         config = {**self.config, **kwargs.pop(\"config\", {})}\n0144: \n0145:         # Get the right LM to use.\n0146:         lm = kwargs.pop(\"lm\", self.lm) or settings.lm\n0147: "
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/predict.py",
+   "start_line": 243,
+   "end_line": 254,
+   "excerpt": "0243:     def forward(self, **kwargs):\n0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)\n0245: \n0246:         adapter = settings.adapter or ChatAdapter()\n0247: \n0248:         if self._should_stream():\n0249:             with settings.context(caller_predict=self):\n0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0251:         else:\n0252:             with settings.context(send_stream=None):\n0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0254: "
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 117,
+   "end_line": 137,
+   "excerpt": "0117:     def format_field_structure(self, signature: type[Signature]) -> str:\n0118:         \"\"\"\n0119:         `ChatAdapter` requires input and output fields to be in their own sections, with section header using markers\n0120:         `[[ ## field_name ## ]]`. An arbitrary field `completed` ([[ ## completed ## ]]) is added to the end of the\n0121:         output fields section to indicate the end of the output fields.\n0122:         \"\"\"\n0123:         parts = []\n0124:         parts.append(\"All interactions will be structured in the following way, with the appropriate values filled in.\")\n0125: \n0126:         def format_signature_fields_for_instructions(fields: dict[str, FieldInfo]):\n0127:             return self.format_field_with_value(\n0128:                 fields_with_values={\n0129:                     FieldInfoWithName(name=field_name, info=field_info): translate_field_type(field_name, field_info)\n0130:                     for field_name, field_info in fields.items()\n0131:                 },\n0132:             )\n0133: \n0134:         parts.append(format_signature_fields_for_instructions(signature.input_fields))\n0135:         parts.append(format_signature_fields_for_instructions(signature.output_fields))\n0136:         parts.append(\"[[ ## completed ## ]]\\n\")\n0137:         return \"\\n\\n\".join(parts).strip()"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/adapters/chat_adapter.py",
+   "start_line": 248,
+   "end_line": 266,
+   "excerpt": "0248:     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any]) -> str:\n0249:         \"\"\"\n0250:         Formats the values of the specified fields according to the field's DSPy type (input or output),\n0251:         annotation (e.g. str, int, etc.), and the type of the value itself. Joins the formatted values\n0252:         into a single string, which is is a multiline string if there are multiple fields.\n0253: \n0254:         Args:\n0255:             fields_with_values: A dictionary mapping information about a field to its corresponding\n0256:                 value.\n0257: \n0258:         Returns:\n0259:             The joined formatted values of the fields, represented as a string\n0260:         \"\"\"\n0261:         output = []\n0262:         for field, field_value in fields_with_values.items():\n0263:             formatted_field_value = format_field_value(field_info=field.info, value=field_value)\n0264:             output.append(f\"[[ ## {field.name} ## ]]\\n{formatted_field_value}\")\n0265: \n0266:         return \"\\n\\n\".join(output).strip()"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/adapters/xml_adapter.py",
+   "start_line": 17,
+   "end_line": 22,
+   "excerpt": "0017:     def format_field_with_value(self, fields_with_values: dict[FieldInfoWithName, Any]) -> str:\n0018:         output = []\n0019:         for field, field_value in fields_with_values.items():\n0020:             formatted = format_field_value(field_info=field.info, value=field_value)\n0021:             output.append(f\"<{field.name}>\\n{formatted}\\n</{field.name}>\")\n0022:         return \"\\n\\n\".join(output).strip()"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/adapters/xml_adapter.py",
+   "start_line": 24,
+   "end_line": 42,
+   "excerpt": "0024:     def format_field_structure(self, signature: type[Signature]) -> str:\n0025:         \"\"\"\n0026:         XMLAdapter requires input and output fields to be wrapped in XML tags like `<field_name>`.\n0027:         \"\"\"\n0028: \n0029:         parts = []\n0030:         parts.append(\"All interactions will be structured in the following way, with the appropriate values filled in.\")\n0031: \n0032:         def format_signature_fields_for_instructions(fields: dict[str, FieldInfo]):\n0033:             return self.format_field_with_value(\n0034:                 fields_with_values={\n0035:                     FieldInfoWithName(name=field_name, info=field_info): translate_field_type(field_name, field_info)\n0036:                     for field_name, field_info in fields.items()\n0037:                 },\n0038:             )\n0039: \n0040:         parts.append(format_signature_fields_for_instructions(signature.input_fields))\n0041:         parts.append(format_signature_fields_for_instructions(signature.output_fields))\n0042:         return \"\\n\\n\".join(parts).strip()"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Useful scope/isolation question: it proves adapter overrides are applied at call time and do not persist after the context exits.",
+ "source_index": 28,
+ "smalldspy_scope": true,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

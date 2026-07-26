@@ -1,0 +1,137 @@
+{
+ "id": "dspy_d8819491654f",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I'm trying to benchmark the exact prompt DSPy sends, not a hand-written approximation. I can already inspect the signature, but for reproducibility I need the fully rendered chat request with my real input values filled in.\n\nWhat confused me is that formatting in isolation is only useful if I can prove it matches the real module call exactly. I want an offline check with `DummyLM`, no API key, where the program both precomputes the messages and then captures the actual request from a real `dspy.Predict` call.\n\nGive me a complete, runnable Python program that prints the precomputed messages and the actual recorded messages, then asserts that they are identical and that the prediction still succeeds.",
+ "gold_answer": "```python\nimport pprint\n\nimport dspy\nfrom dspy.utils.dummies import DummyLM\n\n\nclass QA(dspy.Signature):\n    question: str = dspy.InputField(desc=\"Question to answer\")\n    answer: str = dspy.OutputField(desc=\"Short answer\")\n\n\nadapter = dspy.ChatAdapter()\nexpected_messages = adapter.format(QA, [], {\"question\": \"What is 2 + 2?\"})\n\nlm = DummyLM([{\"answer\": \"4\"}], adapter=adapter)\ndspy.configure(lm=lm, adapter=adapter)\n\npredict = dspy.Predict(QA)\nresult = predict(question=\"What is 2 + 2?\")\nactual_messages = lm.history[-1][\"messages\"]\n\nprint(\"PRECOMPUTED:\")\npprint.pp(expected_messages)\nprint(\"ACTUAL:\")\npprint.pp(actual_messages)\nprint(\"ANSWER:\", result.answer)\n\nassert actual_messages == expected_messages\nassert result.answer == \"4\"\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The answer should precompute the expected chat messages from an explicit adapter using the same signature and concrete input kwargs that the real `Predict` call will send, instead of hand-writing a prompt approximation.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The offline render should match the runtime demo context; for a fresh `Predict` instance with no demos supplied, that means using an empty demo list when precomputing the messages.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer should set DSPy’s active LM and adapter, then run `dspy.Predict` with the real input so the live request goes through that configured LM/adapter path.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer should read the actual runtime chat request from the LM history after the call, using the history entry’s `messages` field as the recorded request payload.",
+   "span_ids": [
+    "s4",
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The program should assert that the recorded runtime messages are exactly equal to the precomputed messages, making the offline rendering a true equivalence check against the real module call.",
+   "span_ids": [
+    "s3",
+    "s4",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c6",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The program should also verify that the module call still succeeds by checking that the returned prediction contains the expected answer from the stubbed LM output.",
+   "span_ids": [
+    "s3",
+    "s7"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/predict/predict.py",
+   "start_line": 65,
+   "end_line": 70,
+   "excerpt": "0065:     def reset(self):\n0066:         self.lm = None\n0067:         self.traces = []\n0068:         self.train = []\n0069:         self.demos = []\n0070: "
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/predict/predict.py",
+   "start_line": 138,
+   "end_line": 146,
+   "excerpt": "0138:     def _forward_preprocess(self, **kwargs):\n0139:         # Extract the three privileged keyword arguments.\n0140:         assert \"new_signature\" not in kwargs, \"new_signature is no longer a valid keyword argument.\"\n0141:         signature = ensure_signature(kwargs.pop(\"signature\", self.signature))\n0142:         demos = kwargs.pop(\"demos\", self.demos)\n0143:         config = {**self.config, **kwargs.pop(\"config\", {})}\n0144: \n0145:         # Get the right LM to use.\n0146:         lm = kwargs.pop(\"lm\", self.lm) or settings.lm"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/predict/predict.py",
+   "start_line": 243,
+   "end_line": 255,
+   "excerpt": "0243:     def forward(self, **kwargs):\n0244:         lm, config, signature, demos, kwargs = self._forward_preprocess(**kwargs)\n0245: \n0246:         adapter = settings.adapter or ChatAdapter()\n0247: \n0248:         if self._should_stream():\n0249:             with settings.context(caller_predict=self):\n0250:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0251:         else:\n0252:             with settings.context(send_stream=None):\n0253:                 completions = adapter(lm, lm_kwargs=config, signature=signature, demos=demos, inputs=kwargs)\n0254: \n0255:         return self._forward_postprocess(completions, signature, **kwargs)"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 90,
+   "end_line": 120,
+   "excerpt": "0090:     def _process_lm_response(self, response, prompt, messages, **kwargs):\n0091:         merged_kwargs = {**self.kwargs, **kwargs}\n0092: \n0093:         if self.model_type == \"responses\":\n0094:             outputs = self._process_response(response)\n0095:         else:\n0096:             outputs = self._process_completion(response, merged_kwargs)\n0097: \n0098:         if settings.disable_history:\n0099:             return outputs\n0100: \n0101:         # Logging, with removed api key & where `cost` is None on cache hit.\n0102:         kwargs = {k: v for k, v in kwargs.items() if not k.startswith(\"api_\")}\n0103:         entry = {\n0104:             \"prompt\": prompt,\n0105:             \"messages\": messages,\n0106:             \"kwargs\": kwargs,\n0107:             \"response\": response,\n0108:             \"outputs\": outputs,\n0109:             \"usage\": dict(response.usage),\n0110:             \"cost\": getattr(response, \"_hidden_params\", {}).get(\"response_cost\"),\n0111:             \"timestamp\": datetime.datetime.now().isoformat(),\n0112:             \"uuid\": str(uuid.uuid4()),\n0113:             \"model\": self.model,\n0114:             \"response_model\": response.model,\n0115:             \"model_type\": self.model_type,\n0116:         }\n0117: \n0118:         self.update_history(entry)\n0119: \n0120:         return outputs"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 122,
+   "end_line": 132,
+   "excerpt": "0122:     @with_callbacks\n0123:     def __call__(\n0124:         self,\n0125:         prompt: str | None = None,\n0126:         messages: list[dict[str, Any]] | None = None,\n0127:         **kwargs\n0128:     ) -> list[dict[str, Any] | str]:\n0129:         response = self.forward(prompt=prompt, messages=messages, **kwargs)\n0130:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)\n0131: \n0132:         return outputs"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 222,
+   "end_line": 239,
+   "excerpt": "0222:     def update_history(self, entry):\n0223:         if settings.disable_history:\n0224:             return\n0225: \n0226:         # Global LM history\n0227:         if len(GLOBAL_HISTORY) >= MAX_HISTORY_SIZE:\n0228:             GLOBAL_HISTORY.pop(0)\n0229: \n0230:         GLOBAL_HISTORY.append(entry)\n0231: \n0232:         if settings.max_history_size == 0:\n0233:             return\n0234: \n0235:         # dspy.LM.history\n0236:         if len(self.history) >= settings.max_history_size:\n0237:             self.history.pop(0)\n0238: \n0239:         self.history.append(entry)"
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/predict/predict.py",
+   "start_line": 226,
+   "end_line": 233,
+   "excerpt": "0226:     def _forward_postprocess(self, completions, signature, **kwargs):\n0227:         pred = Prediction.from_completions(completions, signature=signature)\n0228:         if kwargs.pop(\"_trace\", True) and settings.trace is not None and settings.max_trace_size > 0:\n0229:             trace = settings.trace\n0230:             if len(trace) >= settings.max_trace_size:\n0231:                 trace.pop(0)\n0232:             trace.append((self, {**kwargs}, pred))\n0233:         return pred"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Verifies external prompt rendering matches the exact message list logged for a real `Predict` call.",
+ "source_index": 0,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

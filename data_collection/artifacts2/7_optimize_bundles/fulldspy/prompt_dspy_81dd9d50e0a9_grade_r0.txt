@@ -1,0 +1,610 @@
+You are grading one model answer for a private DSPy expert QA benchmark.
+
+## Scoring model
+- The question gets one final continuous 0-100 score.
+- Claims are only the internal rubric used to compute that question's score.
+- Score each claim as:
+- `0` = wrong or missing
+- `0.5` = partially correct but incomplete, vague, or only partly grounded
+- `1` = fully correct
+- Do not give extra credit for material outside the rubric.
+- If an answer is polished but misses essential content, score the missing claims low.
+- Use the evidence spans and gold answer to resolve ambiguity.
+
+## Output rules
+- Score every rubric claim exactly once.
+- `question_score` must equal the weighted sum of the claim scores.
+- Set `needs_regrade` to `true` only if the rubric or evidence is genuinely insufficient to judge the answer confidently.
+- Keep rationales concise and specific.
+
+## Inputs
+- Question ID: `dspy_81dd9d50e0a9`
+- Label: `prompt_compilation_customization_and_inspection`
+- Question: `I am calling a predictor with multiple generations and then using `inspect_history` for debugging. What I need to know is whether the history printer shows every completion verbatim or only one completion plus some summary text.
+
+Please keep it offline and machine-checkable. I want one real call that produces three different completions, a captured history dump, and assertions that prove exactly what the printer did with the extra generations.
+
+Give me a complete, runnable Python program that runs offline with `DummyLM`, captures `inspect_history` output to a string buffer, prints that text, and asserts that only the first completion is shown while the later completions are summarized by count.`
+- Model answer:
+```python
+import io
+
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+lm = DummyLM([{"answer": "first"}, {"answer": "second"}, {"answer": "third"}])
+
+with dspy.context(lm=lm):
+    program = dspy.Predict("question -> answer", n=3)
+    prediction = program(question="test")
+
+buffer = io.StringIO()
+lm.inspect_history(n=1, file=buffer)
+history_text = buffer.getvalue()
+
+print(history_text)
+
+assert prediction.answer == "first"
+assert "first" in history_text
+assert "second" not in history_text
+assert "third" not in history_text
+assert "and 2 other completions" in history_text
+```
+
+## Gold answer
+```python
+import io
+
+import dspy
+from dspy.utils.dummies import DummyLM
+
+
+lm = DummyLM([{"answer": "first"}, {"answer": "second"}, {"answer": "third"}])
+
+with dspy.context(lm=lm):
+    program = dspy.Predict("question -> answer", n=3)
+    prediction = program(question="test")
+
+buffer = io.StringIO()
+lm.inspect_history(n=1, file=buffer)
+history_text = buffer.getvalue()
+
+print(history_text)
+
+assert prediction.answer == "first"
+assert "first" in history_text
+assert "second" not in history_text
+assert "third" not in history_text
+assert "and 2 other completions" in history_text
+```
+
+## Claim rubric
+[
+  {
+    "claim_id": "c1",
+    "claim_type": "core",
+    "weight": 20,
+    "statement": "The program captures the LM's printed history by calling the LM instance's `inspect_history` with `n=1` and a file-like buffer such as `StringIO`, instead of reconstructing the history text manually.",
+    "span_ids": [
+      "s1",
+      "s2"
+    ]
+  },
+  {
+    "claim_id": "c2",
+    "claim_type": "core",
+    "weight": 40,
+    "statement": "The answer must show or assert that the history printer emits only the first completion verbatim as the displayed response text, because it prints `outputs[0]` rather than iterating over every completion.",
+    "span_ids": [
+      "s3"
+    ]
+  },
+  {
+    "claim_id": "c3",
+    "claim_type": "core",
+    "weight": 25,
+    "statement": "The answer must show or assert that extra generations are summarized only by count; with three completions total, the captured history should contain `and 2 other completions`.",
+    "span_ids": [
+      "s4"
+    ]
+  },
+  {
+    "claim_id": "c4",
+    "claim_type": "supporting",
+    "weight": 15,
+    "statement": "The program includes concrete substring assertions over the captured history proving the first completion appears, the later completion strings do not appear verbatim, and the summary-count text does appear.",
+    "span_ids": [
+      "s3",
+      "s4",
+      "s1"
+    ]
+  }
+]
+
+## Evidence spans
+[
+  {
+    "span_id": "s1",
+    "path": "dspy/clients/base_lm.py",
+    "start_line": 219,
+    "end_line": 220,
+    "excerpt": "0219:     def inspect_history(self, n: int = 1, file: \"TextIO | None\" = None) -> None:\n0220:         pretty_print_history(self.history, n, file=file)"
+  },
+  {
+    "span_id": "s2",
+    "path": "dspy/utils/inspect_history.py",
+    "start_line": 25,
+    "end_line": 36,
+    "excerpt": "0025: def pretty_print_history(history: list[dict[str, Any]], n: int = 1, file: TextIO | None = None) -> None:\n0026:     \"\"\"Print the last n prompts and their completions.\n0027: \n0028:     Args:\n0029:         history: The history list to print from.\n0030:         n: Number of recent entries to display. Defaults to 1.\n0031:         file: An optional file-like object to write output to (must have a\n0032:             `.write()` method). When provided, ANSI color codes are\n0033:             automatically disabled. Defaults to `None` (prints to stdout).\n0034:     \"\"\"\n0035:     out = file or sys.stdout\n0036:     use_colors = file is None"
+  },
+  {
+    "span_id": "s3",
+    "path": "dspy/utils/inspect_history.py",
+    "start_line": 80,
+    "end_line": 91,
+    "excerpt": "0080:         if isinstance(outputs[0], dict):\n0081:             if outputs[0][\"text\"]:\n0082:                 print(_red(\"Response:\", use_colors=use_colors), file=out)\n0083:                 print(_green(outputs[0][\"text\"].strip(), use_colors=use_colors), file=out)\n0084: \n0085:             if outputs[0].get(\"tool_calls\"):\n0086:                 print(_red(\"Tool calls:\", use_colors=use_colors), file=out)\n0087:                 for tool_call in outputs[0][\"tool_calls\"]:\n0088:                     print(_green(f\"{tool_call['function']['name']}: {tool_call['function']['arguments']}\", use_colors=use_colors), file=out)\n0089:         else:\n0090:             print(_red(\"Response:\", use_colors=use_colors), file=out)\n0091:             print(_green(outputs[0].strip(), use_colors=use_colors), file=out)"
+  },
+  {
+    "span_id": "s4",
+    "path": "dspy/utils/inspect_history.py",
+    "start_line": 93,
+    "end_line": 95,
+    "excerpt": "0093:         if len(outputs) > 1:\n0094:             choices_text = f\" \\t (and {len(outputs) - 1} other completions)\"\n0095:             print(_red(choices_text, end=\"\", use_colors=use_colors), file=out)"
+  }
+]
+
+## Whole evidence files
+### dspy/clients/base_lm.py
+0001: import datetime
+0002: import uuid
+0003: from typing import Any, TextIO
+0004: 
+0005: from dspy.dsp.utils import settings
+0006: from dspy.utils.callback import with_callbacks
+0007: from dspy.utils.inspect_history import pretty_print_history
+0008: 
+0009: MAX_HISTORY_SIZE = 10_000
+0010: GLOBAL_HISTORY = []
+0011: 
+0012: 
+0013: class BaseLM:
+0014:     """Base class for handling LLM calls.
+0015: 
+0016:     Most users can directly use the `dspy.LM` class, which is a subclass of `BaseLM`. Users can also implement their
+0017:     own subclasses of `BaseLM` to support custom LLM providers and inject custom logic. To do so, simply override the
+0018:     `forward` method and make sure the return format is identical to the
+0019:     [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object).
+0020: 
+0021:     Examples:
+0022: 
+0023:     ```python
+0024:     from openai import OpenAI
+0025: 
+0026:     import dspy
+0027: 
+0028: 
+0029:     class MyLM(dspy.BaseLM):
+0030:         @property
+0031:         def supports_function_calling(self) -> bool:
+0032:             return self.model.startswith("openai/gpt-4o")
+0033: 
+0034:         @property
+0035:         def supports_reasoning(self) -> bool:
+0036:             return self.model.startswith("anthropic/claude-3-7")
+0037: 
+0038:         @property
+0039:         def supports_response_schema(self) -> bool:
+0040:             return self.model.startswith("openai/gpt-4o")
+0041: 
+0042:         @property
+0043:         def supported_params(self) -> set[str]:
+0044:             if self.model.startswith("openai/gpt-4o"):
+0045:                 return {"response_format"}  # accepts response_format=...
+0046:             return set()
+0047: 
+0048:         def forward(self, prompt, messages=None, **kwargs):
+0049:             client = OpenAI()
+0050:             return client.chat.completions.create(
+0051:                 model=self.model,
+0052:                 messages=messages or [{"role": "user", "content": prompt}],
+0053:                 **self.kwargs,
+0054:             )
+0055: 
+0056: 
+0057:     lm = MyLM(model="gpt-4o-mini")
+0058:     dspy.configure(lm=lm)
+0059:     print(dspy.Predict("q->a")(q="Why did the chicken cross the kitchen?"))
+0060:     ```
+0061:     """
+0062: 
+0063:     def __init__(self, model, model_type="chat", temperature=0.0, max_tokens=1000, cache=True, **kwargs):
+0064:         self.model = model
+0065:         self.model_type = model_type
+0066:         self.cache = cache
+0067:         self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)
+0068:         self.history = []
+0069: 
+0070:     @property
+0071:     def supports_function_calling(self) -> bool:
+0072:         """Whether the model supports function calling (tool use)."""
+0073:         return False
+0074: 
+0075:     @property
+0076:     def supports_reasoning(self) -> bool:
+0077:         """Whether the model supports native reasoning (extended thinking)."""
+0078:         return False
+0079: 
+0080:     @property
+0081:     def supports_response_schema(self) -> bool:
+0082:         """Whether the model supports structured output via response schema."""
+0083:         return False
+0084: 
+0085:     @property
+0086:     def supported_params(self) -> set[str]:
+0087:         """Set of supported OpenAI-style parameter names for the model."""
+0088:         return set()
+0089: 
+0090:     def _process_lm_response(self, response, prompt, messages, **kwargs):
+0091:         merged_kwargs = {**self.kwargs, **kwargs}
+0092: 
+0093:         if self.model_type == "responses":
+0094:             outputs = self._process_response(response)
+0095:         else:
+0096:             outputs = self._process_completion(response, merged_kwargs)
+0097: 
+0098:         if settings.disable_history:
+0099:             return outputs
+0100: 
+0101:         # Logging, with removed api key & where `cost` is None on cache hit.
+0102:         kwargs = {k: v for k, v in kwargs.items() if not k.startswith("api_")}
+0103:         entry = {
+0104:             "prompt": prompt,
+0105:             "messages": messages,
+0106:             "kwargs": kwargs,
+0107:             "response": response,
+0108:             "outputs": outputs,
+0109:             "usage": dict(response.usage),
+0110:             "cost": getattr(response, "_hidden_params", {}).get("response_cost"),
+0111:             "timestamp": datetime.datetime.now().isoformat(),
+0112:             "uuid": str(uuid.uuid4()),
+0113:             "model": self.model,
+0114:             "response_model": response.model,
+0115:             "model_type": self.model_type,
+0116:         }
+0117: 
+0118:         self.update_history(entry)
+0119: 
+0120:         return outputs
+0121: 
+0122:     @with_callbacks
+0123:     def __call__(
+0124:         self,
+0125:         prompt: str | None = None,
+0126:         messages: list[dict[str, Any]] | None = None,
+0127:         **kwargs
+0128:     ) -> list[dict[str, Any] | str]:
+0129:         response = self.forward(prompt=prompt, messages=messages, **kwargs)
+0130:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
+0131: 
+0132:         return outputs
+0133: 
+0134:     @with_callbacks
+0135:     async def acall(
+0136:         self,
+0137:         prompt: str | None = None,
+0138:         messages: list[dict[str, Any]] | None = None,
+0139:         **kwargs
+0140:     ) -> list[dict[str, Any] | str]:
+0141:         response = await self.aforward(prompt=prompt, messages=messages, **kwargs)
+0142:         outputs = self._process_lm_response(response, prompt, messages, **kwargs)
+0143:         return outputs
+0144: 
+0145:     def forward(
+0146:         self,
+0147:         prompt: str | None = None,
+0148:         messages: list[dict[str, Any]] | None = None,
+0149:         **kwargs
+0150:     ):
+0151:         """Forward pass for the language model.
+0152: 
+0153:         Subclasses must implement this method, and the response should be identical to either of the following formats:
+0154: 
+0155:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+0156:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+0157:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
+0158: 
+0159:         Raises:
+0160:             dspy.ContextWindowExceededError: When the request fails because the
+0161:                 input exceeds the model's context window. DSPy adapters and
+0162:                 modules rely on this error to trigger fallback behavior (e.g.
+0163:                 truncating the prompt and retrying). Each subclass is
+0164:                 responsible for catching its provider's native error and
+0165:                 re-raising it as `dspy.ContextWindowExceededError`.
+0166:         """
+0167:         raise NotImplementedError("Subclasses must implement this method.")
+0168: 
+0169:     async def aforward(
+0170:         self,
+0171:         prompt: str | None = None,
+0172:         messages: list[dict[str, Any]] | None = None,
+0173:         **kwargs
+0174:     ):
+0175:         """Async forward pass for the language model.
+0176: 
+0177:         Subclasses must implement this method, and the response should be identical to either of the following formats:
+0178: 
+0179:         - [OpenAI response format](https://platform.openai.com/docs/api-reference/responses/object)
+0180:         - [OpenAI chat completion format](https://platform.openai.com/docs/api-reference/chat/object)
+0181:         - [OpenAI text completion format](https://platform.openai.com/docs/api-reference/completions/object)
+0182: 
+0183:         Raises:
+0184:             dspy.ContextWindowExceededError: When the request fails because the
+0185:                 input exceeds the model's context window. DSPy adapters and
+0186:                 modules rely on this error to trigger fallback behavior (e.g.
+0187:                 truncating the prompt and retrying). Each subclass is
+0188:                 responsible for catching its provider's native error and
+0189:                 re-raising it as `dspy.ContextWindowExceededError`.
+0190:         """
+0191:         raise NotImplementedError("Subclasses must implement this method.")
+0192: 
+0193:     def copy(self, **kwargs):
+0194:         """Returns a copy of the language model with possibly updated parameters.
+0195: 
+0196:         Any provided keyword arguments update the corresponding attributes or LM kwargs of
+0197:         the copy. For example, ``lm.copy(rollout_id=1, temperature=1.0)`` returns an LM whose
+0198:         requests use a different rollout ID at non-zero temperature to bypass cache collisions.
+0199:         """
+0200: 
+0201:         import copy
+0202: 
+0203:         new_instance = copy.deepcopy(self)
+0204:         new_instance.history = []
+0205: 
+0206:         for key, value in kwargs.items():
+0207:             if hasattr(self, key):
+0208:                 setattr(new_instance, key, value)
+0209:             if (key in self.kwargs) or (not hasattr(self, key)):
+0210:                 if value is None:
+0211:                     new_instance.kwargs.pop(key, None)
+0212:                 else:
+0213:                     new_instance.kwargs[key] = value
+0214:         if hasattr(new_instance, "_warned_zero_temp_rollout"):
+0215:             new_instance._warned_zero_temp_rollout = False
+0216: 
+0217:         return new_instance
+0218: 
+0219:     def inspect_history(self, n: int = 1, file: "TextIO | None" = None) -> None:
+0220:         pretty_print_history(self.history, n, file=file)
+0221: 
+0222:     def update_history(self, entry):
+0223:         if settings.disable_history:
+0224:             return
+0225: 
+0226:         # Global LM history
+0227:         if len(GLOBAL_HISTORY) >= MAX_HISTORY_SIZE:
+0228:             GLOBAL_HISTORY.pop(0)
+0229: 
+0230:         GLOBAL_HISTORY.append(entry)
+0231: 
+0232:         if settings.max_history_size == 0:
+0233:             return
+0234: 
+0235:         # dspy.LM.history
+0236:         if len(self.history) >= settings.max_history_size:
+0237:             self.history.pop(0)
+0238: 
+0239:         self.history.append(entry)
+0240: 
+0241:         # Per-module history
+0242:         caller_modules = settings.caller_modules or []
+0243:         for module in caller_modules:
+0244:             if len(module.history) >= settings.max_history_size:
+0245:                 module.history.pop(0)
+0246:             module.history.append(entry)
+0247: 
+0248:     def _process_completion(self, response, merged_kwargs):
+0249:         """Process the response of OpenAI chat completion API and extract outputs.
+0250: 
+0251:         Args:
+0252:             response: The OpenAI chat completion response
+0253:                 https://platform.openai.com/docs/api-reference/chat/object
+0254:             merged_kwargs: Merged kwargs from self.kwargs and method kwargs
+0255: 
+0256:         Returns:
+0257:             List of processed outputs
+0258:         """
+0259:         outputs = []
+0260:         for c in response.choices:
+0261:             output = {}
+0262:             output["text"] = c.message.content if hasattr(c, "message") else c["text"]
+0263: 
+0264:             if hasattr(c, "message") and hasattr(c.message, "reasoning_content") and c.message.reasoning_content:
+0265:                 output["reasoning_content"] = c.message.reasoning_content
+0266: 
+0267:             if merged_kwargs.get("logprobs"):
+0268:                 output["logprobs"] = c.logprobs if hasattr(c, "logprobs") else c["logprobs"]
+0269:             if hasattr(c, "message") and getattr(c.message, "tool_calls", None):
+0270:                 output["tool_calls"] = c.message.tool_calls
+0271: 
+0272:             # Extract citations from LiteLLM response if available
+0273:             citations = self._extract_citations_from_response(c)
+0274:             if citations:
+0275:                 output["citations"] = citations
+0276: 
+0277:             outputs.append(output)
+0278: 
+0279:         if all(len(output) == 1 for output in outputs):
+0280:             # Return a list if every output only has "text" key
+0281:             outputs = [output["text"] for output in outputs]
+0282:         return outputs
+0283: 
+0284:     def _extract_citations_from_response(self, choice):
+0285:         """Extract citations from LiteLLM response if available.
+0286:         Reference: https://docs.litellm.ai/docs/providers/anthropic#beta-citations-api
+0287: 
+0288:         Args:
+0289:             choice: The choice object from response.choices
+0290: 
+0291:         Returns:
+0292:             A list of citation dictionaries or None if no citations found
+0293:         """
+0294:         try:
+0295:             # Check for citations in LiteLLM provider_specific_fields
+0296:             citations_data = choice.message.provider_specific_fields.get("citations")
+0297:             if isinstance(citations_data, list):
+0298:                 return [citation for citations in citations_data for citation in citations]
+0299:         except Exception:
+0300:             return None
+0301: 
+0302:     def _process_response(self, response):
+0303:         """Process the response of OpenAI Response API and extract outputs.
+0304: 
+0305:         Args:
+0306:             response: OpenAI Response API response
+0307:                 https://platform.openai.com/docs/api-reference/responses/object
+0308: 
+0309:         Returns:
+0310:             List of processed outputs, which is always of size 1 because the Response API only supports one output.
+0311:         """
+0312:         text_outputs = []
+0313:         tool_calls = []
+0314:         reasoning_contents = []
+0315: 
+0316:         for output_item in response.output:
+0317:             output_item_type = output_item.type
+0318:             if output_item_type == "message":
+0319:                 for content_item in output_item.content:
+0320:                     text_outputs.append(content_item.text)
+0321:             elif output_item_type == "function_call":
+0322:                 tool_calls.append(output_item.model_dump())
+0323:             elif output_item_type == "reasoning":
+0324:                 if getattr(output_item, "content", None) and len(output_item.content) > 0:
+0325:                     for content_item in output_item.content:
+0326:                         reasoning_contents.append(content_item.text)
+0327:                 elif getattr(output_item, "summary", None) and len(output_item.summary) > 0:
+0328:                     for summary_item in output_item.summary:
+0329:                         reasoning_contents.append(summary_item.text)
+0330: 
+0331:         result = {}
+0332:         if len(text_outputs) > 0:
+0333:             result["text"] = "".join(text_outputs)
+0334:         if len(tool_calls) > 0:
+0335:             result["tool_calls"] = tool_calls
+0336:         if len(reasoning_contents) > 0:
+0337:             result["reasoning_content"] = "".join(reasoning_contents)
+0338:         # All `response.output` items map to one answer, so we return a list of size 1.
+0339:         return [result]
+0340: 
+0341: 
+0342: def inspect_history(n: int = 1, file: "TextIO | None" = None) -> None:
+0343:     """The global history shared across all LMs.
+0344: 
+0345:     Args:
+0346:         n: Number of recent entries to display. Defaults to 1.
+0347:         file: An optional file-like object to write output to. When
+0348:             provided, ANSI color codes are automatically disabled.
+0349:             Defaults to `None` (prints to stdout).
+0350:     """
+0351:     pretty_print_history(GLOBAL_HISTORY, n, file=file)
+
+### dspy/utils/inspect_history.py
+0001: from __future__ import annotations
+0002: 
+0003: import sys
+0004: from typing import Any, TextIO
+0005: 
+0006: 
+0007: def _green(text: str, end: str = "\n", *, use_colors: bool = True) -> str:
+0008:     if use_colors:
+0009:         return "\x1b[32m" + str(text).lstrip() + "\x1b[0m" + end
+0010:     return str(text).lstrip() + end
+0011: 
+0012: 
+0013: def _red(text: str, end: str = "\n", *, use_colors: bool = True) -> str:
+0014:     if use_colors:
+0015:         return "\x1b[31m" + str(text) + "\x1b[0m" + end
+0016:     return str(text) + end
+0017: 
+0018: 
+0019: def _blue(text: str, end: str = "\n", *, use_colors: bool = True) -> str:
+0020:     if use_colors:
+0021:         return "\x1b[34m" + str(text) + "\x1b[0m" + end
+0022:     return str(text) + end
+0023: 
+0024: 
+0025: def pretty_print_history(history: list[dict[str, Any]], n: int = 1, file: TextIO | None = None) -> None:
+0026:     """Print the last n prompts and their completions.
+0027: 
+0028:     Args:
+0029:         history: The history list to print from.
+0030:         n: Number of recent entries to display. Defaults to 1.
+0031:         file: An optional file-like object to write output to (must have a
+0032:             `.write()` method). When provided, ANSI color codes are
+0033:             automatically disabled. Defaults to `None` (prints to stdout).
+0034:     """
+0035:     out = file or sys.stdout
+0036:     use_colors = file is None
+0037: 
+0038:     for item in history[-n:]:
+0039:         messages = item["messages"] or [{"role": "user", "content": item["prompt"]}]
+0040:         outputs = item["outputs"]
+0041:         timestamp = item.get("timestamp", "Unknown time")
+0042: 
+0043:         print("\n\n\n", file=out)
+0044:         print(_blue(f"[{timestamp}]", use_colors=use_colors), file=out)
+0045: 
+0046:         for msg in messages:
+0047:             print(_red(f"{msg['role'].capitalize()} message:", use_colors=use_colors), file=out)
+0048:             if isinstance(msg["content"], str):
+0049:                 print(msg["content"].strip(), file=out)
+0050:             else:
+0051:                 if isinstance(msg["content"], list):
+0052:                     for c in msg["content"]:
+0053:                         if c["type"] == "text":
+0054:                             print(c["text"].strip(), file=out)
+0055:                         elif c["type"] == "image_url":
+0056:                             image_str = ""
+0057:                             if "base64" in c["image_url"].get("url", ""):
+0058:                                 len_base64 = len(c["image_url"]["url"].split("base64,")[1])
+0059:                                 image_str = (
+0060:                                     f"<{c['image_url']['url'].split('base64,')[0]}base64,"
+0061:                                     f"<IMAGE BASE 64 ENCODED({len_base64!s})>"
+0062:                                 )
+0063:                             else:
+0064:                                 image_str = f"<image_url: {c['image_url']['url']}>"
+0065:                             print(_blue(image_str.strip(), use_colors=use_colors), file=out)
+0066:                         elif c["type"] == "input_audio":
+0067:                             audio_format = c["input_audio"]["format"]
+0068:                             len_audio = len(c["input_audio"]["data"])
+0069:                             audio_str = f"<audio format='{audio_format}' base64-encoded, length={len_audio}>"
+0070:                             print(_blue(audio_str.strip(), use_colors=use_colors), file=out)
+0071:                         elif c["type"] == "file" or c["type"] == "input_file":
+0072:                             file_info = c.get("file", c.get("input_file", {}))
+0073:                             filename = file_info.get("filename", "")
+0074:                             file_id = file_info.get("file_id", "")
+0075:                             file_data = file_info.get("file_data", "")
+0076:                             file_str = f"<file: name:{filename}, id:{file_id}, data_length:{len(file_data)}>"
+0077:                             print(_blue(file_str.strip(), use_colors=use_colors), file=out)
+0078:             print("\n", file=out)
+0079: 
+0080:         if isinstance(outputs[0], dict):
+0081:             if outputs[0]["text"]:
+0082:                 print(_red("Response:", use_colors=use_colors), file=out)
+0083:                 print(_green(outputs[0]["text"].strip(), use_colors=use_colors), file=out)
+0084: 
+0085:             if outputs[0].get("tool_calls"):
+0086:                 print(_red("Tool calls:", use_colors=use_colors), file=out)
+0087:                 for tool_call in outputs[0]["tool_calls"]:
+0088:                     print(_green(f"{tool_call['function']['name']}: {tool_call['function']['arguments']}", use_colors=use_colors), file=out)
+0089:         else:
+0090:             print(_red("Response:", use_colors=use_colors), file=out)
+0091:             print(_green(outputs[0].strip(), use_colors=use_colors), file=out)
+0092: 
+0093:         if len(outputs) > 1:
+0094:             choices_text = f" \t (and {len(outputs) - 1} other completions)"
+0095:             print(_red(choices_text, end="", use_colors=use_colors), file=out)
+0096: 
+0097:     print("\n\n\n", file=out)
+
+Return JSON that matches the schema exactly.

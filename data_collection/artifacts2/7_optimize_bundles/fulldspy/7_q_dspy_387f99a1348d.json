@@ -1,0 +1,150 @@
+{
+ "id": "dspy_387f99a1348d",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm collecting execution traces for optimizer-style reflection, and one of my model completions occasionally comes back in the wrong format. What I need to know is whether DSPy drops that row completely or preserves the raw bad completion and some kind of score so I can feed it back into debugging.\n\nThis is exactly the sort of thing that's too easy to infer incorrectly from source comments. Give me a complete, runnable Python program that stays offline with `DummyLM`, forces one well-formed output and one malformed output during trace capture, and prints/asserts the bad row's type, raw completion text, score-like field, and trace presence.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.dsp.utils.utils import dotdict\nfrom dspy.teleprompt.bootstrap_trace import FailedPrediction, bootstrap_trace_data\nfrom dspy.utils.dummies import DummyLM\n\n\nclass StringToInt(dspy.Signature):\n    text: str = dspy.InputField()\n    number: int = dspy.OutputField()\n\n\nclass MalformedDummyLM(DummyLM):\n    def __init__(self):\n        super().__init__([{\"number\": 1}], adapter=dspy.JSONAdapter())\n        self.calls = 0\n\n    def forward(self, prompt=None, messages=None, **kwargs):\n        self.calls += 1\n        if self.calls == 1:\n            return super().forward(prompt=prompt, messages=messages, **kwargs)\n        return dotdict(\n            choices=[dotdict(message=dotdict(content=\"not json at all\", tool_calls=None), finish_reason=\"stop\")],\n            usage=dotdict(prompt_tokens=0, completion_tokens=0, total_tokens=0),\n            model=\"dummy\",\n        )\n\n\ndef exact_match(example, prediction, trace=None):\n    return example.number == prediction.number\n\n\nlm = MalformedDummyLM()\ndspy.configure(lm=lm, adapter=dspy.JSONAdapter())\nprogram = dspy.Predict(StringToInt)\ndataset = [\n    dspy.Example(text=\"one\", number=1).with_inputs(\"text\"),\n    dspy.Example(text=\"two\", number=2).with_inputs(\"text\"),\n]\n\nrows = bootstrap_trace_data(\n    program=program,\n    dataset=dataset,\n    metric=exact_match,\n    raise_on_error=False,\n    capture_failed_parses=True,\n)\n\nprint(\"row_types:\", [type(row[\"prediction\"]).__name__ for row in rows])\nbad = rows[1][\"prediction\"]\nprint(\"bad_completion:\", bad.completion_text)\nprint(\"bad_format_reward:\", bad.format_reward)\nprint(\"bad_trace_len:\", len(rows[1][\"trace\"]))\nassert isinstance(bad, FailedPrediction)\nassert bad.completion_text == \"not json at all\"\nassert bad.format_reward is not None\nassert len(rows[1][\"trace\"]) > 0\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The answer builds a small end-to-end `dspy.Predict` example with a signature, dataset, metric, and controlled LM outputs that include at least one valid completion and one malformed completion before calling `bootstrap_trace_data`.",
+   "span_ids": [
+    "s1",
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "It demonstrates that a parse-failed example is preserved in the returned `bootstrap_trace_data` rows, rather than dropped, when trace collection runs with `raise_on_error=False`.",
+   "span_ids": [
+    "s6",
+    "s8",
+    "s9"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "It identifies the bad row by showing its `prediction` is a `FailedPrediction` and that `completion_text` stores the exact raw malformed LM response text.",
+   "span_ids": [
+    "s4",
+    "s6",
+    "s9"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "It verifies that the bad row still has trace data, because the parse-failure path appends `(predictor, inputs, failed_pred)` to the trace and returns that non-empty trace.",
+   "span_ids": [
+    "s7",
+    "s10"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "It inspects `format_reward` as the score-like signal on the failed parse, which is also what failed predictions feed into evaluation scoring unless the default format-failure score is used instead.",
+   "span_ids": [
+    "s4",
+    "s5",
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "tests/teleprompt/test_bootstrap_trace.py",
+   "start_line": 14,
+   "end_line": 35,
+   "excerpt": "0014:     # Define signature for string -> int conversion\n0015:     class StringToIntSignature(dspy.Signature):\n0016:         \"\"\"Convert a string number to integer\"\"\"\n0017: \n0018:         text: str = dspy.InputField()\n0019:         number: int = dspy.OutputField()\n0020: \n0021:     # Create program with single dspy.Predict\n0022:     program = dspy.Predict(StringToIntSignature)\n0023: \n0024:     # Create dummy dataset of size 5\n0025:     dataset = [\n0026:         Example(text=\"one\", number=1).with_inputs(\"text\"),\n0027:         Example(text=\"two\", number=2).with_inputs(\"text\"),\n0028:         Example(text=\"three\", number=3).with_inputs(\"text\"),\n0029:         Example(text=\"four\", number=4).with_inputs(\"text\"),\n0030:         Example(text=\"five\", number=5).with_inputs(\"text\"),\n0031:     ]\n0032: \n0033:     # Define exact match metric\n0034:     def exact_match_metric(example, prediction, trace=None):\n0035:         return example.number == prediction.number"
+  },
+  {
+   "span_id": "s2",
+   "path": "tests/teleprompt/test_bootstrap_trace.py",
+   "start_line": 40,
+   "end_line": 73,
+   "excerpt": "0040:     # Mock litellm completion responses\n0041:     # 4 successful responses and 1 that will trigger AdapterParseError\n0042:     successful_responses = [\n0043:         ModelResponse(\n0044:             choices=[Choices(message=Message(content='```json\\n{\"number\": 1}\\n```'))],\n0045:             model=\"openai/gpt-4o-mini\",\n0046:         ),\n0047:         ModelResponse(\n0048:             choices=[Choices(message=Message(content='```json\\n{\"number\": 2}\\n```'))],\n0049:             model=\"openai/gpt-4o-mini\",\n0050:         ),\n0051:         ModelResponse(\n0052:             choices=[Choices(message=Message(content='```json\\n{\"number\": 3}\\n```'))],\n0053:             model=\"openai/gpt-4o-mini\",\n0054:         ),\n0055:         ModelResponse(\n0056:             choices=[Choices(message=Message(content='```json\\n{\"number\": 4}\\n```'))],\n0057:             model=\"openai/gpt-4o-mini\",\n0058:         ),\n0059:     ]\n0060: \n0061:     # Create a side effect that will trigger AdapterParseError on the 3rd call (index 2)\n0062:     def completion_side_effect(*args, **kwargs):\n0063:         call_count = completion_side_effect.call_count\n0064:         completion_side_effect.call_count += 1\n0065: \n0066:         if call_count == 5:  # Third call (0-indexed)\n0067:             # Return malformed response that will cause AdapterParseError\n0068:             return ModelResponse(\n0069:                 choices=[Choices(message=Message(content=\"This is an invalid JSON!\"))],\n0070:                 model=\"openai/gpt-4o-mini\",\n0071:             )\n0072:         else:\n0073:             return successful_responses[call_count]"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/teleprompt/test_bootstrap_trace.py",
+   "start_line": 77,
+   "end_line": 85,
+   "excerpt": "0077:     with mock.patch(\"litellm.completion\", side_effect=completion_side_effect):\n0078:         # Call bootstrap_trace_data\n0079:         results = bootstrap_trace_data(\n0080:             program=program,\n0081:             dataset=dataset,\n0082:             metric=exact_match_metric,\n0083:             raise_on_error=False,\n0084:             capture_failed_parses=True,\n0085:         )"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/teleprompt/bootstrap_trace.py",
+   "start_line": 16,
+   "end_line": 20,
+   "excerpt": "0016: @dataclass\n0017: class FailedPrediction:\n0018:     completion_text: str\n0019:     format_reward: float | None = None\n0020: "
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/teleprompt/bootstrap_trace.py",
+   "start_line": 53,
+   "end_line": 57,
+   "excerpt": "0053:     def wrapped_metric(example, prediction, trace=None):\n0054:         prediction, _ = prediction\n0055:         if isinstance(prediction, FailedPrediction):\n0056:             return prediction.format_reward or format_failure_score\n0057:         return metric(example, prediction, trace) if metric else True"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/teleprompt/bootstrap_trace.py",
+   "start_line": 67,
+   "end_line": 94,
+   "excerpt": "0067:             except AdapterParseError as e:\n0068:                 completion_str = e.lm_response\n0069:                 parsed_result = e.parsed_result\n0070:                 failed_signature = e.signature\n0071:                 failed_inputs = kwargs\n0072: \n0073:                 present = list(parsed_result.keys()) if parsed_result else None\n0074:                 expected = list(failed_signature.output_fields.keys())\n0075: \n0076:                 found_pred = None\n0077:                 for pred in program_to_use.predictors():\n0078:                     if pred.signature == failed_signature:\n0079:                         found_pred = pred\n0080:                         break\n0081:                 if found_pred is None:\n0082:                     raise ValueError(f\"Failed to find the predictor for the failed signature: {failed_signature}\")\n0083: \n0084:                 trace = dspy.settings.trace.copy()\n0085:                 # Trace is Tuple[signature, inputs, prediction outputs]\n0086:                 if present:\n0087:                     failed_pred = FailedPrediction(\n0088:                         completion_text=completion_str,\n0089:                         format_reward=format_failure_score\n0090:                         + (failure_score - format_failure_score) * (present / expected),\n0091:                     )\n0092:                 else:\n0093:                     failed_pred = FailedPrediction(completion_text=completion_str, format_reward=format_failure_score)\n0094: "
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/teleprompt/bootstrap_trace.py",
+   "start_line": 95,
+   "end_line": 109,
+   "excerpt": "0095:                 trace.append(\n0096:                     (\n0097:                         found_pred,\n0098:                         failed_inputs,\n0099:                         failed_pred,\n0100:                     )\n0101:                 )\n0102: \n0103:                 if log_format_failures:\n0104:                     logging.warning(\n0105:                         \"Failed to parse output for example. This is likely due to the LLM response not following \"\n0106:                         \"the adapter's formatting.\"\n0107:                     )\n0108: \n0109:                 return failed_pred, trace"
+  },
+  {
+   "span_id": "s8",
+   "path": "dspy/teleprompt/bootstrap_trace.py",
+   "start_line": 122,
+   "end_line": 142,
+   "excerpt": "0122:     data = []\n0123:     for example_ind, (example, prediction, score) in enumerate(results):\n0124:         try:\n0125:             prediction, trace = prediction\n0126:         except ValueError as ve:\n0127:             # TODO(GRPO Team): Often during GRPO bootstrapping, the LLM response does not follow dspy formatting. This\n0128:             # leads to a value error. To reproduce this issue, try Qwen/Qwen2.5-Coder-0.5B-Instruct with MATH dataset.\n0129:             # Proposal(Lakshya): We should capture the incorrectly-formatted LLM response, and store it in the trace,\n0130:             # and pass it to in the GRPO group with a high-negative user-configurable score.\n0131:             logger.warning(\n0132:                 \"Failed to unpack prediction and trace. This is likely due to the LLM response not following \"\n0133:                 \"dspy formatting.\"\n0134:             )\n0135:             if raise_on_error:\n0136:                 raise ve\n0137:             else:\n0138:                 continue\n0139:         data_dict = {\"example\": example, \"prediction\": prediction, \"trace\": trace, \"example_ind\": example_ind}\n0140:         if metric:\n0141:             data_dict[\"score\"] = score\n0142:         data.append(data_dict)"
+  },
+  {
+   "span_id": "s9",
+   "path": "tests/teleprompt/test_bootstrap_trace.py",
+   "start_line": 87,
+   "end_line": 114,
+   "excerpt": "0087:     # Verify results\n0088:     assert len(results) == 5, f\"Expected 5 results, got {len(results)}\"\n0089: \n0090:     # Count successful and failed predictions\n0091:     successful_count = 0\n0092:     failed_count = 0\n0093: \n0094:     for result in results:\n0095:         assert \"example\" in result\n0096:         assert \"prediction\" in result\n0097:         assert \"trace\" in result\n0098:         assert \"example_ind\" in result\n0099:         assert \"score\" in result\n0100: \n0101:         if isinstance(result[\"prediction\"], FailedPrediction):\n0102:             failed_count += 1\n0103:             # Verify failed prediction structure\n0104:             assert hasattr(result[\"prediction\"], \"completion_text\")\n0105:             assert hasattr(result[\"prediction\"], \"format_reward\")\n0106:             assert result[\"prediction\"].completion_text == \"This is an invalid JSON!\"\n0107:         else:\n0108:             successful_count += 1\n0109:             # Verify successful prediction structure\n0110:             assert hasattr(result[\"prediction\"], \"number\")\n0111: \n0112:     # Verify we have the expected number of successful and failed bootstrapping\n0113:     assert successful_count == 4, f\"Expected 4 successful predictions, got {successful_count}\"\n0114:     assert failed_count == 1, f\"Expected 1 failed prediction, got {failed_count}\""
+  },
+  {
+   "span_id": "s10",
+   "path": "tests/teleprompt/test_bootstrap_trace.py",
+   "start_line": 116,
+   "end_line": 121,
+   "excerpt": "0116:     # Verify that traces are present\n0117:     for result in results:\n0118:         assert len(result[\"trace\"]) > 0, \"Trace should not be empty\"\n0119:         # Each trace entry should be a tuple of (predictor, inputs, prediction)\n0120:         for trace_entry in result[\"trace\"]:\n0121:             assert len(trace_entry) == 3, \"Trace entry should have 3 elements\""
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "",
+ "source_index": 43,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

@@ -1,0 +1,97 @@
+{
+ "id": "dspy_c0ccc7e147bf",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "When a predictor output is badly formatted during reflective data collection, I need to know whether DSPy turns that failure into explicit feedback or just drops the example. I can imagine either policy being useful depending on configuration, so I want both sides demonstrated in one place.\n\nGive me a complete, runnable Python program that stays offline, feeds one failed-format trace into the reflection-data path twice under two configurations, and prints/asserts the drop-vs-feedback behavior.",
+ "gold_answer": "```python\nimport types\n\nimport dspy\nfrom dspy.teleprompt.bootstrap_trace import FailedPrediction\nfrom dspy.teleprompt.gepa.gepa_utils import DspyAdapter\n\n\nclass TinyProgram(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\nstudent = TinyProgram()\npredictor = student.predictor\ncandidate = {\"predictor\": predictor.signature.instructions}\nfailed = FailedPrediction(completion_text=\"RAW BAD OUTPUT\", format_reward=0.0)\nrow = {\n    \"example\": dspy.Example(question=\"Q\", answer=\"A\").with_inputs(\"question\"),\n    \"prediction\": failed,\n    \"trace\": [(predictor, {\"question\": \"Q\"}, failed)],\n    \"score\": 0.0,\n}\neval_batch = types.SimpleNamespace(trajectories=[row])\nunused_feedback = {\"predictor\": lambda **kwargs: dspy.Prediction(score=0.0, feedback=\"unused\")}\n\nadapter_drop = DspyAdapter(\n    student_module=student,\n    metric_fn=lambda *args, **kwargs: 0.0,\n    feedback_map=unused_feedback,\n    add_format_failure_as_feedback=False,\n)\ntry:\n    adapter_drop.make_reflective_dataset(candidate, eval_batch, [\"predictor\"])\nexcept Exception as e:\n    print(\"without_feedback_toggle:\", str(e))\n    assert \"No valid predictions found\" in str(e)\nelse:\n    raise AssertionError(\"Expected the failed-format example to be dropped.\")\n\nadapter_keep = DspyAdapter(\n    student_module=student,\n    metric_fn=lambda *args, **kwargs: 0.0,\n    feedback_map=unused_feedback,\n    add_format_failure_as_feedback=True,\n)\ndataset = adapter_keep.make_reflective_dataset(candidate, eval_batch, [\"predictor\"])\nkept = dataset[\"predictor\"][0]\nprint(\"generated_outputs:\", kept[\"Generated Outputs\"])\nprint(\"feedback:\", kept[\"Feedback\"])\nassert \"RAW BAD OUTPUT\" in kept[\"Generated Outputs\"]\nassert kept[\"Feedback\"].startswith(\"Your output failed to parse.\")\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Stay offline by calling `DspyAdapter.make_reflective_dataset` directly on a hand-built `eval_batch` object whose `trajectories` list contains one row with `example`, `prediction`, `trace`, and `score`; use a minimal named predictor and target that predictor in `components_to_update` so the method can match the trace entry by signature.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Represent the bad-format case with a `FailedPrediction` carrying the raw `completion_text` (and optionally `format_reward`), because reflective-dataset generation reads that `completion_text` back out when formatting failed outputs.",
+   "span_ids": [
+    "s1",
+    "s5"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "For the `add_format_failure_as_feedback=False` run, instantiate the adapter with that flag disabled and assert that the failed trace is dropped: `make_reflective_dataset` filters out `FailedPrediction` trace entries, and if that leaves no reflective items it raises `Exception(\"No valid predictions found for any module.\")`.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "For the `add_format_failure_as_feedback=True` run, instantiate the adapter with that flag enabled and assert that the failed trace is kept and preferred, producing a reflective example whose `Generated Outputs` string contains the raw bad response and whose `Feedback` begins with the parse-failure guidance.",
+   "span_ids": [
+    "s2",
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/bootstrap_trace.py",
+   "start_line": 16,
+   "end_line": 20,
+   "excerpt": "0016: @dataclass\n0017: class FailedPrediction:\n0018:     completion_text: str\n0019:     format_reward: float | None = None\n0020: "
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/gepa/gepa_utils.py",
+   "start_line": 77,
+   "end_line": 98,
+   "excerpt": "0077: class DspyAdapter(GEPAAdapter[Example, TraceData, Prediction]):\n0078:     def __init__(\n0079:         self,\n0080:         student_module,\n0081:         metric_fn: Callable,\n0082:         feedback_map: dict[str, Callable],\n0083:         failure_score=0.0,\n0084:         num_threads: int | None = None,\n0085:         add_format_failure_as_feedback: bool = False,\n0086:         rng: random.Random | None = None,\n0087:         reflection_lm=None,\n0088:         custom_instruction_proposer: \"ProposalFn | None\" = None,\n0089:         warn_on_score_mismatch: bool = True,\n0090:         reflection_minibatch_size: int | None = None,\n0091:     ):\n0092:         self.student = student_module\n0093:         self.metric_fn = metric_fn\n0094:         self.feedback_map = feedback_map\n0095:         self.failure_score = failure_score\n0096:         self.num_threads = num_threads\n0097:         self.add_format_failure_as_feedback = add_format_failure_as_feedback\n0098:         self.rng = rng or random.Random(0)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/gepa/gepa_utils.py",
+   "start_line": 198,
+   "end_line": 227,
+   "excerpt": "0198:     def make_reflective_dataset(\n0199:         self, candidate, eval_batch, components_to_update\n0200:     ) -> dict[str, list[ReflectiveExample]]:\n0201:         program = self.build_program(candidate)\n0202: \n0203:         ret_d: dict[str, list[ReflectiveExample]] = {}\n0204: \n0205:         for pred_name in components_to_update:\n0206:             # Find the predictor object\n0207:             module = None\n0208:             for name, m in program.named_predictors():\n0209:                 if name == pred_name:\n0210:                     module = m\n0211:                     break\n0212:             assert module is not None, f\"Predictor not found: {pred_name}\"\n0213: \n0214:             # Create reflective examples from traces\n0215:             items: list[ReflectiveExample] = []\n0216:             for data in eval_batch.trajectories or []:\n0217:                 trace = data[\"trace\"]\n0218:                 example = data[\"example\"]\n0219:                 prediction = data[\"prediction\"]\n0220:                 module_score = data[\"score\"]\n0221:                 if hasattr(module_score, \"score\"):\n0222:                     module_score = module_score[\"score\"]\n0223: \n0224:                 trace_instances = [t for t in trace if t[0].signature.equals(module.signature)]\n0225:                 if not self.add_format_failure_as_feedback:\n0226:                     trace_instances = [t for t in trace_instances if not isinstance(t[2], FailedPrediction)]\n0227:                 if len(trace_instances) == 0:"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/teleprompt/gepa/gepa_utils.py",
+   "start_line": 230,
+   "end_line": 239,
+   "excerpt": "0230:                 selected = None\n0231:                 for t in trace_instances:\n0232:                     if isinstance(t[2], FailedPrediction):\n0233:                         selected = t\n0234:                         break\n0235: \n0236:                 if selected is None:\n0237:                     if isinstance(prediction, FailedPrediction):\n0238:                         continue\n0239:                     selected = self.rng.choice(trace_instances)"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/teleprompt/gepa/gepa_utils.py",
+   "start_line": 272,
+   "end_line": 289,
+   "excerpt": "0272:                 if isinstance(outputs, FailedPrediction):\n0273:                     s = \"Couldn't parse the output as per the expected output format. The model's raw response was:\\n\"\n0274:                     s += \"```\\n\"\n0275:                     s += outputs.completion_text + \"\\n\"\n0276:                     s += \"```\\n\\n\"\n0277:                     new_outputs = s\n0278:                 else:\n0279:                     for output_key, output_val in outputs.items():\n0280:                         new_outputs[output_key] = str(output_val)\n0281: \n0282:                 d = {\"Inputs\": new_inputs, \"Generated Outputs\": new_outputs}\n0283:                 if isinstance(outputs, FailedPrediction):\n0284:                     adapter = ChatAdapter()\n0285:                     structure_instruction = \"\"\n0286:                     for dd in adapter.format(module.signature, [], {}):\n0287:                         structure_instruction += dd[\"role\"] + \": \" + dd[\"content\"] + \"\\n\"\n0288:                     d[\"Feedback\"] = \"Your output failed to parse. Follow this structure:\\n\" + structure_instruction\n0289:                     # d['score'] = self.failure_score"
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/teleprompt/gepa/gepa_utils.py",
+   "start_line": 310,
+   "end_line": 317,
+   "excerpt": "0310:             if len(items) == 0:\n0311:                 logger.warning(f\"  No valid reflective examples found for {pred_name}\")\n0312:                 continue\n0313: \n0314:             ret_d[pred_name] = items\n0315: \n0316:         if len(ret_d) == 0:\n0317:             raise Exception(\"No valid predictions found for any module.\")"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "",
+ "source_index": 52,
+ "smalldspy_scope": false
+}

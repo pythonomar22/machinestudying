@@ -1,0 +1,503 @@
+You are building a private grading rubric for one DSPy expert QA benchmark question.
+Your output is confidential and will only be used by the evaluator.
+
+## Goal
+- Turn the gold answer into 2-8 atomic grading claims.
+- Claims should be small enough to score independently.
+- Together, the claims should capture what a strong code-grounded answer must say.
+
+## Rules
+- Use only the provided question, gold answer, evidence references, and evidence file contents.
+- Make every claim judgeable from code and tests alone.
+- Use `core` for essential mechanisms or facts that define correctness.
+- Use `supporting` for narrower detail, nuance, edge cases, or examples.
+- Claims should be minimally overlapping.
+- The claim weights must sum to exactly 100.
+- `core` claims should carry most of the total weight.
+- Every claim must cite 1-3 evidence spans.
+- Every evidence span must come from the provided files only.
+- Use exact line numbers from the numbered file dumps.
+- Keep spans focused. Prefer 1-40 lines when possible, and never exceed 300 lines.
+- Reuse spans across claims when that is the cleanest grounding.
+- Do not include any public-release wording, benchmarking commentary, or grading instructions in the claim text.
+
+## Inputs
+- Question ID: `dspy_9a52cde7e743`
+- Label: `module_composition_and_runtime_interoperability`
+- Question: `I'm trying to use `BootstrapFinetune` on a tiny offline program before I swap in a real provider. Plain inference works if I only do `dspy.configure(lm=...)`, so I expected the optimizer to inherit that and start compiling.
+
+What I'm actually seeing is that compilation fails because one of the predictors supposedly has no LM assigned, even though the global LM is set and the same module can answer questions. I want a proof that this is about per-predictor wiring, not about the dataset or the metric.
+
+Give me a complete, runnable Python program that uses `DummyLM`, triggers the optimizer error first, then fixes it by attaching the LM directly to the module, with prints and assertions that prove the before/after behavior.`
+- Gold answer:
+```python
+import dspy
+from unittest.mock import patch
+from dspy.teleprompt import BootstrapFinetune
+from dspy.utils.dummies import DummyLM
+
+
+class SimpleModule(dspy.Module):
+    def __init__(self):
+        super().__init__()
+        self.predictor = dspy.Predict("input -> output")
+
+    def forward(self, input):
+        return self.predictor(input=input)
+
+
+trainset = [
+    dspy.Example(input="What is the color of the sky?", output="blue").with_inputs("input")
+]
+lm = DummyLM([{"output": "blue"}])
+dspy.configure(lm=lm)
+
+optimizer = BootstrapFinetune(metric=lambda example, pred, trace=None: example.output == pred.output)
+student = SimpleModule()
+
+try:
+    optimizer.compile(student, trainset=trainset)
+    raise AssertionError("Expected BootstrapFinetune to reject a predictor that only relies on dspy.configure(lm=...)")
+except ValueError as e:
+    msg = str(e)
+    print("missing_lm_error:", msg)
+    assert "does not have an LM assigned" in msg
+    assert "set_lm" in msg
+
+student = SimpleModule()
+teacher = SimpleModule()
+student.set_lm(lm)
+teacher.set_lm(lm)
+optimizer = BootstrapFinetune(metric=lambda example, pred, trace=None: example.output == pred.output)
+
+with patch.object(optimizer, "finetune_lms", return_value={(lm, None): lm}) as mocked:
+    compiled = optimizer.compile(student, teacher=teacher, trainset=trainset)
+    mocked.assert_called_once()
+
+assert compiled._compiled is True
+assert compiled.predictor.lm is lm
+print("compiled_flag:", compiled._compiled)
+print("predictor_lm_model:", compiled.predictor.lm.model)
+```
+
+## Evidence references
+[
+  {
+    "file": "dspy/teleprompt/bootstrap_finetune.py",
+    "symbol": "BootstrapFinetune.compile"
+  },
+  {
+    "file": "tests/teleprompt/test_bootstrap_finetune.py",
+    "symbol": "test_error_handling_missing_lm"
+  }
+]
+
+## Full evidence files
+### dspy/teleprompt/bootstrap_finetune.py
+0001: import logging
+0002: from collections import defaultdict
+0003: from typing import Any, Callable
+0004: 
+0005: import dspy
+0006: from dspy.adapters.base import Adapter
+0007: from dspy.adapters.chat_adapter import ChatAdapter
+0008: from dspy.clients.lm import LM
+0009: from dspy.clients.utils_finetune import infer_data_format
+0010: from dspy.dsp.utils.settings import settings
+0011: from dspy.predict.predict import Predict
+0012: from dspy.primitives.example import Example
+0013: from dspy.primitives.module import Module
+0014: from dspy.teleprompt.bootstrap_trace import bootstrap_trace_data
+0015: from dspy.teleprompt.teleprompt import Teleprompter
+0016: 
+0017: logger = logging.getLogger(__name__)
+0018: 
+0019: 
+0020: class FinetuneTeleprompter(Teleprompter):
+0021:     def __init__(
+0022:         self,
+0023:         train_kwargs: dict[str, Any] | dict[LM, dict[str, Any]] | None = None,
+0024:     ):
+0025:         self.train_kwargs: dict[LM, Any] = self.convert_to_lm_dict(train_kwargs or {})
+0026: 
+0027:     @staticmethod
+0028:     def convert_to_lm_dict(arg) -> dict[LM, Any]:
+0029:         non_empty_dict = arg and isinstance(arg, dict)
+0030:         if non_empty_dict and all(isinstance(k, LM) for k in arg.keys()):
+0031:             return arg
+0032:         # Default to using the same value for all LMs
+0033:         return defaultdict(lambda: arg)
+0034: 
+0035: 
+0036: class BootstrapFinetune(FinetuneTeleprompter):
+0037:     def __init__(
+0038:         self,
+0039:         metric: Callable | None = None,
+0040:         multitask: bool = True,
+0041:         train_kwargs: dict[str, Any] | dict[LM, dict[str, Any]] | None = None,
+0042:         adapter: Adapter | dict[LM, Adapter] | None = None,
+0043:         exclude_demos: bool = False,
+0044:         num_threads: int | None = None,
+0045:     ):
+0046:         # TODO(feature): Inputs train_kwargs (a dict with string keys) and
+0047:         # adapter (Adapter) can depend on the LM they are used with. We are
+0048:         # takingthese as parameters for the time being. However, they can be
+0049:         # attached to LMs themselves -- an LM could know which adapter it should
+0050:         # be used with along with the train_kwargs. This will lead the only
+0051:         # required argument for LM.finetune() to be the train dataset.
+0052: 
+0053:         super().__init__(train_kwargs=train_kwargs)
+0054:         self.metric = metric
+0055:         self.multitask = multitask
+0056:         self.adapter: dict[LM, Adapter] = self.convert_to_lm_dict(adapter)
+0057:         self.exclude_demos = exclude_demos
+0058:         self.num_threads = num_threads
+0059: 
+0060:     def compile(
+0061:         self, student: Module, trainset: list[Example], teacher: Module | list[Module] | None = None
+0062:     ) -> Module:
+0063:         # TODO: Print statements can be converted to logger.info if we ensure
+0064:         # that the default DSPy logger logs info level messages in notebook
+0065:         # environments.
+0066:         logger.info("Preparing the student and teacher programs...")
+0067:         all_predictors_have_lms(student)
+0068: 
+0069:         logger.info("Bootstrapping data...")
+0070:         trace_data = []
+0071: 
+0072:         teachers = teacher if isinstance(teacher, list) else [teacher]
+0073:         teachers = [prepare_teacher(student, t) for t in teachers]
+0074:         num_threads = self.num_threads or dspy.settings.num_threads
+0075:         for t in teachers:
+0076:             trace_data += bootstrap_trace_data(program=t, dataset=trainset, metric=self.metric, num_threads=num_threads)
+0077: 
+0078:         logger.info("Preparing the train data...")
+0079:         key_to_data = {}
+0080:         for pred_ind, pred in enumerate(student.predictors()):
+0081:             data_pred_ind = None if self.multitask else pred_ind
+0082:             if pred.lm is None:
+0083:                 raise ValueError(
+0084:                     f"Predictor {pred_ind} does not have an LM assigned. "
+0085:                     f"Please ensure the module's predictors have their LM set before fine-tuning. "
+0086:                     f"You can set it using: your_module.set_lm(your_lm)"
+0087:                 )
+0088:             training_key = (pred.lm, data_pred_ind)
+0089: 
+0090:             if training_key not in key_to_data:
+0091:                 train_data, data_format = self._prepare_finetune_data(
+0092:                     trace_data=trace_data, lm=pred.lm, pred_ind=data_pred_ind
+0093:                 )
+0094:                 logger.info(f"Using {len(train_data)} data points for fine-tuning the model: {pred.lm.model}")
+0095:                 finetune_kwargs = {
+0096:                     "lm": pred.lm,
+0097:                     "train_data": train_data,
+0098:                     "train_data_format": data_format,
+0099:                     "train_kwargs": self.train_kwargs[pred.lm],
+0100:                 }
+0101:                 key_to_data[training_key] = finetune_kwargs
+0102: 
+0103:         logger.info("Starting LM fine-tuning...")
+0104:         # TODO(feature): We could run batches of fine-tuning jobs in sequence
+0105:         # to avoid exceeding the number of threads.
+0106:         if len(key_to_data) > num_threads:
+0107:             raise ValueError(
+0108:                 "BootstrapFinetune requires `num_threads` to be bigger than or equal to the number of fine-tuning "
+0109:                 f"jobs. There are {len(key_to_data)} fine-tuning jobs to start, but the number of threads is: "
+0110:                 f"{num_threads}! If the `multitask` flag is set to False, the number of fine-tuning jobs will "
+0111:                 "be equal to the number of predictors in the student program. If the `multitask` flag is set to True, "
+0112:                 "the number of fine-tuning jobs will be equal to: 1 if there is only a context LM, or the number of "
+0113:                 "unique LMs attached to the predictors in the student program. In any case, the number of fine-tuning "
+0114:                 "jobs will be less than or equal to the number of predictors."
+0115:             )
+0116:         logger.info(f"{len(key_to_data)} fine-tuning job(s) to start")
+0117:         key_to_lm = self.finetune_lms(key_to_data)
+0118: 
+0119:         logger.info("Updating the student program with the fine-tuned LMs...")
+0120:         for pred_ind, pred in enumerate(student.predictors()):
+0121:             data_pred_ind = None if self.multitask else pred_ind
+0122:             training_key = (pred.lm, data_pred_ind)
+0123:             finetuned_lm = key_to_lm[training_key]
+0124:             if isinstance(finetuned_lm, Exception):
+0125:                 raise RuntimeError(f"Finetuned LM for predictor {pred_ind} failed.") from finetuned_lm
+0126:             pred.lm = finetuned_lm
+0127:             # TODO: What should the correct behavior be here? Should
+0128:             # BootstrapFinetune modify the prompt demos according to the
+0129:             # train data?
+0130:             pred.demos = [] if self.exclude_demos else pred.demos
+0131: 
+0132:         logger.info("BootstrapFinetune has finished compiling the student program")
+0133:         student._compiled = True
+0134:         return student
+0135: 
+0136:     @staticmethod
+0137:     def finetune_lms(finetune_dict) -> dict[Any, LM]:
+0138:         num_jobs = len(finetune_dict)
+0139:         logger.info(f"Starting {num_jobs} fine-tuning job(s)...")
+0140:         # TODO(nit) Pass an identifier to the job so that we can tell the logs
+0141:         # coming from different fine-tune threads.
+0142: 
+0143:         key_to_job = {}
+0144:         for key, finetune_kwargs in finetune_dict.items():
+0145:             lm: LM = finetune_kwargs.pop("lm")
+0146:             # TODO: The following line is a hack. We should re-think how to free
+0147:             # up resources for fine-tuning. This might mean introducing a new
+0148:             # provider method (e.g. prepare_for_finetune) that can be called
+0149:             # before fine-tuning is started.
+0150:             logger.info(
+0151:                 "Calling lm.kill() on the LM to be fine-tuned to free up resources. This won't have any effect if the "
+0152:                 "LM is not running."
+0153:             )
+0154:             lm.kill()
+0155:             key_to_job[key] = lm.finetune(**finetune_kwargs)
+0156: 
+0157:         key_to_lm = {}
+0158:         for ind, (key, job) in enumerate(key_to_job.items()):
+0159:             result = job.result()
+0160:             if isinstance(result, Exception):
+0161:                 raise result
+0162:             key_to_lm[key] = result
+0163:             job.thread.join()
+0164:             logger.info(f"Job {ind + 1}/{num_jobs} is done")
+0165: 
+0166:         return key_to_lm
+0167: 
+0168:     def _prepare_finetune_data(self, trace_data: list[dict[str, Any]], lm: LM, pred_ind: int | None = None):
+0169:         # TODO(nit) Log dataset details/size; make logs nicer
+0170:         if self.metric:
+0171:             logger.info(f"Collected data for {len(trace_data)} examples")
+0172:             trace_data = [d for d in trace_data if d["score"]]
+0173:             logger.info(f"After filtering with the metric, {len(trace_data)} examples remain")
+0174: 
+0175:         data = []
+0176:         adapter = self.adapter[lm] or settings.adapter or ChatAdapter()
+0177:         data_format = infer_data_format(adapter)
+0178:         for item in trace_data:
+0179:             for pred_ind, _ in enumerate(item["trace"]):
+0180:                 include_data = pred_ind is None or pred_ind == pred_ind
+0181:                 if include_data:
+0182:                     call_data = build_call_data_from_trace(
+0183:                         trace=item["trace"], pred_ind=pred_ind, adapter=adapter, exclude_demos=self.exclude_demos
+0184:                     )
+0185:                     data.append(call_data)
+0186: 
+0187:         import random
+0188: 
+0189:         random.Random(0).shuffle(data)
+0190: 
+0191:         return data, data_format
+0192: 
+0193: 
+0194: # Note: Shared below are useful functions for preparing student/teacher programs
+0195: # Similar methods are implemented separately and used by other DSPy
+0196: # teleprompters. These can be moved to shared locations.
+0197: def build_call_data_from_trace(
+0198:     trace: list[dict],
+0199:     pred_ind: int,
+0200:     adapter: Adapter,
+0201:     exclude_demos: bool = False,
+0202: ) -> dict[str, list[dict[str, Any]]]:
+0203:     # Find data that's relevant to the predictor
+0204:     pred, inputs, outputs = trace[pred_ind]  # assuming that the order is kept
+0205: 
+0206:     demos = [] if exclude_demos else pred.demos
+0207:     call_data = adapter.format_finetune_data(
+0208:         signature=pred.signature,
+0209:         demos=demos,
+0210:         inputs=inputs,
+0211:         outputs=outputs,
+0212:     )
+0213:     return call_data
+0214: 
+0215: 
+0216: # # TODO(PR) check with team
+0217: # def bootstrap_trace_data_one_example(
+0218: #     example: Example,
+0219: #     program: Program,
+0220: #     metric: Optional[Callable] = None
+0221: # ) -> dict[str, Any]:
+0222: #     # Return a dict with the following keys:
+0223: #     #     example, prediction, trace, and score (if metric != None)
+0224: #     with dspy.context(trace=[]):
+0225: #         prediction = program(**example.inputs())
+0226: #         trace = dspy.settings.trace
+0227: #         score = metric(example, prediction, trace) if metric else None
+0228: 
+0229: #     data_dict = dict(
+0230: #         example=example,
+0231: #         prediction=prediction,
+0232: #         trace=trace,
+0233: #     )
+0234: #     if metric:
+0235: #         data_dict["score"] = score
+0236: 
+0237: #     return data_dict
+0238: 
+0239: 
+0240: # Note: Shared below are useful functions for preparing student/teacher programs
+0241: # Similar methods are implemented separately and used by other DSPy
+0242: # teleprompters. These can be moved to shared locations.
+0243: def all_predictors_have_lms(program: Module) -> bool:
+0244:     """Return True if all predictors in the program have an LM set."""
+0245:     return all(pred.lm for pred in program.predictors())
+0246: 
+0247: 
+0248: def copy_program_with_lms(program: Module) -> Module:
+0249:     pred_lms = [pred.lm for pred in program.predictors()]
+0250:     program = program.deepcopy()
+0251:     for ind, pred in enumerate(program.predictors()):
+0252:         pred.lm = pred_lms[ind]
+0253:     return program
+0254: 
+0255: 
+0256: def prepare_student(student: Module) -> Module:
+0257:     if getattr(student, "_compiled", False):
+0258:         raise ValueError("The student program should not be compiled.")
+0259: 
+0260:     # TODO: Should we use reset_copy here? How would it affect the student
+0261:     # program's predictor LMs, if they are set?
+0262: 
+0263:     # TODO: Should there be a deepcopy here?
+0264:     # student = student.deepcopy()
+0265:     return student
+0266: 
+0267: 
+0268: def prepare_teacher(student: Module, teacher: Module | None = None) -> Module:
+0269:     if teacher is None:
+0270:         return student
+0271: 
+0272:     # Ensuring that the student and teacher are are structurally equivalent
+0273:     assert_structural_equivalency(student, teacher)
+0274: 
+0275:     # Ensuring that the student and teacher programs do not share predictors
+0276:     assert_no_shared_predictor(student, teacher)
+0277: 
+0278:     return teacher
+0279: 
+0280: 
+0281: def assert_structural_equivalency(program1: object, program2: object):
+0282:     assert isinstance(program1, Module)
+0283:     assert isinstance(program2, Module)
+0284: 
+0285:     num1 = len(program1.predictors())
+0286:     num2 = len(program2.predictors())
+0287:     err = f"Structurally equivalent programs must have the the number of predictors. The number of predictors for the two modules do not match: {num1} != {num2}"
+0288:     assert num1 == num2, err
+0289: 
+0290:     pzip = zip(program1.named_predictors(), program2.named_predictors(), strict=False)
+0291:     for ind, ((name1, pred1), (name2, pred2)) in enumerate(pzip):
+0292:         err = f"Program predictor names must match at  corresponding indices for structural equivalency. The predictor names for the programs do not match at index {ind}: '{name1}' != '{name2}'"
+0293:         assert name1 == name2, err
+0294:         assert isinstance(pred1, Predict)
+0295:         assert isinstance(pred2, Predict)
+0296: 
+0297: 
+0298: def assert_no_shared_predictor(program1: Module, program2: Module):
+0299:     id_to_name1 = {id(p): n for n, p in program1.named_predictors()}
+0300:     id_to_name2 = {id(p): n for n, p in program2.named_predictors()}
+0301:     shared_ids = set(id_to_name1.keys()) & set(id_to_name2.keys())
+0302: 
+0303:     pred_names = ", ".join(id_to_name1[id] for id in shared_ids)
+0304:     err = f"The programs share the following predictor(s) with each other: {pred_names}"
+0305:     assert not shared_ids, err
+0306: 
+0307: 
+0308: def get_unique_lms(program: Module) -> list[LM]:
+0309:     lms = [pred.lm for pred in program.predictors()]
+0310:     return list(set(lms))
+0311: 
+0312: 
+0313: def launch_lms(program: Module):
+0314:     lms = get_unique_lms(program)
+0315:     for lm in lms:
+0316:         lm.launch()
+0317: 
+0318: 
+0319: def kill_lms(program: Module):
+0320:     lms = get_unique_lms(program)
+0321:     for lm in lms:
+0322:         lm.kill()
+
+### tests/teleprompt/test_bootstrap_finetune.py
+0001: from unittest.mock import patch
+0002: 
+0003: import dspy
+0004: from dspy import Example
+0005: from dspy.predict import Predict
+0006: from dspy.teleprompt import BootstrapFinetune
+0007: from dspy.utils.dummies import DummyLM
+0008: 
+0009: 
+0010: # Define a simple metric function for testing
+0011: def simple_metric(example, prediction, trace=None):
+0012:     return example.output == prediction.output
+0013: 
+0014: 
+0015: examples = [
+0016:     Example(input="What is the color of the sky?", output="blue").with_inputs("input"),
+0017:     Example(input="What does the fox say?", output="Ring-ding-ding-ding-dingeringeding!").with_inputs("input"),
+0018: ]
+0019: trainset = [examples[0]]
+0020: 
+0021: 
+0022: def test_bootstrap_finetune_initialization():
+0023:     """Test BootstrapFinetune initialization with various parameters."""
+0024:     bootstrap = BootstrapFinetune(metric=simple_metric)
+0025:     assert bootstrap.metric == simple_metric, "Metric not correctly initialized"
+0026:     assert bootstrap.multitask == True, "Multitask should default to True"
+0027: 
+0028: 
+0029: class SimpleModule(dspy.Module):
+0030:     def __init__(self, signature):
+0031:         super().__init__()
+0032:         self.predictor = Predict(signature)
+0033: 
+0034:     def forward(self, **kwargs):
+0035:         return self.predictor(**kwargs)
+0036: 
+0037: 
+0038: def test_compile_with_predict_instances():
+0039:     """Test BootstrapFinetune compilation with Predict instances."""
+0040:     # Create SimpleModule instances for student and teacher
+0041:     student = SimpleModule("input -> output")
+0042:     teacher = SimpleModule("input -> output")
+0043: 
+0044:     lm = DummyLM([{"output": "blue"}, {"output": "Ring-ding-ding-ding-dingeringeding!"}])
+0045:     dspy.configure(lm=lm)
+0046: 
+0047:     # Set LM for both student and teacher
+0048:     student.set_lm(lm)
+0049:     teacher.set_lm(lm)
+0050: 
+0051:     bootstrap = BootstrapFinetune(metric=simple_metric)
+0052: 
+0053:     # Mock the fine-tuning process since DummyLM doesn't support it
+0054:     with patch.object(bootstrap, "finetune_lms") as mock_finetune:
+0055:         mock_finetune.return_value = {(lm, None): lm}
+0056:         compiled_student = bootstrap.compile(student, teacher=teacher, trainset=trainset)
+0057: 
+0058:         assert compiled_student is not None, "Failed to compile student"
+0059:         assert hasattr(compiled_student, "_compiled") and compiled_student._compiled, "Student compilation flag not set"
+0060: 
+0061:         mock_finetune.assert_called_once()
+0062: 
+0063: 
+0064: def test_error_handling_missing_lm():
+0065:     """Test error handling when predictor doesn't have an LM assigned."""
+0066: 
+0067:     lm = DummyLM([{"output": "test"}])
+0068:     dspy.configure(lm=lm)
+0069: 
+0070:     student = SimpleModule("input -> output")
+0071:     # Intentionally NOT setting LM for the student module
+0072: 
+0073:     bootstrap = BootstrapFinetune(metric=simple_metric)
+0074: 
+0075:     # This should raise ValueError about missing LM and hint to use set_lm
+0076:     try:
+0077:         bootstrap.compile(student, trainset=trainset)
+0078:         assert False, "Should have raised ValueError for missing LM"
+0079:     except ValueError as e:
+0080:         assert "does not have an LM assigned" in str(e)
+0081:         assert "set_lm" in str(e)
+
+Return JSON that matches the schema exactly.

@@ -1,0 +1,101 @@
+{
+ "id": "dspy_e6a9d6633dd1",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I am comparing two prompt contracts: one output is `dspy.Code`, and the other is an ordinary structured object. I want to know whether DSPy treats the code case specially in the prompt, because dumping a full JSON schema there would make the instructions much noisier.\n\nI only want an offline introspection harness. The proof I care about is the two rendered system messages side by side, with assertions about whether raw schema text appears.\n\nGive me a complete, runnable Python program that prints the system message for a code output and for a normal structured output, and asserts that only the structured output includes raw JSON-schema guidance.",
+ "gold_answer": "```python\nimport pydantic\n\nimport dspy\n\n\nclass StructuredOutput(pydantic.BaseModel):\n    code: str\n    language: str\n\n\nclass CodeSig(dspy.Signature):\n    question: str = dspy.InputField()\n    code: dspy.Code = dspy.OutputField()\n\n\nclass StructuredSig(dspy.Signature):\n    question: str = dspy.InputField()\n    payload: StructuredOutput = dspy.OutputField()\n\n\nadapter = dspy.ChatAdapter()\ncode_system = adapter.format_system_message(CodeSig)\nstructured_system = adapter.format_system_message(StructuredSig)\n\nprint(code_system)\nprint(\"---\")\nprint(structured_system)\n\nassert \"markdown code block format\" in code_system\nassert \"JSON schema\" not in code_system\nassert '\"properties\"' not in code_system\nassert \"must adhere to the JSON schema\" in structured_system\nassert '\"properties\"' in structured_system\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 15,
+   "statement": "The harness uses `dspy.ChatAdapter().format_system_message(...)` to render the comparison prompts directly from signatures for offline inspection, rather than invoking an LM call.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "One comparison prompt is built from a signature whose output field is `dspy.Code`, and that rendered system message includes `dspy.Code.description()`'s markdown code block instruction.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The `dspy.Code` system message is checked to exclude the generic JSON-schema guidance and dumped schema text, matching the special-case in `translate_field_type` that suppresses schema notes for `Code` outputs.",
+   "span_ids": [
+    "s1",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The non-Code structured comparison prompt exercises the ordinary structured-output path and is checked to include the generic `must adhere to the JSON schema` guidance with inline schema JSON.",
+   "span_ids": [
+    "s1",
+    "s4",
+    "s5"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/adapters/utils.py",
+   "start_line": 93,
+   "end_line": 118,
+   "excerpt": "0093: def translate_field_type(field_name, field_info):\n0094:     field_type = field_info.annotation\n0095: \n0096:     if get_dspy_field_type(field_info) == \"input\" or field_type is str or field_type is Reasoning:\n0097:         desc = \"\"\n0098:     elif field_type is bool:\n0099:         desc = \"must be True or False\"\n0100:     elif field_type in (int, float):\n0101:         desc = f\"must be a single {field_type.__name__} value\"\n0102:     elif _annotation_is_subclass(field_type, enum.Enum):\n0103:         enum_vals = \"; \".join(str(member.value) for member in field_type)\n0104:         desc = f\"must be one of: {enum_vals}\"\n0105:     elif hasattr(field_type, \"__origin__\") and field_type.__origin__ is Literal:\n0106:         desc = (\n0107:             # Strongly encourage the LM to avoid choosing values that don't appear in the\n0108:             # literal or returning a value of the form 'Literal[<selected_value>]'\n0109:             f\"must exactly match (no extra characters) one of: {'; '.join([str(x) for x in field_type.__args__])}\"\n0110:         )\n0111:     elif _annotation_is_subclass(field_type, Code) and field_type.description():\n0112:         # Code has a rich type description already; avoid duplicating its large schema block.\n0113:         desc = \"\"\n0114:     else:\n0115:         desc = f\"must adhere to the JSON schema: {json.dumps(_get_json_schema(field_type), ensure_ascii=False)}\"\n0116: \n0117:     desc = (\" \" * 8) + f\"# note: the value you produce {desc}\" if desc else \"\"\n0118:     return f\"{{{field_name}}}{desc}\""
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/adapters/types/code.py",
+   "start_line": 78,
+   "end_line": 84,
+   "excerpt": "0078:     @classmethod\n0079:     def description(cls) -> str:\n0080:         return (\n0081:             \"Code represented in a string, specified in the `code` field. If this is an output field, the code \"\n0082:             f\"field should follow the markdown code block format, e.g. \\n```{cls.language.lower()}\\n{{code}}\\n```\"\n0083:             f\"\\nProgramming language: {cls.language}\"\n0084:         )"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/adapters/test_chat_adapter.py",
+   "start_line": 402,
+   "end_line": 416,
+   "excerpt": "0402: def test_code_output_field_omits_json_schema_in_prompt():\n0403:     \"\"\"Regression test for #9251: dspy.Code should avoid duplicating large JSON schema text.\"\"\"\n0404:     class CodeGeneration(dspy.Signature):\n0405:         \"\"\"Generate code to answer the question\"\"\"\n0406:         question: str = dspy.InputField()\n0407:         code: dspy.Code = dspy.OutputField()\n0408: \n0409:     adapter = dspy.ChatAdapter()\n0410:     messages = adapter.format(CodeGeneration, [], {\"question\": \"Hello\"})\n0411:     system_content = messages[0][\"content\"]\n0412: \n0413:     assert dspy.Code.description() in system_content\n0414:     assert \"JSON schema\" not in system_content\n0415:     assert '\"properties\"' not in system_content\n0416:     assert \"Code type in DSPy\" not in system_content"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/adapters/test_chat_adapter.py",
+   "start_line": 716,
+   "end_line": 745,
+   "excerpt": "0716: def test_format_system_message():\n0717:     class MySignature(dspy.Signature):\n0718:         \"\"\"Answer the question with multiple answers and scores\"\"\"\n0719: \n0720:         question: str = dspy.InputField()\n0721:         answers: list[str] = dspy.OutputField()\n0722:         scores: list[float] = dspy.OutputField()\n0723: \n0724:     adapter = dspy.ChatAdapter()\n0725:     system_message = adapter.format_system_message(MySignature)\n0726:     expected_system_message = \"\"\"Your input fields are:\n0727: 1. `question` (str):\n0728: Your output fields are:\n0729: 1. `answers` (list[str]): \n0730: 2. `scores` (list[float]):\n0731: All interactions will be structured in the following way, with the appropriate values filled in.\n0732: \n0733: [[ ## question ## ]]\n0734: {question}\n0735: \n0736: [[ ## answers ## ]]\n0737: {answers}        # note: the value you produce must adhere to the JSON schema: {\"type\": \"array\", \"items\": {\"type\": \"string\"}}\n0738: \n0739: [[ ## scores ## ]]\n0740: {scores}        # note: the value you produce must adhere to the JSON schema: {\"type\": \"array\", \"items\": {\"type\": \"number\"}}\n0741: \n0742: [[ ## completed ## ]]\n0743: In adhering to this structure, your objective is: \n0744:         Answer the question with multiple answers and scores\"\"\"\n0745:     assert system_message == expected_system_message"
+  },
+  {
+   "span_id": "s5",
+   "path": "tests/adapters/test_chat_adapter.py",
+   "start_line": 419,
+   "end_line": 431,
+   "excerpt": "0419: def test_citations_output_field_keeps_json_schema_in_prompt():\n0420:     \"\"\"Non-Code custom types should keep schema guidance for structured output reliability.\"\"\"\n0421: \n0422:     class CitationGeneration(dspy.Signature):\n0423:         question: str = dspy.InputField()\n0424:         citations: Citations = dspy.OutputField()\n0425: \n0426:     adapter = dspy.ChatAdapter()\n0427:     messages = adapter.format(CitationGeneration, [], {\"question\": \"Hello\"})\n0428:     system_content = messages[0][\"content\"]\n0429: \n0430:     assert \"must adhere to the JSON schema\" in system_content\n0431:     assert \"Type description of Citations\" in system_content"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Very aligned with prompt-noise control: it checks DSPy’s special-case handling for `dspy.Code`.",
+ "source_index": 54,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

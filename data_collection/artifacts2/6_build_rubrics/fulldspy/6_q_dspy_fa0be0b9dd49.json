@@ -1,0 +1,74 @@
+{
+ "id": "dspy_fa0be0b9dd49",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I have a text-style backend and expected my usual all-caps env vars like `OPENAI_API_KEY` to be enough. Instead, DSPy seems to find credentials only under provider-specific names, and I want proof of exactly what it reads before I change deployment config.\n\nShow me a complete, runnable Python program that patches the outbound text request, sets conflicting upper-case and lower-case env vars, then proves which values DSPy actually passes for the model string `openai/...` and that explicit `api_key` / `api_base` kwargs still win. Print the captured kwargs and assert the exact values.",
+ "gold_answer": "```python\nimport json\nimport os\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n    usage = {}\n\n    def __init__(self):\n        super().__init__({\"choices\": []})\n        self.model = \"offline\"\n\n\ncaptured = []\n\n\ndef fake_text(*, cache, model, api_key, api_base, prompt, num_retries, retry_strategy, headers=None, **request):\n    captured.append(\n        {\n            \"model\": model,\n            \"api_key\": api_key,\n            \"api_base\": api_base,\n            \"prompt\": prompt,\n            \"headers\": headers,\n            **request,\n        }\n    )\n    return FakeResp()\n\n\nkeys = [\"OPENAI_API_KEY\", \"openai_API_KEY\", \"OPENAI_API_BASE\", \"openai_API_BASE\"]\nsaved = {key: os.environ.get(key) for key in keys}\n\ntry:\n    os.environ[\"OPENAI_API_KEY\"] = \"UPPER-KEY\"\n    os.environ[\"openai_API_KEY\"] = \"lower-key\"\n    os.environ[\"OPENAI_API_BASE\"] = \"https://upper.example/v1\"\n    os.environ[\"openai_API_BASE\"] = \"https://lower.example/v1\"\n\n    with patch(\"litellm.text_completion\", side_effect=fake_text):\n        dspy.LM(\"openai/demo\", model_type=\"text\", cache=False).forward(prompt=\"hello\")\n        dspy.LM(\n            \"openai/demo\",\n            model_type=\"text\",\n            api_key=\"explicit-key\",\n            api_base=\"https://explicit.example/v1\",\n            cache=False,\n        ).forward(prompt=\"hello\")\nfinally:\n    for key, value in saved.items():\n        if value is None:\n            os.environ.pop(key, None)\n        else:\n            os.environ[key] = value\n\nfirst_call, second_call = captured\nassert first_call[\"api_key\"] == \"lower-key\"\nassert first_call[\"api_base\"] == \"https://lower.example/v1\"\nassert second_call[\"api_key\"] == \"explicit-key\"\nassert second_call[\"api_base\"] == \"https://explicit.example/v1\"\n\nprint(json.dumps({\"env_lookup_call\": first_call, \"explicit_override_call\": second_call}, indent=2))\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The answer intercepts the real text-model path by patching `litellm.text_completion` and invoking `dspy.LM(\"openai/demo\", model_type=\"text\").forward(...)`, so it captures the actual outbound text request DSPy sends.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The answer sets conflicting `OPENAI_API_KEY`/`openai_API_KEY` and `OPENAI_API_BASE`/`openai_API_BASE` values, then proves that for an `openai/...` text model DSPy reads the lower-case provider-specific names `openai_API_KEY` and `openai_API_BASE`, not the all-caps variants.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The answer performs a second call with explicit `api_key` and `api_base` kwargs and asserts that those explicit values are the ones passed to the outbound text request, overriding any environment-derived values.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The answer captures and prints the outbound kwargs from the patched calls, showing DSPy’s text request shape such as the rewritten model `text-completion-openai/demo` and the prompt assembled from the message content plus `BEGIN RESPONSE:`.",
+   "span_ids": [
+    "s2"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 177,
+   "end_line": 190,
+   "excerpt": "0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0184: \n0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,\n0189:                 cache=litellm_cache_args,\n0190:             )"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 403,
+   "end_line": 430,
+   "excerpt": "0403: def litellm_text_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0404:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0405:     request = dict(request)\n0406:     request.pop(\"rollout_id\", None)\n0407:     headers = request.pop(\"headers\", None)\n0408:     # Extract the provider and model from the model string.\n0409:     # TODO: Not all the models are in the format of \"provider/model\"\n0410:     model = request.pop(\"model\").split(\"/\", 1)\n0411:     provider, model = model[0] if len(model) > 1 else \"openai\", model[-1]\n0412: \n0413:     # Use the API key and base from the request, or from the environment.\n0414:     api_key = request.pop(\"api_key\", None) or os.getenv(f\"{provider}_API_KEY\")\n0415:     api_base = request.pop(\"api_base\", None) or os.getenv(f\"{provider}_API_BASE\")\n0416: \n0417:     # Build the prompt from the messages.\n0418:     prompt = \"\\n\\n\".join([x[\"content\"] for x in request.pop(\"messages\")] + [\"BEGIN RESPONSE:\"])\n0419: \n0420:     return litellm.text_completion(\n0421:         cache=cache,\n0422:         model=f\"text-completion-openai/{model}\",\n0423:         api_key=api_key,\n0424:         api_base=api_base,\n0425:         prompt=prompt,\n0426:         num_retries=num_retries,\n0427:         retry_strategy=\"exponential_backoff_retry\",\n0428:         headers=_add_dspy_identifier_to_headers(headers),\n0429:         **request,\n0430:     )"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/predict/test_predict.py",
+   "start_line": 446,
+   "end_line": 479,
+   "excerpt": "0446: def test_load_uses_env_api_key_without_honoring_serialized_endpoint_override(tmp_path, monkeypatch):\n0447:     file_path = tmp_path / \"model.json\"\n0448:     override_url = \"http://override.local/v1\"\n0449:     env_api_key = \"sk-live-test-secret\"\n0450: \n0451:     original_predict = dspy.Predict(\"q->a\")\n0452:     original_predict.lm = dspy.LM(model=\"openai/gpt-4o-mini\", model_type=\"text\")\n0453:     original_predict.save(file_path)\n0454: \n0455:     with open(file_path, \"rb\") as f:\n0456:         saved_state = orjson.loads(f.read())\n0457:     assert \"api_key\" not in saved_state[\"lm\"]\n0458:     saved_state[\"lm\"][\"api_base\"] = override_url\n0459:     with open(file_path, \"wb\") as f:\n0460:         f.write(orjson.dumps(saved_state))\n0461: \n0462:     monkeypatch.setenv(\"openai_API_KEY\", env_api_key)\n0463: \n0464:     class FakeResp(dict):\n0465:         cache_hit = False\n0466:         usage = {}\n0467: \n0468:         def __init__(self):\n0469:             super().__init__({\"choices\": []})\n0470: \n0471:     # Simulates legacy behavior by allowing serialized endpoint overrides.\n0472:     opt_in_loaded_predict = dspy.Predict(\"q->a\")\n0473:     opt_in_loaded_predict.load(file_path, allow_unsafe_lm_state=True)\n0474:     with patch(\"litellm.text_completion\", return_value=FakeResp()) as text_completion_mock:\n0475:         opt_in_loaded_predict.lm.forward(prompt=\"hello\", cache=False)\n0476: \n0477:     assert text_completion_mock.call_args.kwargs[\"api_base\"] == override_url\n0478:     assert text_completion_mock.call_args.kwargs[\"api_key\"] == env_api_key\n0479: "
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Lowercase provider env lookup in text mode.",
+ "source_index": 1,
+ "smalldspy_scope": false
+}

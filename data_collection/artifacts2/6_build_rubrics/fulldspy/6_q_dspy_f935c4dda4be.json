@@ -1,0 +1,91 @@
+{
+ "id": "dspy_f935c4dda4be",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "I'm routing DSPy through a proxy that needs SDK-level default headers for tracing, but I also attach per-request headers during a run. The request works, yet I can't tell whether DSPy merges, overwrites, or strips either layer.\n\nWhat I specifically need to know is whether my SDK-like default headers survive untouched and whether DSPy only augments the ordinary request headers with its own identification.\n\nGive me a complete, runnable Python program that patches the outbound chat call, configures both `default_headers` and per-call `headers`, and prints/asserts the final kwargs so it's proven exactly which headers DSPy merged and which ones it left alone.",
+ "gold_answer": "```python\nimport json\nfrom unittest import mock\n\nimport dspy\nfrom litellm.utils import Choices, Message, ModelResponse\n\n\nfake_response = ModelResponse(\n    choices=[Choices(message=Message(content=\"ok\"))],\n    usage={\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2},\n    model=\"openai/gpt-4o-mini\",\n)\n\nwith mock.patch(\"litellm.completion\", return_value=fake_response) as mock_completion:\n    lm = dspy.LM(\n        model=\"openai/gpt-4o-mini\",\n        cache=False,\n        default_headers={\"X-Trace-ID\": \"trace-123\"},\n    )\n    result = lm(\"hello\", headers={\"Authorization\": \"Bearer runtime-token\"})\n\ncall_kwargs = mock_completion.call_args.kwargs\nprint(\"result:\", result)\nprint(json.dumps({\n    \"headers\": call_kwargs[\"headers\"],\n    \"default_headers\": call_kwargs[\"default_headers\"],\n}, indent=2, sort_keys=True))\n\nassert call_kwargs[\"default_headers\"] == {\"X-Trace-ID\": \"trace-123\"}\nassert call_kwargs[\"headers\"][\"Authorization\"] == \"Bearer runtime-token\"\nassert call_kwargs[\"headers\"][\"User-Agent\"].startswith(\"DSPy/\")\nassert \"X-Trace-ID\" not in call_kwargs[\"headers\"]\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The program intercepts the outbound chat call at `litellm.completion` and inspects the mocked call kwargs, because chat-mode `LM.forward` routes through `litellm_completion` to that function.",
+   "span_ids": [
+    "s2",
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The example sets `default_headers` when constructing `dspy.LM(...)` and passes a separate per-call `headers=...` when invoking the LM, exercising DSPy’s merge of constructor kwargs with request-time kwargs.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The answer shows that `default_headers` is forwarded untouched as its own outbound kwarg on the LiteLLM call, rather than being merged into or overwritten by the ordinary `headers` dict.",
+   "span_ids": [
+    "s3"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The answer shows that DSPy only augments the ordinary request headers by adding a `User-Agent` identifier while preserving caller-supplied request headers such as the runtime authorization header.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 15,
+   "statement": "The proof checks that the tracing header placed in `default_headers` does not reappear inside the outbound `headers` dict, demonstrating that DSPy did not copy it during header augmentation.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/clients/lm.py",
+   "start_line": 99,
+   "end_line": 111,
+   "excerpt": "0099:         if model_pattern:\n0100:             if (temperature and temperature != 1.0) or (max_tokens and max_tokens < 16000):\n0101:                 raise ValueError(\n0102:                     \"OpenAI's reasoning models require passing temperature=1.0 or None and max_tokens >= 16000 or None to \"\n0103:                     \"`dspy.LM(...)`, e.g., dspy.LM('openai/gpt-5', temperature=1.0, max_tokens=16000)\"\n0104:                 )\n0105:             self.kwargs = dict(temperature=temperature, max_completion_tokens=max_tokens, **kwargs)\n0106:             if self.kwargs.get(\"rollout_id\") is None:\n0107:                 self.kwargs.pop(\"rollout_id\", None)\n0108:         else:\n0109:             self.kwargs = dict(temperature=temperature, max_tokens=max_tokens, **kwargs)\n0110:             if self.kwargs.get(\"rollout_id\") is None:\n0111:                 self.kwargs.pop(\"rollout_id\", None)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/lm.py",
+   "start_line": 165,
+   "end_line": 190,
+   "excerpt": "0165:         # Build the request.\n0166:         kwargs = dict(kwargs)\n0167:         cache = kwargs.pop(\"cache\", self.cache)\n0168: \n0169:         messages = messages or [{\"role\": \"user\", \"content\": prompt}]\n0170:         if self.use_developer_role and self.model_type == \"responses\":\n0171:             messages = [{**m, \"role\": \"developer\"} if m.get(\"role\") == \"system\" else m for m in messages]\n0172:         kwargs = {**self.kwargs, **kwargs}\n0173:         self._warn_zero_temp_rollout(kwargs.get(\"temperature\"), kwargs.get(\"rollout_id\"))\n0174:         if kwargs.get(\"rollout_id\") is None:\n0175:             kwargs.pop(\"rollout_id\", None)\n0176: \n0177:         if self.model_type == \"chat\":\n0178:             completion = litellm_completion\n0179:         elif self.model_type == \"text\":\n0180:             completion = litellm_text_completion\n0181:         elif self.model_type == \"responses\":\n0182:             completion = litellm_responses_completion\n0183:         completion, litellm_cache_args = self._get_cached_completion_fn(completion, cache)\n0184: \n0185:         try:\n0186:             results = completion(\n0187:                 request=dict(model=self.model, messages=messages, **kwargs),\n0188:                 num_retries=self.num_retries,\n0189:                 cache=litellm_cache_args,\n0190:             )"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/clients/lm.py",
+   "start_line": 385,
+   "end_line": 398,
+   "excerpt": "0385: def litellm_completion(request: dict[str, Any], num_retries: int, cache: dict[str, Any] | None = None):\n0386:     cache = cache or {\"no-cache\": True, \"no-store\": True}\n0387:     request = dict(request)\n0388:     request.pop(\"rollout_id\", None)\n0389:     headers = _add_dspy_identifier_to_headers(request.pop(\"headers\", None))\n0390:     stream_completion = _get_stream_completion_fn(request, cache, sync=True, headers=headers)\n0391:     if stream_completion is None:\n0392:         return litellm.completion(\n0393:             cache=cache,\n0394:             num_retries=num_retries,\n0395:             retry_strategy=\"exponential_backoff_retry\",\n0396:             headers=headers,\n0397:             **request,\n0398:         )"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/clients/lm.py",
+   "start_line": 589,
+   "end_line": 594,
+   "excerpt": "0589: def _add_dspy_identifier_to_headers(headers: dict[str, Any] | None = None):\n0590:     headers = headers or {}\n0591:     return {\n0592:         \"User-Agent\": f\"DSPy/{dspy.__version__}\",\n0593:         **headers,\n0594:     }"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Default headers stay separate; request headers get DSPy's user-agent merge.",
+ "source_index": 43,
+ "smalldspy_scope": false
+}

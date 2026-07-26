@@ -1,0 +1,106 @@
+{
+ "id": "dspy_d429d4d10ca7",
+ "topic": "prompt_compilation_customization_and_inspection",
+ "question": "I'm trying to verify that an optimizer really changes the prompt text of a compiled program instead of only mutating some hidden score table. In particular, I want a tiny offline repro where the optimizer proposes a new instruction and I can prove that the compiled program's rendered prompt actually contains it.\n\nPlease keep it deterministic with `DummyLM`. I want a minimal student module, a trivial metric, and a compiled result whose final rendered prompt can be inspected directly.\n\nGive me a complete, runnable Python program that compiles a small module offline, prints the optimized instruction and rendered system message, and asserts that the compiled predictor now uses the optimizer-proposed instruction text.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy import Example\nfrom dspy.utils.dummies import DummyLM\n\n\nclass Student(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.ChainOfThought(\"question -> answer\")\n\n    def forward(self, **kwargs):\n        return self.predictor(**kwargs)\n\n\ndef metric(example, prediction):\n    return prediction.answer == example.answer\n\n\ntrainset = [\n    Example(question=\"What is 2 + 2?\", answer=\"4\").with_inputs(\"question\")\n]\n\nlm = DummyLM(\n    [\n        {\n            \"proposed_instruction\": \"Answer with a numeral only.\",\n            \"proposed_prefix_for_output_field\": \"Ignored prefix\",\n        }\n    ]\n    + [{\"reasoning\": \"2 + 2 = 4\", \"answer\": \"4\"}] * 4\n)\ndspy.configure(lm=lm)\n\noptimizer = dspy.COPRO(metric=metric, breadth=2, depth=1, init_temperature=1.4)\ncompiled = optimizer.compile(\n    Student(),\n    trainset=trainset,\n    eval_kwargs={\"num_threads\": 1, \"display_progress\": False},\n)\n\noptimized_instruction = compiled.predictor.predict.signature.instructions\nsystem_message = dspy.ChatAdapter().format_system_message(compiled.predictor.predict.signature)\n\nprint(\"OPTIMIZED INSTRUCTION:\", optimized_instruction)\nprint(\"SYSTEM MESSAGE:\\n\", system_message)\n\nassert optimized_instruction == \"Answer with a numeral only.\"\nassert \"Answer with a numeral only.\" in system_message\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Compiles the student with `COPRO.compile(...)` and performs inspection on the returned compiled program object, not the original student, because `compile` deep-copies the student and returns the winning candidate program.",
+   "span_ids": [
+    "s1",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "Shows that COPRO changes prompt text on the predictor itself by taking each candidate `proposed_instruction`, creating an updated signature with `.with_instructions(...)` (along with the output-field update), and assigning that signature back to the predictor before evaluation.",
+   "span_ids": [
+    "s2",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Uses the compiled predictor’s final signature as the proof target, since after scoring COPRO reapplies the best candidate’s instruction to the predictor and returns that candidate program.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "Prints or inspects the compiled predictor’s `signature.instructions` and a rendered prompt/system message derived from that compiled signature, then asserts that the optimizer-proposed instruction text is the one shown there.",
+   "span_ids": [
+    "s3",
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "Treats `Signature.with_instructions` as producing a fresh signature class with the same fields and new instructions, rather than mutating the original signature class in place.",
+   "span_ids": [
+    "s6"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/copro_optimizer.py",
+   "start_line": 123,
+   "end_line": 136,
+   "excerpt": "0123:     def compile(self, student, *, trainset, eval_kwargs):\n0124:         \"\"\"\n0125:         optimizes `signature` of `student` program - note that it may be zero-shot or already pre-optimized (demos already chosen - `demos != []`)\n0126: \n0127:         parameters:\n0128:         student: program to optimize and left modified.\n0129:         trainset: iterable of `Example`s\n0130:         eval_kwargs: optional, dict\n0131:            Additional keywords to go into `Evaluate` for the metric.\n0132: \n0133:         Returns optimized version of `student`.\n0134:         \"\"\"\n0135:         module = student.deepcopy()\n0136:         evaluate = Evaluate(devset=trainset, metric=self.metric, **eval_kwargs)"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/copro_optimizer.py",
+   "start_line": 204,
+   "end_line": 218,
+   "excerpt": "0204:                 for c_i, c in enumerate(candidates_):\n0205:                     # Get the candidate instruction and prefix\n0206:                     instruction, prefix = (\n0207:                         c.proposed_instruction.strip('\"').strip(),\n0208:                         c.proposed_prefix_for_output_field.strip('\"').strip(),\n0209:                     )\n0210: \n0211:                     # Set this new module with our instruction / prefix\n0212:                     *_, last_key = self._get_signature(p_new).fields.keys()\n0213:                     updated_signature = (\n0214:                         self._get_signature(p_new)\n0215:                         .with_instructions(instruction)\n0216:                         .with_updated_fields(last_key, prefix=prefix)\n0217:                     )\n0218:                     self._set_signature(p_new, updated_signature)"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/copro_optimizer.py",
+   "start_line": 259,
+   "end_line": 268,
+   "excerpt": "0259:                 # Now that we've evaluated the candidates, set this predictor to the best performing version\n0260:                 # to ensure the next round of scores reflect the best possible version\n0261:                 best_candidate = max(evaluated_candidates[id(p_old)].values(), key=lambda candidate: candidate[\"score\"])\n0262:                 *_, last_key = self._get_signature(p_old).fields.keys()\n0263:                 updated_signature = (\n0264:                     self._get_signature(p_new)\n0265:                     .with_instructions(best_candidate[\"instruction\"])\n0266:                     .with_updated_fields(last_key, prefix=best_candidate[\"prefix\"])\n0267:                 )\n0268:                 self._set_signature(p_new, updated_signature)"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/teleprompt/copro_optimizer.py",
+   "start_line": 350,
+   "end_line": 357,
+   "excerpt": "0350:         best_program = candidates[0][\"program\"]\n0351:         best_program.candidate_programs = candidates\n0352:         best_program.total_calls = total_calls\n0353:         if self.track_stats:\n0354:             best_program.results_best = results_best\n0355:             best_program.results_latest = results_latest\n0356: \n0357:         return best_program"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 215,
+   "end_line": 222,
+   "excerpt": "0215:     @property\n0216:     def instructions(cls) -> str:\n0217:         return inspect.cleandoc(getattr(cls, \"__doc__\", \"\"))\n0218: \n0219:     @instructions.setter\n0220:     def instructions(cls, instructions: str) -> None:\n0221:         cls.__doc__ = instructions\n0222: "
+  },
+  {
+   "span_id": "s6",
+   "path": "dspy/signatures/signature.py",
+   "start_line": 269,
+   "end_line": 297,
+   "excerpt": "0269:     @classmethod\n0270:     def with_instructions(cls, instructions: str) -> type[\"Signature\"]:\n0271:         \"\"\"Return a new Signature class with identical fields and new instructions.\n0272: \n0273:         This method does not mutate `cls`. It constructs a fresh Signature\n0274:         class using the current fields and the provided `instructions`.\n0275: \n0276:         Args:\n0277:             instructions (str): Instruction text to attach to the new signature.\n0278: \n0279:         Returns:\n0280:             A new Signature class whose fields match `cls.fields`\n0281:             and whose instructions equal `instructions`.\n0282: \n0283:         Examples:\n0284:             ```python\n0285:             import dspy\n0286: \n0287:             class MySig(dspy.Signature):\n0288:                 input_text: str = dspy.InputField(desc=\"Input text\")\n0289:                 output_text: str = dspy.OutputField(desc=\"Output text\")\n0290: \n0291:             NewSig = MySig.with_instructions(\"Translate to French.\")\n0292:             assert NewSig is not MySig\n0293:             assert NewSig.instructions == \"Translate to French.\"\n0294:             ```\n0295:         \"\"\"\n0296:         return Signature(cls.fields, instructions)\n0297: "
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Connects optimizer-proposed instruction text to the compiled predictor's final rendered prompt.",
+ "source_index": 19,
+ "smalldspy_scope": false
+}

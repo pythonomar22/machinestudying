@@ -1,0 +1,138 @@
+{
+ "id": "dspy_be248ab9d4ea",
+ "topic": "lm_provider_integration_and_configuration",
+ "question": "On a reasoning-capable non-OpenAI chat backend, I want to pass `reasoning_effort` through and keep the model's reasoning trace in the returned value. I'm not asking whether the provider supports it in theory; I need to see what DSPy does with both the request and the parsed response.\n\nGive me a complete, runnable Python program that patches the outbound chat call, returns one fake answer with reasoning content, and prints/asserts both the captured request kwargs and the parsed DSPy output.",
+ "gold_answer": "```python\nfrom types import SimpleNamespace\nfrom unittest.mock import patch\n\nimport dspy\n\n\nclass FakeResp(dict):\n    cache_hit = False\n\n    def __init__(self, text, reasoning_content):\n        message = SimpleNamespace(content=text, tool_calls=None)\n        message.reasoning_content = reasoning_content\n        choice = SimpleNamespace(message=message, finish_reason=\"stop\")\n        super().__init__({\"choices\": [choice]})\n        self.choices = [choice]\n        self.usage = {\"prompt_tokens\": 1, \"completion_tokens\": 1, \"total_tokens\": 2}\n        self.model = \"anthropic/claude-3-7-sonnet-20250219\"\n\n\ncaptured = []\n\n\ndef fake_chat(*, cache, num_retries, retry_strategy, headers=None, **request):\n    captured.append({\"headers\": headers, **request})\n    return FakeResp(\"The answer is 4\", \"Step 1: add 2 + 2. Step 2: get 4.\")\n\n\nwith patch(\"litellm.completion\", side_effect=fake_chat):\n    lm = dspy.LM(\n        \"anthropic/claude-3-7-sonnet-20250219\",\n        model_type=\"chat\",\n        reasoning_effort=\"low\",\n        temperature=1.0,\n        max_tokens=16000,\n        cache=False,\n    )\n    result = lm(\"What is 2 + 2?\")\n\nassert captured[0][\"reasoning_effort\"] == \"low\"\nassert result == [{\"text\": \"The answer is 4\", \"reasoning_content\": \"Step 1: add 2 + 2. Step 2: get 4.\"}]\n\nprint(\"request_reasoning_effort=\", captured[0][\"reasoning_effort\"])\nprint(\"parsed_result=\", result)\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The example exercises DSPy's chat-completion path by patching `litellm.completion` and invoking `dspy.LM` with `model_type=\"chat\"` on a non-OpenAI model configured with `reasoning_effort`.",
+   "span_ids": [
+    "s1"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The stubbed completion return value is response-like, exposing `choices`, `usage`, and `model`, because DSPy reads those fields while processing chat completions.",
+   "span_ids": [
+    "s2",
+    "s3",
+    "s9"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 30,
+   "statement": "The program captures the outbound completion kwargs and verifies that DSPy sends `reasoning_effort=\"low\"` in the chat request.",
+   "span_ids": [
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The fake choice message includes both assistant `content` and non-empty `reasoning_content`, and DSPy's chat-completion parser copies them into `text` and `reasoning_content` fields.",
+   "span_ids": [
+    "s5",
+    "s6"
+   ]
+  },
+  {
+   "claim_id": "c5",
+   "claim_type": "core",
+   "weight": 25,
+   "statement": "The parsed LM result is asserted as a list containing one dict with both `text` and `reasoning_content`; DSPy only collapses outputs to a plain string list when each output has `text` alone.",
+   "span_ids": [
+    "s7",
+    "s8"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 671,
+   "end_line": 684,
+   "excerpt": "0671:     with mock.patch(\"litellm.completion\", return_value=mock_response) as mock_completion:\n0672:         with mock.patch(\"litellm.supports_reasoning\", return_value=True):\n0673:             # Create reasoning model with chat API\n0674:             lm = dspy.LM(\n0675:                 model=\"anthropic/claude-3-7-sonnet-20250219\",\n0676:                 model_type=\"chat\",\n0677:                 temperature=1.0,\n0678:                 max_tokens=16000,\n0679:                 reasoning_effort=\"low\",\n0680:                 cache=False,\n0681:             )\n0682: \n0683:             # Test the call\n0684:             result = lm(\"What is 2 + 2?\")"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 90,
+   "end_line": 115,
+   "excerpt": "0090:     def _process_lm_response(self, response, prompt, messages, **kwargs):\n0091:         merged_kwargs = {**self.kwargs, **kwargs}\n0092: \n0093:         if self.model_type == \"responses\":\n0094:             outputs = self._process_response(response)\n0095:         else:\n0096:             outputs = self._process_completion(response, merged_kwargs)\n0097: \n0098:         if settings.disable_history:\n0099:             return outputs\n0100: \n0101:         # Logging, with removed api key & where `cost` is None on cache hit.\n0102:         kwargs = {k: v for k, v in kwargs.items() if not k.startswith(\"api_\")}\n0103:         entry = {\n0104:             \"prompt\": prompt,\n0105:             \"messages\": messages,\n0106:             \"kwargs\": kwargs,\n0107:             \"response\": response,\n0108:             \"outputs\": outputs,\n0109:             \"usage\": dict(response.usage),\n0110:             \"cost\": getattr(response, \"_hidden_params\", {}).get(\"response_cost\"),\n0111:             \"timestamp\": datetime.datetime.now().isoformat(),\n0112:             \"uuid\": str(uuid.uuid4()),\n0113:             \"model\": self.model,\n0114:             \"response_model\": response.model,\n0115:             \"model_type\": self.model_type,"
+  },
+  {
+   "span_id": "s3",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 665,
+   "end_line": 669,
+   "excerpt": "0665:     mock_response = ModelResponse(\n0666:         choices=[mock_choice],\n0667:         model=\"anthropic/claude-3-7-sonnet-20250219\",\n0668:         usage={\"prompt_tokens\": 10, \"completion_tokens\": 20, \"total_tokens\": 30},\n0669:     )"
+  },
+  {
+   "span_id": "s4",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 695,
+   "end_line": 700,
+   "excerpt": "0695:             # Verify mock was called with correct parameters\n0696:             mock_completion.assert_called_once()\n0697:             call_kwargs = mock_completion.call_args.kwargs\n0698:             assert call_kwargs[\"model\"] == \"anthropic/claude-3-7-sonnet-20250219\"\n0699:             assert call_kwargs[\"reasoning_effort\"] == \"low\"\n0700: "
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 259,
+   "end_line": 266,
+   "excerpt": "0259:         outputs = []\n0260:         for c in response.choices:\n0261:             output = {}\n0262:             output[\"text\"] = c.message.content if hasattr(c, \"message\") else c[\"text\"]\n0263: \n0264:             if hasattr(c, \"message\") and hasattr(c.message, \"reasoning_content\") and c.message.reasoning_content:\n0265:                 output[\"reasoning_content\"] = c.message.reasoning_content\n0266: "
+  },
+  {
+   "span_id": "s6",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 656,
+   "end_line": 663,
+   "excerpt": "0656:     # Create message with reasoning_content attribute\n0657:     message = Message(content=\"The answer is 4\", role=\"assistant\")\n0658:     # Add reasoning_content attribute\n0659:     message.reasoning_content = \"Step 1: I need to add 2 + 2\\nStep 2: 2 + 2 = 4\\nTherefore, the answer is 4\"\n0660: \n0661:     # Create choice with the message\n0662:     mock_choice = Choices(message=message)\n0663: "
+  },
+  {
+   "span_id": "s7",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 279,
+   "end_line": 282,
+   "excerpt": "0279:         if all(len(output) == 1 for output in outputs):\n0280:             # Return a list if every output only has \"text\" key\n0281:             outputs = [output[\"text\"] for output in outputs]\n0282:         return outputs"
+  },
+  {
+   "span_id": "s8",
+   "path": "tests/clients/test_lm.py",
+   "start_line": 686,
+   "end_line": 694,
+   "excerpt": "0686:             # Verify the response format\n0687:             assert isinstance(result, list)\n0688:             assert len(result) == 1\n0689:             assert isinstance(result[0], dict)\n0690:             assert \"text\" in result[0]\n0691:             assert \"reasoning_content\" in result[0]\n0692:             assert result[0][\"text\"] == \"The answer is 4\"\n0693:             assert \"Step 1\" in result[0][\"reasoning_content\"]\n0694: "
+  },
+  {
+   "span_id": "s9",
+   "path": "dspy/clients/base_lm.py",
+   "start_line": 248,
+   "end_line": 260,
+   "excerpt": "0248:     def _process_completion(self, response, merged_kwargs):\n0249:         \"\"\"Process the response of OpenAI chat completion API and extract outputs.\n0250: \n0251:         Args:\n0252:             response: The OpenAI chat completion response\n0253:                 https://platform.openai.com/docs/api-reference/chat/object\n0254:             merged_kwargs: Merged kwargs from self.kwargs and method kwargs\n0255: \n0256:         Returns:\n0257:             List of processed outputs\n0258:         \"\"\"\n0259:         outputs = []\n0260:         for c in response.choices:"
+  }
+ ],
+ "difficulty": "hard",
+ "note": "Chat-mode reasoning content survives parsing.",
+ "source_index": 12,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}

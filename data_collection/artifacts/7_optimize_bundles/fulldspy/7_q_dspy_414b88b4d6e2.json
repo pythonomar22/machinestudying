@@ -1,0 +1,101 @@
+{
+ "id": "dspy_414b88b4d6e2",
+ "topic": "evaluation_metrics_and_parallelism",
+ "question": "I'm using a graded acceptance metric during few-shot bootstrapping, and I hit something surprising: tiny nonzero scores seem to behave like successes unless I set an explicit threshold. I want a repro that shows whether a score like 0.1 is accepted as \"good enough\" when no threshold is configured.\n\nGive me a complete, runnable Python program that uses `DummyLM` offline, compiles the same tiny program twice with a metric that always returns 0.1, once without a threshold and once with a stricter threshold, and prints/asserts the resulting demo counts so the acceptance rule is obvious.",
+ "gold_answer": "```python\nimport dspy\nfrom dspy.teleprompt import BootstrapFewShot\nfrom dspy.utils.dummies import DummyLM\n\n\nclass SimpleModule(dspy.Module):\n    def __init__(self):\n        super().__init__()\n        self.predictor = dspy.Predict(\"question -> answer\")\n\n    def forward(self, question):\n        return self.predictor(question=question)\n\n\ndef tiny_nonzero_metric(example, prediction, trace=None):\n    return 0.1\n\n\ndspy.configure(lm=DummyLM({\"math\": {\"answer\": \"4\"}}))\ntrainset = [dspy.Example(question=\"math\", answer=\"4\").with_inputs(\"question\")]\n\ncompiled_without_threshold = BootstrapFewShot(\n    metric=tiny_nonzero_metric,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n).compile(SimpleModule(), teacher=SimpleModule(), trainset=trainset)\n\ncompiled_with_threshold = BootstrapFewShot(\n    metric=tiny_nonzero_metric,\n    metric_threshold=0.5,\n    max_bootstrapped_demos=1,\n    max_labeled_demos=0,\n).compile(SimpleModule(), teacher=SimpleModule(), trainset=trainset)\n\ncount_without_threshold = len(compiled_without_threshold.predictor.demos)\ncount_with_threshold = len(compiled_with_threshold.predictor.demos)\nprint(count_without_threshold, count_with_threshold)\nassert count_without_threshold == 1\nassert count_with_threshold == 0\n```",
+ "rubric": [
+  {
+   "claim_id": "c1",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The answer must demonstrate that when `BootstrapFewShot` has no explicit `metric_threshold`, the metric result is used directly as the success value, so a constant nonzero score like `0.1` is treated as accepted.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c2",
+   "claim_type": "core",
+   "weight": 35,
+   "statement": "The answer must demonstrate that with a truthy `metric_threshold` such as `0.5`, bootstrap acceptance is decided by `metric_val >= metric_threshold`, so a constant `0.1` score is rejected.",
+   "span_ids": [
+    "s1",
+    "s2"
+   ]
+  },
+  {
+   "claim_id": "c3",
+   "claim_type": "core",
+   "weight": 20,
+   "statement": "The answer must check the compiled predictor demo list, because only successful bootstrap traces are converted into demos and `_train()` assigns those augmented demos onto the compiled student's predictors.",
+   "span_ids": [
+    "s3",
+    "s4"
+   ]
+  },
+  {
+   "claim_id": "c4",
+   "claim_type": "supporting",
+   "weight": 10,
+   "statement": "The repro should isolate bootstrap acceptance by setting `max_labeled_demos=0` and `max_bootstrapped_demos=1`, so labeled examples are not added and at most one bootstrapped demo is retained.",
+   "span_ids": [
+    "s5",
+    "s4"
+   ]
+  }
+ ],
+ "evidence": [
+  {
+   "span_id": "s1",
+   "path": "dspy/teleprompt/bootstrap.py",
+   "start_line": 205,
+   "end_line": 210,
+   "excerpt": "0205:                 if self.metric:\n0206:                     metric_val = self.metric(example, prediction, trace)\n0207:                     if self.metric_threshold:\n0208:                         success = metric_val >= self.metric_threshold\n0209:                     else:\n0210:                         success = metric_val"
+  },
+  {
+   "span_id": "s2",
+   "path": "dspy/teleprompt/bootstrap.py",
+   "start_line": 223,
+   "end_line": 225,
+   "excerpt": "0223:         if success:\n0224:             for step in trace:\n0225:                 predictor, inputs, outputs = step"
+  },
+  {
+   "span_id": "s3",
+   "path": "dspy/teleprompt/bootstrap.py",
+   "start_line": 223,
+   "end_line": 257,
+   "excerpt": "0223:         if success:\n0224:             for step in trace:\n0225:                 predictor, inputs, outputs = step\n0226:                 demo = dspy.Example(augmented=True, **inputs, **outputs)\n0227: \n0228:                 try:\n0229:                     predictor_name = self.predictor2name[id(predictor)]\n0230:                 except KeyError:\n0231:                     continue  # FIXME: !\n0232: \n0233:                     # # TODO: Look closer into this. It's a bit tricky to reproduce.\n0234:                     # print(f\"Failed to find predictor {predictor} in {self.predictor2name}.\")\n0235:                     # print(\n0236:                     #     \"Are you doing this in a notebook (Jupyter)? This might be caused by redefining values by rerunning cells.\",\n0237:                     # )\n0238:                     # print(\"Try restarting the notebook, or open an issue.\")\n0239:                     # raise KeyError(\n0240:                     #     f\"Failed to find predictor {id(predictor)} {predictor} in {self.predictor2name}.\",\n0241:                     # ) from e\n0242: \n0243:                 name2traces[predictor_name] = name2traces.get(predictor_name, [])\n0244:                 name2traces[predictor_name].append(demo)\n0245: \n0246:             # Update the traces\n0247:             for name, demos in name2traces.items():\n0248:                 # If there are multiple traces for the same predictor in the sample example,\n0249:                 # sample 50/50 from the first N-1 traces or the last trace.\n0250:                 if len(demos) > 1:\n0251:                     from dspy.utils.hasher import Hasher\n0252: \n0253:                     rng = random.Random(Hasher.hash(tuple(demos)))\n0254:                     demos = [rng.choice(demos[:-1]) if rng.random() < 0.5 else demos[-1]]\n0255:                 self.name2traces[name].extend(demos)\n0256: \n0257:         return success"
+  },
+  {
+   "span_id": "s4",
+   "path": "dspy/teleprompt/bootstrap.py",
+   "start_line": 263,
+   "end_line": 270,
+   "excerpt": "0263:         for name, predictor in self.student.named_predictors():\n0264:             augmented_demos = self.name2traces[name][: self.max_bootstrapped_demos]\n0265: \n0266:             sample_size = min(self.max_labeled_demos - len(augmented_demos), len(raw_demos))\n0267:             sample_size = max(0, sample_size)\n0268: \n0269:             raw_demos = rng.sample(raw_demos, sample_size)\n0270:             predictor.demos = augmented_demos + raw_demos"
+  },
+  {
+   "span_id": "s5",
+   "path": "dspy/teleprompt/bootstrap.py",
+   "start_line": 148,
+   "end_line": 169,
+   "excerpt": "0148:     def _bootstrap(self, *, max_bootstraps=None):\n0149:         max_bootstraps = max_bootstraps or self.max_bootstrapped_demos\n0150:         bootstrap_attempts = 0\n0151: \n0152:         bootstrapped = {}\n0153:         self.name2traces = {name: [] for name in self.name2predictor}\n0154: \n0155:         for example_idx, example in enumerate(tqdm.tqdm(self.trainset)):\n0156:             if len(bootstrapped) >= max_bootstraps:\n0157:                 break\n0158: \n0159:             for round_idx in range(self.max_rounds):\n0160:                 bootstrap_attempts += 1\n0161: \n0162:                 if self._bootstrap_one_example(example, round_idx):\n0163:                     bootstrapped[example_idx] = True\n0164:                     break\n0165: \n0166:         print(\n0167:             f\"Bootstrapped {len(bootstrapped)} full traces after {example_idx} examples \"\n0168:             f\"for up to {self.max_rounds} rounds, amounting to {bootstrap_attempts} attempts.\"\n0169:         )"
+  }
+ ],
+ "difficulty": "very_hard",
+ "note": "Captures a subtle optimizer behavior that is easy to miss from logs and closely tied to numeric-vs-bool metric semantics.",
+ "source_index": 9,
+ "smalldspy_scope": false,
+ "optimization": {
+  "rounds": 0,
+  "revised": false,
+  "self_score": 100,
+  "history": [
+   {
+    "round": 0,
+    "failures": [],
+    "self_score": 100
+   }
+  ]
+ }
+}
