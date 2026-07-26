@@ -1,7 +1,9 @@
 # 013 — Claude Sonnet 4.5 baselines in the paper's DSPy ReAct harness
 
 **Status: complete — both runs graded and adversarially audited
-(2026-07-25, workflow wf_ad1427f5-e12).**
+(2026-07-25, workflow wf_ad1427f5-e12); regraded with the restored
+GPT-5.4 paper judge on 2026-07-26 (see final section), making the
+cross-model table below the citable one.**
 
 ## Objective
 
@@ -193,3 +195,57 @@ cross-model tables are ever needed, regrade 008 with `--judge sonnet`.
 
 Next: judge hardening (post-grade lint for rationale/score
 contradictions), then the fold-back pipeline on Sonnet direct.
+
+## 2026-07-26 addendum — GPT-5.4 paper-judge regrade
+
+Omar restored the OpenAI key; both runs regraded with `--judge gpt`
+(grade-id `gpt-5-4`, the judge behind every pre-013 number). 240
+verdicts, zero failures; `scripts/paired_stats.py` on the gpt-5-4
+grades reproduces the report expertise values independently.
+
+| condition (gpt-5-4 judge) | direct | k5 | k20 | k20f | E |
+|---|---:|---:|---:|---:|---:|
+| Sonnet 4.5 no-study | 21.43 | 47.63 | 59.87 | 69.93 | **32.94** |
+| Sonnet 4.5 + own cheatsheet | 26.50 | 46.83 | 53.07 | 61.67 | **34.36** |
+
+Paired: ΔE = +1.41, 95% CI [−4.26, +7.30], P(Δ>0) = 0.661; direct
++5.07 (12W/5L/13T, n.s.), k20 −6.80, k20f −8.27. **Same verdict as the
+sonnet judge: no separable cheatsheet effect; the climb is monotone
+and large (+48.5 direct→k20f).**
+
+The citable cross-model table (same 30 questions, same GPT-5.4 judge;
+rollouts: Qwen/codex 3, Sonnet 1; harness: Qwen+Sonnet dspy.ReAct,
+codex its own CLI):
+
+| agent | direct | k5 | k20 | k20f | E |
+|---|---:|---:|---:|---:|---:|
+| Qwen no-study | 4.5 | 8.2 | 9.8 | 24.0 | 9.04 |
+| Qwen + cheatsheet | 10.4 | 14.3 | 19.5 | 29.5 | 15.90 |
+| codex-mini no-study | 25.8 | 64.9 | 67.1 | 71.1 | 16.78 |
+| codex-mini + cheatsheet | 29.5 | 67.1 | 70.6 | 71.7 | 18.28 |
+| **Sonnet 4.5 no-study** | 21.4 | 47.6 | 59.9 | 69.9 | **32.94** |
+| **Sonnet 4.5 + cheatsheet** | 26.5 | 46.8 | 53.1 | 61.7 | **34.36** |
+
+Sonnet 4.5 roughly **doubles codex-mini's expertise (32.9 vs 16.8)
+while being LESS accurate than codex at k5/k20** — the entire
+difference is the direct point's token cost (1.6k vs 10.8k; anchor
+weight 1.0 vs 0.28). Token-efficiency at the cheap end, not raw
+accuracy, is what the expertise metric rewards — the paper's thesis,
+now demonstrated across three agents in our own data.
+
+Judge-vs-judge on identical answers (sonnet-4-5 minus gpt-5-4, mean
+per-episode lenient delta): no-study +3.47 (direct +6.4, k5 +8.2,
+k20 +2.8, k20f −3.5), cheatsheet +5.35 (+5.1/+7.5/+7.3/+1.5); on the
+E scale +5.24/+4.99; exact agreement 58/120 and 54/120. The gpt-5-4
+judge is also far more internally consistent (self-reported total ≠
+claim-sum on 3/240 grades vs the sonnet judge's 99/240). The sonnet
+judge is systematically hotter, budget-dependently so — sonnet-judged
+numbers are diagnostic-tier; gpt-5-4 is the paper tier now that the
+key is back.
+
+Audited (wf_097abc08-b1a, 3 auditors): all six E values in the table
+recompute from raw grades to <1e-9, identical 30-question set and
+judge revision `gpt-5.4-2026-03-05` across all six grade sets, zero
+fatal judge contradictions in a full 1,200-claim lint; only minor
+flags (two plausible single-claim miscalls that cut *against* the
+nominally-winning arm, one historical Qwen empty-answer auto-zero).
