@@ -47,6 +47,15 @@ CLAUDE_SAMPLING = {
     "temperature": 1.0,
     "max_tokens": 32_768,
 }
+GPT_MODEL = "openai/gpt-5.4-mini"
+GPT_SAMPLING = {
+    # The gpt-5.x chat surface rejects max_tokens (wants max_completion_tokens;
+    # max_tokens=None keeps dspy's default out of the request) and offers no
+    # reasoning_effort — provider-default effort, reasoning tokens count as output.
+    "temperature": 1.0,
+    "max_tokens": None,
+    "max_completion_tokens": 32_768,
+}
 TOOL_CONFIG = {
     "names": ["grep", "glob", "read_file"],
     "read_max_lines": READ_MAX_LINES,
@@ -202,12 +211,13 @@ def run_episode(
     sampling: dict = SAMPLING,
     closing_observation: str | None = None,
 ) -> dict:
-    provider = (
-        # The Anthropic API has no sampling-seed parameter; only vLLM gets one.
-        {"api_base": base_url, "api_key": os.environ.get("VLLM_API_KEY", "EMPTY"), "seed": seed}
-        if base_url
-        else {"api_key": os.environ["ANTHROPIC_API_KEY"]}
-    )
+    if base_url:
+        provider = {"api_base": base_url, "api_key": os.environ.get("VLLM_API_KEY", "EMPTY"), "seed": seed}
+    elif model.startswith("anthropic/"):
+        # The Anthropic API has no sampling-seed parameter.
+        provider = {"api_key": os.environ["ANTHROPIC_API_KEY"]}
+    else:
+        provider = {"api_key": os.environ["OPENAI_API_KEY"], "seed": seed}
     lm = dspy.LM(
         model,
         model_type="chat",
@@ -434,7 +444,7 @@ def main() -> None:
     )
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--seed", required=True, type=int)
-    parser.add_argument("--model", choices=("qwen", "sonnet45"), default="qwen")
+    parser.add_argument("--model", choices=("qwen", "sonnet45", "gptmini"), default="qwen")
     parser.add_argument("--budgets", default=",".join(BUDGETS))
     parser.add_argument("--rollouts", type=int, default=3)
     parser.add_argument("--limit", type=int, default=0)
@@ -459,6 +469,11 @@ def main() -> None:
             raise SystemExit("ANTHROPIC_API_KEY is required for --model sonnet45")
         model, model_revision, sampling = CLAUDE_MODEL, None, CLAUDE_SAMPLING
         urls = [None]
+    elif args.model == "gptmini":
+        if not os.environ.get("OPENAI_API_KEY"):
+            raise SystemExit("OPENAI_API_KEY is required for --model gptmini")
+        model, model_revision, sampling = GPT_MODEL, None, GPT_SAMPLING
+        urls = [None]
     else:
         model, model_revision, sampling = MODEL, MODEL_REVISION, SAMPLING
         urls = _base_urls(args.base_urls)
@@ -474,6 +489,29 @@ def main() -> None:
         "corpus_snapshot_sha256": repository.snapshot_sha256,
     }
     run_root = ROOT / "runs" / args.run_id / args.task
+    store_path = run_root / "study" / "build" / "lookup_store.json"
+    if args.condition == "foldback" and store_path.is_file():
+        store = read_json(store_path)
+
+        def study_lookup(key: str) -> str:
+            """Look up your own study notes by key; a miss lists the closest keys."""
+
+            entry = store.get(key)
+            if entry is None:
+                matches = [k for k in sorted(store) if key.lower() in k.lower()][:5]
+                return "No exact match. " + (
+                    f"Closest keys: {', '.join(matches)}" if matches else "No similar keys."
+                )
+            block = entry["text"] + (f"\n{entry['code']}" if entry.get("code") else "")
+            return block[:OBSERVATION_MAX_CHARS]
+
+        repository_tools = repository_tools + [study_lookup]
+        tool_config = {
+            **tool_config,
+            "names": TOOL_CONFIG["names"] + ["study_lookup"],
+            "study_lookup_store_sha256": sha256_json(store),
+            "study_lookup_keys": len(store),
+        }
     runtime = {
         "python": platform.python_version(),
         "dspy": getattr(dspy, "__version__", "unknown"),
