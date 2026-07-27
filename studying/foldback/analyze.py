@@ -81,7 +81,7 @@ log = logging.getLogger("studying.foldback.analyze")
 BUCKETS = {(0, 1): "FLIP+", (1, 0): "FLIP-", (0, 0): "BOTH0", (1, 1): "BOTH1"}
 RECOVERABLE = {"FLIP+", "BOTH0"}
 
-PROMPT = """You are gpt-5.4-mini studying the {library} repository. You answered one practice question twice, and a judge graded both answers against a weighted claim rubric:
+PROMPT = """You are {studier} studying the {library} repository. You answered one practice question twice, and a judge graded both answers against a weighted claim rubric:
 
 - `direct`: zero tool calls, from your own knowledge. Score {direct_score}/100.
 - `k20f`: 20 forced repository-tool iterations. Score {k20f_score}/100.
@@ -122,7 +122,7 @@ Each claim: weight, bucket (FLIP+ = only k20f earned it; BOTH0 = both missed it 
 
 Ground everything; if you cannot ground a lesson in the trajectory, the reference answer, or a repository file you saw, either mark source `prior` or omit it. Return JSON matching the schema exactly."""
 
-FOLLOWUP_PROMPT = """You are gpt-5.4-mini, continuing the extraction you just did for the practice question below. Your first pass produced no lesson for these RECOVERABLE claims (bucket FLIP+ or BOTH0), which together carry {missing_weight} points of rubric weight:
+FOLLOWUP_PROMPT = """You are {studier}, continuing the extraction you just did for the practice question below. Your first pass produced no lesson for these RECOVERABLE claims (bucket FLIP+ or BOTH0), which together carry {missing_weight} points of rubric weight:
 
 {missing_claims}
 
@@ -211,7 +211,7 @@ def call_structured(api: OpenAI, *, prompt: str, schema: dict, name: str, seed: 
                     cap_key: str = "max_completion_tokens") -> tuple[dict, dict]:
     sampling = dict(sampling if sampling is not None else ANALYST_SAMPLING)
     finish = None
-    for attempt in range(2):
+    for attempt in range(3):  # resample protocol; final attempts run at the cap ceiling
         response = api.chat.completions.create(
             model=model,
             messages=[{"role": "user", "content": prompt}],
@@ -372,6 +372,7 @@ def main() -> None:
         recoverable_ids = {c["claim_id"] for c in table if c["bucket"] in RECOVERABLE}
         if recoverable_ids:
             body = PROMPT.format(
+                studier=profile["model"],
                 library=corpus.display,
                 direct_score=direct_grade["lenient"],
                 k20f_score=k20f_grade["lenient"],
@@ -409,6 +410,7 @@ def main() -> None:
                 followup, usage2 = call_structured(
                     api,
                     prompt=FOLLOWUP_PROMPT.format(
+                        studier=profile["model"],
                         missing_weight=sum(by_id[cid]["weight"] for cid in missing),
                         missing_claims=missing_lines,
                         body=body),

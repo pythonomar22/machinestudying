@@ -107,7 +107,7 @@ def mechanics_block(report: dict, summary: dict, library: str) -> str:
 - Question-specific practice content is free to keep in a note (space-wise) but competes for your attention and helps only if a similar mechanism recurs; your analysis tagged generality per lesson — use it to organize, not necessarily to discard."""
 
 
-PROPOSAL_PROMPT = """You are gpt-5.4-mini. You studied the {library} repository on {n_questions} practice questions and your extracted knowledge is summarized below. You will now DESIGN the study artifact you carry into the exam. Design for yourself: you know how you fail and what you already know.
+PROPOSAL_PROMPT = """You are {studier}. You studied the {library} repository on {n_questions} practice questions and your extracted knowledge is summarized below. You will now DESIGN the study artifact you carry into the exam. Design for yourself: you know how you fail and what you already know.
 
 {mechanics}
 
@@ -122,7 +122,7 @@ Propose ONE complete design for your study artifact. Be concrete and opinionated
 - `rationale`: why this form and structure beat the alternatives FOR YOU, referencing the mechanics numerically.
 - `failure_modes`: the ways this design could fail on the unseen exam."""
 
-COMMIT_PROMPT = """You are gpt-5.4-mini, choosing the final design of your own study artifact. Below are {n} designs you drafted independently, plus the mechanics and your analysis summary. Critique each against the mechanics (the best-so-far area metric and each budget's marginal weight, attention dilution, per-budget token headroom, unseen-question transfer), then commit to a final design — one of the drafts or a merge of their best ideas. Return the same schema as the drafts (this is the binding plan).
+COMMIT_PROMPT = """You are {studier}, choosing the final design of your own study artifact. Below are {n} designs you drafted independently, plus the mechanics and your analysis summary. Critique each against the mechanics (the best-so-far area metric and each budget's marginal weight, attention dilution, per-budget token headroom, unseen-question transfer), then commit to a final design — one of the drafts or a merge of their best ideas. Return the same schema as the drafts (this is the binding plan).
 
 {mechanics}
 
@@ -165,7 +165,7 @@ PLAN_SCHEMA = {
     "additionalProperties": False,
 }
 
-ASSEMBLY_PROMPT = """You are gpt-5.4-mini writing part of your own study artifact, following the design you committed to. Merge the raw extracted material below into final entries: deduplicate aggressively, keep every distinct load-bearing fact, and write so your exam self can act on each entry without the repository. The claim statements show exactly what graded weight each piece of material served; the already-known list shows what NOT to re-teach.
+ASSEMBLY_PROMPT = """You are {studier} writing part of your own study artifact, following the design you committed to. Merge the raw extracted material below into final entries: deduplicate aggressively, keep every distinct load-bearing fact, and write so your exam self can act on each entry without the repository. The claim statements show exactly what graded weight each piece of material served; the already-known list shows what NOT to re-teach.
 
 {mechanics}
 
@@ -383,14 +383,14 @@ def main() -> None:
     # ---- phase A: form decision ---------------------------------------------
     proposals = [
         studier(build_root / f"proposal_{i}.json",
-                PROPOSAL_PROMPT.format(library=corpus.display,
+                PROPOSAL_PROMPT.format(studier=profile["model"], library=corpus.display,
                                        n_questions=summary["questions"],
                                        mechanics=mechanics, summary=summary_text),
                 PLAN_SCHEMA, "fb_proposal", stable_seed(args.seed, "fb-proposal", i))
         for i in range(N_PROPOSALS)
     ]
     plan = studier(build_root / "plan.json",
-                   COMMIT_PROMPT.format(n=N_PROPOSALS, mechanics=mechanics,
+                   COMMIT_PROMPT.format(studier=profile["model"], n=N_PROPOSALS, mechanics=mechanics,
                                         summary=summary_text,
                                         proposals=json.dumps(proposals, indent=1)),
                    PLAN_SCHEMA, "fb_commit", stable_seed(args.seed, "fb-commit"))
@@ -446,6 +446,7 @@ def main() -> None:
         payload = studier(
             build_root / f"assembled_{topic}.json",
             ASSEMBLY_PROMPT.format(
+                studier=profile["model"],
                 mechanics=mechanics, plan=json.dumps(plan, indent=1), topic=topic,
                 known="\n".join(f"- {k}" for k in known) or "(none)",
                 n_lessons=sum(len(r["lessons"]) for r in topic_records),
