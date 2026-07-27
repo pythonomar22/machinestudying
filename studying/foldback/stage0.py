@@ -34,6 +34,9 @@ from studybench.react import (
     CLAUDE_SAMPLING,
     GPT_MODEL,
     GPT_SAMPLING,
+    MODEL,
+    MODEL_REVISION,
+    SAMPLING,
     TOOL_CONFIG,
     make_tools,
     run_episode,
@@ -45,6 +48,7 @@ from .data import load_practice_questions, practice_dataset_sha256, split_practi
 MODELS = {
     "sonnet45": (CLAUDE_MODEL, CLAUDE_SAMPLING, "ANTHROPIC_API_KEY"),
     "gptmini": (GPT_MODEL, GPT_SAMPLING, "OPENAI_API_KEY"),
+    "qwen": (MODEL, SAMPLING, None),  # local vLLM; requires --base-urls
 }
 JUDGES = {
     "gpt": ("gpt-5.4", "OPENAI_API_KEY"),
@@ -131,6 +135,7 @@ def main() -> None:
     parser.add_argument("--seed", required=True, type=int)
     parser.add_argument("--model", required=True, choices=sorted(MODELS))
     parser.add_argument("--judge", required=True, choices=sorted(JUDGES))
+    parser.add_argument("--base-urls", help="local vLLM endpoints (qwen only)")
     parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--smoke", action="store_true")
     parser.add_argument("--debug", action="store_true")
@@ -140,8 +145,11 @@ def main() -> None:
     model, sampling, model_key_env = MODELS[args.model]
     judge_model, judge_key_env = JUDGES[args.judge]
     for env in {model_key_env, judge_key_env}:
-        if not os.environ.get(env):
+        if env and not os.environ.get(env):
             raise SystemExit(f"{env} is required for --model {args.model} / --judge {args.judge}")
+    if (args.model == "qwen") != bool(args.base_urls):
+        raise SystemExit("--base-urls is required for --model qwen and invalid otherwise")
+    urls = args.base_urls.split(",") if args.base_urls else [None]
 
     (ROOT / "logs").mkdir(exist_ok=True)
     logging.basicConfig(
@@ -176,7 +184,7 @@ def main() -> None:
         "corpus_commit": corpus.commit,
         "corpus_snapshot_sha256": repository.snapshot_sha256,
         "model": model,
-        "model_revision": None,
+        "model_revision": MODEL_REVISION if args.model == "qwen" else None,
         "harness": "dspy.ReAct",
         "sampling": sampling,
         "tools": {**TOOL_CONFIG, "corpus_roots": list(corpus.roots)},
@@ -228,12 +236,12 @@ def main() -> None:
                 budget="k20f-attempt" if budget == "k20f" else "direct",
                 rollout=0,
                 seed=stable_seed(args.seed, seed_tag, qid, try_no),
-                base_url=None,
+                base_url=urls[index % len(urls)],
                 max_iters=2 if args.smoke and forced else max_iters,
                 forced=forced,
                 debug=args.debug,
                 model=model,
-                model_revision=None,
+                model_revision=MODEL_REVISION if args.model == "qwen" else None,
                 sampling=sampling,
             )
             if episode["status"] in {"ok", "no_answer"}:

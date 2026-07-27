@@ -81,8 +81,19 @@ def evaluate_variant(
     budgets: tuple[str, ...] = ("direct", "k5"),
     rollouts: int = 2,
     debug: bool = False,
+    model: str | None = None,
+    model_revision: str | None = None,
+    sampling: dict | None = None,
 ) -> dict:
-    """Evaluate one note variant on the dev slice; fully idempotent."""
+    """Evaluate one note variant on the dev slice; fully idempotent.
+
+    ``model``/``model_revision``/``sampling`` override the harness default
+    (local Qwen) — e.g. a hosted studier with ``base_urls=[None]``."""
+
+    model_kwargs = (
+        {"model": model, "model_revision": model_revision, "sampling": sampling}
+        if model is not None else {}
+    )
 
     report_path = out_dir / "report.json"
     if report_path.exists():
@@ -116,6 +127,7 @@ def evaluate_variant(
                 max_iters=BUDGET_ITERS[budget],
                 forced=False,
                 debug=debug,
+                **model_kwargs,
             )
             if episode["status"] in {"ok", "no_answer"}:
                 break
