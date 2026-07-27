@@ -122,7 +122,67 @@ tool set includes `study_lookup` at tool budgets (manifested), 1
 rollout, n=30. Full adversarial audit deferred to the baseline
 comparison, where the actual claims get made.
 
+## The three-way test comparison (2026-07-27, audited)
+
+Baselines landed (`dspy-gptmini-nostudy-20260727`,
+`dspy-gptmini-cheatsheet-20260727` — mini's own 8.5k self-study note;
+same protocol, 120/120 ok each; GPT-5.4 judge):
+
+| condition | direct | k5 | k20 | k20f | E |
+|---|---:|---:|---:|---:|---:|
+| no-study | 17.93 @ 1.0k | 50.07 @ 1.9k | 53.43 @ 2.1k | 56.37 @ 3.9k | **55.68** |
+| + own cheatsheet | 21.37 | 48.13 | 46.57 | 50.67 | **50.21** |
+| + fold-back object | 36.97 @ 0.9k | 33.13 @ 1.4k | 42.33 @ 1.5k | 43.67 @ 3.8k | **43.38** |
+
+Audit: workflow wf_b2a6ca8a-afa (15 agents; zero recompute
+discrepancies across 360 episodes/grades; provenance, splits, and
+cross-arm identity all verified; 11/11 serious flags confirmed and
+folded in). **Audited claims:**
+
+1. **The fold-back object moves real knowledge into k=0: direct +19.0
+   lenient** (20W/2L/8T, sign p=0.0001, CI [+8.6, +29.1]) — the
+   largest and most robust single effect in the project. A spot-check
+   of 10 note entries against the corpus found 10/10 factually correct.
+2. **But it loses on expertise: ΔE = −12.3 vs no-study (CI [−21.4,
+   −0.8])**, driven by k5 −16.9 (CI [−27.2, −6.8]); the k20f −12.7 is
+   marginal (perm p = 0.0497). Mechanism, episode-verified: (a) the
+   object's own answer-protocol suppresses exploration — 14/30 k5
+   episodes are a bare `finish` with zero tool calls, and foldback k5
+   (33.1) undercuts its own direct (37.0) on 12/30 questions; (b) at
+   k20f corpus consultation halves (132 vs 257 repo calls) in favor of
+   77 `study_lookup` calls into a 15-key store that often mismatches
+   the question; (c) one quote-grade anchoring case (dspy_3a5e956e4421,
+   100→18: the note's trace-metric lesson applied where Evaluate passes
+   no trace). The distilled knowledge helps; the distilled *behavior*
+   hurts.
+3. **The classic cheatsheet is null on a third model**: every
+   cheatsheet-arm delta sits inside noise (direct +3.4 CI [−2.8,+9.4];
+   ΔE −5.5 CI [−13.2,+3.4]) — matching codex-mini (+1.5) and Sonnet
+   (null, 013).
+4. **The codex→dspy harness gap is entirely the generated-token axis,
+   understated before**: codex accuracy is *higher* at every budget,
+   yet counterfactually swapping token costs moves E 16.78→70.1 (codex
+   accuracy at dspy tokens) and 55.68→13.1 (reverse). Caveats: 3-vs-1
+   rollouts, pinned-vs-default reasoning effort, shell-vs-ReAct budget
+   semantics.
+5. Not claimable: any monotone "more note = worse tools" dose-response
+   (the cheatsheet middle step is null and size/content/provenance are
+   confounded); no-study's project-best E=55.68 is descriptive (paired
+   separation exists only vs foldback). Foldback's tool budgets carry
+   three joint differences (note + store + protocol); only direct
+   isolates the note's knowledge content.
+
+Interpretation: fold-back distillation *works as knowledge transfer*
+(+19 at the only budget where delivery has no behavioral side channel)
+and fails as an expertise strategy here because its behavioral wrapper
+(early-stop protocol + lookup habit) suppresses the exploration that
+this token-cheap harness already prices at weight ≈ 1.0. The v2 lever
+is delivery, not content: same knowledge, no behavior change (e.g.
+note-at-direct-only, no protocol capsule, no store).
+
 ## Next
 
-gptmini `baseline` and `cheatsheet` test runs in the dspy harness
-(1 rollout, gpt judge), then the attribution audit.
+Decide v2 (delivery-only ablation: same object minus protocol/store,
+or note-at-direct-only) vs pivoting the fold-back program to Sonnet
+(where direct carries the weight and tool budgets are expensive) once
+lab credits return.
