@@ -44,6 +44,27 @@ ANALYST_MODEL = "gpt-5.4-mini"
 # The gpt-5.x surface pins temperature to 1; the 010 temp-0.2 study-time
 # convention is unreachable for this studier (ledgered in the summary).
 ANALYST_SAMPLING = {"temperature": 1.0, "max_completion_tokens": 8_192}
+# Studier profiles. gptmini's config sha must stay byte-identical to the
+# pre-parameterization constant, so its profile adds nothing to the payload.
+ANALYST_MODELS = {
+    "gptmini": {
+        "model": ANALYST_MODEL,
+        "sampling": ANALYST_SAMPLING,
+        "cap_key": "max_completion_tokens",
+        "key_env": "OPENAI_API_KEY",
+        "local": False,
+        "note": "temperature pinned to 1.0 by the gpt-5.x surface "
+                "(010 study-time convention was 0.2)",
+    },
+    "qwen": {
+        "model": "Qwen/Qwen3.5-9B",
+        "sampling": {"temperature": 0.2, "top_p": 0.95, "max_tokens": 8_192},
+        "cap_key": "max_tokens",
+        "key_env": "VLLM_API_KEY",
+        "local": True,
+        "note": "010 temp-0.2 study-time convention (local vLLM)",
+    },
+}
 MAX_COMPLETION_CEILING = 32_768
 TIMEOUT = 600
 KINDS = ("api_fact", "idiom", "behavior", "pitfall", "concept", "other")
@@ -168,21 +189,31 @@ SCHEMA = {
     "additionalProperties": False,
 }
 
-CONFIG_SHA256 = sha256_json({
-    "prompt": PROMPT,
-    "followup": FOLLOWUP_PROMPT,
-    "schema": SCHEMA,
-    "sampling": ANALYST_SAMPLING,
-    "caps": [REASONING_CHARS, OBS_CHARS, TOUCHED_OBS_CHARS, ANSWER_CHARS, GOLD_CHARS],
-})
+def config_sha256(model_key: str) -> str:
+    profile = ANALYST_MODELS[model_key]
+    payload = {
+        "prompt": PROMPT,
+        "followup": FOLLOWUP_PROMPT,
+        "schema": SCHEMA,
+        "sampling": profile["sampling"],
+        "caps": [REASONING_CHARS, OBS_CHARS, TOUCHED_OBS_CHARS, ANSWER_CHARS, GOLD_CHARS],
+    }
+    if model_key != "gptmini":  # gptmini sha predates parameterization
+        payload["studier_model"] = profile["model"]
+    return sha256_json(payload)
 
 
-def call_structured(api: OpenAI, *, prompt: str, schema: dict, name: str, seed: int) -> tuple[dict, dict]:
-    sampling = dict(ANALYST_SAMPLING)
+CONFIG_SHA256 = config_sha256("gptmini")
+
+
+def call_structured(api: OpenAI, *, prompt: str, schema: dict, name: str, seed: int,
+                    model: str = ANALYST_MODEL, sampling: dict | None = None,
+                    cap_key: str = "max_completion_tokens") -> tuple[dict, dict]:
+    sampling = dict(sampling if sampling is not None else ANALYST_SAMPLING)
     finish = None
     for attempt in range(2):
         response = api.chat.completions.create(
-            model=ANALYST_MODEL,
+            model=model,
             messages=[{"role": "user", "content": prompt}],
             seed=seed + attempt,
             **sampling,
@@ -202,8 +233,7 @@ def call_structured(api: OpenAI, *, prompt: str, schema: dict, name: str, seed: 
             return payload, usage
         log.warning("%s: unusable payload (finish=%s, chars=%d); retrying larger",
                     name, finish, len(content))
-        sampling["max_completion_tokens"] = min(
-            sampling["max_completion_tokens"] * 4, MAX_COMPLETION_CEILING)
+        sampling[cap_key] = min(sampling[cap_key] * 4, MAX_COMPLETION_CEILING)
     raise RuntimeError(f"{name}: no usable structured payload after retry (finish={finish})")
 
 
@@ -273,12 +303,19 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--seed", required=True, type=int)
+    parser.add_argument("--model", default="gptmini", choices=sorted(ANALYST_MODELS))
+    parser.add_argument("--base-urls", help="local vLLM endpoints (local studiers only)")
     parser.add_argument("--limit", type=int, default=0)
     parser.add_argument("--concurrency", type=int, default=8)
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
-    if not os.environ.get("OPENAI_API_KEY"):
-        raise SystemExit("OPENAI_API_KEY is required (studier analyst)")
+    profile = ANALYST_MODELS[args.model]
+    if profile["local"] != bool(args.base_urls):
+        raise SystemExit("--base-urls is required for local studiers and invalid otherwise")
+    api_key = os.environ.get(profile["key_env"]) or ("EMPTY" if profile["local"] else None)
+    if not api_key:
+        raise SystemExit(f"{profile['key_env']} is required (studier analyst)")
+    config_sha = config_sha256(args.model)
 
     (ROOT / "logs").mkdir(exist_ok=True)
     logging.basicConfig(
@@ -296,13 +333,16 @@ def main() -> None:
         raise SystemExit("practice dataset changed since the split was made")
     full_study_ids = split["study_ids"]
     study_ids = full_study_ids[: args.limit or None]
-    api = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=TIMEOUT, max_retries=2)
+    urls = args.base_urls.split(",") if args.base_urls else [None]
+    clients = [OpenAI(api_key=api_key, base_url=url, timeout=TIMEOUT, max_retries=2)
+               for url in urls]
 
-    def analyze_one(qid: str) -> dict:
+    def analyze_one(index: int, qid: str) -> dict:
+        api = clients[index % len(clients)]
         path = out_root / f"{qid}.json"
         if path.exists():
             cached = read_json(path)
-            if cached.get("config_sha256") == CONFIG_SHA256:
+            if cached.get("config_sha256") == config_sha:
                 return cached
             log.warning("%s: cached record from a different analyze config; regenerating", qid)
         row = rows[qid]
@@ -318,7 +358,7 @@ def main() -> None:
         record = {
             "qid": qid,
             "topic": row["topic"],
-            "config_sha256": CONFIG_SHA256,
+            "config_sha256": config_sha,
             "direct_lenient": direct_grade["lenient"],
             "k20f_lenient": k20f_grade["lenient"],
             "claims": table,
@@ -349,6 +389,8 @@ def main() -> None:
             payload, usage = call_structured(
                 api, prompt=body, schema=SCHEMA, name="foldback_analyze",
                 seed=stable_seed(args.seed, "fb-analyze", qid),
+                model=profile["model"], sampling=profile["sampling"],
+                cap_key=profile["cap_key"],
             )
             record["analyst_usage"].append(usage)
             valid_ids = {c["claim_id"] for c in table}
@@ -371,6 +413,8 @@ def main() -> None:
                         body=body),
                     schema=SCHEMA, name="foldback_analyze_followup",
                     seed=stable_seed(args.seed, "fb-analyze2", qid),
+                    model=profile["model"], sampling=profile["sampling"],
+                    cap_key=profile["cap_key"],
                 )
                 record["analyst_usage"].append(usage2)
                 lessons += [l for l in followup["lessons"]
@@ -389,7 +433,7 @@ def main() -> None:
         return record
 
     with ThreadPoolExecutor(max_workers=args.concurrency) as pool:
-        records = list(pool.map(analyze_one, study_ids))
+        records = list(pool.map(lambda item: analyze_one(*item), enumerate(study_ids)))
 
     weight = {"FLIP+": 0, "FLIP-": 0, "BOTH0": 0, "BOTH1": 0}
     covered = {"FLIP+": 0, "BOTH0": 0}
@@ -422,9 +466,8 @@ def main() -> None:
     summary = {
         "kind": "foldback-analysis",
         "run_id": args.run_id,
-        "analyst": {"model": ANALYST_MODEL, "sampling": ANALYST_SAMPLING,
-                    "note": "temperature pinned to 1.0 by the gpt-5.x surface "
-                            "(010 study-time convention was 0.2)"},
+        "analyst": {"model": profile["model"], "sampling": profile["sampling"],
+                    "note": profile["note"]},
         "master_seed": args.seed,
         "questions": len(records),
         "bucket_weight": weight,
@@ -443,7 +486,7 @@ def main() -> None:
         "by_topic": by_topic,
         "analyst_completion_tokens": sum(
             u.get("completion_tokens", 0) for r in records for u in r["analyst_usage"]),
-        "config_sha256": CONFIG_SHA256,
+        "config_sha256": config_sha,
     }
     if len(study_ids) == len(full_study_ids):
         write_json(out_root / "summary.json", summary)

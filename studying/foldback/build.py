@@ -48,8 +48,7 @@ from studybench.artifacts import read_json, sha256_json, sha256_text, stable_see
 from studybench.dataset import CORPORA, ROOT, read_corpus_file
 from studybench.tools import RepoTools
 
-from .analyze import CONFIG_SHA256 as ANALYZE_CONFIG_SHA256
-from .analyze import call_structured
+from .analyze import ANALYST_MODELS, call_structured, config_sha256
 
 VERIFIER_MODEL = "gpt-5.4"
 VERIFY_FILE_CHARS = 40_000
@@ -233,14 +232,18 @@ Verdicts: `verified` (supported), `unverified` (cannot confirm from these source
 
 Return JSON matching the schema exactly: a verdict for every entry id."""
 
-BUILD_CONFIG_SHA256 = sha256_json({
-    "proposal": PROPOSAL_PROMPT, "commit": COMMIT_PROMPT, "plan_schema": PLAN_SCHEMA,
-    "assembly": ASSEMBLY_PROMPT, "assembly_schema": ASSEMBLY_SCHEMA,
-    "verify": VERIFY_PROMPT, "verifier": VERIFIER_MODEL,
-    "verify_caps": [VERIFY_FILE_CHARS, VERIFY_GROUP_FILES],
-    "note_ceiling": NOTE_CHAR_CEILING, "n_proposals": N_PROPOSALS,
-    "analyze_config": ANALYZE_CONFIG_SHA256,
-})
+def build_config_sha256(model_key: str) -> str:
+    payload = {
+        "proposal": PROPOSAL_PROMPT, "commit": COMMIT_PROMPT, "plan_schema": PLAN_SCHEMA,
+        "assembly": ASSEMBLY_PROMPT, "assembly_schema": ASSEMBLY_SCHEMA,
+        "verify": VERIFY_PROMPT, "verifier": VERIFIER_MODEL,
+        "verify_caps": [VERIFY_FILE_CHARS, VERIFY_GROUP_FILES],
+        "note_ceiling": NOTE_CHAR_CEILING, "n_proposals": N_PROPOSALS,
+        "analyze_config": config_sha256(model_key),
+    }
+    if model_key != "gptmini":  # gptmini sha predates parameterization
+        payload["studier_model"] = ANALYST_MODELS[model_key]["model"]
+    return sha256_json(payload)
 
 
 def verify_schema(ids: list[str]) -> dict:
@@ -287,11 +290,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--seed", required=True, type=int)
+    parser.add_argument("--model", default="gptmini", choices=sorted(ANALYST_MODELS))
+    parser.add_argument("--base-urls", help="local vLLM endpoints (local studiers only)")
     parser.add_argument("--dirty-ok", action="store_true")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+    profile = ANALYST_MODELS[args.model]
+    if profile["local"] != bool(args.base_urls):
+        raise SystemExit("--base-urls is required for local studiers and invalid otherwise")
+    studier_key = os.environ.get(profile["key_env"]) or ("EMPTY" if profile["local"] else None)
+    if not studier_key:
+        raise SystemExit(f"{profile['key_env']} is required (studier)")
     if not os.environ.get("OPENAI_API_KEY"):
-        raise SystemExit("OPENAI_API_KEY is required (studier and verifier)")
+        raise SystemExit("OPENAI_API_KEY is required (verifier)")
+    BUILD_CONFIG_SHA256 = build_config_sha256(args.model)
+    ANALYZE_CONFIG_SHA256 = config_sha256(args.model)
 
     (ROOT / "logs").mkdir(exist_ok=True)
     logging.basicConfig(
@@ -343,6 +356,9 @@ def main() -> None:
         write_json(manifest_path, manifest)
 
     api = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=600, max_retries=2)
+    studier_api = (OpenAI(api_key=studier_key, base_url=args.base_urls.split(",")[0],
+                          timeout=600, max_retries=2)
+                   if profile["local"] else api)
     report = read_json(study_root / "report.json")
     mechanics = mechanics_block(report, summary, corpus.display)
     summary_text = json.dumps(
@@ -356,8 +372,11 @@ def main() -> None:
     def studier(path: Path, prompt: str, schema: dict, name: str, seed: int) -> dict:
         if path.exists():
             return read_json(path)["payload"]
-        payload, usage = call_structured(api, prompt=prompt, schema=schema,
-                                         name=name, seed=seed)
+        payload, usage = call_structured(studier_api, prompt=prompt, schema=schema,
+                                         name=name, seed=seed,
+                                         model=profile["model"],
+                                         sampling=profile["sampling"],
+                                         cap_key=profile["cap_key"])
         write_json(path, {"payload": payload, "usage": usage})
         return payload
 
@@ -598,8 +617,8 @@ def main() -> None:
         "analyze_config_sha256": ANALYZE_CONFIG_SHA256,
         "source_commit": source_commit,
         "study_questions": summary["questions"],
-        "studier": {"model": "gpt-5.4-mini",
-                    "sampling_note": "temperature pinned to 1.0 (gpt-5.x surface)"},
+        "studier": {"model": profile["model"], "sampling": profile["sampling"],
+                    "sampling_note": profile["note"]},
         "verifier": {"model": VERIFIER_MODEL, "role": "verdict-only, drop-only",
                      "usage": verifier_usage},
         "studier_generated_tokens": {
