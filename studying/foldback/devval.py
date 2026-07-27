@@ -17,7 +17,7 @@ from openai import OpenAI
 
 from studybench.artifacts import read_json, stable_seed, write_json
 from studybench.dataset import NOTE_PREFIX
-from studybench.grade import build_prompt, response_schema, score_verdict
+from studybench.grade import build_prompt, response_schema, score_claims, score_verdict
 from studybench.react import run_episode
 
 JUDGE_MODEL = "gpt-5.4"
@@ -47,16 +47,30 @@ def _grade_one(api: OpenAI, row: dict, answer: str) -> dict:
             "judge_response": None,
         }
     prompt = build_prompt("dspy", row, answer, "paper")
-    response = api.chat.completions.create(
-        model=JUDGE_MODEL,
-        messages=[{"role": "user", "content": prompt}],
-        response_format=response_schema(row, "paper"),
-    )
-    verdict = json.loads(response.choices[0].message.content)
-    claims, score, question_score = score_verdict(row, verdict, "paper")
+    abstained = False
+    for attempt in range(2):
+        response = api.chat.completions.create(
+            model=JUDGE_MODEL,
+            messages=[{"role": "user", "content": prompt}],
+            response_format=response_schema(row, "paper"),
+        )
+        verdict = json.loads(response.choices[0].message.content)
+        try:
+            claims, score, question_score = score_verdict(row, verdict, "paper")
+            break
+        except ValueError as error:
+            if "regrading" not in str(error):
+                raise
+            if attempt == 0:
+                continue  # one semantic retry on judge abstention
+            # dev-only fallback: accept the claim verdicts, flag the abstention
+            claims, score = score_claims(row, verdict["claims"])
+            question_score = verdict.get("question_score")
+            abstained = True
     return {
         "claims": claims,
         "lenient": score,
+        "judge_abstained": abstained,
         "judge_question_score": question_score,
         "judge_response": {
             "id": response.id,
@@ -81,8 +95,19 @@ def evaluate_variant(
     budgets: tuple[str, ...] = ("direct", "k5"),
     rollouts: int = 2,
     debug: bool = False,
+    model: str | None = None,
+    model_revision: str | None = None,
+    sampling: dict | None = None,
 ) -> dict:
-    """Evaluate one note variant on the dev slice; fully idempotent."""
+    """Evaluate one note variant on the dev slice; fully idempotent.
+
+    ``model``/``model_revision``/``sampling`` override the harness default
+    (local Qwen) — e.g. a hosted studier with ``base_urls=[None]``."""
+
+    model_kwargs = (
+        {"model": model, "model_revision": model_revision, "sampling": sampling}
+        if model is not None else {}
+    )
 
     report_path = out_dir / "report.json"
     if report_path.exists():
@@ -116,6 +141,7 @@ def evaluate_variant(
                 max_iters=BUDGET_ITERS[budget],
                 forced=False,
                 debug=debug,
+                **model_kwargs,
             )
             if episode["status"] in {"ok", "no_answer"}:
                 break

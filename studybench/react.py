@@ -48,6 +48,7 @@ CLAUDE_SAMPLING = {
     "max_tokens": 32_768,
 }
 GPT_MODEL = "openai/gpt-5.4-mini"
+GPT51_MODEL = "openai/gpt-5.1"
 GPT_SAMPLING = {
     # The gpt-5.x chat surface rejects max_tokens (wants max_completion_tokens;
     # max_tokens=None keeps dspy's default out of the request) and offers no
@@ -444,7 +445,7 @@ def main() -> None:
     )
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--seed", required=True, type=int)
-    parser.add_argument("--model", choices=("qwen", "sonnet45", "gptmini"), default="qwen")
+    parser.add_argument("--model", choices=("qwen", "sonnet45", "gptmini", "gpt51"), default="qwen")
     parser.add_argument("--budgets", default=",".join(BUDGETS))
     parser.add_argument("--rollouts", type=int, default=3)
     parser.add_argument("--limit", type=int, default=0)
@@ -469,10 +470,11 @@ def main() -> None:
             raise SystemExit("ANTHROPIC_API_KEY is required for --model sonnet45")
         model, model_revision, sampling = CLAUDE_MODEL, None, CLAUDE_SAMPLING
         urls = [None]
-    elif args.model == "gptmini":
+    elif args.model in ("gptmini", "gpt51"):
         if not os.environ.get("OPENAI_API_KEY"):
-            raise SystemExit("OPENAI_API_KEY is required for --model gptmini")
-        model, model_revision, sampling = GPT_MODEL, None, GPT_SAMPLING
+            raise SystemExit(f"OPENAI_API_KEY is required for --model {args.model}")
+        model = GPT_MODEL if args.model == "gptmini" else GPT51_MODEL
+        model_revision, sampling = None, GPT_SAMPLING
         urls = [None]
     else:
         model, model_revision, sampling = MODEL, MODEL_REVISION, SAMPLING

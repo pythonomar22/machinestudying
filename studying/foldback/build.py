@@ -48,8 +48,7 @@ from studybench.artifacts import read_json, sha256_json, sha256_text, stable_see
 from studybench.dataset import CORPORA, ROOT, read_corpus_file
 from studybench.tools import RepoTools
 
-from .analyze import CONFIG_SHA256 as ANALYZE_CONFIG_SHA256
-from .analyze import call_structured
+from .analyze import ANALYST_MODELS, call_structured, config_sha256
 
 VERIFIER_MODEL = "gpt-5.4"
 VERIFY_FILE_CHARS = 40_000
@@ -108,7 +107,7 @@ def mechanics_block(report: dict, summary: dict, library: str) -> str:
 - Question-specific practice content is free to keep in a note (space-wise) but competes for your attention and helps only if a similar mechanism recurs; your analysis tagged generality per lesson — use it to organize, not necessarily to discard."""
 
 
-PROPOSAL_PROMPT = """You are gpt-5.4-mini. You studied the {library} repository on {n_questions} practice questions and your extracted knowledge is summarized below. You will now DESIGN the study artifact you carry into the exam. Design for yourself: you know how you fail and what you already know.
+PROPOSAL_PROMPT = """You are {studier}. You studied the {library} repository on {n_questions} practice questions and your extracted knowledge is summarized below. You will now DESIGN the study artifact you carry into the exam. Design for yourself: you know how you fail and what you already know.
 
 {mechanics}
 
@@ -123,7 +122,7 @@ Propose ONE complete design for your study artifact. Be concrete and opinionated
 - `rationale`: why this form and structure beat the alternatives FOR YOU, referencing the mechanics numerically.
 - `failure_modes`: the ways this design could fail on the unseen exam."""
 
-COMMIT_PROMPT = """You are gpt-5.4-mini, choosing the final design of your own study artifact. Below are {n} designs you drafted independently, plus the mechanics and your analysis summary. Critique each against the mechanics (the best-so-far area metric and each budget's marginal weight, attention dilution, per-budget token headroom, unseen-question transfer), then commit to a final design — one of the drafts or a merge of their best ideas. Return the same schema as the drafts (this is the binding plan).
+COMMIT_PROMPT = """You are {studier}, choosing the final design of your own study artifact. Below are {n} designs you drafted independently, plus the mechanics and your analysis summary. Critique each against the mechanics (the best-so-far area metric and each budget's marginal weight, attention dilution, per-budget token headroom, unseen-question transfer), then commit to a final design — one of the drafts or a merge of their best ideas. Return the same schema as the drafts (this is the binding plan).
 
 {mechanics}
 
@@ -166,7 +165,7 @@ PLAN_SCHEMA = {
     "additionalProperties": False,
 }
 
-ASSEMBLY_PROMPT = """You are gpt-5.4-mini writing part of your own study artifact, following the design you committed to. Merge the raw extracted material below into final entries: deduplicate aggressively, keep every distinct load-bearing fact, and write so your exam self can act on each entry without the repository. The claim statements show exactly what graded weight each piece of material served; the already-known list shows what NOT to re-teach.
+ASSEMBLY_PROMPT = """You are {studier} writing part of your own study artifact, following the design you committed to. Merge the raw extracted material below into final entries: deduplicate aggressively, keep every distinct load-bearing fact, and write so your exam self can act on each entry without the repository. The claim statements show exactly what graded weight each piece of material served; the already-known list shows what NOT to re-teach.
 
 {mechanics}
 
@@ -233,14 +232,18 @@ Verdicts: `verified` (supported), `unverified` (cannot confirm from these source
 
 Return JSON matching the schema exactly: a verdict for every entry id."""
 
-BUILD_CONFIG_SHA256 = sha256_json({
-    "proposal": PROPOSAL_PROMPT, "commit": COMMIT_PROMPT, "plan_schema": PLAN_SCHEMA,
-    "assembly": ASSEMBLY_PROMPT, "assembly_schema": ASSEMBLY_SCHEMA,
-    "verify": VERIFY_PROMPT, "verifier": VERIFIER_MODEL,
-    "verify_caps": [VERIFY_FILE_CHARS, VERIFY_GROUP_FILES],
-    "note_ceiling": NOTE_CHAR_CEILING, "n_proposals": N_PROPOSALS,
-    "analyze_config": ANALYZE_CONFIG_SHA256,
-})
+def build_config_sha256(model_key: str) -> str:
+    payload = {
+        "proposal": PROPOSAL_PROMPT, "commit": COMMIT_PROMPT, "plan_schema": PLAN_SCHEMA,
+        "assembly": ASSEMBLY_PROMPT, "assembly_schema": ASSEMBLY_SCHEMA,
+        "verify": VERIFY_PROMPT, "verifier": VERIFIER_MODEL,
+        "verify_caps": [VERIFY_FILE_CHARS, VERIFY_GROUP_FILES],
+        "note_ceiling": NOTE_CHAR_CEILING, "n_proposals": N_PROPOSALS,
+        "analyze_config": config_sha256(model_key),
+    }
+    if model_key != "gptmini":  # gptmini sha predates parameterization
+        payload["studier_model"] = ANALYST_MODELS[model_key]["model"]
+    return sha256_json(payload)
 
 
 def verify_schema(ids: list[str]) -> dict:
@@ -287,11 +290,21 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--run-id", required=True)
     parser.add_argument("--seed", required=True, type=int)
+    parser.add_argument("--model", default="gptmini", choices=sorted(ANALYST_MODELS))
+    parser.add_argument("--base-urls", help="local vLLM endpoints (local studiers only)")
     parser.add_argument("--dirty-ok", action="store_true")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
+    profile = ANALYST_MODELS[args.model]
+    if profile["local"] != bool(args.base_urls):
+        raise SystemExit("--base-urls is required for local studiers and invalid otherwise")
+    studier_key = os.environ.get(profile["key_env"]) or ("EMPTY" if profile["local"] else None)
+    if not studier_key:
+        raise SystemExit(f"{profile['key_env']} is required (studier)")
     if not os.environ.get("OPENAI_API_KEY"):
-        raise SystemExit("OPENAI_API_KEY is required (studier and verifier)")
+        raise SystemExit("OPENAI_API_KEY is required (verifier)")
+    BUILD_CONFIG_SHA256 = build_config_sha256(args.model)
+    ANALYZE_CONFIG_SHA256 = config_sha256(args.model)
 
     (ROOT / "logs").mkdir(exist_ok=True)
     logging.basicConfig(
@@ -343,6 +356,9 @@ def main() -> None:
         write_json(manifest_path, manifest)
 
     api = OpenAI(api_key=os.environ["OPENAI_API_KEY"], timeout=600, max_retries=2)
+    studier_api = (OpenAI(api_key=studier_key, base_url=args.base_urls.split(",")[0],
+                          timeout=600, max_retries=2)
+                   if profile["local"] else api)
     report = read_json(study_root / "report.json")
     mechanics = mechanics_block(report, summary, corpus.display)
     summary_text = json.dumps(
@@ -356,22 +372,25 @@ def main() -> None:
     def studier(path: Path, prompt: str, schema: dict, name: str, seed: int) -> dict:
         if path.exists():
             return read_json(path)["payload"]
-        payload, usage = call_structured(api, prompt=prompt, schema=schema,
-                                         name=name, seed=seed)
+        payload, usage = call_structured(studier_api, prompt=prompt, schema=schema,
+                                         name=name, seed=seed,
+                                         model=profile["model"],
+                                         sampling=profile["sampling"],
+                                         cap_key=profile["cap_key"])
         write_json(path, {"payload": payload, "usage": usage})
         return payload
 
     # ---- phase A: form decision ---------------------------------------------
     proposals = [
         studier(build_root / f"proposal_{i}.json",
-                PROPOSAL_PROMPT.format(library=corpus.display,
+                PROPOSAL_PROMPT.format(studier=profile["model"], library=corpus.display,
                                        n_questions=summary["questions"],
                                        mechanics=mechanics, summary=summary_text),
                 PLAN_SCHEMA, "fb_proposal", stable_seed(args.seed, "fb-proposal", i))
         for i in range(N_PROPOSALS)
     ]
     plan = studier(build_root / "plan.json",
-                   COMMIT_PROMPT.format(n=N_PROPOSALS, mechanics=mechanics,
+                   COMMIT_PROMPT.format(studier=profile["model"], n=N_PROPOSALS, mechanics=mechanics,
                                         summary=summary_text,
                                         proposals=json.dumps(proposals, indent=1)),
                    PLAN_SCHEMA, "fb_commit", stable_seed(args.seed, "fb-commit"))
@@ -427,6 +446,7 @@ def main() -> None:
         payload = studier(
             build_root / f"assembled_{topic}.json",
             ASSEMBLY_PROMPT.format(
+                studier=profile["model"],
                 mechanics=mechanics, plan=json.dumps(plan, indent=1), topic=topic,
                 known="\n".join(f"- {k}" for k in known) or "(none)",
                 n_lessons=sum(len(r["lessons"]) for r in topic_records),
@@ -598,8 +618,8 @@ def main() -> None:
         "analyze_config_sha256": ANALYZE_CONFIG_SHA256,
         "source_commit": source_commit,
         "study_questions": summary["questions"],
-        "studier": {"model": "gpt-5.4-mini",
-                    "sampling_note": "temperature pinned to 1.0 (gpt-5.x surface)"},
+        "studier": {"model": profile["model"], "sampling": profile["sampling"],
+                    "sampling_note": profile["note"]},
         "verifier": {"model": VERIFIER_MODEL, "role": "verdict-only, drop-only",
                      "usage": verifier_usage},
         "studier_generated_tokens": {
