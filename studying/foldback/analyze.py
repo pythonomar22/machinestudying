@@ -348,8 +348,9 @@ def main() -> None:
         row = rows[qid]
         episode = read_json(study_root / "attempts" / f"{qid}.json")
         direct_ep = read_json(study_root / "direct" / f"{qid}.json")
-        if episode["status"] != "ok" or direct_ep["status"] != "ok":
-            raise SystemExit(f"{qid}: stage-0 episode not ok; rerun stage 0 first")
+        if (episode["status"] not in {"ok", "no_answer"}
+                or direct_ep["status"] not in {"ok", "no_answer"}):
+            raise SystemExit(f"{qid}: stage-0 episode not usable; rerun stage 0 first")
         direct_grade = read_json(study_root / "grades" / "direct" / f"{qid}.json")
         k20f_grade = read_json(study_root / "grades" / "k20f" / f"{qid}.json")
         table = claim_flip_table(row, direct_grade, k20f_grade, episode)

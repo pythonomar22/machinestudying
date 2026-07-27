@@ -20,13 +20,16 @@ import os
 
 from studybench.artifacts import read_json, write_json
 from studybench.dataset import CORPORA, ROOT
-from studybench.react import GPT_MODEL, GPT_SAMPLING, make_tools
+from studybench.react import GPT_MODEL, GPT_SAMPLING, MODEL, MODEL_REVISION, SAMPLING, make_tools
 from studybench.tools import RepoTools
 
 from .data import load_practice_questions
 from .devval import evaluate_variant
 
-MODELS = {"gptmini": (GPT_MODEL, None, GPT_SAMPLING)}
+MODELS = {
+    "gptmini": (GPT_MODEL, None, GPT_SAMPLING),
+    "qwen": (MODEL, MODEL_REVISION, SAMPLING),  # requires --base-urls
+}
 log = logging.getLogger("studying.foldback.devrun")
 
 
@@ -38,6 +41,7 @@ def main() -> None:
     parser.add_argument("--arms", required=True)
     parser.add_argument("--rollouts", type=int, default=2)
     parser.add_argument("--limit", type=int, default=0)
+    parser.add_argument("--base-urls", help="local vLLM endpoints (qwen only)")
     parser.add_argument("--debug", action="store_true")
     args = parser.parse_args()
     if not os.environ.get("OPENAI_API_KEY"):
@@ -58,6 +62,9 @@ def main() -> None:
     dev_ids = read_json(run_root / "study" / "split.json")["dev_ids"]
     dev_rows = [by_id[qid] for qid in dev_ids][: args.limit or None]
     model, revision, sampling = MODELS[args.model]
+    if (args.model == "qwen") != bool(args.base_urls):
+        raise SystemExit("--base-urls is required for --model qwen and invalid otherwise")
+    base_urls = args.base_urls.split(",") if args.base_urls else [None]
 
     summary = {}
     for arm in args.arms.split(","):
@@ -74,7 +81,7 @@ def main() -> None:
             rows=dev_rows,
             corpus=corpus,
             tools=tools,
-            base_urls=[None],
+            base_urls=base_urls,
             api_key=os.environ["OPENAI_API_KEY"],
             master_seed=args.seed,
             out_dir=run_root / "dev" / f"{args.model}-{arm}",
