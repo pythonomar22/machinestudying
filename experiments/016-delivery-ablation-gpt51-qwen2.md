@@ -54,11 +54,39 @@ budgets barely help (stops early on wrong answers), best-so-far ≤k20
 (+13…19) projects E ≈ 31–35 — a near-doubling. **GPT-5.1 fold-back is
 the next headline experiment.**
 
-## C. Qwen fold-back v2 — in flight
+## C. Qwen fold-back v2 — dev gate passed; test shot in flight
 
-Infra landed (26a4565): stage0/analyze/build fully model-parameterized
-(qwen studier via session vLLM, temp-0.2 study convention restored;
-gptmini config hashes byte-preserved). Two TP=2 vLLM servers on GPUs
-0–3 (ninja/nvcc PATH fix after one failed bring-up). Stage-0
-(`dspy-qwenfoldback2-20260727`: 70q direct+k20f, gpt judge) running;
-analyze → build → dev-30 → test (target: beat cheatsheet 15.90) next.
+Infra (26a4565 + follow-ups): full pipeline model-parameterized (qwen
+studier via session vLLM; temp-0.2 study convention restored with
+thinking_token_budget 6000 after two rumination `finish=length`
+failures; studier persona parameterized after catching Qwen being
+addressed as "gpt-5.4-mini" — analysis regenerated clean; gptmini
+config hashes byte-preserved throughout). vLLM bring-up needed the
+sbatch PATH env (ninja/nvcc).
+
+Stage-0 (`dspy-qwenfoldback2-20260727`, 70q, gpt judge): direct
+**2.21 @ 2,596** vs k20f **30.64 @ 18,612** — 139/140 ok. Bucket
+structure: BOTH0 = 4,790/7,000 (68%!) vs FLIP+ 2,055 — Qwen's forced
+search finds far less than mini's, so the golds carry the distillation.
+
+Analysis: 341 lessons (340 reusable, **289 gold-sourced**), 100%
+recoverable coverage. Build: Qwen committed to **prompt_note** (vs
+mini's hybrid — sensible given its expensive k20f); 214 assembled →
+**153 kept** (52 unverified + 8 contradicted + 1 uncited dropped — the
+external drop-only verifier caught substantially more bad content than
+it did for mini); 45.8k-char note.
+
+Dev-30 gate (bare vs object, direct+k5, 2 rollouts, gpt judge):
+
+| arm | direct | k5 |
+|---|---:|---:|
+| bare | 0.50 @ 3122 | 6.80 @ 6030 |
+| object_v2 | **6.97 @ 2527** | **11.08 @ 5647** |
+
+Both budgets up AND both token counts down — unlike mini, Qwen gains
+at tool budgets (the note carries what its search can't find). Gate
+passed → declared test shot launched: 30q × 4 budgets × **3 rollouts**
+(matching the 008 anchors), gpt judge, targets 9.04 (no-study) and
+15.90 (cheatsheet). One dev-only infra note: the GPT-5.4 judge
+abstained (`needs_regrade`) on one dev answer; devval now retries once
+and, only for dev signal, accepts flagged claim verdicts.
