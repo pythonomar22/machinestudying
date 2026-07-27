@@ -1,7 +1,7 @@
 # 016 — Delivery ablation (mini), GPT-5.1 gate, Qwen fold-back v2
 
-**Status: mini ablation and GPT-5.1 gate complete (2026-07-27);
-Qwen v2 stage-0 in flight.**
+**Status: all three workstreams complete (2026-07-27); Qwen v2 test
+graded — beats no-study and v1 separably, ties the cheatsheet.**
 
 ## A. Mini delivery ablation — behavior was the whole regression
 
@@ -90,3 +90,53 @@ passed → declared test shot launched: 30q × 4 budgets × **3 rollouts**
 15.90 (cheatsheet). One dev-only infra note: the GPT-5.4 judge
 abstained (`needs_regrade`) on one dev answer; devval now retries once
 and, only for dev signal, accepts flagged claim verdicts.
+
+### Test result (360/360 after the standing 8-episode resample; retry
+### executed from the recorded source_commit 3f59481)
+
+| Qwen arm (same seeds/rollouts/judge/questions) | direct | k5 | k20 | k20f | E |
+|---|---:|---:|---:|---:|---:|
+| no-study (008) | 4.5 @ 3.0k | 8.2 @ 5.7k | 9.8 @ 7.7k | 24.0 @ 20.5k | 9.04 |
+| + cheatsheet (008) | 10.4 @ 2.8k | 14.3 @ 5.4k | 19.5 @ 7.5k | 29.5 @ 24.1k | 15.90 |
+| + fold-back v1 (010) | 9.2 | 13.1 | 14.4 | 20.4 | 11.02 |
+| **+ fold-back v2** | 10.96 @ 3.0k | 15.82 @ 6.6k | **21.98** @ 7.5k | 26.02 @ 25.4k | **16.02** |
+
+Paired (10k-rep bootstrap, seed 20260715):
+
+- **v2 > no-study: ΔE +6.98, CI [+3.08, +10.79]** — separable.
+- **v2 > fold-back v1: ΔE +5.01, CI [+1.86, +7.08]** — the automated
+  pipeline (gold-sourcing, claim targeting, verification,
+  self-designed object) is a real improvement over 010.
+- **v2 ≈ cheatsheet: ΔE +0.13, CI [−3.84, +3.80]** — a statistical
+  tie, claimed as a tie. v2 leads at direct/k5/k20; the cheatsheet
+  leads at k20f (−3.5).
+
+Adversarial audit (wf_bcd12668-c55; all 1,440 grades recomputed exact,
+provenance 0 mismatches, splits and note leakage-clean with zero test
+shingles, resample lean n.s. — zeroing all 8 retried episodes still
+leaves E=15.24 > no-study). **Audited wording:**
+
+1. Claimable as stated: v2 beats no-study (+6.98, CI [+3.08, +10.79];
+   survives ×3 correction, perm p=0.0006).
+2. Reframed: v1 was the *teacher-mined* object (gpt-5.4-mini mining
+   codex-teacher trajectories, 66KB, student-mismatched) — so +5.01
+   (CI [+1.86, +7.08]) is an end-to-end pipeline comparison
+   (self-studied v2 vs teacher-taught v1), not a single-factor one.
+3. Softened: the cheatsheet comparison is a *failure to detect a
+   difference* (no pre-registered equivalence margin; CI admits ±3.8),
+   not demonstrated equivalence. The founding "beat 15.90" target is
+   matched, not beaten.
+4. Mechanism note: the k20f deficit (−3.5, itself n.s.) tracks a
+   **note-length tax on forced search**, monotone across arms
+   (cheatsheet 13.5KB→29.5, v2 45.9KB→26.0, v1 66KB→20.4; no-note
+   24.0); protocol-suppression is NOT supported (finish attempts
+   correlate positively with score within arms). Qwen's self-written
+   protocol is metric-aware (targets ~2.8k tokens at direct — the 3k
+   anchor) — disclosed as part of the method; realized direct tokens
+   matched the anchors (3.0k), so no distortion materialized.
+5. Note quality: 8/8 sampled entries API-real; 6 fully correct, 2
+   minor imprecisions; 4 duplicate bullets (cosmetic).
+
+Next lever suggested by (4): a size-disciplined v2 render (compress
+toward ~15-20KB, drop-only) could reclaim the k20f tax — the one
+experiment between "tie" and "beat."
