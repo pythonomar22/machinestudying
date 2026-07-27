@@ -58,11 +58,15 @@ ANALYST_MODELS = {
     },
     "qwen": {
         "model": "Qwen/Qwen3.5-9B",
-        "sampling": {"temperature": 0.2, "top_p": 0.95, "max_tokens": 8_192},
+        # thinking bounded so rumination cannot eat the JSON budget (the
+        # local-judge convention); 010 temp-0.2 study-time convention kept.
+        "sampling": {"temperature": 0.2, "top_p": 0.95, "max_tokens": 16_384,
+                     "extra_body": {"thinking_token_budget": 6_000}},
         "cap_key": "max_tokens",
         "key_env": "VLLM_API_KEY",
         "local": True,
-        "note": "010 temp-0.2 study-time convention (local vLLM)",
+        "note": "010 temp-0.2 study-time convention (local vLLM, "
+                "thinking_token_budget 6000)",
     },
 }
 MAX_COMPLETION_CEILING = 32_768
