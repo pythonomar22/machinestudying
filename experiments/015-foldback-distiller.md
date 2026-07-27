@@ -94,8 +94,35 @@ store; only 1 question-specific entry kept. `cheatsheet.md` +
   lesson level), not weight_hint sums.
 - Nothing here touched the dev-30 slice or the 30-question test set.
 
+## Test shot (2026-07-27, Omar's call: test first, baselines after)
+
+`studybench.react --condition foldback --model gptmini`, 30 test
+questions × 4 budgets × 1 rollout, seed 20260715, 120/120 ok first
+pass, GPT-5.4 judge:
+
+| budget | mean lenient | mean gen tokens | behavior |
+|---|---:|---:|---|
+| direct | 36.97 | 857 | note only |
+| k5 | 33.13 | 1,406 | median 2 iters (voluntary stop), lookup in 15/30 |
+| k20 | 42.33 | 1,481 | median 2 iters, lookup in 15/30 |
+| k20f | 43.67 | 3,825 | forced 20, lookup 2.6×/ep in 30/30 |
+
+**Expertise = 43.38** — the highest E in the project (same judge and
+questions: Sonnet no-study 32.94 / +cheatsheet 34.36, codex-mini
+16.78/18.28, Qwen 9.04/15.90). Three of four budget points sit inside
+the 3k anchor (weights 1/1/1/0.78): the answer-protocol's early
+stopping collapsed k5/k20 to ~1.4k gen tokens, exactly the lever the
+mechanics block priced.
+
+**Attribution is NOT yet claimable.** vs codex-mini's 16.78 this
+conflates the harness change with studying; the same-harness no-study
+and cheatsheet baselines (next step) are required before attributing
+any of the 43.38 to the study object. Also note the foldback arm's
+tool set includes `study_lookup` at tool budgets (manifested), 1
+rollout, n=30. Full adversarial audit deferred to the baseline
+comparison, where the actual claims get made.
+
 ## Next
 
-Dev-30 evaluation (object vs bare vs a plain-cheatsheet control,
-direct + k5 at least; devval.py) before the one declared test shot vs
-the 32.94/34.36 anchors.
+gptmini `baseline` and `cheatsheet` test runs in the dspy harness
+(1 rollout, gpt judge), then the attribution audit.
