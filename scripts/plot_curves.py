@@ -1,7 +1,7 @@
-"""Six-way budget curves in the fiveway.png house style (GPT-5.4 judge).
+"""Eight-way budget curves in the fiveway.png house style (GPT-5.4 judge).
 
 Reads mean lenient / mean generated tokens per budget from the grade
-reports and saves docs/figures/sixway-gpt54.{png,svg}. Style contract
+reports and saves docs/figures/eightway-gpt54.{png,svg}. Style contract
 (matches the original fiveway figure): cheatsheet = solid dark shade,
 no-study = dashed light shade of the same agent hue; no legend box —
 colored "<series> · E <value>" labels at line ends; log-x with the 3k
@@ -29,6 +29,8 @@ SERIES = [
     ("dspy-codexmini-nostudy-20260723", "codex-mini no-study", "#85b3ea", "dashed", (27_000, 72.0)),
     ("dspy-sonnet45-cheatsheet-20260725", "Sonnet 4.5 + cheatsheet", "#12a370", "solid", (27_000, 60.5)),
     ("dspy-sonnet45-nostudy-20260725", "Sonnet 4.5 no-study", "#7fd0ae", "dashed", (27_000, 67.0)),
+    ("dspy-gptmini-cheatsheet-20260727", "gpt-5.4-mini + cheatsheet", "#6d4fc2", "solid", (900, 61.0)),
+    ("dspy-gptmini-nostudy-20260727", "gpt-5.4-mini no-study", "#b3a1e6", "dashed", (900, 66.0)),
 ]
 INK, INK_2 = "#1a1a1a", "#777777"
 
@@ -59,11 +61,11 @@ def main() -> None:
                 color=color, fontsize=11.5, fontweight="medium", va="center")
 
     ax.set_xscale("log")
-    ticks = [2000, 3000, 5000, 10_000, 20_000, 40_000]
+    ticks = [1000, 2000, 3000, 5000, 10_000, 20_000, 40_000]
     ax.set_xticks(ticks)
-    ax.set_xticklabels(["2k", "3k", "5k", "10k", "20k", "40k"])
+    ax.set_xticklabels(["1k", "2k", "3k", "5k", "10k", "20k", "40k"])
     ax.minorticks_off()
-    ax.set_xlim(1400, 130_000)
+    ax.set_xlim(750, 130_000)
     ax.set_ylim(0, 85)
     ax.set_yticks(range(0, 81, 10))
     ax.text(3200, 81.5, "3k anchor", color=INK_2, fontsize=10)
@@ -87,8 +89,8 @@ def main() -> None:
     out = ROOT / "docs" / "figures"
     out.mkdir(parents=True, exist_ok=True)
     for suffix in ("png", "svg"):
-        fig.savefig(out / f"sixway-gpt54.{suffix}", bbox_inches="tight", facecolor="white")
-    print(f"saved {out}/sixway-gpt54.png + .svg")
+        fig.savefig(out / f"eightway-gpt54.{suffix}", bbox_inches="tight", facecolor="white")
+    print(f"saved {out}/eightway-gpt54.png + .svg")
 
 
 if __name__ == "__main__":
