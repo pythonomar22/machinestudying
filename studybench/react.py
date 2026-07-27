@@ -489,6 +489,29 @@ def main() -> None:
         "corpus_snapshot_sha256": repository.snapshot_sha256,
     }
     run_root = ROOT / "runs" / args.run_id / args.task
+    store_path = run_root / "study" / "build" / "lookup_store.json"
+    if args.condition == "foldback" and store_path.is_file():
+        store = read_json(store_path)
+
+        def study_lookup(key: str) -> str:
+            """Look up your own study notes by key; a miss lists the closest keys."""
+
+            entry = store.get(key)
+            if entry is None:
+                matches = [k for k in sorted(store) if key.lower() in k.lower()][:5]
+                return "No exact match. " + (
+                    f"Closest keys: {', '.join(matches)}" if matches else "No similar keys."
+                )
+            block = entry["text"] + (f"\n{entry['code']}" if entry.get("code") else "")
+            return block[:OBSERVATION_MAX_CHARS]
+
+        repository_tools = repository_tools + [study_lookup]
+        tool_config = {
+            **tool_config,
+            "names": TOOL_CONFIG["names"] + ["study_lookup"],
+            "study_lookup_store_sha256": sha256_json(store),
+            "study_lookup_keys": len(store),
+        }
     runtime = {
         "python": platform.python_version(),
         "dspy": getattr(dspy, "__version__", "unknown"),
