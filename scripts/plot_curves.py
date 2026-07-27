@@ -29,8 +29,9 @@ SERIES = [
     ("dspy-codexmini-nostudy-20260723", "codex-mini no-study", "#85b3ea", "dashed", (27_000, 72.0)),
     ("dspy-sonnet45-cheatsheet-20260725", "Sonnet 4.5 + cheatsheet", "#12a370", "solid", (27_000, 60.5)),
     ("dspy-sonnet45-nostudy-20260725", "Sonnet 4.5 no-study", "#7fd0ae", "dashed", (27_000, 67.0)),
-    ("dspy-gptmini-cheatsheet-20260727", "gpt-5.4-mini + cheatsheet", "#6d4fc2", "solid", (900, 61.0)),
-    ("dspy-gptmini-nostudy-20260727", "gpt-5.4-mini no-study", "#b3a1e6", "dashed", (900, 66.0)),
+    ("dspy-gptmini-cheatsheet-20260727", "gpt-5.4-mini + cheatsheet", "#6d4fc2", "solid", (900, 63.5)),
+    ("dspy-gptmini-nostudy-20260727", "gpt-5.4-mini no-study", "#b3a1e6", "dashed", (900, 68.0)),
+    ("dspy-gptminifoldback-20260726", "gpt-5.4-mini + fold-back object", "#472f8f", "dashdot", (900, 59.0)),
 ]
 INK, INK_2 = "#1a1a1a", "#777777"
 
@@ -53,7 +54,8 @@ def main() -> None:
         tokens, lenient, expertise = load(run_id)
         ax.plot(
             tokens, lenient, color=color,
-            linestyle="-" if style == "solid" else (0, (5, 2.5)),
+            linestyle={"solid": "-", "dashed": (0, (5, 2.5)),
+                       "dashdot": (0, (6, 2, 1.5, 2))}[style],
             linewidth=2.6 if style == "solid" else 2.1,
             marker="o", markersize=6, zorder=3,
         )
@@ -82,7 +84,7 @@ def main() -> None:
     ax.set_ylabel("lenient score (%)", color=INK, fontsize=12.5)
     ax.set_title("Score vs. inference compute — GPT-5.4 paper judge",
                  color=INK, fontsize=15.5, loc="left", pad=26)
-    ax.text(0, 1.035, "solid = + cheatsheet, dashed = no-study · 30 test questions"
+    ax.text(0, 1.035, "solid = + cheatsheet, dashed = no-study, dash-dot = + fold-back object · 30 test questions"
             " · E = expertise (WAUC, 3k anchor)",
             transform=ax.transAxes, color=INK_2, fontsize=10.5)
 
