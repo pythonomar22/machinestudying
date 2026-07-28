@@ -198,6 +198,57 @@ rollouts on the direct head to settle the marginal cheatsheet claim;
 disclosure or compute parity for a fairer cheatsheet control; (v) 018
 anchor sweep + closed-book endpoint reporting.
 
-## Results
+## B. Qwen v2-compact result (audited wf_9959f35b-e18; wording is the
+## audit's — the mechanism sub-claim I proposed FAILED its audit)
 
-(qwen compact pending)
+| Qwen arm (same seeds/rollouts/judge/questions) | direct | k5 | k20 | k20f | E |
+|---|---:|---:|---:|---:|---:|
+| no-study (008) | 4.5 | 8.2 | 9.8 | 24.0 | 9.04 |
+| cheatsheet (008) | 10.4 | 14.3 | 19.5 | 29.5 | 15.90 |
+| fold-back v2 (016) | 10.96 | 15.82 | 21.98 | 26.02 | 16.02 |
+| **v2-compact** | 5.73 | 13.31 | 13.40 | 21.72 | **9.83** |
+
+1. **The compaction lowered performance at every budget**: ΔE −6.19,
+   CI [−8.72, −3.00], seed-stable, independently reimplemented.
+   Provenance exact (verbatim drop-only subset, protocol
+   byte-identical, all 360 prompt hashes validate, resample-robust).
+2. **The 016 length-tax prediction is falsified**: k20f fell to 21.72
+   instead of rising toward ~28.8. Within-object, note length is NOT
+   the driver of v2's k20f deficit; the cross-arm size↔k20f
+   correlation is confounded by content/authorship AND
+   exploration/rollout variance, and cannot be read causally.
+3. **Compaction erased the entire study benefit**: compact ≈ no-study
+   (ΔE +0.79, CI [−1.14, +3.38]) and separably below the cheatsheet
+   (−6.06, CI [−9.33, −2.56]).
+4. Mechanism (audited decomposition of gross lost claim-weight):
+   dropped-entry content is a REAL but MINORITY share (33% at k20f,
+   36% at k20 — incl. all 4 systematic losses, e.g. the dropped
+   ReAct-signature entries on dspy_7329144ef1e9); the majority is
+   facts in NEITHER note that v2 earned via exploration (58% at
+   k20f) plus facts still present that compact failed to apply (34%
+   at k20). Compact also GAINED 176.7 weight at k20f — pure
+   content-removal cannot explain the pattern. Do NOT claim "every
+   dropped entry was pulling weight" or "longer notes are better."
+5. Dev-30 predicted the direct drop (−4.05 dev vs −5.22 test) — the
+   dev gate is a validated predictor for direct; and the 018-style
+   weight math predicted before grading that compact could not win
+   even in its best case. Both ledgered pre-grading.
+
+Verdict: the compact-render lever is dead. v2 (all 153 entries)
+stands as the best Qwen object — its content is efficient, not
+bloated. Any future Qwen lever must ADD test-relevant coverage or
+change behavior at tool budgets, not subtract note mass; otherwise
+the audited 016 position (beats no-study, ties cheatsheet) is the
+final Qwen result.
+
+## Session summary (2026-07-28)
+
+Both 017 workstreams closed. Headline: **GPT-5.1 fold-back E 18.31 →
+39.44** (beats no-study separably on both endpoints; cheatsheet
+comparison marginal — see A). Negative: **Qwen compact refuted the
+length-tax mechanism** (see B). Methods: **018 anchor-sensitivity
+analysis** (audited) reframed mini and pre-registered the closed-book
+secondary endpoint that the 5.1 result then needed. Queued decisions:
++2–4 rollouts on the 5.1 direct head; protocol-stripped ablation;
+sonnet-judge robustness; mini rollout equalization; report.py sweep
+tooling.
