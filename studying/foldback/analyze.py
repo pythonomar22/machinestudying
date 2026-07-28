@@ -56,6 +56,15 @@ ANALYST_MODELS = {
         "note": "temperature pinned to 1.0 by the gpt-5.x surface "
                 "(010 study-time convention was 0.2)",
     },
+    "gpt51": {
+        "model": "gpt-5.1",
+        "sampling": ANALYST_SAMPLING,
+        "cap_key": "max_completion_tokens",
+        "key_env": "OPENAI_API_KEY",
+        "local": False,
+        "note": "temperature pinned to 1.0 by the gpt-5.x surface "
+                "(010 study-time convention was 0.2)",
+    },
     "qwen": {
         "model": "Qwen/Qwen3.5-9B",
         # thinking bounded so rumination cannot eat the JSON budget (the

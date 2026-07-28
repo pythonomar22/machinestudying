@@ -20,7 +20,15 @@ import os
 
 from studybench.artifacts import read_json, write_json
 from studybench.dataset import CORPORA, ROOT
-from studybench.react import GPT_MODEL, GPT_SAMPLING, MODEL, MODEL_REVISION, SAMPLING, make_tools
+from studybench.react import (
+    GPT51_MODEL,
+    GPT_MODEL,
+    GPT_SAMPLING,
+    MODEL,
+    MODEL_REVISION,
+    SAMPLING,
+    make_tools,
+)
 from studybench.tools import RepoTools
 
 from .data import load_practice_questions
@@ -28,6 +36,7 @@ from .devval import evaluate_variant
 
 MODELS = {
     "gptmini": (GPT_MODEL, None, GPT_SAMPLING),
+    "gpt51": (GPT51_MODEL, None, GPT_SAMPLING),
     "qwen": (MODEL, MODEL_REVISION, SAMPLING),  # requires --base-urls
 }
 log = logging.getLogger("studying.foldback.devrun")

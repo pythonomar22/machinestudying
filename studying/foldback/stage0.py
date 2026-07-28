@@ -32,6 +32,7 @@ from studybench.grade import build_prompt, response_schema, score_verdict
 from studybench.react import (
     CLAUDE_MODEL,
     CLAUDE_SAMPLING,
+    GPT51_MODEL,
     GPT_MODEL,
     GPT_SAMPLING,
     MODEL,
@@ -48,6 +49,7 @@ from .data import load_practice_questions, practice_dataset_sha256, split_practi
 MODELS = {
     "sonnet45": (CLAUDE_MODEL, CLAUDE_SAMPLING, "ANTHROPIC_API_KEY"),
     "gptmini": (GPT_MODEL, GPT_SAMPLING, "OPENAI_API_KEY"),
+    "gpt51": (GPT51_MODEL, GPT_SAMPLING, "OPENAI_API_KEY"),
     "qwen": (MODEL, SAMPLING, None),  # local vLLM; requires --base-urls
 }
 JUDGES = {
