@@ -36,6 +36,10 @@ gpt-5.4 (paper contract) throughout. Seed 20260715.
   direct up by ≥ 5 points and k5 not down by more than its noise**
   (same both-budgets-healthy bar 016 used for qwen).
 - Test: 3 rollouts × 30q × 4 budgets, condition `foldback`.
+- Endpoints (pre-registered in 018 before any test grade existed):
+  primary E(3000); secondary closed-book direct accuracy (the
+  transfer construct, immune to the 018 censoring band); anchor sweep
+  reported alongside.
 - Controls, both 1 rollout (the tier every hosted-model control has
   used since 013): existing `dspy-gpt51-nostudy-20260727` (E=18.31)
   and a new **own-cheatsheet arm** `dspy-gpt51-cheatsheet-20260727`
