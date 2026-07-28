@@ -135,6 +135,69 @@ directly test the 016 length-tax hypothesis within-object. E is
 expected ≤ v2; any "beats cheatsheet" claim is off the table for
 this arm.
 
+## A. GPT-5.1 results (audited wf_6f99d2fe-59e — all 6 checks pass;
+## wording below is the audit's)
+
+Pipeline (all 2026-07-27/28): stage-0 direct 7.14 vs k20f 35.21 on the
+70-question practice slice → analyze 335 lessons / **317 misconception
+fixes** / 100% recoverable-weight coverage → build: self-designed
+96.6KB prompt note, 70/83 entries verified (12 unverified + 1
+contradicted dropped) → dev gate: object direct 26.93 vs bare 7.38
+(+19.55 [+11.15,+28.47]), vs cheatsheet +9.00; tokens DOWN with the
+note → test (1 rollout, deviation ledgered above).
+
+| gpt-5.1 arm (gpt-5-4 judge, 30q, 1 rollout) | direct | k5 | k20 | k20f | E |
+|---|---:|---:|---:|---:|---:|
+| no-study | 11.43 @ 1.9k | 15.10 | 13.47 | 25.80 @ 8.4k | 18.31 |
+| own cheatsheet (50-iter study) | 24.37 @ 1.5k | 31.13 | 28.03 | 35.63 @ 10.8k | 31.47 |
+| **fold-back** | **38.70 @ 1.5k** | 30.43 | **38.10** | **42.70** @ 16.2k | **39.44** |
+
+Audited claims (paired bootstrap, seed 20260715, fresh stream per
+endpoint):
+
+1. **Fold-back beats no-study decisively on both endpoints**: ΔE
+   +21.14, CI [+10.56, +34.42]; closed-book direct +27.27, CI
+   [+16.40, +38.73] (BCa/t/Wilcoxon/sign all agree). Unhedged.
+2. **Cheatsheet also beats no-study**: ΔE +13.17, CI [+5.75, +22.21]
+   — the first non-null cheatsheet effect in the project (null on
+   Sonnet/mini/codex; qwen's was positive) and CI-clean at every
+   anchor (018). On a stale-priors model, even single-pass studying
+   corrects knowledge.
+3. **Fold-back vs cheatsheet on E: numerically ahead, NOT separable**
+   — +7.97, CI [−4.27, +21.29], P=0.904 (null stable under 4 seeds ×
+   2 rep counts × percentile/BCa). Point estimate only.
+4. **Fold-back vs cheatsheet on the pre-registered secondary endpoint
+   (closed-book direct): +14.33, marginal at p≈0.05** — CI
+   [+0.03, +28.17], but the lower bound is a Monte-Carlo knife-edge
+   (other seeds: −0.10…+0.53; t p=0.059, Wilcoxon p=0.040, sign
+   p=0.115). Never "clean exclusion of zero."
+5. Not token gaming: direct arms token-matched (1482/1496/1859, all
+   weight 1.0); fold-back's k20f inflation (16.2k) PENALIZES it —
+   swapping in the cheatsheet's token profile would RAISE E to 39.81.
+   8/8 audited direct wins are knowledge (API facts present/absent),
+   not form; reverse control exists (fold-back loses 10-vs-100 on a
+   retriever question).
+6. No test leakage (0 shared 12-word shingles vs questions and golds;
+   positive control fires on study golds; residual overlap ≤ the
+   cheatsheet arm's own baseline).
+
+Required framing (audit): the studier is handed the exam mechanics
+(build.py mechanics block) and its note is mined from judge-graded
+practice on same-generator questions — the method is **"studying
+graded past exams," not pure repository distillation**, and the
+cheatsheet control received no mechanics disclosure and less study
+compute (33KB from one 24.5k-token pass). Not study-compute-matched.
+One model/corpus/judge, 30q × 1 rollout — no generality claims.
+Commits differ per arm (37e0f3f/416b85e/2af128e); harness code
+verified byte-identical across them.
+
+Publication queue from the audit: (i) protocol-stripped-note ablation
+(separate knowledge from metric-aware protocol at direct); (ii) +2-4
+rollouts on the direct head to settle the marginal cheatsheet claim;
+(iii) sonnet-judge robustness on the direct head; (iv) mechanics
+disclosure or compute parity for a fairer cheatsheet control; (v) 018
+anchor sweep + closed-book endpoint reporting.
+
 ## Results
 
-(pending)
+(qwen compact pending)
