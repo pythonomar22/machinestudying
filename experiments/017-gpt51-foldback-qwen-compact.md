@@ -36,6 +36,12 @@ gpt-5.4 (paper contract) throughout. Seed 20260715.
   direct up by ≥ 5 points and k5 not down by more than its noise**
   (same both-budgets-healthy bar 016 used for qwen).
 - Test: 3 rollouts × 30q × 4 budgets, condition `foldback`.
+  **Deviation (2026-07-28, decided after the dev gate, before any test
+  contact): 1 rollout, not 3 — Omar's call on cost (the 96.6KB note
+  rides every prompt; 3 rollouts projected ~$80–130). Silver lining:
+  all three 5.1 arms are now rollout-matched (1 each), so every
+  within-model contrast passes report.py check_pair; the CI will be
+  wider than the konly precedent.**
 - Endpoints (pre-registered in 018 before any test grade existed):
   primary E(3000); secondary closed-book direct accuracy (the
   transfer construct, immune to the 018 censoring band); anchor sweep
