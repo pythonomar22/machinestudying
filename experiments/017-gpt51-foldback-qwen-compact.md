@@ -65,6 +65,36 @@ gpt-5.4 (paper contract) throughout. Seed 20260715.
 
 Both tracks: adversarial audit workflow before any claim is worded.
 
+## Infra event — OpenAI quota outage (2026-07-27 ~22:33)
+
+Mid-launch, the lab OpenAI key returned 429 `insufficient_quota`
+(billing, not rate limiting) and every OpenAI-dependent call died:
+gpt-5.1 episodes AND the gpt-5.4 paper judge. State at outage +
+salvage:
+
+- `dspy-gpt51foldback-20260727` stage-0: all 70 direct episodes ok
+  (mean 1,358 gen tokens); k20f 11 ok, 59 quota-poisoned `gave_up`
+  **deleted** (stage-0's `_episode_ok` treats `gave_up` as done — a
+  rerun would have silently kept them). **Resume: rerun the same
+  stage0 command**; it redoes the 59 attempts + all 140 grades.
+- `dspy-gpt51-cheatsheet-20260727`: the 50-iteration forced study
+  **completed before the outage** (cheatsheet.md + study.json valid);
+  all 120 eval episodes were 0-token 429 stubs, deleted. **Resume:
+  rerun the same react command**; study is reused.
+- Qwen dev-sanity (`dev/qwen-compact`): episodes completing on vLLM;
+  grading (gpt-5.4) blocked. **Resume: rerun the same devrun
+  command** (idempotent per episode/grade).
+- **Decision under the outage:** the compact test episodes were
+  launched before dev-sanity could be graded — the GPU allocation
+  (ends 07-28 06:34) is the only perishable resource and the compact
+  object is a frozen deterministic render (nothing dev could have
+  iterated). Evaluation order is preserved: dev-sanity will be graded
+  and read BEFORE any test grade is looked at. Ledgered here rather
+  than hidden.
+- Resume order when quota returns: dev-sanity grades → read →
+  compact-test grades; stage-0 rerun → analyze → build → dev-30 gate
+  → gpt51 test; cheatsheet-arm rerun → grade.
+
 ## Results
 
 (pending)
