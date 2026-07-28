@@ -95,6 +95,36 @@ salvage:
   compact-test grades; stage-0 rerun → analyze → build → dev-30 gate
   → gpt51 test; cheatsheet-arm rerun → grade.
 
+## B. Dev-sanity result (read before any test grade existed)
+
+| arm | direct | k5 |
+|---|---:|---:|
+| bare | 0.50 @ 3122 | 6.80 @ 6030 |
+| object_v2 | 6.97 @ 2527 | 11.08 @ 5647 |
+| compact | 2.92 @ 2462 | **11.08** @ 5528 |
+
+k5 holds exactly. Direct does NOT hold: paired compact−v2 = **−4.05,
+CI [−8.30, −0.63]** (10 questions down / 2 up / 18 tied) — the 96
+dropped entries were earning direct claims on dev. **The
+pre-registered sanity bar (direct holds) FAILED.**
+
+Weight-math recalculation (recorded before test grades): at v2's test
+token profile the k20f point carries only w≈0.12, so even a FULL
++3.5 k20f tax refund adds only ~+0.4 E. Scenario E (v2 test points,
+audit tax slope −0.17/KB → compact k20f ≈ +2.8):
+
+- direct holds, k20f +2.8 → E ≈ 16.3 (vs v2 16.02 — inside noise)
+- direct −4 (dev-sized), k20f +2.8 → E ≈ 14.1 (worse than v2)
+
+**The founding-target framing ("refund half the tax → beat 15.90")
+does not survive the weights — k20f moves E through a 0.12 weight.
+The test shot is therefore reinterpreted, before grading, as the
+causal mechanism probe**: same entries, same protocol, only note
+size differs (45.9KB → 17.7KB), so the k20f (and k20) budget points
+directly test the 016 length-tax hypothesis within-object. E is
+expected ≤ v2; any "beats cheatsheet" claim is off the table for
+this arm.
+
 ## Results
 
 (pending)
